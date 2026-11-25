@@ -43,10 +43,15 @@ API answer. Each store table's columns are its fields in `ingestion-record.schem
 test in the package that writes a shape validates real output against its file. A data catalog
 builds its contracts from these files, so a reader points at them rather than copying the fields.
 
-`store/` holds one `.sql` file per stage, embedded and applied on every open with `CREATE TABLE IF
-NOT EXISTS`. There are no numbered migrations. A stage adds its tables in its own file, and declares
-each in `store/tables.go`, which names its key, its stamp, its text columns, and whether it appends
-or upserts. The outbox ships every declared table.
+`store/` holds one `.sql` file per stage, converged on every open, with no numbered migrations.
+A new table or index converges through its `CREATE … IF NOT EXISTS`. A file's `CREATE TABLE` never
+changes a table that exists, so a column added to one converges through the `ALTER TABLE … ADD
+COLUMN` that `converge` runs where the table lacks it, carrying the column's type, `NOT NULL` and
+default and no other constraint. A stage declares each table it adds in `store/tables.go`, naming
+its key, its stamp, its text columns, and whether it appends or upserts. `Open` refuses a table
+that is neither declared there nor listed as unlogged, and the outbox ships every declared table.
+Every write runs through `Store.Update`, and each logged table's triggers refuse a row stamped
+other than by that write.
 
 `deploy/` holds the Kubernetes manifests, and `release/` the scripts that the release job runs to
 pin and publish them. The `Dockerfile` builds the one image that `serve` and `worker run` share.

@@ -118,28 +118,37 @@ func contains(list []string, s string) bool {
 // quote is column as an SQL identifier, since commit is a keyword.
 func quote(column string) string { return `"` + column + `"` }
 
+// unlogged names the tables the store keeps for itself, which the outbox never
+// ships. Every other table a schema file creates is declared in Tables.
+var unlogged = []string{"outbox_marks", "write_stamp"}
+
 // guard makes the database refuse a write that would hide a version from the
-// outbox: any update of an appended table, and an update of an upserted table
-// that stamps a row earlier than its last write. A stage that writes otherwise
-// then fails in its own tests rather than leaving bronze short.
+// outbox: a row stamped other than by the write in flight, which write_stamp
+// holds, and any update of an appended table. A write that forgets its stamp
+// then fails at the write rather than leaving bronze short. Each trigger is
+// made again on every open, so a change here reaches a store that exists.
 func guard(ctx context.Context, db *sql.DB, t Table) error {
-	var statement string
-	name := t.Name + "_logged_"
+	stampedOtherwise := t.StampSQL("new") + ` IS NOT (SELECT stamp FROM write_stamp)`
+	refuse := func(why string) string {
+		return ` BEGIN SELECT RAISE(ABORT, '` + t.Name + ` ` + why + `'); END`
+	}
+	triggers := map[string]string{
+		t.Name + "_logged_inserts_stamped": `BEFORE INSERT ON ` + t.Name + ` WHEN ` + stampedOtherwise +
+			refuse("rows carry the stamp of the write that adds them"),
+	}
 	switch t.Writes {
 	case Appends:
-		name += "appends_only"
-		statement = `CREATE TRIGGER IF NOT EXISTS ` + name + ` BEFORE UPDATE ON ` + t.Name + `
-			BEGIN SELECT RAISE(ABORT, '` + t.Name + ` is appended, so no row is updated'); END`
+		triggers[t.Name+"_logged_appends_only"] = `BEFORE UPDATE ON ` + t.Name + refuse("is appended, so no row is updated")
 	case Upserts:
-		name += "stamp_rises"
-		statement = `CREATE TRIGGER IF NOT EXISTS ` + name + ` BEFORE UPDATE ON ` + t.Name + `
-			WHEN ` + t.StampSQL("new") + ` < ` + t.StampSQL("old") + `
-			BEGIN SELECT RAISE(ABORT, '` + t.Name + ` is upserted, so each write stamps a row no earlier than its last'); END`
+		triggers[t.Name+"_logged_updates_stamped"] = `BEFORE UPDATE ON ` + t.Name + ` WHEN ` + stampedOtherwise +
+			refuse("rows carry the stamp of the write that changes them")
 	default:
 		return fmt.Errorf("%s declares no way it is written", t.Name)
 	}
-	if _, err := db.ExecContext(ctx, statement); err != nil {
-		return fmt.Errorf("guard how %s is written: %w", t.Name, err)
+	for name, body := range triggers {
+		if _, err := db.ExecContext(ctx, `DROP TRIGGER IF EXISTS `+name+`; CREATE TRIGGER `+name+` `+body); err != nil {
+			return fmt.Errorf("guard how %s is written: %w", t.Name, err)
+		}
 	}
 	return nil
 }

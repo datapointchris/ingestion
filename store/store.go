@@ -4,10 +4,10 @@
 //
 // The store is one writer connection beside a pool of readers. Each stage's
 // tables come from an embedded schema file of its own in this directory,
-// applied on every open with CREATE TABLE IF NOT EXISTS, so a stage adds its
-// tables by adding a file here. Every write runs through Update, which stamps
-// it later than every write before it, so the outbox reads each table in commit
-// order by stamp.
+// converged on every open. A stage adds a table in its file and declares it in
+// Tables, and Open refuses a table that is in neither Tables nor unlogged.
+// Every write runs through Update, which stamps it later than every write
+// before it, so the outbox reads each table in commit order by stamp.
 package store
 
 import (
@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -102,22 +103,34 @@ func dsn(path string, readOnly bool) string {
 	return "file:" + path + "?" + q.Encode()
 }
 
-// converge applies each schema file in name order, guards each logged table,
-// and starts the stamp clock past the newest stamp in any table.
+// converge adds each column a schema file declares and its table lacks,
+// applies each schema file in name order, checks that Tables declares every
+// table the files create, guards each logged table, and starts the stamp clock
+// past the newest stamp in any table.
 func (s *Store) converge(ctx context.Context) error {
 	names, err := fs.Glob(schemaFiles, "*.sql")
 	if err != nil {
 		return err
 	}
 	sort.Strings(names)
-	for _, name := range names {
+	files := make([]string, len(names))
+	for i, name := range names {
 		statements, err := schemaFiles.ReadFile(name)
 		if err != nil {
 			return err
 		}
-		if _, err := s.write.ExecContext(ctx, string(statements)); err != nil {
-			return fmt.Errorf("apply %s: %w", name, err)
+		files[i] = string(statements)
+	}
+	if err := s.addColumns(ctx, files); err != nil {
+		return err
+	}
+	for i, statements := range files {
+		if _, err := s.write.ExecContext(ctx, statements); err != nil {
+			return fmt.Errorf("apply %s: %w", names[i], err)
 		}
+	}
+	if err := checkDeclared(ctx, s.write); err != nil {
+		return err
 	}
 	for _, t := range Tables {
 		if err := guard(ctx, s.write, t); err != nil {
@@ -134,6 +147,144 @@ func (s *Store) converge(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// addColumns adds to each table the store already holds each column its schema
+// file declares and the table lacks, because CREATE TABLE IF NOT EXISTS leaves
+// a table that exists as it is. It reads what the files declare from a scratch
+// database they are applied to. A column added this way carries its type, NOT
+// NULL and default, and no other constraint.
+func (s *Store) addColumns(ctx context.Context, files []string) error {
+	declared, err := sql.Open("sqlite", "file::memory:")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = declared.Close() }()
+	// One connection, because each connection to :memory: is its own database.
+	declared.SetMaxOpenConns(1)
+	for _, statements := range files {
+		if _, err := declared.ExecContext(ctx, statements); err != nil {
+			return fmt.Errorf("read the schema files: %w", err)
+		}
+	}
+	tables, err := tableNames(ctx, declared)
+	if err != nil {
+		return err
+	}
+	for _, name := range tables {
+		want, err := tableColumns(ctx, declared, name)
+		if err != nil {
+			return err
+		}
+		have, err := tableColumns(ctx, s.write, name)
+		if err != nil {
+			return err
+		}
+		if len(have) == 0 {
+			continue
+		}
+		held := map[string]bool{}
+		for _, c := range have {
+			held[c.name] = true
+		}
+		for _, c := range want {
+			if held[c.name] {
+				continue
+			}
+			definition := quote(c.name) + " " + c.kind
+			if c.notNull {
+				definition += " NOT NULL"
+			}
+			if c.dflt.Valid {
+				definition += " DEFAULT " + c.dflt.String
+			}
+			if _, err := s.write.ExecContext(ctx, `ALTER TABLE `+name+` ADD COLUMN `+definition); err != nil {
+				return fmt.Errorf("add column %s to %s: %w", c.name, name, err)
+			}
+		}
+	}
+	return nil
+}
+
+// checkDeclared refuses a table the schema files create that Tables does not
+// declare and unlogged does not name, a declared table no file creates, and a
+// declared key other than the table's primary key. Leaving a table out of
+// Tables would leave it unguarded and never shipped, with nothing to say so.
+func checkDeclared(ctx context.Context, db *sql.DB) error {
+	names, err := tableNames(ctx, db)
+	if err != nil {
+		return err
+	}
+	created := map[string]bool{}
+	for _, name := range names {
+		created[name] = true
+		if _, ok := TableNamed(name); !ok && !contains(unlogged, name) {
+			return fmt.Errorf("the store holds table %s, which store.Tables does not declare and unlogged does not name", name)
+		}
+	}
+	for _, t := range Tables {
+		if !created[t.Name] {
+			return fmt.Errorf("store.Tables declares %s, which no schema file creates", t.Name)
+		}
+		columns, err := tableColumns(ctx, db, t.Name)
+		if err != nil {
+			return err
+		}
+		sort.Slice(columns, func(i, j int) bool { return columns[i].pk < columns[j].pk })
+		var key []string
+		for _, c := range columns {
+			if c.pk > 0 {
+				key = append(key, c.name)
+			}
+		}
+		if strings.Join(key, ",") != strings.Join(t.Key, ",") {
+			return fmt.Errorf("%s's primary key is (%s), and store.Tables declares its key as (%s)",
+				t.Name, strings.Join(key, ", "), strings.Join(t.Key, ", "))
+		}
+	}
+	return nil
+}
+
+func tableNames(ctx context.Context, db *sql.DB) ([]string, error) {
+	rows, err := db.QueryContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
+	if err != nil {
+		return nil, fmt.Errorf("list tables: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		names = append(names, name)
+	}
+	return names, rows.Err()
+}
+
+type column struct {
+	name    string
+	kind    string
+	notNull bool
+	dflt    sql.NullString
+	pk      int
+}
+
+func tableColumns(ctx context.Context, db *sql.DB, table string) ([]column, error) {
+	rows, err := db.QueryContext(ctx, `SELECT name, type, "notnull", dflt_value, pk FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return nil, fmt.Errorf("read %s's columns: %w", table, err)
+	}
+	defer func() { _ = rows.Close() }()
+	var columns []column
+	for rows.Next() {
+		var c column
+		if err := rows.Scan(&c.name, &c.kind, &c.notNull, &c.dflt, &c.pk); err != nil {
+			return nil, err
+		}
+		columns = append(columns, c)
+	}
+	return columns, rows.Err()
 }
 
 // Close closes both handles.
@@ -172,6 +323,11 @@ func (s *Store) Update(ctx context.Context, fn func(*Tx) error) error {
 	}
 	// The stamp is taken once the write lock is held, so it is in commit order.
 	tx := &Tx{tx: sqlTx, at: s.stamp()}
+	if _, err := sqlTx.ExecContext(ctx, `INSERT INTO write_stamp (id, stamp) VALUES (1, ?)
+		ON CONFLICT (id) DO UPDATE SET stamp = excluded.stamp`, tx.stamp()); err != nil {
+		_ = sqlTx.Rollback()
+		return fmt.Errorf("stamp a write: %w", err)
+	}
 	if err := fn(tx); err != nil {
 		_ = sqlTx.Rollback()
 		return err
