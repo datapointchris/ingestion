@@ -93,8 +93,8 @@ list` reads the service's open tasks and the workers it has heard from:
 TASK                              ITEM              STAGE  CAPABILITY       STATE   ATTEMPTS  LEASE  UPDATED
 8a35d7545c3cb9c4cfdf1bb5128fddfd  reddit:t3_aq7ggd  parse  parse:text/html  queued  0         —      2026-11-24 21:13:50 EST
 
-WORKER              VERSION  CAPABILITIES  STARTED                  LAST HEARTBEAT
-archlinux-0f683526  0.4.0    —             2026-11-24 21:13:50 EST  2026-11-24 21:13:53 EST
+WORKER                                     VERSION  CAPABILITIES  STARTED                  LAST HEARTBEAT
+ingestion-worker-7c9d8f6b4-x2kqp-0f683526  0.4.0    —             2026-11-24 21:13:50 EST  2026-11-24 21:13:53 EST
 ```
 
 `--state` narrows the list to one state and repeats, `--limit` caps it, and `--json` prints the
