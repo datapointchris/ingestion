@@ -26,7 +26,7 @@
         "required": ["rule", "severity", "in", "span"],
         "properties": {
           "rule": {"type": "string"},
-          "severity": {"$ref": "ingestion-record.schema.json#/$defs/severity"},
+          "severity": {"description": "How severe the finding is, from least to most severe, as the $defs/severity of ingestion-record.schema.json lists it. The list is written here rather than referred to, so a copy of this file reads alone.", "enum": ["info", "low", "medium", "high", "critical"]},
           "in": {"description": "Where the span was found.", "enum": ["source", "sentence"]},
           "span": {"description": "The matched text, null where the output's text holds no span for the finding.", "type": ["string", "null"]}
         }

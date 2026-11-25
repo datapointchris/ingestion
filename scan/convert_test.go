@@ -1,6 +1,12 @@
 package scan
 
-import "testing"
+import (
+	"encoding/json"
+	"slices"
+	"testing"
+
+	"github.com/datapointchris/ingestion/schemas"
+)
 
 // An ATR pattern keeps its meaning in YARA-X's dialect. Its flags go, a slash
 // and a control character are escaped, JavaScript's \xE9 becomes the
@@ -27,5 +33,34 @@ func TestAnATRPatternCarriesItsMeaningIntoYARA(t *testing.T) {
 		if got := yaraRegex(pattern); got != want {
 			t.Errorf("yaraRegex(%q) = %q, want %q", pattern, got, want)
 		}
+	}
+}
+
+// A suggestion's finding offers the severities the record schema lists, in its
+// order. The suggestion schema writes the list out, so a copy of it in another
+// repo reads alone, and this keeps the two lists one.
+func TestASuggestionsFindingOffersTheRecordsSeverities(t *testing.T) {
+	var doc struct {
+		Properties struct {
+			Findings struct {
+				Items struct {
+					Properties struct {
+						Severity struct {
+							Enum []string `json:"enum"`
+						} `json:"severity"`
+					} `json:"properties"`
+				} `json:"items"`
+			} `json:"findings"`
+		} `json:"properties"`
+	}
+	raw, err := schemas.Files.ReadFile("suggestion.schema.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if got := doc.Properties.Findings.Items.Properties.Severity.Enum; !slices.Equal(got, Severities) {
+		t.Errorf("suggestion.schema.json offers %v, and ingestion-record.schema.json lists %v", got, Severities)
 	}
 }
