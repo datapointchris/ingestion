@@ -1,12 +1,14 @@
 package outbox
 
 import (
+	"bytes"
 	"compress/gzip"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -110,7 +112,7 @@ func TestAnItemGainsEachStageRecordAndEachChangeReachesTheCollectorOnce(t *testi
 		drain(t, relay)
 	}
 	if err := st.Update(ctx, func(tx *store.Tx) error {
-		_, err := tx.Enqueue(ctx, store.Task{ItemKey: key, Stage: store.StageParse, Capability: "reddit"})
+		_, err := tx.Enqueue(ctx, store.Task{ItemKey: &key, Stage: store.StageParse, Capability: "reddit"})
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -120,8 +122,15 @@ func TestAnItemGainsEachStageRecordAndEachChangeReachesTheCollectorOnce(t *testi
 		if err := tx.PutCursor(ctx, store.Cursor{Connector: "reddit-exports", DueAt: store.Stamp(time.Now()), FirstFill: "held", FirstFillItemKey: &key}); err != nil {
 			return err
 		}
-		return tx.AddDeclarations(ctx, store.Declarations{Commit: "a41c9e2", AppliedBy: "person", Connectors: []json.RawMessage{
-			json.RawMessage(`{"name":"reddit-exports","mode":"drop","source":"reddit-bookmarklet-exports","zone":"outside","tags":[]}`),
+		connector := "reddit-exports"
+		if err := tx.AddKeyedRequest(ctx, store.KeyedRequest{
+			Caller: "ingestion-cli-desk person", IdempotencyKey: "drop-1", Route: "drops", Connector: &connector,
+			Fingerprint: strings.Repeat("d", 64), Status: 201, Answer: json.RawMessage(`{"schema_version":1,"items":[]}`),
+		}); err != nil {
+			return err
+		}
+		return tx.PutDeclarations(ctx, store.Declarations{Commit: "a41c9e2", AppliedBy: "person", Connectors: []json.RawMessage{
+			json.RawMessage(`{"name":"reddit-exports","mode":"drop","source":"reddit-bookmarklet-exports","due_interval":"30d","zone":"outside","tags":[]}`),
 		}})
 	}); err != nil {
 		t.Fatal(err)
@@ -304,22 +313,38 @@ func drain(t *testing.T, r *Relay) {
 	t.Fatal("the relay still had rows waiting after 50 passes")
 }
 
-// compileSchemas is each table's published schema, by kind attribute.
+// compileSchemas is each table's published schema, by kind attribute. Every
+// file in schemas/ is a resource under its $id, so a $ref to a sibling file
+// resolves as the data catalog resolves it.
 func compileSchemas(t *testing.T) map[string]map[string]*jsonschema.Schema {
 	t.Helper()
 	c := jsonschema.NewCompiler()
 	c.AssertFormat()
-	out := map[string]map[string]*jsonschema.Schema{RecordKind: {}, TextKind: {}}
-	for kind, file := range map[string]string{RecordKind: "ingestion-record", TextKind: "ingestion-text"} {
-		path, err := filepath.Abs(filepath.Join("..", "schemas", file+".schema.json"))
+	files, err := filepath.Glob(filepath.Join("..", "schemas", "*.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		raw, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)
 		}
+		doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := c.AddResource(doc.(map[string]any)["$id"].(string), doc); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out := map[string]map[string]*jsonschema.Schema{RecordKind: {}, TextKind: {}}
+	const base = "https://github.com/datapointchris/ingestion/schemas/"
+	for kind, file := range map[string]string{RecordKind: "ingestion-record", TextKind: "ingestion-text"} {
 		for _, tab := range store.Tables {
 			if kind == TextKind && len(tab.Text) == 0 {
 				continue
 			}
-			s, err := c.Compile(path + "#/$defs/" + tab.Name)
+			s, err := c.Compile(base + file + ".schema.json#/$defs/" + tab.Name)
 			if err != nil {
 				t.Fatalf("compile %s's %s: %v", file, tab.Name, err)
 			}

@@ -11,6 +11,8 @@ import (
 	"github.com/datapointchris/goselfupdate/autoupdate"
 	"github.com/datapointchris/gotermstyle/cobrahelp"
 	"github.com/spf13/cobra"
+
+	"github.com/datapointchris/ingestion/connectors"
 )
 
 // A subcommand is one file in this package that builds its *cobra.Command and
@@ -54,8 +56,9 @@ func exitCode(w io.Writer, err error) int {
 		return 2
 	}
 	// 3 says a check ran and found what only a person can fix, so a scheduled
-	// check tells it from a check that could not run.
-	if errors.Is(err, errIssue) {
+	// check tells it from a check that could not run. A declaration set that
+	// does not hold is one.
+	if errors.Is(err, errIssue) || errors.Is(err, connectors.ErrInvalid) {
 		return 3
 	}
 	// 4 says the server gave no answer, so the command did nothing.

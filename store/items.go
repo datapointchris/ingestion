@@ -133,7 +133,7 @@ func (s *Store) recordsOf(ctx context.Context, items []Item) ([]ItemRecords, err
 		return nil, err
 	}
 	for _, r := range tasks {
-		out[at[r.ItemKey]].Tasks = append(out[at[r.ItemKey]].Tasks, r)
+		out[at[*r.ItemKey]].Tasks = append(out[at[*r.ItemKey]].Tasks, r)
 	}
 	if len(sums) == 0 {
 		return out, nil
@@ -314,12 +314,18 @@ func (r ItemRecords) newestDecision(gate string) (Decision, bool) {
 }
 
 // outputCondition is True where any producer's output for stage is done,
-// Unknown where one waits, and False where every one failed.
+// Unknown where one waits or a first fill holds the stage's task, and False
+// where every one failed.
 func (r ItemRecords) outputCondition(stage string) (Condition, bool) {
 	states := map[string]bool{}
 	for _, o := range r.Outputs {
 		if o.Stage == stage {
 			states[o.State] = true
+		}
+	}
+	for _, t := range r.Tasks {
+		if t.Stage == stage && t.State == TaskQueued && t.HeldBy != nil {
+			states[OutputWaiting] = true
 		}
 	}
 	switch {

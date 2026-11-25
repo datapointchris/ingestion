@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/datapointchris/ingestion/schemas/destinations.schema.json",
+  "title": "The destinations",
+  "description": "What destinations.yml holds in a directory that `ingestion connectors apply` sends: each place an item is delivered, the side it takes, and the tags that place an item there. The side gate, a person's placement and every routing rule name a destination from here.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "destinations": {"type": "array", "items": {"$ref": "#/$defs/destination"}}
+  },
+  "$defs": {
+    "destination": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
+        "side": {"description": "The side an item placed here takes. Left out, it takes neither, as a destination that drops what it takes does.", "enum": ["personal", "fleet"]},
+        "tags": {"description": "Each tag that places an item here. A tag places an item on one destination only.", "type": "array", "items": {"$ref": "connector.schema.json#/$defs/tag"}, "uniqueItems": true}
+      }
+    }
+  }
+}

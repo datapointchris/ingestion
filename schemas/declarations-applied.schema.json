@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/datapointchris/ingestion/schemas/declarations-applied.schema.json",
+  "title": "An applied set of declarations",
+  "description": "What PUT /api/v1/declarations answers once the set is in force. A set holding an invalid declaration answers 422 with code invalid_declarations and an invalid list instead, naming each declaration and its problems, and the set in force stays as it was.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "commit", "applied_ts", "applied_by", "unchanged", "connectors", "routing_rules", "destinations"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "commit": {"type": "string"},
+    "applied_ts": {"type": "string", "format": "date-time"},
+    "applied_by": {"description": "The login that applied the set in force.", "type": "string"},
+    "unchanged": {"description": "True where this commit's set was already in force, so nothing was written.", "type": "boolean"},
+    "connectors": {"type": "integer", "minimum": 0},
+    "routing_rules": {"type": "integer", "minimum": 0},
+    "destinations": {"type": "integer", "minimum": 0}
+  }
+}

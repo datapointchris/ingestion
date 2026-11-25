@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/datapointchris/ingestion/schemas/routing-rules.schema.json",
+  "title": "The routing rules",
+  "description": "What routing-rules.yml holds in a directory that `ingestion connectors apply` sends. Each rule places an item on a destination before any model reads it, and the side gate records its decision as by rule:<name>.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "rules": {"type": "array", "items": {"$ref": "#/$defs/rule"}}
+  },
+  "$defs": {
+    "rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "match", "destination"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
+        "match": {
+          "description": "What the rule holds for. Each condition it names must hold, and it names at least one.",
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "properties": {
+            "connector": {"description": "Holds for an item this connector sighted. The set declares the connector.", "type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
+            "tag": {"description": "Holds for an item a sighting tagged with this.", "$ref": "connector.schema.json#/$defs/tag"},
+            "field": {"description": "A field of the source's payload, such as a Reddit save's subreddit.", "type": "string", "minLength": 1},
+            "values": {"description": "The values of field the rule holds for.", "type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}
+          },
+          "dependentRequired": {"field": ["values"], "values": ["field"]},
+          "anyOf": [{"required": ["connector"]}, {"required": ["tag"]}, {"required": ["field"]}]
+        },
+        "destination": {"description": "The destination the rule places an item on, which destinations.yml declares.", "type": "string", "pattern": "^[a-z][a-z0-9-]*$"}
+      }
+    }
+  }
+}

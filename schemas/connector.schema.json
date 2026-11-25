@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/datapointchris/ingestion/schemas/connector.schema.json",
+  "title": "One connector's declaration",
+  "description": "What connectors/<name>.yml holds in a directory that `ingestion connectors apply` sends, and each entry of an applied set's connectors. A poll or a folder runs on its schedule. A drop or a push runs as its items arrive, and is due its due_interval after its last delivery.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "mode", "source", "zone"],
+  "properties": {
+    "name": {"description": "The connector's name, which its file is named for.", "type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
+    "mode": {"enum": ["poll", "push", "folder", "drop"]},
+    "source": {"description": "The external feed the connector reads, by its name in the data catalog. A source with a drop handler of its own splits each dropped file into items.", "type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
+    "contract": {"description": "The contract the source's payloads hold to.", "type": "string"},
+    "schedule": {"description": "A poll's or a folder's schedule: five cron fields, a descriptor such as @hourly, or @every 15m, read in UTC unless a CRON_TZ=<zone> prefix names another zone.", "type": "string"},
+    "due_interval": {"description": "How long after its last delivery a drop or a push is due again, as a count of m, h, d or w, such as 30d.", "type": "string", "pattern": "^([0-9]+[dw]|([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"},
+    "freshness": {"description": "How long a poll or a folder may go without a delivery before it reads overdue, in due_interval's form.", "type": "string", "pattern": "^([0-9]+[dw]|([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"},
+    "tags": {"description": "The tags every item the connector lands carries on its sighting.", "type": "array", "items": {"$ref": "#/$defs/tag"}, "uniqueItems": true},
+    "zone": {"description": "Who writes the content the connector carries, as its items' default: outside for an outsider, owner for the owner.", "enum": ["outside", "owner"]},
+    "read_rule": {"description": "How an item the connector landed is read where no tag's rule decides: as-is, or a model read. Left out, the side's default decides.", "enum": ["as-is", "model"]},
+    "root": {"description": "The [serve.homes] root a folder connector reads.", "type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
+    "path": {"description": "The directory below the root a folder connector reads, with forward slashes. Left out, it reads the whole root.", "type": "string"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"mode": {"enum": ["poll", "folder"]}}},
+      "then": {"required": ["schedule"], "properties": {"due_interval": false}},
+      "else": {"required": ["due_interval"], "properties": {"schedule": false, "freshness": false}}
+    },
+    {
+      "if": {"properties": {"mode": {"const": "folder"}}},
+      "then": {"required": ["root"]},
+      "else": {"properties": {"root": false, "path": false}}
+    }
+  ],
+  "$defs": {
+    "tag": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._:-]*$"}
+  }
+}

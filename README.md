@@ -95,7 +95,10 @@ poll = "10s"  # how often an idle worker asks for work
 - **The access token decides what a caller reaches.** A person's token reaches every route. A
   service token reaches only the routes its scopes grant. A worker needs
   `ingestion.tasks.claim`, which also reads and writes bytes through
-  `/api/v1/blobs/{sha256}`, and a service that reads items needs `ingestion.items.read`.
+  `/api/v1/blobs/{sha256}`, and a service that reads items needs `ingestion.items.read`. A job
+  that applies declarations needs `ingestion.declarations.apply`, one that reads connectors
+  `ingestion.connectors.read`, one that runs them `ingestion.connectors.run`, and a source that
+  drops files `ingestion.items.drop`.
 
 `ingestion auth login`, `auth status` and `auth logout` hold a person's login. `ingestion tasks
 list` reads the service's open tasks and the workers it has heard from:
@@ -141,6 +144,85 @@ differs is hashed again before it is served, and is not served where its bytes c
 `ingestion blobs unpaired` names each blob in the volume that no row names, and each row whose
 bytes are missing. It exits 3 where it names any, and 1 where it could not compare. It deletes
 nothing.
+
+### A person applies each connector as a declaration kept in git
+
+Each source enters through a connector declared in a directory kept in git:
+
+```text
+connectors/<name>.yml   one connector each, in a file named for it
+routing-rules.yml       rules: the rules that place an item before any model reads it
+destinations.yml        destinations: each place an item is delivered
+```
+
+`examples/declarations/` holds a set to start from. `schemas/connector.schema.json`,
+`schemas/routing-rules.schema.json` and `schemas/destinations.schema.json` hold each file's shape,
+for an editor to check against. A connector names these:
+
+| Field | Holds |
+| --- | --- |
+| `name` | the connector's name, which each item it lands is sighted under |
+| `mode` | `poll`, `push`, `folder` or `drop` |
+| `source` | the external feed it reads, by its name in the data catalog |
+| `contract` | optional: the data contract its records hold to |
+| `zone` | who wrote what it carries: `outside` for an outsider, `owner` for the owner's own words |
+| `tags` | the tags every item it lands carries |
+| `read_rule` | optional: `as-is` or `model`, in place of the side's default |
+| `schedule` | a poll's or a folder's cron expression, a descriptor such as `@hourly`, or `@every 6h`, read in UTC unless it opens `CRON_TZ=<zone>` |
+| `freshness` | optional, for a poll or a folder: how long it may go without a delivery before it reads overdue |
+| `due_interval` | a drop's or a push's expected cadence, as a Go duration or `30d` or `2w` |
+| `root`, `path` | a folder's `[serve.homes]` root, and the directory below it to scan |
+
+A routing rule is named, and the item it places records `rule:<name>`. Its match holds a
+`connector`, a `tag`, or a source `field` with the `values` it takes, such as a subreddit. Every
+condition it names must hold. A destination names its `side`, `personal` or `fleet`, and the
+`tags` that place an item there.
+
+`ingestion connectors apply <dir>` reads the whole set, checks it, and sends it to the service,
+which keeps it beside its commit. The commit is the directory's `HEAD`, marked `+dirty.<digest>`
+where the directory holds an uncommitted change. A set holding any invalid declaration is refused
+whole. The refusal names each one with every reason, and the set in force stays as it was:
+
+```text
+$ ingestion connectors apply ./declarations
+the set holds invalid declarations, so none of it is applied
+  connector stream
+    zone is outside or owner, not "public"
+    mode is poll, push, folder or drop, not "stream"
+  routing rule to-nowhere
+    destination nowhere is not one destinations.yml declares
+```
+
+It exits 3 on a refusal. `ingestion connectors list` prints each connector in force:
+
+```text
+     CONNECTOR    MODE  APPLIED         LAST DELIVERY  ITEMS  WAITING  REVIEW  FAILED                                       DUE
+  books-folder  folder  5519f33                     —      0        0       0       0  */15 * * * * · next 2026-11-25 00:00 EST
+   feed-reader    poll  5519f33                     —      0        0       0       0       @hourly · next 2026-11-25 00:00 EST
+reddit-exports    drop  5519f33  2026-11-24 23:50 EST      1        0       0       0     every 30d · next 2026-12-24 23:50 EST
+```
+
+`ingestion connectors show <name>` adds its source, its tags, its last run and its first fill.
+`--json` on either prints the shape in `schemas/connectors-list.schema.json`.
+
+- **The service schedules each connector.** A poll or a folder is due at its schedule's next time.
+  A drop or a push is due its `due_interval` after its last delivery, and reads overdue once that
+  passes with nothing delivered. `ingestion connectors run <name>` makes a poll or a folder due
+  now.
+- **A poll's run is a task with no item.** Its stage is `poll` and its capability is
+  `poll:<source>`, so only a worker that handles that source leases it. The task names its
+  connector, and a connector never has two polls in flight.
+- **The service scans a folder itself**, since only it holds the `[serve.homes]` roots. Each new
+  file lands once by reference. A file whose size and time match its landing is skipped, so a
+  rerun lands nothing.
+- **A drop connector takes a file a person or a job sends.** `ingestion items drop <file>
+  --connector <name>` posts it to `/api/v1/connectors/<name>/drops` under an `Idempotency-Key`. A
+  retry under that key answers the first landing, and another file under it is refused with 409.
+  The CLI derives the key from the connector and the file's bytes, so dropping a file twice lands
+  it once.
+- **A connector's first fill runs one item through the model stages, and holds the rest.** `show`
+  prints that item and its tokens by stage, and `ingestion connectors release <name>` queues every
+  model task the fill held. The hold lives in the store, so it survives a restart.
 
 ### Running it in a container
 

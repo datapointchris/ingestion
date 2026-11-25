@@ -1,0 +1,11 @@
+# A folder connector lands each new file below a [serve.homes] root by
+# reference, on its schedule. A file it already landed, unchanged, is skipped.
+name: books-folder
+mode: folder
+source: local-books
+schedule: "*/15 * * * *"
+freshness: 30d
+zone: outside
+root: books
+read_rule: as-is
+tags: [book]

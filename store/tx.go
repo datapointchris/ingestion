@@ -122,20 +122,41 @@ func (t *Tx) PutDelivery(ctx context.Context, d Delivery) error {
 	return t.put(ctx, table("deliveries"), d)
 }
 
-// PutCursor writes one connector's cursor.
+// PutCursor writes one connector's cursor, keeping when it was created.
 func (t *Tx) PutCursor(ctx context.Context, c Cursor) error {
-	c.UpdatedTS = t.stamp()
+	c.CreatedTS, c.UpdatedTS = t.stamp(), t.stamp()
 	return t.put(ctx, table("cursors"), c)
 }
 
-// AddDeclarations records one applied set of declarations. A commit already
-// applied is left as it is.
-func (t *Tx) AddDeclarations(ctx context.Context, d Declarations) error {
-	if d.Connectors == nil {
-		d.Connectors = []json.RawMessage{}
+// Cursor reads connector's cursor as this write sees it, and false where the
+// store holds none.
+func (t *Tx) Cursor(ctx context.Context, connector string) (Cursor, bool, error) {
+	return first[Cursor](ctx, t.tx, table("cursors"), `connector = ?`, connector)
+}
+
+// PutDeclarations records one applied set of declarations, stamped now. A
+// commit applied again is stamped again, so it is the set in force.
+func (t *Tx) PutDeclarations(ctx context.Context, d Declarations) error {
+	for _, list := range []*[]json.RawMessage{&d.Connectors, &d.RoutingRules, &d.Destinations} {
+		if *list == nil {
+			*list = []json.RawMessage{}
+		}
 	}
 	d.AppliedTS = t.stamp()
 	return t.put(ctx, table("declarations"), d)
+}
+
+// KeyedRequest reads the request caller sent under key, and false where the
+// store holds none.
+func (t *Tx) KeyedRequest(ctx context.Context, caller, key string) (KeyedRequest, bool, error) {
+	return first[KeyedRequest](ctx, t.tx, table("keyed_requests"), `caller = ? AND idempotency_key = ?`, caller, key)
+}
+
+// AddKeyedRequest records a request and its answer. A key the caller already
+// sent is left as it is.
+func (t *Tx) AddKeyedRequest(ctx context.Context, r KeyedRequest) error {
+	r.CreatedTS = t.stamp()
+	return t.put(ctx, table("keyed_requests"), r)
 }
 
 // put writes record's fields as tab's columns. An upserted table writes the

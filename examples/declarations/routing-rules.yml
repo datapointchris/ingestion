@@ -1,0 +1,13 @@
+# Each rule places an item on a destination before any model reads it. Every
+# condition a match names must hold.
+rules:
+  - name: cooking-subreddits
+    match:
+      connector: reddit-exports
+      field: subreddit
+      values: [Cooking, AskCulinary]
+    destination: reading-list
+  - name: books-are-personal
+    match:
+      tag: book
+    destination: reading-list

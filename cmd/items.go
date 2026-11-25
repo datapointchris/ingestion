@@ -1,11 +1,17 @@
 package cmd
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"mime"
+	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -53,17 +59,36 @@ var itemsShowCmd = &cobra.Command{
 	RunE: runItemsShow,
 }
 
+var itemsDropCmd = &cobra.Command{
+	Use:   "drop <file>",
+	Short: "Drop a file into a drop connector, which lands it and each item it holds",
+	Long: "Sends the file to the drop connector --connector names, which lands it under\n" +
+		"its bytes' key. A source whose file holds items of its own, such as a Reddit\n" +
+		"export, lands each one too, as a child of the file. Each item takes the\n" +
+		"connector's default tags and zone.\n" +
+		"\n" +
+		"The drop is keyed by the connector and the file's bytes, so dropping the same\n" +
+		"file again answers what the first drop landed, and lands nothing new. Its\n" +
+		"media type is read from the file's extension.",
+	Example: "  ingestion items drop ~/Downloads/reddit-saved.json --connector reddit-exports",
+	Args:    cobra.ExactArgs(1),
+	RunE:    runItemsDrop,
+}
+
 func init() {
 	goclikit.AsNamespace(itemsCmd)
+	itemsDropCmd.Flags().String("connector", "", "Drop the file into this drop connector (required)")
+	itemsDropCmd.Flags().Bool("json", false, "Print the service's answer as JSON")
+	_ = itemsDropCmd.MarkFlagRequired("connector")
 	itemsListCmd.Flags().Int("limit", server.DefaultItemsListed, "List at most this many items")
 	itemsListCmd.Flags().Bool("keys", false, "Print each item's key alone, one per line")
 	itemsListCmd.Flags().Bool("json", false, "Print the service's answer as JSON")
 	itemsShowCmd.Flags().Bool("json", false, "Print the service's answer as JSON")
-	for _, c := range []*cobra.Command{itemsListCmd, itemsShowCmd} {
+	for _, c := range []*cobra.Command{itemsListCmd, itemsShowCmd, itemsDropCmd} {
 		c.Flags().String("api", "", "Call this server rather than the config file's api")
 		addConfigFlag(c)
 	}
-	itemsCmd.AddCommand(itemsListCmd, itemsShowCmd)
+	itemsCmd.AddCommand(itemsListCmd, itemsShowCmd, itemsDropCmd)
 	rootCmd.AddCommand(itemsCmd)
 }
 
@@ -247,4 +272,57 @@ func byteSize(n int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
+}
+
+func runItemsDrop(cmd *cobra.Command, args []string) error {
+	connector, _ := cmd.Flags().GetString("connector")
+	asJSON, _ := cmd.Flags().GetBool("json")
+	api, _ := cmd.Flags().GetString("api")
+	body, err := os.ReadFile(args[0])
+	if err != nil {
+		return err
+	}
+	name := filepath.Base(args[0])
+	mediaType := mime.TypeByExtension(filepath.Ext(name))
+	if mediaType == "" {
+		mediaType = "application/octet-stream"
+	}
+	sum := sha256.Sum256(append([]byte(connector+"\x00"), body...))
+	var answer server.PushAnswer
+	status, raw, err := callJSON(cmd.Context(), configPath(cmd), api, call{
+		Method: http.MethodPost, Route: "/api/v1/connectors/" + url.PathEscape(connector) + "/drops",
+		Header: http.Header{
+			"Content-Type":        {mediaType},
+			"Content-Disposition": {mime.FormatMediaType("attachment", map[string]string{"filename": name})},
+			server.IdempotencyKey: {"drop-" + hex.EncodeToString(sum[:16])},
+		},
+		Body: body,
+	}, &answer)
+	if err != nil {
+		return refusedAsUsage(err)
+	}
+	w := cmd.OutOrStdout()
+	if asJSON {
+		_, err := w.Write(raw)
+		return err
+	}
+	created := 0
+	for _, it := range answer.Items {
+		if it.Created {
+			created++
+		}
+	}
+	if status == http.StatusOK {
+		_, err = fmt.Fprintf(w, "%s was already dropped into %s, so nothing landed: it holds %s.\n", name, connector, itemCount(len(answer.Items)))
+		return err
+	}
+	_, err = fmt.Fprintf(w, "Dropped %s into %s: it holds %s, %d of them new.\n", name, connector, itemCount(len(answer.Items)), created)
+	return err
+}
+
+func itemCount(n int) string {
+	if n == 1 {
+		return "1 item"
+	}
+	return fmt.Sprintf("%d items", n)
 }

@@ -21,7 +21,7 @@ package:
 
 | Package | Holds |
 | --- | --- |
-| `store` | the SQLite store: items, sightings, blobs, each stage's outputs and decisions, deliveries, task leases and connector cursors |
+| `store` | the SQLite store: items, sightings, blobs, each stage's outputs and decisions, deliveries, task leases, connector cursors, the declaration sets applied, and each keyed request's answer |
 | `itemkey` | the one component that derives an item's key from any form of its artifact |
 | `landing` | an artifact's bytes written under their SHA-256 or referenced under a named root, the item and one sighting per connector, and the report of blobs and rows that disagree |
 | `redditexport` | the Reddit bookmarklet's export, as a store keeps it, split into one save each and landed as an item with a child per save |
@@ -30,7 +30,7 @@ package:
 | `qualitygate` | the model stage that reads an item's opening and answers its quality, genre, domains, themes, a one-line idea and a side guess |
 | `route` | the side gate and the read rule: a sighting's tags, then a rule, then the quality gate's guess above its confidence floor, else review |
 | `modelread` | the model stage that answers an item's note with a summary, a suggestion sentence, or both |
-| `connectors` | each source's connector, by mode: `poll`, `push`, `folder` or `drop` |
+| `connectors` | the declaration set and its apply, the scheduler that makes each connector due, the folder scan, and the drop handler each source registers by its name |
 | `deliver` | the upsert into each destination through that destination's own write path, keyed by the item |
 | `modelport` | the one port that carries every model call, and its `queue` and `claude-cli` adapters |
 | `outbox` | the relay that ships each logged change past its mark, with outsider text on a channel of its own |
@@ -43,6 +43,9 @@ API answer. Each store table's columns are its fields in `ingestion-record.schem
 `ingestion-text.schema.json` together. The second file holds each outsider-written field. A
 test in the package that writes a shape validates real output against its file. A data catalog
 builds its contracts from these files, so a reader points at them rather than copying the fields.
+
+`examples/declarations/` holds a declaration set to start from. A test reads it whole and checks
+each file against its schema.
 
 `store/` holds one `.sql` file per stage, converged on every open, with no numbered migrations.
 A new table or index converges through its `CREATE … IF NOT EXISTS`. A file's `CREATE TABLE` never
