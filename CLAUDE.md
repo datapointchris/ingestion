@@ -37,6 +37,12 @@ package:
 | `worker` | `ingestion worker run`, which leases tasks by capability under a fencing token |
 | `push` | `ingestion push`, which hands a URL or a key straight to a named destination |
 
+`schemas/` is no package. It holds the JSON Schema of each record the outbox ships and of each
+API answer. Each store table's columns are its fields in `ingestion-record.schema.json` and
+`ingestion-text.schema.json` together. The second file holds each outsider-written field. A
+test in the package that writes a shape validates real output against its file. A data catalog
+builds its contracts from these files, so a reader points at them rather than copying the fields.
+
 ## Every item passes one line of stages
 
 ```text

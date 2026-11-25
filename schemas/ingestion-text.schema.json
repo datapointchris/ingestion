@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/datapointchris/ingestion/schemas/ingestion-text.schema.json",
+  "title": "Every field an outsider wrote in one row of the store",
+  "description": "The body of an ingestion.text log record: the outsider-written fields of one store row, as JSON. It carries the same ingestion.record.kind, ingestion.record.id and ingestion.record.version attributes as the ingestion.record holding the rest of that row, so a reader granted both joins them on those three. A row with no outsider-written field ships no ingestion.text. A reader that must never meet outsider text is granted ingestion.record alone.",
+  "anyOf": [
+    {"$ref": "#/$defs/items"},
+    {"$ref": "#/$defs/sightings"},
+    {"$ref": "#/$defs/homes"},
+    {"$ref": "#/$defs/outputs"},
+    {"$ref": "#/$defs/tasks"}
+  ],
+  "$defs": {
+    "items": {
+      "title": "items",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "title": {"description": "The artifact's title, as its source gave it.", "type": ["string", "null"]},
+        "url": {"description": "The artifact's canonical URL.", "type": ["string", "null"]}
+      }
+    },
+    "sightings": {
+      "title": "sightings",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["external_key"],
+      "properties": {
+        "external_key": {"description": "The connector's own key for the artifact, such as a canonical URL or a post's id.", "type": "string"}
+      }
+    },
+    "homes": {
+      "title": "homes",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path"],
+      "properties": {
+        "path": {"description": "Where the file lives under its root.", "type": "string"}
+      }
+    },
+    "outputs": {
+      "title": "outputs",
+      "description": "A parse holds its text and units. A scan holds each finding's span. A model stage holds its answer. A failed output holds its error.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "text": {"description": "A parse's whole text.", "type": ["string", "null"]},
+        "units": {
+          "description": "A parse's units in order, such as a thread's posts or a book's pages.",
+          "type": ["array", "null"],
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["n", "text"],
+            "properties": {
+              "n": {"description": "The unit's place, from 1.", "type": "integer", "minimum": 1},
+              "label": {"description": "The unit's own heading, such as a comment's author or a chapter's title.", "type": ["string", "null"]},
+              "text": {"type": "string"}
+            }
+          }
+        },
+        "spans": {
+          "description": "Each finding's matched text, in the order of the record's findings.",
+          "type": ["array", "null"],
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["rule", "span"],
+            "properties": {
+              "rule": {"type": "string"},
+              "unit": {"description": "The unit the span sits in.", "type": ["integer", "null"]},
+              "span": {"type": "string"}
+            }
+          }
+        },
+        "answer": {
+          "description": "A model stage's structured answer, whole, as the stage's schema holds it. The quality gate answers genre, domains, themes and a one-line idea beside the record's fields. A model read answers a summary, a suggestion sentence, or both.",
+          "type": ["object", "null"]
+        },
+        "error": {"description": "Why the output failed, such as an extractor's stderr or the run's error.", "type": ["string", "null"]}
+      }
+    },
+    "tasks": {
+      "title": "tasks",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "error": {"description": "Why the task last failed.", "type": ["string", "null"]}
+      }
+    }
+  }
+}

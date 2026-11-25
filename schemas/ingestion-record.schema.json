@@ -1,0 +1,274 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/datapointchris/ingestion/schemas/ingestion-record.schema.json",
+  "title": "One row of the store, less every field an outsider wrote",
+  "description": "The body of an ingestion.record log record: one row of one store table, as JSON, holding its keys, states, hashes, versions, tags, zones and decisions. The record's ingestion.record.kind attribute names the table, ingestion.record.id the row, and ingestion.record.version its version, so a reader folds the rows on those three. Every field an outsider wrote ships in the ingestion.text record of the same kind, id and version, which schemas/ingestion-text.schema.json describes. The table's columns are this row's fields and that row's together.",
+  "anyOf": [
+    {"$ref": "#/$defs/items"},
+    {"$ref": "#/$defs/sightings"},
+    {"$ref": "#/$defs/blobs"},
+    {"$ref": "#/$defs/homes"},
+    {"$ref": "#/$defs/outputs"},
+    {"$ref": "#/$defs/decisions"},
+    {"$ref": "#/$defs/deliveries"},
+    {"$ref": "#/$defs/tasks"},
+    {"$ref": "#/$defs/workers"},
+    {"$ref": "#/$defs/cursors"},
+    {"$ref": "#/$defs/declarations"}
+  ],
+  "$defs": {
+    "item_key": {
+      "description": "An item's key, which names the artifact: reddit/<fullname>, youtube/<video id>, url/<16 hex>, file/<16 hex> or memo/<16 hex>, and <parent key>#<n> for a child.",
+      "type": "string",
+      "pattern": "^(reddit|youtube|url|file|memo)/[A-Za-z0-9_-]+(#[0-9]+)*$"
+    },
+    "zone": {
+      "description": "Who wrote the content: outside for an outsider, owner for the owner. The strictest wins, and outside is stricter.",
+      "enum": ["outside", "owner"]
+    },
+    "sha256": {"description": "A SHA-256, in lowercase hex.", "type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "stage": {"description": "A stage that writes an output or holds a task.", "enum": ["land", "parse", "scan", "quality", "model-read", "deliver"]},
+    "timestamp": {"type": "string", "format": "date-time"},
+    "tokens": {
+      "description": "A model run's tokens by kind.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uncached_input", "cache_write", "cache_read", "output"],
+      "properties": {
+        "uncached_input": {"type": "integer", "minimum": 0},
+        "cache_write": {"type": "integer", "minimum": 0},
+        "cache_read": {"type": "integer", "minimum": 0},
+        "output": {"type": "integer", "minimum": 0}
+      }
+    },
+    "items": {
+      "title": "items, one row per artifact",
+      "description": "ingestion.record.id is the key. The title and URL ship as ingestion.text.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "media_type", "zone", "flow_id", "created_ts", "updated_ts"],
+      "properties": {
+        "key": {"$ref": "#/$defs/item_key"},
+        "media_type": {"description": "The artifact's media type, such as text/html or application/pdf.", "type": "string"},
+        "zone": {"$ref": "#/$defs/zone"},
+        "blob_sha256": {"description": "The landed bytes, or null where a home holds the file instead.", "anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+        "parent_key": {"description": "The item this one was split from, such as the export a Reddit save came in.", "anyOf": [{"$ref": "#/$defs/item_key"}, {"type": "null"}]},
+        "flow_id": {"description": "The flow the item started.", "type": "string"},
+        "parent_flow_id": {"description": "The flow of the write that landed the item.", "type": ["string", "null"]},
+        "created_ts": {"$ref": "#/$defs/timestamp"},
+        "updated_ts": {"$ref": "#/$defs/timestamp"}
+      }
+    },
+    "sightings": {
+      "title": "sightings, one row per item and connector",
+      "description": "ingestion.record.id is <item key>/<connector>. The connector's own key for the artifact, such as a canonical URL, ships as ingestion.text.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["item_key", "connector", "tags", "zone", "first_seen_ts", "last_seen_ts"],
+      "properties": {
+        "item_key": {"$ref": "#/$defs/item_key"},
+        "connector": {"description": "The connector's name, as its declaration gives it.", "type": "string"},
+        "tags": {"description": "The tags the connector or its source gave this arrival, which the side gate reads first.", "type": "array", "items": {"type": "string"}},
+        "zone": {"$ref": "#/$defs/zone"},
+        "cursor_position": {"description": "The connector's cursor where this arrival was read.", "type": ["string", "null"]},
+        "first_seen_ts": {"$ref": "#/$defs/timestamp"},
+        "last_seen_ts": {"$ref": "#/$defs/timestamp"}
+      }
+    },
+    "blobs": {
+      "title": "blobs, one row per SHA-256",
+      "description": "ingestion.record.id is the SHA-256. A blob is written once.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "md5", "size_bytes", "media_type", "created_ts"],
+      "properties": {
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "md5": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+        "size_bytes": {"type": "integer", "minimum": 0},
+        "media_type": {"type": "string"},
+        "created_ts": {"$ref": "#/$defs/timestamp"}
+      }
+    },
+    "homes": {
+      "title": "homes, one row per blob and place a file already lives",
+      "description": "ingestion.record.id is <sha256>/<root>/<path_sha256>. The path under the root ships as ingestion.text, because whoever named the file may be an outsider.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["blob_sha256", "root", "path_sha256", "found_ts"],
+      "properties": {
+        "blob_sha256": {"$ref": "#/$defs/sha256"},
+        "root": {"description": "The named root the path resolves under, such as books.", "type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
+        "path_sha256": {"$ref": "#/$defs/sha256"},
+        "found_ts": {"$ref": "#/$defs/timestamp"},
+        "gone_ts": {"description": "When the file left its root. The item stays.", "anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]}
+      }
+    },
+    "outputs": {
+      "title": "outputs, one row per item, stage, producer and version",
+      "description": "ingestion.record.id is <item key>/<stage>/<producer>/<producer_version>. A parse's text and units, each finding's span, a model's answer and an error's text ship as ingestion.text.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["item_key", "stage", "producer", "producer_version", "state", "created_ts", "updated_ts"],
+      "properties": {
+        "item_key": {"$ref": "#/$defs/item_key"},
+        "stage": {"$ref": "#/$defs/stage"},
+        "producer": {"description": "What wrote the output: an extractor, a rule set or a stage's prompt.", "type": "string"},
+        "producer_version": {"description": "The extractor's, the rules' or the prompt's version, so a new one replays beside the old.", "type": "string"},
+        "lens": {"description": "The lens a model read answered under.", "type": ["string", "null"]},
+        "lens_version": {"type": ["string", "null"]},
+        "state": {"description": "waiting holds a model stage's dispatch, done holds its output, failed holds why in the text.", "enum": ["waiting", "done", "failed"]},
+        "blob_sha256": {"description": "The output's bytes.", "anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+        "dispatch_id": {"description": "A model stage's dispatch, stored in the write that ends the worker's lease.", "type": ["string", "null"]},
+        "run_id": {"description": "The run that answered the dispatch.", "type": ["string", "null"]},
+        "tokens": {"anyOf": [{"$ref": "#/$defs/tokens"}, {"type": "null"}]},
+        "findings": {
+          "description": "The scan's findings, each with its rule and severity. Each matched span ships as ingestion.text.",
+          "type": ["array", "null"],
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["rule", "severity"],
+            "properties": {
+              "rule": {"description": "The rule's id: a converted ATR rule's, or one of ingestion's own rules'.", "type": "string"},
+              "severity": {"enum": ["info", "low", "medium", "high", "critical"]}
+            }
+          }
+        },
+        "quality": {"description": "The quality gate's score.", "type": ["integer", "null"], "minimum": 0, "maximum": 10},
+        "side_guess": {"description": "The quality gate's guess at the side.", "enum": ["personal", "fleet", "unsure", null]},
+        "side_confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "created_ts": {"$ref": "#/$defs/timestamp"},
+        "updated_ts": {"$ref": "#/$defs/timestamp"}
+      }
+    },
+    "decisions": {
+      "title": "decisions, one row per gate decision, appended",
+      "description": "ingestion.record.id is <item key>/<gate>/<sequence>. A decision holds no outsider text.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["item_key", "gate", "sequence", "verdict", "decided_by", "cause", "decided_ts"],
+      "properties": {
+        "item_key": {"$ref": "#/$defs/item_key"},
+        "gate": {"enum": ["quality", "side", "read"]},
+        "sequence": {"description": "The decision's place among the item's decisions at this gate. The newest decides.", "type": "integer", "minimum": 1},
+        "verdict": {
+          "description": "quality: pass, drop or review. side: personal, fleet or review. read: as-is or model.",
+          "enum": ["pass", "drop", "review", "personal", "fleet", "as-is", "model"]
+        },
+        "decided_by": {"description": "tag, rule:<name>, model:<run id> or person:<login>.", "type": "string", "pattern": "^(tag|rule:.+|model:.+|person:.+)$"},
+        "confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "cause": {
+          "description": "What decided: tags, tags-disagree, rule, guess or below-floor, or the aspect a person named, such as subreddit, channel, theme or title.",
+          "type": "string",
+          "pattern": "^[a-z][a-z-]*$"
+        },
+        "destination": {"description": "A placement's destination, one the destinations file names.", "type": ["string", "null"]},
+        "note": {"description": "The read's note: the lens, the questions and why the item was saved, as the owner or a rule wrote it.", "type": ["string", "null"]},
+        "decided_ts": {"$ref": "#/$defs/timestamp"}
+      }
+    },
+    "deliveries": {
+      "title": "deliveries, one row per item and destination",
+      "description": "ingestion.record.id is <item key>/<destination>.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["item_key", "destination", "outcome", "attempts", "updated_ts"],
+      "properties": {
+        "item_key": {"$ref": "#/$defs/item_key"},
+        "destination": {"description": "One the destinations file names.", "type": "string"},
+        "destination_id": {"description": "The record's id in the destination.", "type": ["string", "null"]},
+        "outcome": {
+          "description": "refused is a 409 naming an existing record, kept and never retried.",
+          "enum": ["pending", "delivered", "delivered-to-existing", "refused"]
+        },
+        "attempts": {"type": "integer", "minimum": 0},
+        "last_error": {"description": "The destination's last error, as it answered it.", "type": ["string", "null"]},
+        "updated_ts": {"$ref": "#/$defs/timestamp"}
+      }
+    },
+    "tasks": {
+      "title": "tasks, one row per task",
+      "description": "ingestion.record.id is the task's id. A failed task's error ships as ingestion.text, because an extractor's stderr can quote the item.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "item_key", "stage", "capability", "state", "attempts", "created_ts", "updated_ts"],
+      "properties": {
+        "id": {"type": "string"},
+        "item_key": {"$ref": "#/$defs/item_key"},
+        "stage": {"$ref": "#/$defs/stage"},
+        "capability": {"description": "What a worker needs to claim the task, such as pdf or whisper.", "type": "string"},
+        "state": {"enum": ["queued", "leased", "done", "failed"]},
+        "lease_holder": {"description": "The worker holding the lease.", "type": ["string", "null"]},
+        "lease_token": {"description": "The fencing token. A report under an older token is refused.", "type": ["integer", "null"]},
+        "lease_expires_ts": {"anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
+        "attempts": {"type": "integer", "minimum": 0},
+        "not_before_ts": {"description": "The backoff's end.", "anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
+        "created_ts": {"$ref": "#/$defs/timestamp"},
+        "updated_ts": {"$ref": "#/$defs/timestamp"}
+      }
+    },
+    "workers": {
+      "title": "workers, one row per worker",
+      "description": "ingestion.record.id is the worker's id.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "capabilities", "version", "started_ts", "heartbeat_ts"],
+      "properties": {
+        "id": {"type": "string"},
+        "capabilities": {"type": "array", "items": {"type": "string"}},
+        "version": {"description": "The worker binary's version.", "type": "string"},
+        "started_ts": {"$ref": "#/$defs/timestamp"},
+        "heartbeat_ts": {"$ref": "#/$defs/timestamp"}
+      }
+    },
+    "cursors": {
+      "title": "cursors, one row per connector",
+      "description": "ingestion.record.id is the connector's name. due_at is the scheduler's, which every view of freshness copies.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["connector", "due_at", "first_fill", "updated_ts"],
+      "properties": {
+        "connector": {"type": "string"},
+        "position": {"description": "Where the next poll reads from. It moves only past what landed.", "type": ["string", "null"]},
+        "due_at": {"$ref": "#/$defs/timestamp"},
+        "last_run_ts": {"anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
+        "last_delivery_ts": {"description": "The newest arrival the connector landed.", "anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
+        "first_fill": {"description": "held keeps every item after the first at the model stages until a person releases it.", "enum": ["held", "released", "none"]},
+        "first_fill_item_key": {"description": "The one item a held first fill ran end to end.", "anyOf": [{"$ref": "#/$defs/item_key"}, {"type": "null"}]},
+        "updated_ts": {"$ref": "#/$defs/timestamp"}
+      }
+    },
+    "declarations": {
+      "title": "declarations, one row per applied set",
+      "description": "ingestion.record.id is the applied commit.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "applied_ts", "applied_by", "connectors"],
+      "properties": {
+        "commit": {"description": "The commit of the declarations the set was applied from.", "type": "string"},
+        "applied_ts": {"$ref": "#/$defs/timestamp"},
+        "applied_by": {"description": "The login that applied the set.", "type": "string"},
+        "connectors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "mode", "source", "zone"],
+            "properties": {
+              "name": {"type": "string"},
+              "mode": {"enum": ["poll", "push", "folder", "drop"]},
+              "source": {"description": "The external feed the connector reads, by its name in the data catalog.", "type": "string"},
+              "contract": {"description": "The contract the source's payloads hold to.", "type": ["string", "null"]},
+              "schedule": {"description": "A poll's schedule, as a cron expression.", "type": ["string", "null"]},
+              "due_interval": {"description": "How often a drop or push is expected, such as 720h.", "type": ["string", "null"]},
+              "freshness": {"description": "How stale the connector may get before it reads overdue.", "type": ["string", "null"]},
+              "tags": {"type": "array", "items": {"type": "string"}},
+              "zone": {"$ref": "#/$defs/zone"},
+              "read_rule": {"description": "as-is, model, or the side's default.", "type": ["string", "null"]}
+            }
+          }
+        }
+      }
+    }
+  }
+}

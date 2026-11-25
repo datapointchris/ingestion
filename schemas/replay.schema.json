@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/datapointchris/ingestion/schemas/replay.schema.json",
+  "title": "A stage run again over landed items",
+  "description": "What POST /api/v1/replays and POST /api/v1/items/{key}/model-read answer. A model stage's replay answers its count and estimate first, and queues only when the request confirms it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "stage", "items", "queued"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "stage": {"enum": ["parse", "scan", "quality", "model-read", "deliver"]},
+    "connector": {"type": ["string", "null"]},
+    "key": {"type": ["string", "null"]},
+    "items": {"description": "The items the replay covers.", "type": "integer"},
+    "queued": {"description": "False where a model stage waits for confirmation.", "type": "boolean"},
+    "estimate": {
+      "description": "A model stage's tokens by kind over every item it covers.",
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["uncached_input", "cache_write", "cache_read", "output"],
+      "properties": {
+        "uncached_input": {"type": "integer"},
+        "cache_write": {"type": "integer"},
+        "cache_read": {"type": "integer"},
+        "output": {"type": "integer"}
+      }
+    }
+  }
+}
