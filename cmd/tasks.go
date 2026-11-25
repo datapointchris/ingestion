@@ -147,7 +147,13 @@ func getJSON(ctx context.Context, api, path string, into any) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	client := oauth2.NewClient(ctx, source)
+	// Taken before the first request, so a token that cannot be had fails as
+	// itself rather than as a server that gave no answer.
+	token, err := source.Token()
+	if err != nil {
+		return nil, err
+	}
+	client := oauth2.NewClient(ctx, oauth2.ReuseTokenSource(token, source))
 	client.Timeout = answerTimeout
 	base := strings.TrimRight(d.API.Value, "/")
 	var lastErr error
