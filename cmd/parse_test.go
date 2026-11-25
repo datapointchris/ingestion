@@ -471,6 +471,21 @@ func TestTheStoredRedditExportsParseOnceEachSaveAndReplayBeside(t *testing.T) {
 // name, and skips the test where the variable names no directory.
 func storedExports(t *testing.T) map[string][]byte {
 	t.Helper()
+	exports := map[string][]byte{}
+	for _, path := range storedExportFiles(t) {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		exports[strings.TrimSuffix(filepath.Base(path), ".json")] = raw
+	}
+	return exports
+}
+
+// storedExportFiles is the path of each stored Reddit export under
+// redditExportsEnv, and skips the test where the variable names no directory.
+func storedExportFiles(t *testing.T) []string {
+	t.Helper()
 	dir := os.Getenv(redditExportsEnv)
 	if dir == "" {
 		t.Skip(redditExportsEnv + " names no directory of stored Reddit exports")
@@ -479,13 +494,5 @@ func storedExports(t *testing.T) map[string][]byte {
 	if err != nil || len(files) == 0 {
 		t.Fatalf("%s holds no JSON files: %v", dir, err)
 	}
-	exports := map[string][]byte{}
-	for _, path := range files {
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		exports[strings.TrimSuffix(filepath.Base(path), ".json")] = raw
-	}
-	return exports
+	return files
 }
