@@ -65,8 +65,7 @@ func WithClock(clock func() time.Time) Option {
 }
 
 // Open opens the database at path, creating it and its directory where they
-// are missing, and converges every schema file, every logged table's guard and
-// every item's phase.
+// are missing, and converges every schema file and every logged table's guard.
 func Open(ctx context.Context, path string, options ...Option) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return nil, fmt.Errorf("create the store's directory: %w", err)
@@ -88,10 +87,6 @@ func Open(ctx context.Context, path string, options ...Option) (*Store, error) {
 	}
 	s.read.SetMaxOpenConns(readConnections)
 	if err := s.converge(ctx); err != nil {
-		_ = s.Close()
-		return nil, err
-	}
-	if err := s.convergePhases(ctx); err != nil {
 		_ = s.Close()
 		return nil, err
 	}

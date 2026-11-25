@@ -74,8 +74,8 @@ land → parse → scan → quality gate → side → read → model read → de
   reason.
 - **The store keeps the derived phase on the item's row, so the outbox ships it.** Before
   `Store.Update` commits, it settles the phase of each item whose rows the write stamped, as
-  `ItemRecords.Phase` decides it. `Open` settles every item's, so a release that changes `Phase`
-  ships each item it moves. A stage extends `Phase` and writes no phase of its own, and a reader
+  `ItemRecords.Phase` decides it. `serve` settles every item's once it listens, so a release that
+  changes `Phase` ships each item it moves. A stage extends `Phase` and writes no phase of its own, and a reader
   of the records counts by the shipped phase rather than deriving it again.
 - **A stage that needs a model never holds up a model-free one.** Landing, parsing, scanning, rules
   and deliveries run whatever the model budget. An item waits only at a model stage, and a waiting

@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS items (
 );
 CREATE INDEX IF NOT EXISTS items_by_stamp ON items (updated_ts);
 CREATE INDEX IF NOT EXISTS items_by_parent ON items (parent_key);
+CREATE INDEX IF NOT EXISTS items_by_blob ON items (blob_sha256);
 
 CREATE TABLE IF NOT EXISTS sightings (
     item_key        TEXT NOT NULL REFERENCES items (key),

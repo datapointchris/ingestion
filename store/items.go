@@ -83,7 +83,9 @@ func (s *Store) Items(ctx context.Context, page ItemPage) ([]ItemRecords, string
 	return records, next, err
 }
 
-// recordsOf reads every record of items, one query per table.
+// recordsOf reads every record of items, one query per table. A table read
+// here joins to an item by item_key or by the item's blob_sha256, which
+// itemColumns also follows, so a write to it settles the item's phase.
 func recordsOf(ctx context.Context, db querier, items []Item) ([]ItemRecords, error) {
 	out := make([]ItemRecords, len(items))
 	if len(items) == 0 {
