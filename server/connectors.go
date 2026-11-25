@@ -157,7 +157,7 @@ type FirstFillAnswer struct {
 	SchemaVersion int    `json:"schema_version"`
 	Connector     string `json:"connector"`
 	State         string `json:"state"`
-	// Released counts the held tasks that this request returned to the
+	// Released counts the held queued tasks that this request returned to the
 	// claims, which is 0 for a fill already released.
 	Released int `json:"released"`
 }

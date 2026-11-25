@@ -141,7 +141,8 @@ func (t *Tx) firstFillHold(ctx context.Context, item string) (*string, error) {
 // ReleaseFirstFill marks connector's first fill released, and returns to the
 // claims every task it held whose item no other connector's fill holds. A task
 // whose item another held fill sighted moves to that fill. It answers how many
-// tasks it returned.
+// queued tasks it returned. A held task that a person's placement already
+// finished loses its hold too, and is not counted.
 func (t *Tx) ReleaseFirstFill(ctx context.Context, connector string) (int, error) {
 	c, ok, err := t.Cursor(ctx, connector)
 	if err != nil {
@@ -163,7 +164,7 @@ UPDATE tasks SET updated_ts = ?, held_by = (
 		AND (c.first_fill_item_key IS NULL OR c.first_fill_item_key != tasks.item_key)
 	ORDER BY c.connector LIMIT 1)
 WHERE held_by = ?
-RETURNING held_by`, t.stamp(), connector)
+RETURNING held_by, state`, t.stamp(), connector)
 	if err != nil {
 		return 0, fmt.Errorf("release the tasks %s held: %w", connector, err)
 	}
@@ -171,10 +172,11 @@ RETURNING held_by`, t.stamp(), connector)
 	released := 0
 	for rows.Next() {
 		var holder *string
-		if err := rows.Scan(&holder); err != nil {
+		var state string
+		if err := rows.Scan(&holder, &state); err != nil {
 			return 0, fmt.Errorf("release the tasks %s held: %w", connector, err)
 		}
-		if holder == nil {
+		if holder == nil && state == TaskQueued {
 			released++
 		}
 	}
