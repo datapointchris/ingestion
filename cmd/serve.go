@@ -20,6 +20,7 @@ import (
 	"github.com/datapointchris/ingestion/extract"
 	"github.com/datapointchris/ingestion/landing"
 	"github.com/datapointchris/ingestion/outbox"
+	"github.com/datapointchris/ingestion/route"
 	"github.com/datapointchris/ingestion/scan"
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
@@ -66,11 +67,22 @@ func init() {
 	rootCmd.AddCommand(serveCmd)
 }
 
-// stageWiring is what the service queues after each stage ends, keyed by that
-// stage, and how a replay queues each stage again.
-func stageWiring(extractors *extract.Registry) (map[string]server.QueueNext, map[string]server.Replayable) {
-	return map[string]server.QueueNext{store.StageParse: scan.QueueAfterParse},
-		map[string]server.Replayable{store.StageParse: extractors.Replayable(), store.StageScan: scan.Replayable(extractors)}
+// afterStage runs in the write that ends an item's task done. It queues the
+// item's scan after its parse, then runs the gates.
+func afterStage(log *slog.Logger) server.AfterStage {
+	gates := route.AfterStage(log)
+	return func(ctx context.Context, tx *store.Tx, task store.Task) error {
+		if err := scan.QueueAfterParse(ctx, tx, task); err != nil {
+			return err
+		}
+		return gates(ctx, tx, task)
+	}
+}
+
+// replayableStages is how a replay queues each stage again, keyed by the
+// stage.
+func replayableStages(extractors *extract.Registry) map[string]server.Replayable {
+	return map[string]server.Replayable{store.StageParse: extractors.Replayable(), store.StageScan: scan.Replayable(extractors)}
 }
 
 func runServe(cmd *cobra.Command, _ []string) error {
@@ -118,12 +130,14 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	for root := range cfg.Serve.Homes {
 		roots = append(roots, root)
 	}
-	next, replayable := stageWiring(extractors)
 	handler := server.Handler(server.Config{
 		Store: st, Gate: gate, Issuer: cfg.Issuer, PublicURL: cfg.Serve.PublicURL, Version: version, Log: log,
-	}, server.TaskRoutes(st, log, next), server.BlobRoutes(lander, log), server.ItemRoutes(st, log),
-		server.ConnectorRoutes(server.ConnectorConfig{Store: st, Lander: lander, Scheduler: scheduler, Roots: roots, Log: log}),
-		server.ReplayRoutes(st, replayable, log))
+	}, server.TaskRoutes(st, log, afterStage(log)), server.BlobRoutes(lander, log), server.ItemRoutes(st, log),
+		server.ConnectorRoutes(server.ConnectorConfig{
+			Store: st, Lander: lander, Scheduler: scheduler, Roots: roots, AfterApply: route.AfterApply(log), Log: log,
+		}),
+		server.ReplayRoutes(st, replayableStages(extractors), log),
+		server.ReviewRoutes(st, log))
 	srv := &http.Server{Addr: listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 
 	var wg sync.WaitGroup

@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/datapointchris/ingestion/schemas/review-placement.schema.json",
+  "title": "A person's placement or drop of one item",
+  "description": "What POST /api/v1/review/{key}/place and /api/v1/review/{key}/drop answer, and `ingestion review place --json` and `review drop --json` print. A placement's body names its destination, and either body may name a cause and a note. A service's body also names the login of the person it decides for. Sent again with the same body, either answers the decisions the first made and appends none.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "key", "decisions"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "key": {"description": "The item's key, which a URL in the path resolves to.", "type": "string"},
+    "decisions": {
+      "description": "The side decision, decided by person:<login>, then the read decision where the destination takes a side.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 2,
+      "items": {"$ref": "item.schema.json#/properties/decisions/items"}
+    }
+  }
+}

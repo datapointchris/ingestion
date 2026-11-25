@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -95,8 +96,11 @@ type Arrival struct {
 	MediaType string
 	// ExternalKey is the connector's own key for the artifact. Empty keeps
 	// the sighting's, or records the item's key on a first sighting.
-	ExternalKey    string
-	Tags           []string
+	ExternalKey string
+	Tags        []string
+	// Fields are values read from the source's payload, such as a Reddit
+	// save's subreddit. A later arrival's value replaces the sighting's.
+	Fields         map[string]string
 	CursorPosition string
 	Title          string
 	// URL is the item's own URL, such as a Reddit post's permalink.
@@ -385,10 +389,17 @@ func record(ctx context.Context, tx *store.Tx, a Arrival, key string, w *Written
 	}
 	next := sighting
 	if !had {
-		next = store.Sighting{ItemKey: key, Connector: a.Connector, Zone: a.Zone, ExternalKey: key, Tags: []string{}}
+		next = store.Sighting{ItemKey: key, Connector: a.Connector, Zone: a.Zone, ExternalKey: key, Tags: []string{}, Fields: map[string]string{}}
 	}
 	next.Zone = store.Stricter(next.Zone, a.Zone)
 	next.Tags = union(next.Tags, a.Tags)
+	if len(a.Fields) > 0 {
+		next.Fields = maps.Clone(next.Fields)
+		if next.Fields == nil {
+			next.Fields = map[string]string{}
+		}
+		maps.Copy(next.Fields, a.Fields)
+	}
 	if a.ExternalKey != "" {
 		next.ExternalKey = a.ExternalKey
 	}

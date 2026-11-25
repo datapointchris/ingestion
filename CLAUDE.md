@@ -29,7 +29,7 @@ package:
 | `isolatedprocess` | the one door that starts a program over outsider bytes, in a temporary directory of its own with an environment that holds no secret |
 | `scan` | the scanner, which runs YARA-X's `yr` over a parse's text or over one sentence, its stored findings, and `build-rules`, which converts Agent Threat Rules and tests each by its own examples |
 | `qualitygate` | the model stage that reads an item's opening and answers its quality, genre, domains, themes, a one-line idea and a side guess |
-| `route` | the side gate and the read rule: a sighting's tags, then a rule, then the quality gate's guess above its confidence floor, else review |
+| `route` | the side gate and the read gate, which serve runs in the write that ends each stage before them and in the write that applies a changed set: a sighting's tags, then a rule, then the quality gate's guess at or above its confidence floor, else review; and a person's placement from review |
 | `modelread` | the model stage that answers an item's note with a summary, a suggestion sentence, or both |
 | `connectors` | the declaration set, checked against its schemas, and its apply, the scheduler that makes each connector due, the folder scan, and the drop handler each source registers under its format |
 | `deliver` | the upsert into each destination through that destination's own write path, keyed by the item |

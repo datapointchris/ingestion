@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/datapointchris/ingestion/schemas/routing-rules.schema.json",
   "title": "The routing rules",
-  "description": "What routing-rules.yml holds in a directory that `ingestion connectors apply` sends. Each rule names one destination for the items that match it.",
+  "description": "What routing-rules.yml holds in a directory that `ingestion connectors apply` sends. Each rule names one destination for the items that match it. The side gate reads the rules in order, after the tags, and the first rule that holds places the item.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -16,15 +16,15 @@
       "properties": {
         "name": {"type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
         "match": {
-          "description": "What the rule holds for. Each condition it names must hold, and it names at least one.",
+          "description": "What the rule holds for. Each condition it names must hold on one of the item's sightings, and it names at least one.",
           "type": "object",
           "additionalProperties": false,
           "minProperties": 1,
           "properties": {
             "connector": {"description": "Holds for an item this connector sighted. The set declares the connector.", "type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
             "tag": {"description": "Holds for an item a sighting tagged with this.", "$ref": "connector.schema.json#/$defs/tag"},
-            "field": {"description": "A field of the source's payload, such as a Reddit save's subreddit.", "type": "string", "minLength": 1},
-            "values": {"description": "The values of field the rule holds for.", "type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}
+            "field": {"description": "A field of the source's payload, as the connector's format records it on each sighting, such as a Reddit save's subreddit.", "type": "string", "minLength": 1},
+            "values": {"description": "The values of field the rule holds for, each matched exactly.", "type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}
           },
           "dependentRequired": {"field": ["values"], "values": ["field"]},
           "anyOf": [{"required": ["connector"]}, {"required": ["tag"]}, {"required": ["field"]}]

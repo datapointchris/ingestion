@@ -62,6 +62,9 @@ var (
 	RouteConnectorRuns  = Route{"POST /api/v1/connectors/{name}/runs", ScopeConnectorsRun, RepeatKeyed}
 	RouteFirstFill      = Route{"PATCH /api/v1/connectors/{name}/first-fill", ScopeFirstFillsRelease, RepeatByContent}
 	RouteConnectorDrops = Route{"POST /api/v1/connectors/{name}/drops", ScopeItemsDrop, RepeatKeyed}
+	RouteReview         = Route{"GET /api/v1/review", ScopeReviewRead, RepeatRead}
+	RouteReviewPlace    = Route{"POST /api/v1/review/{key}/place", ScopeReviewPlace, RepeatByContent}
+	RouteReviewDrop     = Route{"POST /api/v1/review/{key}/drop", ScopeReviewPlace, RepeatByContent}
 )
 
 // Handle serves route with h. A service reaches it only while its token

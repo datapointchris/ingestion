@@ -99,8 +99,10 @@ poll = "10s"  # how often an idle worker asks for work
   needs `ingestion.items.read`, and one that runs a stage again needs `ingestion.items.replay`. A
   job that applies declarations needs `ingestion.declarations.apply`, one that reads connectors
   `ingestion.connectors.read`, one that runs them `ingestion.connectors.run`, and a source that
-  drops files `ingestion.items.drop`. Releasing a connector's first fill spends the model stages on
-  every item it held, so it takes `ingestion.first-fills.release`, which no other scope grants.
+  drops files `ingestion.items.drop`. An app that shows the review queue needs
+  `ingestion.review.read`, and one that places items from it for a person needs
+  `ingestion.review.place`. Releasing a connector's first fill spends the model stages on every
+  item it held, so it takes `ingestion.first-fills.release`, which no other scope grants.
 
 `ingestion auth login`, `auth status` and `auth logout` hold a person's login. `ingestion tasks
 list` reads the service's open tasks and the workers it has heard from:
@@ -116,7 +118,8 @@ ingestion-worker-7c9d8f6b4-x2kqp-0f683526  0.4.0    parse:thread-text  2026-11-2
 `--state` narrows the list to one state and repeats, `--limit` caps it, and `--json` prints the
 shape in `schemas/tasks-list.schema.json`. The list shows each worker heard from lately, and
 `--all-workers` lists every worker the service holds, since each process start is a worker of its
-own. A command exits 4 when the service gives no answer, and 2 when a flag is wrong.
+own. A command exits 4 when the service gives no answer. It exits 2 when a flag is wrong, or when
+it names an item that the service holds no record of.
 
 ### Reading items and their bytes
 
@@ -180,9 +183,10 @@ for an editor to check against. A connector names these:
 `90m`, `12h`, `30d` or `2w`. A day is 24 hours.
 
 A routing rule is named, and its match holds a `connector`, a `tag`, or a source `field` with the
-`values` it takes, such as a subreddit. Every condition it names must hold. A destination names
-its `side`, `personal` or `fleet`, and the `tags` that place an item there. `apply` checks and
-keeps the rules and destinations. No stage reads them, so no item is placed by a rule.
+`values` it takes, such as a subreddit. Every condition it names must hold on one sighting. A
+destination names its `side`, `personal` or `fleet`, and the `tags` that place an item there. A
+destination with no side drops what it takes. The side gate reads the rules and destinations of
+the set in force.
 
 `ingestion connectors apply <dir>` reads the whole set, checks each file against its schema, and
 sends it to the service, which keeps it beside its commit. The commit is the directory's `HEAD`,
@@ -219,7 +223,9 @@ reddit-exports    drop  5519f33  2026-11-24 23:50 EST      1        0       0   
 ```
 
 `ingestion connectors show <name>` adds its source, its tags, its last run and its first fill.
-`--json` on either prints the shape in `schemas/connectors-list.schema.json`.
+`--json` on either prints the shape in `schemas/connectors-list.schema.json`. REVIEW counts what
+`ingestion review list` lists, including an item whose parse failed. FAILED counts an item whose
+newest task past its parse failed.
 
 - **The service schedules each connector.** A poll or a folder is due at its schedule's next time.
   A drop or a push is due its `due_interval` after its last delivery, and reads overdue once that
@@ -298,7 +304,8 @@ A finding names its rule, the rule's severity, the unit it starts in, its byte o
 in that unit, and the span it matched, each in the text as written. It reads through the parse
 route, and through `ingestion items show`, which prints each span quoted with any hidden character
 escaped. A finding never drops an item. A scan that fails runs again, up to three runs, then fails
-its task, and the item's phase reads `failed` until a later scan of it is done.
+its task. The item's phase then reads `failed` until a later scan of it is done, unless the item
+waits in review or a side decision dropped it.
 
 `ingestion items replay --stage scan` scans the selected items again, as a new rule set needs. A
 scan by new rules, or of a new parse, writes beside the old one. A scan that is done keeps its
@@ -317,6 +324,58 @@ go run ./scan/build-rules --atr ./atr --yr ./bin/yr --out ./scan-rules
 `build-rules` prints the rules' version, how many rules it kept, and each reason it dropped a rule
 with how many it dropped for that reason. `rules.json` beside the compiled rules records the
 decision on each rule.
+
+### The side gate places each item, and a person places what it leaves
+
+When an item's parse is done, the service runs the side gate in the same write. The gate places
+the item by the first rung that decides it:
+
+1. **Every sighting's tags.** A tag that a destination names places the item on that
+   destination's side. Tags naming two sides send it to review as `tags-disagree`.
+2. **A routing rule**: the first in the file whose match holds on one sighting. A Reddit save's
+   sighting carries its `subreddit` field for a rule to match.
+3. **The quality gate's side guess**, where its confidence reaches the floor that
+   `route.GuessFloor` sets. A guess below the floor, or `unsure`, sends the item to review as
+   `below-floor`.
+4. **Review.** An item that no tag or rule placed, and that the quality gate gave no guess for,
+   waits as `no-guess`.
+
+The gate runs again in the write that ends each later stage before it, such as the quality gate,
+and in the write that applies a changed set. Each run decides again an item that the gate sent to
+review as `no-guess`, `below-floor` or `gate-error`, so a guess or a rule that arrives later
+places it. A placed item stays where it is: a later sighting or parse moves nothing, and only a
+person's placement moves it. Where the gate cannot read the set in force or the item's sightings,
+it logs why and sends the item to review as `gate-error`, and the parse stands.
+
+An item whose parse failed waits in review as `no-parse`. One that the quality gate sent to
+review before any side decision waits as `quality-review`.
+
+Where the item lands on a side, the read gate chooses how it is read: as is, or by a model under
+the side's lens. The first connector that sighted it and declares a `read_rule` decides.
+Otherwise a personal item is read as is, and a fleet item by a model.
+
+Each decision is appended to the item's records with who decided it: `tag`, `rule:<name>`,
+`model:<run>`, `person:<login>`, or `gate` where the rungs ran out. `items show` prints them.
+
+```text
+$ ingestion review list
+ITEM                   ZONE     REASON    GUESS  WAITING SINCE            TITLE
+reddit/t3_bb2          outside  no-guess  —      2026-11-25 01:07:26 EST  A post
+file/5d41402abc4b2a76  outside  no-parse  —      2026-11-25 01:07:26 EST  —
+$ ingestion review place reddit/t3_bb2 work-inbox --cause subreddit --note "what would this change?"
+Placed reddit/t3_bb2 on work-inbox: side fleet, read by a model under the fleet lens.
+$ ingestion review drop file/5d41402abc4b2a76 --cause title
+Dropped file/5d41402abc4b2a76, cause title.
+```
+
+`review list` reads `GET /api/v1/review`, the longest waiting first, in
+`schemas/review-list.schema.json`. `place` and `drop` post to `/api/v1/review/{key}/place` and
+`…/drop`, and print `schemas/review-placement.schema.json` with `--json`. A placement names a
+destination that the set in force declares, and any other is refused. `--cause` names the aspect
+that decided it, such as subreddit or title, and a decision that names none is kept as
+`unstated`. `--note` carries the questions that a model read answers. Sending the same placement again changes nothing. A service placing for a person names
+the person's `login` in its body, because a service token carries no person. The decision keeps
+the service's client id beside the login.
 
 ### Running it in a container
 

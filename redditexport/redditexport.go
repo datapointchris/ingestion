@@ -41,6 +41,10 @@ const (
 	MediaTypeSave   = "application/x-reddit-save+json"
 )
 
+// FieldSubreddit names the field of a save's sighting that holds its
+// subreddit, as Reddit spells it, for a routing rule's match to name.
+const FieldSubreddit = "subreddit"
+
 // Export is one export. Which fields are set depends on Kind.
 type Export struct {
 	Kind         string    `json:"kind"`
@@ -228,8 +232,9 @@ type Landed struct {
 
 // Land lands d as an item of its own, keyed by its bytes, then each save it
 // carries as that item's child under reddit/<fullname>. A save's sighting
-// records the export's key as its cursor, which names the drop it came in.
-// Every arrival is outside, because Reddit's users wrote it. A save that an
+// records the export's key as its cursor, which names the drop it came in,
+// and its subreddit under FieldSubreddit. Every arrival is outside, because
+// Reddit's users wrote it. A save that an
 // earlier export landed keeps that export as its parent, and its first bytes.
 func Land(ctx context.Context, l *landing.Lander, d Drop) (Landed, error) {
 	e, err := Parse(d.Raw)
@@ -253,9 +258,13 @@ func Land(ctx context.Context, l *landing.Lander, d Drop) (Landed, error) {
 		if err != nil {
 			return out, err
 		}
+		var fields map[string]string
+		if s.Subreddit != "" {
+			fields = map[string]string{FieldSubreddit: s.Subreddit}
+		}
 		landed, err := l.Land(ctx, landing.Arrival{
 			Connector: d.Connector, Zone: store.Outside, Key: key, MediaType: MediaTypeSave,
-			ExternalKey: s.Fullname, Tags: d.Tags, CursorPosition: out.Export.Key, Title: s.Title, URL: s.URL,
+			ExternalKey: s.Fullname, Tags: d.Tags, Fields: fields, CursorPosition: out.Export.Key, Title: s.Title, URL: s.URL,
 			Parent: out.Export.Key, Body: bytes.NewReader(s.Bytes),
 		})
 		if err != nil {

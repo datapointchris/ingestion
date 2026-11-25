@@ -1,7 +1,9 @@
 -- An item is one artifact under the key that itemkey derives. A sighting is
 -- one connector's arrival of it. A blob is landed bytes under their SHA-256,
--- and a home names where a file already lives on disk. title, url,
--- external_key and path are outsider-written, so the outbox ships them as
+-- and a home names where a file already lives on disk. A sighting's fields
+-- are values its connector read from the source's payload, such as a Reddit
+-- save's subreddit, which a routing rule matches. title, url, external_key,
+-- fields and path are outsider-written, so the outbox ships them as
 -- ingestion.text.
 
 CREATE TABLE IF NOT EXISTS items (
@@ -24,6 +26,7 @@ CREATE TABLE IF NOT EXISTS sightings (
     item_key        TEXT NOT NULL REFERENCES items (key),
     connector       TEXT NOT NULL,
     tags            TEXT NOT NULL DEFAULT '[]',
+    fields          TEXT NOT NULL DEFAULT '{}',
     zone            TEXT NOT NULL CHECK (zone IN ('outside', 'owner')),
     cursor_position TEXT,
     external_key    TEXT NOT NULL,

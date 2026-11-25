@@ -43,6 +43,46 @@ func (t *Tx) Sighting(ctx context.Context, key, connector string) (Sighting, boo
 	return first[Sighting](ctx, t.tx, table("sightings"), `item_key = ? AND connector = ?`, key, connector)
 }
 
+// Sightings reads every sighting of the item under key, the first seen first.
+func (t *Tx) Sightings(ctx context.Context, key string) ([]Sighting, error) {
+	return readInto[Sighting](ctx, t.tx, table("sightings"), `item_key = ? ORDER BY first_seen_ts, rowid`, key)
+}
+
+// NewestDecision reads the newest decision at gate on the item under key,
+// and false where none is.
+func (t *Tx) NewestDecision(ctx context.Context, key, gate string) (Decision, bool, error) {
+	return first[Decision](ctx, t.tx, table("decisions"), `item_key = ? AND gate = ? ORDER BY sequence DESC`, key, gate)
+}
+
+// Outputs reads every output of the item under key, oldest first, in the order
+// that Store.Outputs reads them.
+func (t *Tx) Outputs(ctx context.Context, key string) ([]Output, error) {
+	return readInto[Output](ctx, t.tx, table("outputs"), `item_key = ? ORDER BY created_ts, rowid`, key)
+}
+
+// UnplacedParsedKeys reads the key of each item with a done parse whose newest
+// side decision is a review, or that holds none.
+func (t *Tx) UnplacedParsedKeys(ctx context.Context) ([]string, error) {
+	rows, err := t.tx.QueryContext(ctx, `
+SELECT i.key FROM items i
+WHERE EXISTS (SELECT 1 FROM outputs o WHERE o.item_key = i.key AND o.stage = 'parse' AND o.state = 'done')
+	AND coalesce((SELECT d.verdict FROM decisions d WHERE d.item_key = i.key AND d.gate = 'side' ORDER BY d.sequence DESC LIMIT 1), 'review') = 'review'
+ORDER BY i.key`)
+	if err != nil {
+		return nil, fmt.Errorf("select the parsed items that no side decision placed: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var keys []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		keys = append(keys, key)
+	}
+	return keys, rows.Err()
+}
+
 // Blob reads the blob row for sum, and false where the store holds none.
 func (t *Tx) Blob(ctx context.Context, sum string) (Blob, bool, error) {
 	return first[Blob](ctx, t.tx, table("blobs"), `sha256 = ?`, sum)
@@ -69,6 +109,9 @@ func (t *Tx) PutItem(ctx context.Context, item Item) error {
 func (t *Tx) PutSighting(ctx context.Context, s Sighting) error {
 	if s.Tags == nil {
 		s.Tags = []string{}
+	}
+	if s.Fields == nil {
+		s.Fields = map[string]string{}
 	}
 	s.FirstSeenTS, s.LastSeenTS = t.stamp(), t.stamp()
 	return t.put(ctx, table("sightings"), s)

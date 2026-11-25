@@ -169,19 +169,19 @@ type TasksAnswer struct {
 // workers that stopped outnumber the live ones within a few releases.
 const WorkersHeardWithin = 10 * time.Minute
 
-// QueueNext queues the stage that follows task's, in the write that ends
-// task, from the outputs that its report wrote.
-type QueueNext func(ctx context.Context, tx *store.Tx, task store.Task, outputs []store.Output) error
+// AfterStage runs in the write that ends an item's task done, after the
+// stage's outputs, such as the scan and the gates that follow an item's parse.
+// An error rolls the whole report back, so the task stays leased.
+type AfterStage func(ctx context.Context, tx *store.Tx, task store.Task) error
 
 // TaskRoutes are the routes for a worker to lease tasks through and read a
-// task's input, and the list for a person to read. next holds what follows
-// each stage, keyed by the stage, and runs in the write that ends a task of
-// that stage.
-func TaskRoutes(st *store.Store, log *slog.Logger, next map[string]QueueNext) Routes {
+// task's input, and the list for a person to read. after runs in the write
+// that ends each item's task done, and nil runs nothing.
+func TaskRoutes(st *store.Store, log *slog.Logger, after AfterStage) Routes {
 	if log == nil {
 		log = slog.Default()
 	}
-	h := taskHandlers{store: st, log: log, next: next}
+	h := taskHandlers{store: st, log: log, after: after}
 	return func(r *Router) {
 		r.Handle(RouteTaskClaims, h.claim)
 		r.Handle(RouteTaskHeartbeats, h.heartbeat)
@@ -194,7 +194,7 @@ func TaskRoutes(st *store.Store, log *slog.Logger, next map[string]QueueNext) Ro
 type taskHandlers struct {
 	store *store.Store
 	log   *slog.Logger
-	next  map[string]QueueNext
+	after AfterStage
 }
 
 func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
@@ -274,15 +274,13 @@ func (h taskHandlers) report(w http.ResponseWriter, r *http.Request) {
 		if task.ItemKey == nil && len(body.Outputs) > 0 {
 			return errOutputsWithoutItem
 		}
-		outputs := make([]store.Output, 0, len(body.Outputs))
 		for _, o := range body.Outputs {
 			if err := tx.PutOutputWithUnits(r.Context(), o.output(task), o.Units); err != nil {
 				return err
 			}
-			outputs = append(outputs, o.output(task))
 		}
-		if next, ok := h.next[task.Stage]; ok {
-			return next(r.Context(), tx, task, outputs)
+		if h.after != nil && outcome.State == store.TaskDone && task.ItemKey != nil {
+			return h.after(r.Context(), tx, task)
 		}
 		return nil
 	})

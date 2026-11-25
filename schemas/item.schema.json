@@ -54,6 +54,7 @@
           "connector": {"type": "string"},
           "external_key": {"type": "string"},
           "tags": {"type": "array", "items": {"type": "string"}},
+          "fields": {"description": "Values the connector read from the source's payload, by name, such as a Reddit save's subreddit. A routing rule matches them. Outsider text where the zone is outside.", "type": "object", "additionalProperties": {"type": "string"}},
           "zone": {"enum": ["outside", "owner"]},
           "cursor_position": {"description": "The connector's cursor where it last delivered the item.", "type": ["string", "null"]},
           "first_seen_ts": {"type": "string", "format": "date-time"},
@@ -114,6 +115,8 @@
           "cause": {"type": "string"},
           "destination": {"type": ["string", "null"]},
           "note": {"type": ["string", "null"]},
+          "lens": {"description": "How a model read takes the item, on a read decision whose verdict is model.", "type": ["string", "null"]},
+          "client_id": {"description": "The client that sent a person's decision.", "type": ["string", "null"]},
           "decided_ts": {"type": "string", "format": "date-time"}
         }
       }

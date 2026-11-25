@@ -117,16 +117,15 @@ func (h handler) failed(task worker.Task, reason string, parse *server.TaskParse
 }
 
 // QueueAfterParse queues a scan of the item in the write that ends its parse
-// task, where the parse reported done. So every parsed item is scanned, and a
-// parse that failed waits in review unscanned.
-func QueueAfterParse(ctx context.Context, tx *store.Tx, task store.Task, outputs []store.Output) error {
-	for _, o := range outputs {
-		if o.State == store.OutputDone {
-			_, err := tx.Enqueue(ctx, store.Task{ItemKey: task.ItemKey, Stage: store.StageScan, Capability: Capability})
-			return err
-		}
+// task done, and does nothing after any other stage. So every parsed item is
+// scanned. A parse that failed ends its task failed, so it waits in review
+// unscanned.
+func QueueAfterParse(ctx context.Context, tx *store.Tx, task store.Task) error {
+	if task.Stage != store.StageParse || task.ItemKey == nil {
+		return nil
 	}
-	return nil
+	_, err := tx.Enqueue(ctx, store.Task{ItemKey: task.ItemKey, Stage: store.StageScan, Capability: Capability})
+	return err
 }
 
 // Replayable is the scan as a replay runs it again, such as over a new rule

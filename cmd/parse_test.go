@@ -40,17 +40,20 @@ const redditExportsEnv = "INGESTION_REDDIT_EXPORTS_DIR"
 // pipeline is the service's store, landing and routes, a worker's client, and
 // a CLI config that reaches them.
 type pipeline struct {
-	st     *store.Store
-	lander *landing.Lander
-	api    *httptest.Server
-	config string
-	person *http.Client
+	st       *store.Store
+	lander   *landing.Lander
+	api      *httptest.Server
+	provider *authtest.Provider
+	config   string
+	person   *http.Client
 	// service is the worker's own client, under its service token.
 	service *http.Client
 	worker  *worker.Client
 }
 
-func newPipeline(t *testing.T, extractors *extract.Registry) *pipeline {
+// newPipeline serves the routes with after run in the write that ends each
+// item's task done, as serve runs the gates there.
+func newPipeline(t *testing.T, extractors *extract.Registry, after server.AfterStage) *pipeline {
 	t.Helper()
 	ctx := t.Context()
 	dir := t.TempDir()
@@ -71,10 +74,9 @@ func newPipeline(t *testing.T, extractors *extract.Registry) *pipeline {
 	provider.Register("ingestion-svc-worker", "worker-secret", server.ScopeTasksClaim)
 	gate := verifiedGate{provider.Verifier(t, "ingestion-cli-", "ingestion-svc-")}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	next, replayable := stageWiring(extractors)
 	api := httptest.NewServer(server.Handler(server.Config{Store: st, Gate: gate, Issuer: provider.URL, Version: "test", Log: log},
-		server.TaskRoutes(st, log, next), server.BlobRoutes(lander, log), server.ItemRoutes(st, log),
-		server.ReplayRoutes(st, replayable, log)))
+		server.TaskRoutes(st, log, after), server.BlobRoutes(lander, log), server.ItemRoutes(st, log), server.ReviewRoutes(st, log),
+		server.ReplayRoutes(st, replayableStages(extractors), log)))
 	t.Cleanup(api.Close)
 	person := provider.Person(t, "ingestion-cli-test", "person")
 	tokenFile, config := filepath.Join(dir, "token.json"), filepath.Join(dir, "config.toml")
@@ -92,7 +94,8 @@ func newPipeline(t *testing.T, extractors *extract.Registry) *pipeline {
 		Scopes: []string{server.ScopeTasksClaim},
 	}).Client(ctx)
 	return &pipeline{
-		st: st, lander: lander, api: api, config: config, service: service, worker: worker.NewClient(api.URL, service),
+		st: st, lander: lander, api: api, provider: provider, config: config, service: service,
+		worker: worker.NewClient(api.URL, service),
 		person: oauth2.NewClient(ctx, oauth2.StaticTokenSource(&oauth2.Token{AccessToken: person})),
 	}
 }
@@ -175,7 +178,8 @@ func (p *pipeline) readParse(t *testing.T, key, version string) server.ParseAnsw
 }
 
 // holdsTo fails the test where raw does not hold to the named file under
-// schemas/.
+// schemas/. Every file there is a resource under its $id, so one can refer to
+// another.
 func holdsTo(t *testing.T, raw []byte, file string) {
 	t.Helper()
 	instance, err := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
@@ -205,7 +209,7 @@ func holdsTo(t *testing.T, raw []byte, file string) {
 		t.Fatal(err)
 	}
 	if err := schema.Validate(instance); err != nil {
-		t.Errorf("%s does not hold to %s: %v", raw, file, err)
+		t.Errorf("the answer does not hold to %s: %v", file, err)
 	}
 }
 
@@ -233,6 +237,15 @@ func (p *pipeline) replay(t *testing.T, idempotencyKey, connector string) (int, 
 	return resp.StatusCode, answer
 }
 
+func mustAbs(t *testing.T, path string) string {
+	t.Helper()
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return abs
+}
+
 // parsedThenReplayed lands each export, parses every save with thread-text
 // v1, then replays the parse with v2 through `items replay`. It checks that
 // each save holds a done v1 and v2 parse with units, both readable through the
@@ -242,7 +255,7 @@ func parsedThenReplayed(t *testing.T, exports map[string][]byte) (saves, units i
 	t.Helper()
 	ctx := t.Context()
 	v1 := extract.Builtin()
-	p := newPipeline(t, v1)
+	p := newPipeline(t, v1, nil)
 	for _, name := range slices.Sorted(maps.Keys(exports)) {
 		if _, err := redditexport.Land(ctx, p.lander, redditexport.Drop{Connector: "reddit-exports", Name: name, Raw: exports[name]}); err != nil {
 			t.Fatalf("an export failed to land: %v", errorClass(err))
@@ -368,7 +381,7 @@ func TestAnExtractorProgramThatFailsOrHangsFailsItsTaskAndAFailedRerunKeepsTheDo
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := newPipeline(t, extractors)
+	p := newPipeline(t, extractors, nil)
 	keys := map[string]string{}
 	for _, name := range []string{"failing", "hanging", "working"} {
 		landed, err := p.lander.Land(ctx, landing.Arrival{

@@ -64,14 +64,17 @@ type Item struct {
 
 // Sighting is one connector's arrival of an item.
 type Sighting struct {
-	ItemKey        string   `json:"item_key"`
-	Connector      string   `json:"connector"`
-	Tags           []string `json:"tags"`
-	Zone           Zone     `json:"zone"`
-	CursorPosition *string  `json:"cursor_position"`
-	ExternalKey    string   `json:"external_key"`
-	FirstSeenTS    string   `json:"first_seen_ts"`
-	LastSeenTS     string   `json:"last_seen_ts"`
+	ItemKey   string   `json:"item_key"`
+	Connector string   `json:"connector"`
+	Tags      []string `json:"tags"`
+	// Fields hold the source payload's values by name, such as a Reddit
+	// save's subreddit, for a routing rule to match.
+	Fields         map[string]string `json:"fields"`
+	Zone           Zone              `json:"zone"`
+	CursorPosition *string           `json:"cursor_position"`
+	ExternalKey    string            `json:"external_key"`
+	FirstSeenTS    string            `json:"first_seen_ts"`
+	LastSeenTS     string            `json:"last_seen_ts"`
 }
 
 // Blob is landed bytes, written once.
@@ -202,7 +205,10 @@ type Decision struct {
 	Cause       string   `json:"cause"`
 	Destination *string  `json:"destination"`
 	Note        *string  `json:"note"`
-	DecidedTS   string   `json:"decided_ts"`
+	// Lens is set on a read decision whose verdict is model.
+	Lens      *string `json:"lens"`
+	ClientID  *string `json:"client_id"`
+	DecidedTS string  `json:"decided_ts"`
 }
 
 // Delivery outcomes.
