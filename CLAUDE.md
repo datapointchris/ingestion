@@ -1,0 +1,132 @@
+# ingestion
+
+ingestion takes items in from outside sources: exports, feeds, playlists, watched folders, and
+links or memos pushed from a phone. It lands each item once under one key, then parses and scans
+it. It gates the item by quality and by side, and delivers it to the one place it belongs. It is a
+Go service on SQLite with a leasing worker, and the same binary is the CLI that talks to it.
+
+This repo is a product for a stranger. Someone who installs it and runs it on its defaults gets a
+working tool. So nothing committed here names one person's sources, machines or other tools. A
+deployment's connector declarations live outside this repo.
+
+## Layout
+
+`main.go` calls `cmd.Execute`. `cmd/` is the cobra command package. `root.go` builds the root
+command, and each other file there is one command that adds itself to `rootCmd` from its own
+`init`.
+
+Every other package sits flat beside `main.go`, one per stage, with no `internal/` or `pkg/`. A
+package is created with its stage's first code, never ahead of it. A stage's code goes in its own
+package:
+
+| Package | Holds |
+| --- | --- |
+| `store` | the SQLite store: items, sightings, blobs, each stage's outputs and decisions, deliveries, task leases and connector cursors |
+| `itemkey` | the one component that derives an item's key from any form of its artifact |
+| `landing` | an artifact's bytes written under their SHA-256, and one sighting per connector |
+| `extract` | one extractor per media type, each writing versioned text and units |
+| `scan` | the scanner, run over parsed text and again over each suggestion, and its stored findings |
+| `qualitygate` | the model stage that reads an item's opening and answers its quality, genre, domains, themes, a one-line idea and a side guess |
+| `route` | the side gate and the read rule: a sighting's tags, then a rule, then the quality gate's guess above its confidence floor, else review |
+| `modelread` | the model stage that answers an item's note with a summary, a suggestion sentence, or both |
+| `connectors` | each source's connector, by mode: `poll`, `push`, `folder` or `drop` |
+| `deliver` | the upsert into each destination through that destination's own write path, keyed by the item |
+| `modelport` | the one port that carries every model call, and its `queue` and `claude-cli` adapters |
+| `outbox` | the relay that ships each logged change past its mark, with outsider text on a channel of its own |
+| `server` | the HTTP API that `ingestion serve` answers, including the blob routes that carry a worker's bytes |
+| `worker` | `ingestion worker run`, which leases tasks by capability under a fencing token |
+| `push` | `ingestion push`, which hands a URL or a key straight to a named destination |
+
+## Every item passes one line of stages
+
+```text
+land → parse → scan → quality gate → side → read → model read → deliver
+```
+
+- **Each stage writes its own record, and an item's phase is derived from which records exist.** A
+  push skips stages, and a model stage can wait while later model-free work runs elsewhere. A
+  single status column would misread both. Kubernetes derives status from conditions for the same
+  reason.
+- **A stage that needs a model never holds up a model-free one.** Landing, parsing, scanning, rules
+  and deliveries run whatever the model budget. An item waits only at a model stage, and a waiting
+  item holds no worker slot.
+- **A rule placed before the model always wins over it.** A tag or a routing rule decides first.
+  The model judges only what the rules leave, and drops an item only above a high confidence.
+- **A drop is soft.** The item keeps its row and its one-line idea, and a person can still send it
+  to a model read.
+- **A push that names its destination skips the quality gate, the side gate and every model
+  stage.** It still parses and scans the item.
+
+## The zone records who wrote the content, and the strictest sighting wins
+
+Outsider-written text can carry instructions aimed at whatever model or person reads it next. The
+zone tells every reader downstream which text that is.
+
+- **`outside` marks outsider-written content**: a fetched page, a post, a comment, a transcript, a
+  feed entry or a book. It stays `outside` when the owner shares the link. **`owner` marks the
+  owner's own words**: a voice memo or typed text.
+- **The zone names who wrote the content, never who handed it in.** A connector declares its
+  content's default zone. The push route reads the zone from the request: a link is `outside`, and
+  audio or typed text is `owner`.
+- **The strictest zone wins.** An item takes the strictest zone among its sightings. A child takes
+  the stricter of its own zone and its parent's. A model's output takes its input's zone.
+- **Outsider text leaves only on its own channel.** The outbox ships keys, states, hashes,
+  versions, tags, zones and decisions as one record kind. It ships every outsider-written field as
+  another kind, so a reader can be granted the first without the second.
+
+## Every model call goes through the model port
+
+`modelport` is the only package that reaches a model. A stage hands it a prompt, a JSON schema and
+the prompt's version, and gets back the structured answer.
+
+- **The port has two adapters, and refuses with neither.**
+  - `queue` posts the prompt and schema to an HTTP dispatch service and reads the answer back.
+  - `claude-cli` runs `claude -p` on the host with `--safe-mode`, `--setting-sources ""`,
+    `--permission-mode default`, `--permission-prompts none`, `--tools ""` and the stage's
+    `--json-schema`, with the prompt on stdin. Without `--safe-mode`, the host's own instructions
+    ride beside the prompt.
+
+  A model stage runs only where config names an adapter. With none named, the stage refuses, and
+  the item waits there naming the missing setting. A stage never falls back to reaching a model
+  some other way.
+- **A model stage holds no tools.** A model that reads outsider text must never hold both a private
+  read and a way to send data out. With no tools it holds neither.
+- **Each stage's prompt and schema live in this repo, versioned.** Each output records the prompt
+  version beside it, so a better prompt replays over what is already landed. A schema's matched
+  names, such as the side and the destinations, are enums that ingestion writes, never values
+  taken from the text.
+- **A model stage dispatches once.** It sends under an idempotency key of item, stage and prompt
+  version. It stores the dispatch id in the same write that ends the worker's lease. A task whose
+  lease lapsed reads the run it already started, rather than paying for a second.
+
+## The service is the one writer, and a worker does the heavy work
+
+- **`ingestion serve` is the single writer**, run as a one-replica StatefulSet. It holds the SQLite
+  store and the blob volume, serves the API, schedules polls, runs the cheap stages and ships the
+  outbox.
+- **`ingestion worker run` runs the same image as a Deployment.** It leases tasks by capability
+  under a fencing token. It reads and writes bytes through the service's blob routes, so a heavy
+  extractor never shares memory with the writer. This is the external task pattern that Camunda
+  uses.
+- **An extractor whose library is Python runs as a program in the worker image.** It reads bytes
+  and writes JSON lines.
+- **A CLI command whose server gave no answer exits 4**, and does nothing locally.
+
+## Testing
+
+`task test` runs `go test ./...`, the whole suite, which is also what CI runs. The commit hook runs
+`go test -short ./...`, so a slow test checks `testing.Short()` and skips. A new test pins behavior
+that a user reaches and no other test already pins.
+
+## Releasing
+
+A push to `main` runs `release.yml`. It validates through `validate.yml`, then go-semantic-release
+tags a version from the conventional-commit types, and goreleaser builds linux and darwin archives
+for it. `allow-initial-development-versions` holds the major at 0. Drop that input once the API is
+settled enough to promise compatibility.
+
+## Never write the breaking-change trailer in a commit message
+
+Those words cut a major once the repo is past 0.x. A major on a Go module with no `/vN` path is an
+outage, because `go install …@latest` stops seeing the tag. The analyzer matches the words
+anywhere in the message, so a commit that only discusses them cuts one too. Call it "that marker".
