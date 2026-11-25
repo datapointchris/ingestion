@@ -81,6 +81,11 @@ type LeasedTask struct {
 	// so a task whose run is already dispatched follows that run rather than
 	// starting another. Every other task carries none.
 	StageOutputs []StageOutput `json:"stage_outputs,omitempty"`
+	// Lens and Note are a model read's task's: the lens of the item's newest
+	// read decision, and the note that a person wrote, which the read
+	// answers. Every other task carries neither.
+	Lens *string `json:"lens,omitempty"`
+	Note *string `json:"note,omitempty"`
 }
 
 // StageOutput is one output that a model stage's task carries: which prompt
@@ -155,9 +160,12 @@ type ReportOutput struct {
 	// InputProducer and InputVersion name the parse that a later stage read.
 	InputProducer *string `json:"input_producer,omitempty"`
 	InputVersion  *string `json:"input_version,omitempty"`
-	// Findings and Spans are a scan's. A scan that found nothing sends an
-	// empty list, which reads apart from a stage that sends none.
+	// Findings and Spans are a scan's, and a model read's over its
+	// suggestion sentence. A scan that found nothing sends an empty list,
+	// which reads apart from a stage that sends none. RulesVersion is the
+	// version of the rules that made them.
 	Findings       []store.Finding `json:"findings"`
+	RulesVersion   *string         `json:"rules_version,omitempty"`
 	Quality        *int            `json:"quality,omitempty"`
 	SideGuess      *string         `json:"side_guess,omitempty"`
 	SideConfidence *float64        `json:"side_confidence,omitempty"`
@@ -176,7 +184,7 @@ func (o ReportOutput) output(task store.Task) store.Output {
 		Lens: o.Lens, LensVersion: o.LensVersion, InputProducer: o.InputProducer, InputVersion: o.InputVersion,
 		State: o.State, BlobSHA256: o.BlobSHA256,
 		DispatchID: o.DispatchID, RunID: o.RunID, Model: o.Model, Effort: o.Effort, AnsweredModel: o.AnsweredModel, Tokens: o.Tokens,
-		Findings: o.Findings, Quality: o.Quality,
+		Findings: o.Findings, RulesVersion: o.RulesVersion, Quality: o.Quality,
 		SideGuess: o.SideGuess, SideConfidence: o.SideConfidence, Spans: o.Spans, Answer: o.Answer, Error: o.Error,
 	}
 }
@@ -281,6 +289,9 @@ func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
 		}
 		if t.Delivery != nil {
 			leased.Title, leased.URL = t.Delivery.Title, t.Delivery.URL
+		}
+		if t.Read != nil {
+			leased.Lens, leased.Note = t.Read.Lens, t.Read.Note
 		}
 		for _, o := range t.Outputs {
 			leased.StageOutputs = append(leased.StageOutputs, StageOutput{

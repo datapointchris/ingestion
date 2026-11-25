@@ -85,7 +85,8 @@
               "unevaluatedProperties": false
             }
           },
-          "answer": {"description": "A model stage's structured answer.", "type": ["object", "null"]},
+          "rules_version": {"description": "The scanner rules' version that made the findings: a scan's over its parse, and a model read's over its suggestion sentence.", "type": ["string", "null"]},
+          "answer": {"description": "A model stage's structured answer. A model read's holds its summary and its suggestion sentence.", "type": ["object", "null"]},
           "run_id": {"type": ["string", "null"]},
           "dispatch_id": {"description": "A model stage's dispatch, where the model port started one.", "type": ["string", "null"]},
           "model": {"description": "The model that a model stage asked its run for.", "type": ["string", "null"]},

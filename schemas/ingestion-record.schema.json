@@ -135,7 +135,7 @@
         "lens": {"description": "The lens a model read answered under.", "type": ["string", "null"]},
         "input_producer": {"description": "The producer of the parse this output read, such as the parse a scan's findings index the units of.", "type": ["string", "null"]},
         "input_version": {"description": "The producer version of the parse this output read.", "type": ["string", "null"]},
-        "lens_version": {"type": ["string", "null"]},
+        "lens_version": {"description": "The version of the lens a model read answered under.", "type": ["string", "null"]},
         "state": {"description": "waiting holds a model stage's dispatch that has not answered, done holds its output, failed holds why in the text.", "enum": ["waiting", "done", "failed"]},
         "blob_sha256": {"description": "The output's bytes.", "anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
         "dispatch_id": {"description": "A model stage's dispatch, stored in the write that ends the worker's lease.", "type": ["string", "null"]},
@@ -145,10 +145,11 @@
         "answered_model": {"description": "The model that a model stage's run reports answering on, such as a model id where the stage asked for an alias. Null while the run has not answered, or where it names none.", "type": ["string", "null"]},
         "tokens": {"anyOf": [{"$ref": "#/$defs/tokens"}, {"type": "null"}]},
         "findings": {
-          "description": "The scan's findings, in the order the matches sit in the text. A done scan that found nothing holds an empty list. Each matched span ships as ingestion.text.",
+          "description": "The scan's findings, or a model read's over its suggestion sentence, in the order the matches sit in the text. A done scan that found nothing holds an empty list. Each matched span ships as ingestion.text.",
           "type": ["array", "null"],
           "items": {"$ref": "#/$defs/finding", "unevaluatedProperties": false}
         },
+        "rules_version": {"description": "The scanner rules' version that made the findings: a scan's over its parse, and a model read's over its suggestion sentence.", "type": ["string", "null"]},
         "quality": {"description": "The quality gate's score.", "type": ["integer", "null"], "minimum": 0, "maximum": 10},
         "side_guess": {"description": "The quality gate's guess at the side.", "enum": ["personal", "fleet", "unsure", null]},
         "side_confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},

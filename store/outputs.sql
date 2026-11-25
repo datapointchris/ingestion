@@ -4,6 +4,8 @@
 -- text, units, spans, answer and error are outsider-written, so the outbox
 -- ships them as ingestion.text. A model stage's model and effort are what it
 -- asked its run for, and answered_model is the model its run reports.
+-- rules_version is the scanner rules' version that made findings: a scan's
+-- over its parse, and a model read's over its suggestion sentence.
 
 CREATE TABLE IF NOT EXISTS outputs (
     item_key         TEXT NOT NULL REFERENCES items (key),
@@ -23,6 +25,7 @@ CREATE TABLE IF NOT EXISTS outputs (
     answered_model   TEXT,
     tokens           TEXT,
     findings         TEXT,
+    rules_version    TEXT,
     quality          INTEGER,
     side_guess       TEXT,
     side_confidence  REAL,

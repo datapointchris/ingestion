@@ -18,9 +18,10 @@
 // itself sent to review, or a model's guess below the floor, so a guess or a
 // rule that arrives later reaches it. A person's placement from
 // review runs the read gate the same way. Each decision is appended, and the
-// newest at a gate decides. Each decision brings the item's delivery in line
-// in the same write: a read as is queues it, and a drop or a move withdraws
-// one that has not run.
+// newest at a gate decides. Each decision brings the item's delivery and its
+// model read in line in the same write: a read as is queues its delivery, a
+// read by a model queues its model read, and a drop or a move withdraws
+// either where it has not run.
 package route
 
 import (
@@ -420,7 +421,41 @@ func decide(ctx context.Context, tx *store.Tx, key string, side store.Decision, 
 	if _, err := reconcileDelivery(ctx, tx, set, item, side, read); err != nil {
 		return nil, err
 	}
+	if err := reconcileModelRead(ctx, tx, key, side, read); err != nil {
+		return nil, err
+	}
 	return out, nil
+}
+
+// ReadByModel says whether an item's newest side and read decisions send it
+// to a model read: the side decision places it on a side, and the read
+// decision reads it by a model.
+func ReadByModel(side, read store.Decision) bool {
+	return onASide(side.Verdict) && read.Verdict == connectors.ReadModel
+}
+
+// reconcileModelRead queues the model read of the item under key where its
+// newest decisions read it by a model, and it holds neither an open model
+// read's task nor a done read. It withdraws a queued one where they read it
+// otherwise. A read that the item already holds runs again only through a
+// replay.
+func reconcileModelRead(ctx context.Context, tx *store.Tx, key string, side, read store.Decision) error {
+	if !ReadByModel(side, read) {
+		by := side.DecidedBy
+		if onASide(side.Verdict) {
+			by = read.DecidedBy
+		}
+		return tx.WithdrawQueued(ctx, key, store.StageModelRead, "withdrawn: "+by+" decided the item is not read by a model")
+	}
+	if _, open, err := tx.OpenTask(ctx, key, store.StageModelRead); err != nil || open {
+		return err
+	}
+	outputs, err := tx.Outputs(ctx, key)
+	if err != nil || store.NewestDone(outputs, store.StageModelRead) != nil {
+		return err
+	}
+	_, err = tx.Enqueue(ctx, store.Task{ItemKey: &key, Stage: store.StageModelRead, Capability: store.StageModelRead})
+	return err
 }
 
 // Due is where an item's newest side and read decisions send it for delivery

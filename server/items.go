@@ -153,6 +153,7 @@ type OutputView struct {
 	State           string          `json:"state"`
 	Units           *int            `json:"units"`
 	Findings        []FindingView   `json:"findings"`
+	RulesVersion    *string         `json:"rules_version"`
 	Answer          json.RawMessage `json:"answer"`
 	RunID           *string         `json:"run_id"`
 	DispatchID      *string         `json:"dispatch_id"`
@@ -492,7 +493,7 @@ func itemAnswer(rec store.ItemRecords) ItemAnswer {
 		view := OutputView{
 			Stage: o.Stage, Producer: o.Producer, ProducerVersion: o.ProducerVersion, Lens: o.Lens, LensVersion: o.LensVersion,
 			State: o.State, Answer: o.Answer, RunID: o.RunID, DispatchID: o.DispatchID, Model: o.Model, Effort: o.Effort,
-			AnsweredModel: o.AnsweredModel, Tokens: o.Tokens, Error: o.Error,
+			AnsweredModel: o.AnsweredModel, Tokens: o.Tokens, Error: o.Error, RulesVersion: o.RulesVersion,
 		}
 		if n, ok := rec.UnitCount(o); ok {
 			view.Units = &n

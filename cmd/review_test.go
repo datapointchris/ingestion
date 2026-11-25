@@ -271,7 +271,8 @@ func TestASaveIsPlacedByItsRuleOrWaitsInReviewForAPersonToPlace(t *testing.T) {
 // the quality gate's answer arrives after its parse: by the rule of a set
 // applied later, as on a first deploy that applies its set after the first
 // parses, which withdraws its quality task, or by the gate's confident guess.
-// An apply that changes nothing for a save appends nothing to it.
+// An apply that changes nothing for a save appends nothing to it. A save
+// that the guess places on the fleet side then waits at its model read.
 func TestASaveWaitingOnTheGateIsPlacedByARuleOrGuessThatArrivesLater(t *testing.T) {
 	p := newGatedPipeline(t, "")
 	stand := newStandInDispatch(t, p.provider)
@@ -299,8 +300,8 @@ func TestASaveWaitingOnTheGateIsPlacedByARuleOrGuessThatArrivesLater(t *testing.
 		read.Verdict != connectors.ReadModel {
 		t.Errorf("after a confident guess the save is %s by %s and read %s, want fleet by the model's run and read by a model", side.Verdict, side.DecidedBy, read.Verdict)
 	}
-	if c := p.gated(t); len(c.review) != 0 || c.waiting != 0 {
-		t.Errorf("%d saves still wait and the review queue holds %v", c.waiting, c.review)
+	if c, at := p.gated(t), p.shown(t, "reddit/t3_bb2").Item.WaitingAt; len(c.review) != 0 || c.waiting != 1 || text(at) != store.StageModelRead {
+		t.Errorf("%d saves wait and the review queue holds %v, want the fleet save alone waiting at its model read", c.waiting, c.review)
 	}
 }
 

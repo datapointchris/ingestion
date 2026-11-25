@@ -82,6 +82,7 @@ type modelConfig struct {
 		Command string `toml:"command"`
 	} `toml:"claude-cli"`
 	Quality stageModel `toml:"quality"`
+	Read    stageModel `toml:"read"`
 }
 
 // stageModel is what one model stage asks its run for.

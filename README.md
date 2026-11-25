@@ -5,6 +5,8 @@ links or memos pushed from a phone. It delivers each item once, to the one place
 
 On the way it parses each item and scans it for content aimed at whatever reads it next. Then it
 gates the item by quality and by side. A model judges only what a rule has not already decided.
+An item on the fleet side, about the software you build and run, is read whole by a model, which
+answers your note on it with a summary and a suggested change.
 
 ## Install
 
@@ -45,6 +47,11 @@ command = "claude"  # a path, or a name on PATH
 
 # What the quality gate asks each run for.
 [model.quality]
+model = "haiku"
+effort = "medium"
+
+# What the model read asks each run for.
+[model.read]
 model = "haiku"
 effort = "medium"
 ```
@@ -498,6 +505,49 @@ that decided it, such as subreddit or title, and a decision that names none is k
 the person's `login` in its body, because a service token carries no person. The decision keeps
 the service's client id beside the login.
 
+### A model read answers a fleet item's note with a summary and a suggestion
+
+Where the read gate reads an item by a model, the same write queues one task of capability
+`model-read`. A person's drop or move withdraws it where it has not run. The task carries the read
+decision's lens, and the note that a person wrote with `review place --note`. A worker whose
+config names a `[model]` adapter, and that runs the scan, claims it. It reads the item's media
+type, title, URL and its parse's text, up to the bound that `modelread`'s `textRunes` sets. It puts
+them to the model through `prompts/model-read/prompt.tmpl` and the lens's file in
+`prompts/model-read/lenses/`.
+
+- **The lens says what the item is read for.** The `fleet` lens reads it for the software it may
+  bear on: how that software is built, run and kept safe. Where the item carries a note, the read
+  answers the note. Where it carries none, it answers the lens's default questions.
+- **The answer holds to `prompts/model-read/answer.schema.json`**: a summary, a suggestion
+  sentence, or both, with the other null. An answer holding neither fails the task.
+- **A suggestion states a change in words, never a command to run.** The prompt forbids commands,
+  code, paths and links in it.
+- **The scanner reads the suggestion before the answer is kept.** Its findings and their spans
+  are the output's own, under the rules' version in `rules_version`. A finding never drops the
+  answer. A scan that fails fails the task, so no suggestion is kept unscanned.
+- **The summary is kept on the item alone.** It is delivered nowhere, and `items show` prints it.
+- **The output's version is the prompt's, under its lens.** It digests `prompt.tmpl`,
+  `answer.schema.json` and the lens's file. The output records the lens and the lens's own
+  version beside it. A change to any of the three writes beside the old read.
+- **Each call is dispatched once**, as the quality gate's is. Both stages run the same protocol,
+  which `modelstage` holds.
+
+```text
+$ ingestion items show reddit/t3_bb2
+reddit/t3_bb2   outside   read
+  ...
+  model-read  model-read v1-<digest>  done  haiku at medium  dispatch 7f3a9c  uncached input 2, cache write 10666, cache read 0, output 804
+              lens fleet v1-<digest>
+              summary "A post about how setup scripts …"
+              suggestion "This post suggests that setup scripts stop calling sudo, because …"
+  finding     ingestion.command  info  "sudo"
+```
+
+The outbox ships the answer and each span as `ingestion.text`, and the findings with the output's
+`ingestion.record`. `ingestion items replay --stage model-read` runs the prompt in force over each
+item whose newest decisions read it by a model, and that holds no answer of that prompt. Like the
+quality gate's replay, it first prints its estimate, and queues only with `--yes`.
+
 ### An item read as is reaches its destination's app once, under its key
 
 Where the read gate reads an item as is, the service queues its delivery in the same write. The
@@ -592,6 +642,8 @@ land → parse → scan → quality gate → side → read → model read → de
   of that item.
 - **A rule decides before a model does.** A source's tags or a routing rule place an item first.
   The quality gate's model reads only what the rules leave.
+- **A model reads an item whole only on the fleet side.** It answers the item's note with a
+  summary and a suggested change, and the scanner reads the suggestion before it is kept.
 - **A drop is soft.** A dropped item keeps its row and its one-line idea, so a person can still
   send it on.
 - **The zone records who wrote the content.** `outside` marks what an outsider wrote, such as a

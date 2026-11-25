@@ -188,11 +188,13 @@ type Output struct {
 	RunID         *string `json:"run_id"`
 	// Model and Effort are what a model stage asked its run for, and
 	// AnsweredModel the model that its run reports answering on.
-	Model          *string         `json:"model"`
-	Effort         *string         `json:"effort"`
-	AnsweredModel  *string         `json:"answered_model"`
-	Tokens         *Tokens         `json:"tokens"`
-	Findings       []Finding       `json:"findings"`
+	Model         *string   `json:"model"`
+	Effort        *string   `json:"effort"`
+	AnsweredModel *string   `json:"answered_model"`
+	Tokens        *Tokens   `json:"tokens"`
+	Findings      []Finding `json:"findings"`
+	// RulesVersion is the scanner rules' version that made Findings.
+	RulesVersion   *string         `json:"rules_version"`
 	Quality        *int            `json:"quality"`
 	SideGuess      *string         `json:"side_guess"`
 	SideConfidence *float64        `json:"side_confidence"`

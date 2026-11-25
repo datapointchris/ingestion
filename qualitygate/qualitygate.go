@@ -8,9 +8,10 @@
 // wins. A worker holding a model port runs the task. It stores the dispatch
 // in the write that ends its lease, and follows the dispatch on each later
 // claim until the run answers, so the task holds no worker slot while the run
-// waits. When the task ends done, the service appends the gate's decision:
-// pass, drop where the model dropped the item at or above DropFloor, or
-// review. The side gate then reads that decision and the side guess.
+// waits. That dispatch-once protocol is modelstage's. When the task ends
+// done, the service appends the gate's decision: pass, drop where the model
+// dropped the item at or above DropFloor, or review. The side gate then reads
+// that decision and the side guess.
 package qualitygate
 
 import (
@@ -20,6 +21,7 @@ import (
 	"slices"
 
 	"github.com/datapointchris/ingestion/connectors"
+	"github.com/datapointchris/ingestion/modelstage"
 	"github.com/datapointchris/ingestion/prompts"
 	"github.com/datapointchris/ingestion/route"
 	"github.com/datapointchris/ingestion/server"
@@ -35,9 +37,6 @@ const (
 	// DropFloor is the confidence at or above which the model's drop drops
 	// an item. Below it, the item waits in review.
 	DropFloor = 0.8
-	// estimateFrom bounds the stored runs, newest first, whose median a
-	// replay's estimate takes.
-	estimateFrom = 50
 )
 
 // VerdictPass is the gate's decision that an item earns a full read. Its drop
@@ -212,29 +211,10 @@ func Replayable(st *store.Store) server.Replayable {
 			return err == nil, err
 		},
 		Estimate: func(ctx context.Context, items []store.Item) (int, *store.Tokens, error) {
-			n := 0
-			for _, item := range items {
-				r, err := st.Item(ctx, item.Key)
-				if err != nil {
-					return 0, nil, err
-				}
+			return modelstage.Estimate(ctx, st, store.StageQuality, items, func(r store.ItemRecords, open bool) bool {
 				side, sided := r.NewestDecision(store.GateSide)
-				open := slices.ContainsFunc(r.Tasks, func(t store.Task) bool {
-					return t.Stage == store.StageQuality && (t.State == store.TaskQueued || t.State == store.TaskLeased)
-				})
-				if due(r.Outputs, side, sided, open) {
-					n++
-				}
-			}
-			stored, err := st.StageTokens(ctx, store.StageQuality, estimateFrom)
-			if err != nil || len(stored) == 0 {
-				return n, nil, err
-			}
-			median := store.MedianTokens(stored)
-			return n, &store.Tokens{
-				UncachedInput: median.UncachedInput * int64(n), CacheWrite: median.CacheWrite * int64(n),
-				CacheRead: median.CacheRead * int64(n), Output: median.Output * int64(n),
-			}, nil
+				return due(r.Outputs, side, sided, open)
+			})
 		},
 	}
 }

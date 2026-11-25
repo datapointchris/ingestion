@@ -40,7 +40,9 @@ const (
 // Idempotency-Key and answers the same dispatch to the key again. GET
 // /api/v1/dispatches/{id}/ reads it, and GET /api/v1/outside-text-answers/{id}
 // answers its run once it finished. While hold is set, every dispatch waits
-// with hold as its note. Once hold clears, a read finishes it.
+// with hold as its note. Once hold clears, a read finishes it. A dispatch
+// whose schema is the model read's is answered by read, and any other by
+// answer.
 type standInDispatch struct {
 	*httptest.Server
 	mu sync.Mutex
@@ -48,8 +50,10 @@ type standInDispatch struct {
 	hold string
 	// fail is the failure code that the next run to finish ends with.
 	fail string
-	// answer is the structured output of a run on prompt.
+	// answer is the structured output of a run on prompt, and read that of a
+	// model read's run.
 	answer     func(prompt string) map[string]any
+	read       func(prompt string) map[string]any
 	dispatches map[string]*standInRun
 	byKey      map[string]string
 	started    []dispatchStart
@@ -58,14 +62,15 @@ type standInDispatch struct {
 
 // standInRun is one dispatch and, once finished, its stored answer.
 type standInRun struct {
-	id, prompt, model, effort string
-	finished                  time.Time
-	answer                    map[string]any
+	id, prompt, schema, model, effort string
+	finished                          time.Time
+	answer                            map[string]any
 }
 
-// dispatchStart is what one new dispatch asked for.
+// dispatchStart is what one new dispatch asked for, and the $id of its
+// schema.
 type dispatchStart struct {
-	Key, Agent, Model, Effort string
+	Key, Agent, Model, Effort, Schema string
 }
 
 func newStandInDispatch(t *testing.T, provider *authtest.Provider) *standInDispatch {
@@ -107,9 +112,12 @@ func newStandInDispatch(t *testing.T, provider *authtest.Provider) *standInDispa
 			writeDispatch(w, http.StatusAccepted, d.view(d.dispatches[id]))
 			return
 		}
-		run := &standInRun{id: fmt.Sprintf("dispatch-%d", len(d.dispatches)+1), prompt: body.Inputs.Prompt, model: body.Model, effort: body.Effort}
+		schema, _ := body.Inputs.Schema["$id"].(string)
+		run := &standInRun{
+			id: fmt.Sprintf("dispatch-%d", len(d.dispatches)+1), prompt: body.Inputs.Prompt, schema: schema, model: body.Model, effort: body.Effort,
+		}
 		d.dispatches[run.id], d.byKey[key] = run, run.id
-		d.started = append(d.started, dispatchStart{Key: key, Agent: body.Agent, Model: body.Model, Effort: body.Effort})
+		d.started = append(d.started, dispatchStart{Key: key, Agent: body.Agent, Model: body.Model, Effort: body.Effort, Schema: schema})
 		d.settle(run)
 		writeDispatch(w, http.StatusAccepted, d.view(run))
 	})
@@ -162,7 +170,21 @@ func (d *standInDispatch) settle(run *standInRun) {
 		d.fail = ""
 		return
 	}
-	run.answer["state"], run.answer["structured_output"] = modelport.Succeeded, d.answer(run.prompt)
+	answer := d.answer
+	if strings.HasSuffix(run.schema, "/prompts/model-read/answer.schema.json") {
+		answer = d.read
+	}
+	run.answer["state"], run.answer["structured_output"] = modelport.Succeeded, answer(run.prompt)
+}
+
+// prompt is the prompt of the dispatch that started under key.
+func (d *standInDispatch) prompt(key string) string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if run, ok := d.dispatches[d.byKey[key]]; ok {
+		return run.prompt
+	}
+	return ""
 }
 
 // view is run as the service answers a dispatch.
@@ -216,7 +238,7 @@ func (d *standInDispatch) models(t *testing.T, model, effort string) modelConfig
 // where it opens none.
 func (p *pipeline) qualityGate(t *testing.T, models modelConfig) worker.Handler {
 	t.Helper()
-	handlers := workerHandlers(p.worker, nil, openModelPort(t.Context(), models, p.provider.URL, quiet), models, quiet)
+	handlers := workerHandlers(p.worker, nil, openModelPort(t.Context(), models, p.provider.URL, quiet), nil, models, quiet)
 	i := slices.IndexFunc(handlers, func(h worker.Handler) bool { return h.Capability() == qualitygate.Capability })
 	if i < 0 {
 		return nil
@@ -443,12 +465,14 @@ func TestAModelCallIsSentOnceAndAgainOnlyAfterItsRunFails(t *testing.T) {
 	}
 }
 
-// The stored Reddit exports pass the quality gate against the stand-in
-// dispatch service under the declared rules: each save that no rule places
-// gets one dispatch, and its answer places it. The exports are outsider text
-// kept out of this public repo, so the test reads them only from
-// redditExportsEnv, and it reports counts alone.
-func TestTheStoredRedditExportsPassTheQualityGateAgainstAStandIn(t *testing.T) {
+// The stored Reddit exports pass both model stages against the stand-in
+// dispatch service under the declared rules. Each save that no rule places
+// gets one quality dispatch, and its answer places it. Each save that the
+// answer places on the fleet side then gets one model read, whose suggestion
+// the scanner reads. The exports are outsider text kept out of this public
+// repo, so the test reads them only from redditExportsEnv, and it reports
+// counts alone.
+func TestTheStoredRedditExportsPassTheModelStagesAgainstAStandIn(t *testing.T) {
 	exportsDir, declarations := os.Getenv(redditExportsEnv), os.Getenv(declarationsEnv)
 	if exportsDir == "" || declarations == "" {
 		t.Skip(redditExportsEnv + " and " + declarationsEnv + " name no stored Reddit exports and no declaration set")
@@ -468,32 +492,50 @@ func TestTheStoredRedditExportsPassTheQualityGateAgainstAStandIn(t *testing.T) {
 	p := newGatedPipeline(t, declarations)
 	stand := newStandInDispatch(t, p.provider)
 	verdicts := []string{qualitygate.AnswerPass, qualitygate.AnswerDrop, qualitygate.AnswerUnsure}
-	answered := 0
+	answered, read := 0, 0
 	stand.answer = func(string) map[string]any {
 		answered++
-		return judged(verdicts[answered%len(verdicts)], 0.9, connectors.SidePersonal, 0.9)
+		side := connectors.SidePersonal
+		if answered%2 == 0 {
+			side = connectors.SideFleet
+		}
+		return judged(verdicts[answered%len(verdicts)], 0.9, side, 0.9)
+	}
+	stand.read = func(string) map[string]any {
+		read++
+		if read%2 == 0 {
+			return readAnswered("A summary.", "")
+		}
+		return readAnswered("A summary.", "This item suggests a change.")
 	}
 	p.landExports(t, exports)
 	p.parse(t, extract.Builtin())
 	p.scanFindingNothing(t)
-	gate := p.qualityGate(t, stand.models(t, "", ""))
-	first := p.run(t, gate)
+	models := stand.models(t, "", "")
+	gate, reader := p.qualityGate(t, models), p.modelRead(t, models, sentenceScanner{})
+	first := p.run(t, gate, reader)
 	for _, name := range connectorsSighted(t, p) {
 		if _, err := runCLI(t, "connectors", "release", name, "--config", p.config); err != nil {
 			t.Fatal(err)
 		}
 	}
-	ran := first + p.run(t, gate)
+	ran := first + p.run(t, gate, reader)
 	c := p.gated(t)
 	byModel := p.count(t, `SELECT count(DISTINCT item_key) FROM decisions WHERE gate = 'side' AND decided_by LIKE 'model:%'`)
 	dropped := p.count(t, `SELECT count(*) FROM items WHERE phase = 'dropped'`)
-	waiting := p.count(t, `SELECT count(*) FROM items WHERE phase = 'waiting'`)
-	if len(stand.starts()) != ran || ran != c.saves-c.byRule || waiting != 0 {
-		t.Errorf("%d saves, %d placed by rule: the gate ran %d tasks, the stand-in started %d dispatches, and %d wait; "+
-			"want one dispatch for each save no rule placed and none waiting", c.saves, c.byRule, ran, len(stand.starts()), waiting)
+	fleet := p.count(t, `SELECT count(*) FROM items i WHERE (SELECT d.verdict FROM decisions d WHERE d.item_key = i.key AND d.gate = 'side'
+		ORDER BY d.sequence DESC LIMIT 1) = 'fleet'`)
+	reads := p.count(t, `SELECT count(*) FROM outputs WHERE stage = 'model-read' AND state = 'done'`)
+	scanned := p.count(t, `SELECT count(*) FROM outputs WHERE stage = 'model-read' AND state = 'done' AND findings IS NOT NULL`)
+	if len(stand.starts()) != ran || ran != c.saves-c.byRule+fleet || reads != fleet || scanned != (fleet+1)/2 || c.waiting != 0 {
+		t.Errorf("%d saves, %d placed by rule, %d on the fleet side: the stages ran %d tasks, the stand-in started %d dispatches, "+
+			"%d model reads are done with %d suggestions scanned, and %d wait; want one quality dispatch for each save no rule placed, "+
+			"one model read for each fleet save, every suggestion scanned and none waiting",
+			c.saves, c.byRule, fleet, ran, len(stand.starts()), reads, scanned, c.waiting)
 	}
-	t.Logf("%d exports, %d saves: %d placed by rule, %d dispatches, %d decided by the model's answer, %d dropped, review %v",
-		len(files), c.saves, c.byRule, len(stand.starts()), byModel, dropped, c.review)
+	t.Logf("%d exports, %d saves: %d placed by rule, %d decided by the quality answer, %d dropped, review %v, %d on the fleet side, "+
+		"%d model reads, %d suggestions scanned, %d dispatches", len(files), c.saves, c.byRule, byModel, dropped, c.review, fleet,
+		reads, scanned, len(stand.starts()))
 }
 
 // connectorsSighted is each connector that sighted an item.

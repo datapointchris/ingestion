@@ -26,6 +26,8 @@ import (
 	"github.com/datapointchris/ingestion/deliver"
 	"github.com/datapointchris/ingestion/extract"
 	"github.com/datapointchris/ingestion/modelport"
+	"github.com/datapointchris/ingestion/modelread"
+	"github.com/datapointchris/ingestion/modelstage"
 	"github.com/datapointchris/ingestion/qualitygate"
 	"github.com/datapointchris/ingestion/scan"
 	"github.com/datapointchris/ingestion/store"
@@ -39,14 +41,23 @@ const (
 )
 
 // workerHandlers lists the stage handlers for a worker to run: each
-// extractor's, the scan's, the quality gate's where port is open, and each of
-// deliverers by its name. A stage whose work runs in a worker adds its handler
-// here.
-func workerHandlers(client *worker.Client, deliverers map[string]deliver.Deliverer, port modelport.Port, models modelConfig, log *slog.Logger) []worker.Handler {
-	handlers := append(extract.Builtin().Handlers(client, log), scan.Handlers(client, log)...)
+// extractor's, the scan's where scanner is installed, the quality gate's where
+// port is open, the model read's where both are, and each of deliverers by its
+// name. A stage whose work runs in a worker adds its handler here.
+func workerHandlers(client *worker.Client, deliverers map[string]deliver.Deliverer, port modelport.Port, scanner *scan.Scanner,
+	models modelConfig, log *slog.Logger,
+) []worker.Handler {
+	handlers := extract.Builtin().Handlers(client, log)
+	if scanner != nil {
+		handlers = append(handlers, scan.NewHandler(scanner, client, log))
+	}
 	if port != nil {
 		handlers = append(handlers, qualitygate.NewHandler(port, client,
-			qualitygate.Settings{Model: models.Quality.Model, Effort: models.Quality.Effort}, log))
+			modelstage.Settings{Model: models.Quality.Model, Effort: models.Quality.Effort}, log))
+	}
+	if port != nil && scanner != nil {
+		handlers = append(handlers, modelread.NewHandler(port, client, scanner,
+			modelstage.Settings{Model: models.Read.Model, Effort: models.Read.Effort}, log))
 	}
 	for _, name := range slices.Sorted(maps.Keys(deliverers)) {
 		handlers = append(handlers, deliver.Handler(name, deliverers[name]))
@@ -63,7 +74,7 @@ func openModelPort(ctx context.Context, cfg modelConfig, issuer string, log *slo
 	var err error
 	switch cfg.Adapter {
 	case "":
-		log.Warn("the config names no [model] adapter, so the worker claims no " + qualitygate.Capability + " task")
+		log.Warn("the config names no [model] adapter, so the worker claims no " + qualitygate.Capability + " or " + modelread.Capability + " task")
 		return nil
 	case modelport.AdapterQueue:
 		var client *http.Client
@@ -76,7 +87,8 @@ func openModelPort(ctx context.Context, cfg modelConfig, issuer string, log *slo
 		err = fmt.Errorf("adapter %q is none of %s", cfg.Adapter, strings.Join(modelport.Adapters, ", "))
 	}
 	if err != nil {
-		log.Error("[model] cannot open, so the worker claims no "+qualitygate.Capability+" task", "adapter", cfg.Adapter, "error", err)
+		log.Error("[model] cannot open, so the worker claims no "+qualitygate.Capability+" or "+modelread.Capability+" task",
+			"adapter", cfg.Adapter, "error", err)
 		return nil
 	}
 	return port
@@ -175,11 +187,13 @@ var workerRunCmd = &cobra.Command{
 		"The " + deliver.LifeArticles + " client needs the scope " + strings.Join(deliver.LifeArticlesScopes, " ") + ". A table that\n" +
 		"cannot open is logged and left out, and the worker's other stages run on.\n" +
 		"\n" +
-		"It runs the quality gate through the adapter that the [model] table names:\n" +
+		"It runs the quality gate and the model read through the adapter that the\n" +
+		"[model] table names. It runs the model read only where it also runs the scan,\n" +
+		"because the scanner reads each suggestion before it is kept:\n" +
 		"\n" +
 		"  [model]\n" +
 		"  adapter            queue or claude-cli. With none, the worker claims no\n" +
-		"                     quality task, and the item waits at that stage\n" +
+		"                     quality or model-read task, and the item waits there\n" +
 		"  [model.queue]      an HTTP dispatch service\n" +
 		"  api                its address\n" +
 		"  agent              the kind of run it starts (default " + modelport.DefaultAgent + ")\n" +
@@ -192,6 +206,9 @@ var workerRunCmd = &cobra.Command{
 		"  [model.quality]    what the quality gate asks its run for\n" +
 		"  model              the model (default " + qualitygate.DefaultModel + ")\n" +
 		"  effort             the effort (default " + qualitygate.DefaultEffort + ")\n" +
+		"  [model.read]       what the model read asks its run for\n" +
+		"  model              the model (default " + modelread.DefaultModel + ")\n" +
+		"  effort             the effort (default " + modelread.DefaultEffort + ")\n" +
 		"\n" +
 		"The [model.queue] client needs the scopes " + strings.Join(modelport.QueueScopes, " ") + ".",
 	Example: "  # a worker, as a service client\n" +
@@ -246,5 +263,5 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 	deliverers := openDeliverers(ctx, cfg, d.Issuer.Value, run.Log)
 	port := openModelPort(ctx, cfg.Model, d.Issuer.Value, run.Log)
 	client := worker.NewClient(d.API.Value, oauth2.NewClient(ctx, source))
-	return worker.Run(ctx, client, run, workerHandlers(client, deliverers, port, cfg.Model, run.Log)...)
+	return worker.Run(ctx, client, run, workerHandlers(client, deliverers, port, scan.Installed(run.Log), cfg.Model, run.Log)...)
 }

@@ -29,20 +29,21 @@ const (
 	retryAfter = 30 * time.Second
 )
 
-// Handlers is the scan's worker handler where yr and the built rules are
-// installed here, and none where either is missing, so such a worker claims
-// no scan task.
-func Handlers(client *worker.Client, log *slog.Logger) []worker.Handler {
+// Installed is the scanner over the yr and the built rules that the image
+// installs, and nil where either is missing here. A worker with no scanner
+// claims no scan task and no model read's task, because a model read's
+// suggestion is scanned before it is kept.
+func Installed(log *slog.Logger) *Scanner {
 	if log == nil {
 		log = slog.Default()
 	}
 	scanner, err := Open(Yr, RulesDir)
 	if err != nil {
-		log.Warn("the scanner is not installed here, so this worker claims no scan task", "error", err)
+		log.Warn("the scanner is not installed here, so this worker claims no scan task and no model read's task", "error", err)
 		return nil
 	}
 	log.Info("the worker scans", "rules", scanner.Version())
-	return []worker.Handler{NewHandler(scanner, client, log)}
+	return scanner
 }
 
 // NewHandler is the worker handler that scans with scanner, reading each
@@ -91,10 +92,11 @@ func (h handler) Run(ctx context.Context, task worker.Task) worker.Result {
 	if err != nil {
 		return h.failed(task, err.Error(), &parse)
 	}
+	rules := h.scanner.Version()
 	return worker.Result{Outcome: server.OutcomeDone, Outputs: []server.ReportOutput{{
-		Producer: Producer, ProducerVersion: store.ScanVersion(h.scanner.Version(), parse.Extractor, parse.ExtractorVersion),
+		Producer: Producer, ProducerVersion: store.ScanVersion(rules, parse.Extractor, parse.ExtractorVersion),
 		State: store.OutputDone, InputProducer: &parse.Extractor, InputVersion: &parse.ExtractorVersion,
-		Findings: findings, Spans: spans,
+		Findings: findings, Spans: spans, RulesVersion: &rules,
 	}}}
 }
 
