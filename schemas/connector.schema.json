@@ -23,9 +23,12 @@
   },
   "allOf": [
     {
-      "if": {"properties": {"mode": {"enum": ["poll", "folder"]}}},
-      "then": {"required": ["schedule"], "properties": {"due_interval": false}},
-      "else": {"required": ["due_interval"], "properties": {"schedule": false, "freshness": false}}
+      "if": {"required": ["mode"], "properties": {"mode": {"enum": ["poll", "folder"]}}},
+      "then": {"required": ["schedule"], "properties": {"due_interval": false}}
+    },
+    {
+      "if": {"required": ["mode"], "properties": {"mode": {"enum": ["push", "drop"]}}},
+      "then": {"required": ["due_interval"], "properties": {"schedule": false, "freshness": false}}
     },
     {
       "if": {"properties": {"mode": {"const": "folder"}}},

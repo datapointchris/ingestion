@@ -195,8 +195,8 @@ every reason, and the set in force stays as it was:
 $ ingestion connectors apply ./declarations
 the set holds invalid declarations, so none of it is applied
   connector stream
-    zone is outside or owner, not "public"
-    mode is poll, push, folder or drop, not "stream"
+    mode: value must be one of 'poll', 'push', 'folder', 'drop'
+    zone: value must be one of 'outside', 'owner'
   routing rule to-nowhere
     destination nowhere is not one destinations.yml declares
 ```
