@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/datapointchris/ingestion/schemas/items-list.schema.json",
+  "title": "Items, newest first",
+  "description": "What GET /api/v1/items answers and `ingestion items list --json` prints: a page of items, newest first. An item's phase is derived from which of its records exist.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "items"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "next": {"description": "The cursor that the next page's after takes, and null where no item is left.", "type": ["string", "null"]},
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key", "zone", "media_type", "connectors", "phase", "created_ts"],
+        "properties": {
+          "key": {"type": "string"},
+          "zone": {"enum": ["outside", "owner"]},
+          "media_type": {"type": "string"},
+          "title": {"type": ["string", "null"]},
+          "url": {"type": ["string", "null"]},
+          "connectors": {"description": "Each connector that sighted the item.", "type": "array", "items": {"type": "string"}},
+          "phase": {"$ref": "#/$defs/phase"},
+          "waiting_at": {"$ref": "#/$defs/waiting_at"},
+          "side": {"enum": ["personal", "fleet", null]},
+          "created_ts": {"type": "string", "format": "date-time"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "phase": {
+      "description": "The furthest stage the item's records reach, or waiting where a model stage holds it, review where a person must place it, and failed where a task failed.",
+      "enum": ["landed", "parsed", "scanned", "gated", "placed", "read", "delivered", "dropped", "waiting", "review", "failed"]
+    },
+    "waiting_at": {"description": "The model stage the item waits at.", "enum": ["quality", "model-read", null]}
+  }
+}

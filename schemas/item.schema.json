@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/datapointchris/ingestion/schemas/item.schema.json",
+  "title": "One item and every record it holds",
+  "description": "What GET /api/v1/items/{key} answers and `ingestion items show --json` prints: the item, each home its file lives at, each sighting, each stage's output, each gate decision, each delivery and its latest suggestion.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "item", "homes", "sightings", "outputs", "decisions", "deliveries"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "zone", "media_type", "flow_id", "phase", "created_ts"],
+      "properties": {
+        "key": {"type": "string"},
+        "zone": {"enum": ["outside", "owner"]},
+        "media_type": {"type": "string"},
+        "title": {"type": ["string", "null"]},
+        "url": {"type": ["string", "null"]},
+        "blob_sha256": {"type": ["string", "null"]},
+        "size_bytes": {"type": ["integer", "null"]},
+        "md5": {"description": "The bytes' MD5, which a reader such as sioyek keys a book's annotations by.", "type": ["string", "null"]},
+        "parent_key": {"type": ["string", "null"]},
+        "flow_id": {"type": "string"},
+        "phase": {"$ref": "items-list.schema.json#/$defs/phase"},
+        "waiting_at": {"$ref": "items-list.schema.json#/$defs/waiting_at"},
+        "created_ts": {"type": "string", "format": "date-time"}
+      }
+    },
+    "homes": {
+      "description": "Each place the item's file lives under a named root, where it was referenced rather than copied. A home gone from its root keeps its row.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["root", "path", "found_ts"],
+        "properties": {
+          "root": {"type": "string"},
+          "path": {"description": "The file's place below its root, with forward slashes.", "type": "string"},
+          "modified_ts": {"description": "The file's modification time, to the nanosecond, when its bytes were last hashed at this path.", "type": ["string", "null"], "format": "date-time"},
+          "found_ts": {"type": "string", "format": "date-time"},
+          "gone_ts": {"type": ["string", "null"], "format": "date-time"}
+        }
+      }
+    },
+    "sightings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["connector", "external_key", "tags", "zone", "first_seen_ts", "last_seen_ts"],
+        "properties": {
+          "connector": {"type": "string"},
+          "external_key": {"type": "string"},
+          "tags": {"type": "array", "items": {"type": "string"}},
+          "zone": {"enum": ["outside", "owner"]},
+          "cursor_position": {"description": "The connector's cursor where it last delivered the item.", "type": ["string", "null"]},
+          "first_seen_ts": {"type": "string", "format": "date-time"},
+          "last_seen_ts": {"type": "string", "format": "date-time"}
+        }
+      }
+    },
+    "outputs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["stage", "producer", "producer_version", "state"],
+        "properties": {
+          "stage": {"enum": ["parse", "scan", "quality", "model-read"]},
+          "producer": {"type": "string"},
+          "producer_version": {"type": "string"},
+          "lens": {"type": ["string", "null"]},
+          "lens_version": {"type": ["string", "null"]},
+          "state": {"enum": ["waiting", "done", "failed"]},
+          "units": {"description": "A parse's unit count.", "type": ["integer", "null"]},
+          "findings": {
+            "type": ["array", "null"],
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["rule", "severity"],
+              "properties": {
+                "rule": {"type": "string"},
+                "severity": {"enum": ["info", "low", "medium", "high", "critical"]},
+                "span": {"type": ["string", "null"]}
+              }
+            }
+          },
+          "answer": {"description": "A model stage's structured answer.", "type": ["object", "null"]},
+          "run_id": {"type": ["string", "null"]},
+          "tokens": {
+            "type": ["object", "null"],
+            "additionalProperties": false,
+            "properties": {
+              "uncached_input": {"type": "integer"},
+              "cache_write": {"type": "integer"},
+              "cache_read": {"type": "integer"},
+              "output": {"type": "integer"}
+            }
+          },
+          "error": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "decisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["gate", "verdict", "decided_by", "cause", "decided_ts"],
+        "properties": {
+          "gate": {"enum": ["quality", "side", "read"]},
+          "verdict": {"enum": ["pass", "drop", "review", "personal", "fleet", "as-is", "model"]},
+          "decided_by": {"type": "string"},
+          "confidence": {"type": ["number", "null"]},
+          "cause": {"type": "string"},
+          "destination": {"type": ["string", "null"]},
+          "note": {"type": ["string", "null"]},
+          "decided_ts": {"type": "string", "format": "date-time"}
+        }
+      }
+    },
+    "deliveries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["destination", "outcome", "attempts"],
+        "properties": {
+          "destination": {"description": "One the destinations file names.", "type": "string"},
+          "destination_id": {"type": ["string", "null"]},
+          "outcome": {"enum": ["pending", "delivered", "delivered-to-existing", "refused"]},
+          "attempts": {"type": "integer"},
+          "last_error": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "suggestion": {"anyOf": [{"$ref": "suggestion.schema.json"}, {"type": "null"}]}
+  }
+}

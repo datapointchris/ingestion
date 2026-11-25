@@ -1,8 +1,0 @@
-# A push connector takes what a phone shares. A shared link is an outsider's
-# words, and a typed note the owner's, so the push route sets each item's zone.
-name: phone
-mode: push
-source: phone-shares
-due_interval: 7d
-zone: outside
-tags: []

@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/datapointchris/ingestion/schemas/suggestion.schema.json",
+  "title": "One suggestion a model read made from an item",
+  "description": "An item's latest suggestion, with what a person needs to judge it before acting on it: the scanner's findings first, then the sentence, then its source. The sentence is a model's answer over outsider text, so the suggestion takes the item's zone. A reader that copies this file keeps its bytes and its $id.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "item_key", "sentence", "zone", "findings", "prompt_version", "suggested_ts"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "item_key": {
+      "description": "The item the suggestion was read from.",
+      "type": "string",
+      "pattern": "^(reddit|youtube|url|file|memo)/[A-Za-z0-9_-]+(#[0-9]+)*$"
+    },
+    "sentence": {"description": "The suggestion, one sentence.", "type": "string", "minLength": 1},
+    "title": {"description": "The source's title.", "type": ["string", "null"]},
+    "url": {"description": "The source's canonical URL.", "type": ["string", "null"]},
+    "zone": {"description": "Who wrote the source: outside or owner.", "enum": ["outside", "owner"]},
+    "findings": {
+      "description": "Each finding the scanner made in the source and in the sentence.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["rule", "severity", "in", "span"],
+        "properties": {
+          "rule": {"type": "string"},
+          "severity": {"enum": ["info", "low", "medium", "high", "critical"]},
+          "in": {"description": "Where the span was found.", "enum": ["source", "sentence"]},
+          "span": {"description": "The matched text.", "type": "string"}
+        }
+      }
+    },
+    "prompt_version": {"description": "The model read prompt's version that wrote the sentence.", "type": "string"},
+    "lens": {"description": "The lens the model read answered under, with its version.", "type": ["string", "null"]},
+    "suggested_ts": {"description": "When the model read finished.", "type": "string", "format": "date-time"}
+  }
+}
