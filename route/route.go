@@ -51,7 +51,8 @@ const (
 	CauseGuess        = "guess"
 	CauseBelowFloor   = "below-floor"
 	// CauseNoGuess sends to review an item that no tag or rule placed and
-	// that the quality gate has given no guess for.
+	// that the quality gate gave no answer for: its run failed, or no quality
+	// task was queued.
 	CauseNoGuess = "no-guess"
 	// CauseGateError sends to review an item whose gate could not read the
 	// set in force or the item's sightings. The item keeps its parse.
@@ -84,7 +85,8 @@ func ByPerson(login string) string { return "person:" + login }
 
 func byRule(name string) string { return "rule:" + name }
 
-func byModel(run string) string { return "model:" + run }
+// ByModel is a model's decision, under the run that answered.
+func ByModel(run string) string { return "model:" + run }
 
 // sideDefaults is how an item on each side is read where no connector's read
 // rule decides.
@@ -105,17 +107,30 @@ type Guess struct {
 // Side is the side gate's decision on an item that sightings sighted, under
 // set and the quality gate's guess, which is nil where it has given none.
 func Side(set connectors.Set, sightings []store.Sighting, guess *Guess) store.Decision {
+	if d, ok := BeforeModel(set, sightings); ok {
+		return d
+	}
+	return byGuess(guess)
+}
+
+// BeforeModel is the side decision that a sighting's tags or a routing rule
+// make under set, and false where neither places the item, so the quality
+// gate judges it.
+func BeforeModel(set connectors.Set, sightings []store.Sighting) (store.Decision, bool) {
 	if d, ok := byTags(set, sightings); ok {
-		return d
+		return d, true
 	}
-	if d, ok := byRules(set, sightings); ok {
-		return d
-	}
+	return byRules(set, sightings)
+}
+
+// byGuess is the side decision on the quality gate's guess, and review for
+// want of one.
+func byGuess(guess *Guess) store.Decision {
 	if guess == nil {
 		return store.Decision{Gate: store.GateSide, Verdict: VerdictReview, DecidedBy: ByGate, Cause: CauseNoGuess}
 	}
 	confidence := guess.Confidence
-	d := store.Decision{Gate: store.GateSide, DecidedBy: byModel(guess.Run), Confidence: &confidence}
+	d := store.Decision{Gate: store.GateSide, DecidedBy: ByModel(guess.Run), Confidence: &confidence}
 	if onASide(guess.Side) && confidence >= GuessFloor {
 		d.Verdict, d.Cause = guess.Side, CauseGuess
 	} else {
@@ -280,13 +295,14 @@ func Gate(ctx context.Context, tx *store.Tx, key string, log *slog.Logger) ([]st
 		return nil, err
 	}
 	set, sightings, err := inputs(ctx, tx, key)
-	side := Side(set, sightings, GuessOf(outputs))
-	if err != nil {
+	side, ruled := BeforeModel(set, sightings)
+	switch {
+	case err != nil:
 		log.ErrorContext(ctx, "the side gate could not read what it decides from, so the item waits in review", "item", key, "error", err)
 		side = store.Decision{Gate: store.GateSide, Verdict: VerdictReview, DecidedBy: ByGate, Cause: CauseGateError}
-	} else if byQualityRung(side) {
+	case !ruled:
 		var waits bool
-		if side, waits, err = byQuality(ctx, tx, key, side); err != nil || waits {
+		if side, waits, err = byQuality(ctx, tx, key, byGuess(GuessOf(outputs))); err != nil || waits {
 			return nil, err
 		}
 	}
@@ -294,12 +310,6 @@ func Gate(ctx context.Context, tx *store.Tx, key string, log *slog.Logger) ([]st
 		return nil, nil
 	}
 	return decide(ctx, tx, key, side, set, sightings, nil)
-}
-
-// byQualityRung says whether side came from the rungs after the rules: the
-// guess, or review for want of one.
-func byQualityRung(side store.Decision) bool {
-	return side.Cause == CauseGuess || side.Cause == CauseBelowFloor || side.Cause == CauseNoGuess
 }
 
 // byQuality is the side gate's decision on the item under key, which no tag
@@ -346,10 +356,12 @@ func inputs(ctx context.Context, tx *store.Tx, key string) (connectors.Set, []st
 // Provisional says whether a side decision waits on a later input: a review
 // that the gate wrote for want of a rule or a guess, or for an error, and a
 // model's review or drop. A rule that a later set adds, or a later answer of
-// the quality gate, then decides the item again.
+// the quality gate, then decides the item again. Every other side decision,
+// by a tag, a rule, a person or a model's confident guess, is final, and the
+// quality gate never runs on its item again.
 func Provisional(d store.Decision) bool {
 	return (d.Verdict == VerdictReview && d.DecidedBy == ByGate) ||
-		((d.Verdict == VerdictReview || d.Verdict == VerdictDrop) && strings.HasPrefix(d.DecidedBy, byModel("")))
+		((d.Verdict == VerdictReview || d.Verdict == VerdictDrop) && strings.HasPrefix(d.DecidedBy, ByModel("")))
 }
 
 // sameDecision says whether b decides what a decides, by the same hand.
@@ -362,22 +374,13 @@ func sameDecision(a, b store.Decision) bool {
 // outputs, and nil where that output holds none. The side gate places by it,
 // and the review queue shows it.
 func GuessOf(outputs []store.Output) *Guess {
-	var newest *store.Output
-	for i := range outputs {
-		o := &outputs[i]
-		if o.Stage == store.StageQuality && o.State == store.OutputDone && (newest == nil || o.UpdatedTS >= newest.UpdatedTS) {
-			newest = o
-		}
-	}
+	newest := store.NewestDone(outputs, store.StageQuality)
 	if newest == nil || newest.SideGuess == nil {
 		return nil
 	}
-	g := &Guess{Side: *newest.SideGuess, Run: newest.Producer + "/" + newest.ProducerVersion}
+	g := &Guess{Side: *newest.SideGuess, Run: newest.Run()}
 	if newest.SideConfidence != nil {
 		g.Confidence = *newest.SideConfidence
-	}
-	if newest.RunID != nil {
-		g.Run = *newest.RunID
 	}
 	return g
 }

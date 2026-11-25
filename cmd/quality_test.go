@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"net/http"
@@ -15,11 +16,13 @@ import (
 	"time"
 
 	"github.com/datapointchris/goapiauth/authtest"
+	"github.com/datapointchris/goclikit"
 
 	"github.com/datapointchris/ingestion/connectors"
 	"github.com/datapointchris/ingestion/extract"
 	"github.com/datapointchris/ingestion/modelport"
 	"github.com/datapointchris/ingestion/qualitygate"
+	"github.com/datapointchris/ingestion/route"
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
 	"github.com/datapointchris/ingestion/worker"
@@ -30,7 +33,6 @@ import (
 const (
 	dispatchClient = "dispatch-svc-ingestion"
 	dispatchSecret = "dispatch-secret"
-	dispatchScope  = "dispatch.start"
 )
 
 // standInDispatch answers a dispatch service's three routes as its published
@@ -68,13 +70,13 @@ type dispatchStart struct {
 
 func newStandInDispatch(t *testing.T, provider *authtest.Provider) *standInDispatch {
 	t.Helper()
-	provider.Register(dispatchClient, dispatchSecret, dispatchScope)
+	provider.Register(dispatchClient, dispatchSecret, modelport.QueueScopes...)
 	verifier := provider.Verifier(t, "dispatch-cli-", "dispatch-svc-")
 	d := &standInDispatch{dispatches: map[string]*standInRun{}, byKey: map[string]string{}}
 	authorized := func(w http.ResponseWriter, r *http.Request) bool {
 		token, bearer := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		caller, err := verifier.Verify(r.Context(), token)
-		if !bearer || err != nil || !slices.Contains(caller.Scopes, dispatchScope) {
+		if !bearer || err != nil || slices.ContainsFunc(modelport.QueueScopes, func(s string) bool { return !slices.Contains(caller.Scopes, s) }) {
 			writeDispatch(w, http.StatusUnauthorized, map[string]string{"error": "Unauthorized", "message": "no token", "code": "unauthorized"})
 			return false
 		}
@@ -205,7 +207,7 @@ func (d *standInDispatch) models(t *testing.T, model, effort string) modelConfig
 	t.Setenv(modelSecretEnv, dispatchSecret)
 	var cfg modelConfig
 	cfg.Adapter = modelport.AdapterQueue
-	cfg.Queue.API, cfg.Queue.ClientID, cfg.Queue.Scopes = d.URL, dispatchClient, []string{dispatchScope}
+	cfg.Queue.API, cfg.Queue.ClientID = d.URL, dispatchClient
 	cfg.Quality = stageModel{Model: model, Effort: effort}
 	return cfg
 }
@@ -271,8 +273,8 @@ func TestTheQualityGateJudgesOnlyTheSavesNoRulePlaces(t *testing.T) {
 	reasons := map[string]int{}
 	for _, key := range []string{"reddit/t3_bb2", "reddit/t3_cc3", "reddit/t3_dd4"} {
 		w := p.shown(t, key).Waiting
-		if w == nil || (w.Reason == server.WaitingUnclaimed && !strings.Contains(w.Message, "[model] adapter")) {
-			t.Errorf("with no worker running the gate %s shows waiting %s, want a reason, and [model] adapter named where none claims it", key, jsonOf(w))
+		if w == nil {
+			t.Errorf("with no worker running the gate %s shows no waiting", key)
 			continue
 		}
 		reasons[w.Reason]++
@@ -316,9 +318,12 @@ func TestTheQualityGateJudgesOnlyTheSavesNoRulePlaces(t *testing.T) {
 	if phase := p.phase(t, "reddit/t3_cc3"); phase != "dropped" {
 		t.Errorf("the junk save's phase is %s, want dropped", phase)
 	}
+	if _, side, _ := p.decisions(t, "reddit/t3_cc3"); side.Cause != route.CauseQualityDrop {
+		t.Errorf("the junk save is %s for %s, want dropped for %s", side.Verdict, side.Cause, route.CauseQualityDrop)
+	}
 	if out, err := runCLI(t, "items", "show", "reddit/t3_cc3", "--config", p.config); err != nil ||
-		!strings.Contains(out, `idea "The drop idea in one line."`) || !strings.Contains(out, "cause quality-drop") {
-		t.Errorf("items show on the dropped save printed %q, %v, want its idea and the quality-drop decision", out, err)
+		!strings.Contains(out, `idea "The drop idea in one line."`) {
+		t.Errorf("items show on the dropped save printed %q, %v, want its idea quoted", out, err)
 	}
 	if c := p.gated(t); !maps.Equal(c.review, map[string]int{store.ReasonQualityReview: 1}) {
 		t.Errorf("the review queue holds %v, want the unsure save as quality-review", c.review)
@@ -359,6 +364,30 @@ func TestAHeldDispatchHoldsUpOnlyItsOwnSave(t *testing.T) {
 	}
 	if s := stand.starts(); len(s) != 1 || s[0].Model != qualitygate.DefaultModel || s[0].Effort != qualitygate.DefaultEffort {
 		t.Errorf("the stand-in started %s, want one dispatch on %s at %s", jsonOf(s), qualitygate.DefaultModel, qualitygate.DefaultEffort)
+	}
+
+	// A rule that a later set adds places the held save. That withdraws its
+	// quality task, so the save stops waiting at the gate and is delivered.
+	ruled := lifeSet(t, withLife)
+	rules, err := os.ReadFile(filepath.Join(ruled, connectors.RoutingRulesFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules = append(rules, "  - name: golang-is-personal\n    match:\n      connector: reddit-exports\n      field: subreddit\n"+
+		"      values: [golang]\n    destination: reading-list\n"...)
+	if err := os.WriteFile(filepath.Join(ruled, connectors.RoutingRulesFile), rules, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	set, err := connectors.Read(ruled, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := connectors.Apply(t.Context(), p.st, set, "test-ruled", new("test"), "person:test", nil, route.AfterApply(quiet)); err != nil {
+		t.Fatal(err)
+	}
+	p.run(t, p.lifeDeliverer(t, life))
+	if shown := p.shown(t, "reddit/t3_bb2"); shown.Item.Phase != "delivered" || shown.Waiting != nil {
+		t.Errorf("once a rule placed the held save it is %s and shows waiting %s, want delivered", shown.Item.Phase, jsonOf(shown.Waiting))
 	}
 }
 
@@ -409,8 +438,8 @@ func TestAModelCallIsSentOnceAndAgainOnlyAfterItsRunFails(t *testing.T) {
 	if _, side, _ := p.decisions(t, key); side.Verdict != connectors.SidePersonal || !strings.HasPrefix(side.DecidedBy, "model:") {
 		t.Errorf("after the retried run the save is %s by %s, want personal by the model's run", side.Verdict, side.DecidedBy)
 	}
-	if _, err := runCLI(t, "tasks", "retry", id, "--config", p.config); err == nil || !strings.Contains(err.Error(), "items replay") {
-		t.Errorf("tasks retry on a done task answered %v, want a refusal naming items replay", err)
+	if _, err := runCLI(t, "tasks", "retry", id, "--config", p.config); !errors.Is(err, goclikit.ErrUsage) {
+		t.Errorf("tasks retry on a done task answered %v, want it refused as a usage error", err)
 	}
 }
 

@@ -62,14 +62,15 @@ adapter = "queue"
 [model.queue]
 api = "https://dispatch.example.com"
 agent = "outside-text"           # the kind of run the service starts
-scopes = ["dispatch.start"]      # what the client's token asks for, as the service names them
 client_id = "dispatch-svc-ingestion"
 # token_command = ["my-token-helper", "dispatch"]  # in place of client_id
 # issuer = "..."  # the OIDC provider that signs the service's tokens, if not the file's
 ```
 
-The secret of the `client_id` client is in **`INGESTION_MODEL_QUEUE_CLIENT_SECRET`**. A worker logs
-a `[model]` table that cannot open and runs on without the model stages.
+The secret of the `client_id` client is in **`INGESTION_MODEL_QUEUE_CLIENT_SECRET`**. Its token
+asks for the scopes that the adapter's routes need, which `modelport.QueueScopes` names and
+`ingestion worker run --help` prints. A worker logs a `[model]` table that cannot open and runs on
+without the model stages.
 
 ## Running the service and its workers
 
@@ -375,25 +376,28 @@ decision on each rule.
 ### The quality gate reads each item's opening before anyone reads it whole
 
 Where no tag or rule places an item, the write that ends the scan of its newest parse queues one
-task of capability `quality`. An item gets that task once, and only a replay runs the gate on it
-again. A worker whose config names a `[model] adapter` claims it. It reads the item's media type,
-title, URL and the first 2,000 characters of its parse, and puts them to the model through the
-prompt in `prompts/quality/prompt.tmpl`.
+task of capability `quality`. An item gets that task once. The gate runs on it again only through
+a replay, or through `tasks retry` on its failed task. A worker whose config names a `[model]
+adapter` claims it. It reads the item's media type, title, URL and the opening of its parse, up to
+the bound that `qualitygate`'s `openingRunes` sets. It puts them to the model through the prompt in
+`prompts/quality/prompt.tmpl`.
 
 - **The answer holds to `prompts/quality/answer.schema.json`.** It gives a genre, one or two
   domains, up to four themes, a quality estimate from 1 to 10 and a one-line idea. It ends with a
   verdict of `pass`, `drop` or `unsure` and a side of `personal`, `fleet` or `unsure`, each with
   its confidence. An answer that breaks the schema fails the task rather than being patched.
-- **A drop is soft, and needs a confidence of 0.8.** A drop below it, or an `unsure`, sends the
-  item to review. A dropped item keeps its row and its one-line idea, and `items show` prints
-  both.
-- **The prompt's version is its number and a digest of both files**, such as `1-acfc1263`. A
-  change to either writes the gate's outputs beside the old ones.
+- **A drop is soft, and needs a confidence at or above `qualitygate.DropFloor`.** A drop below it,
+  or an `unsure`, sends the item to review. A dropped item keeps its row and its one-line idea,
+  and `items show` prints both.
+- **The prompt's version is its number and a digest of `prompt.tmpl` and `answer.schema.json`.**
+  A change to either writes the gate's outputs beside the old ones.
 - **Each call is dispatched once.** The worker stores the dispatch in the write that ends its
-  lease. Until the run answers, the task goes back with a backoff from 15 seconds that doubles to
-  15 minutes, so a waiting item holds no worker slot. The next claim reads the stored dispatch's
-  run, even on a worker started again. A run that fails fails the task, and `ingestion tasks
-  retry <task>` dispatches it once more.
+  lease. Until the run answers, the task goes back with a backoff that doubles up to a cap, so a
+  waiting item holds no worker slot. The next claim reads the stored dispatch's run, even on a
+  worker started again. A run that fails fails the task, and `ingestion tasks retry <task>`
+  dispatches it once more.
+- **A call that the account's usage limit refused waits for the limit's reset.** It spent
+  nothing, so it fails nothing. `items show` prints the refusal as the task's last try.
 - **Nothing model-free waits behind the gate.** A held run holds up its own item alone, and
   `connectors list` counts that item as waiting.
 
@@ -408,13 +412,13 @@ reddit/t3_bb2   outside   waiting at quality
 $ ingestion items show reddit/t3_bb2    # the dispatch service holds the run
 reddit/t3_bb2   outside   waiting at quality
   ...
-  quality  quality-gate v1-acfc1263  waiting  haiku at medium  dispatch 7f3a9c
+  quality  quality-gate v1-<digest>  waiting  haiku at medium  dispatch 7f3a9c
   waiting  dispatched: dispatch 7f3a9c has not answered: the model budget holds new runs
 
 $ ingestion items show reddit/t3_bb2    # the run failed
 reddit/t3_bb2   outside   failed
   ...
-  quality  quality-gate v1-acfc1263  failed  haiku at medium  dispatch 7f3a9c  uncached input 12, cache write 3400, cache read 0, output 180
+  quality  quality-gate v1-<digest>  failed  haiku at medium  dispatch 7f3a9c  uncached input 12, cache write 3400, cache read 0, output 180
            "claude_failed: claude exited 1"
 $ ingestion tasks retry c2e134a22919ae6efb0bbee0c02b0fb1
 Task c2e134a22919ae6efb0bbee0c02b0fb1, quality on reddit/t3_bb2, is queued.
@@ -425,10 +429,15 @@ release`. `tasks retry` posts to `/api/v1/tasks/{id}/retries`, and its `--json` 
 `schemas/task-retry.schema.json`. It queues a failed task again, prints a queued or leased task as
 it stands, and refuses a done one.
 
-`ingestion items replay --stage quality` runs the prompt in force over each scanned item that no
-tag or rule placed and that holds no answer of that prompt. It first prints how many items it
-would run on, and the median tokens by kind of the stage's newest stored runs times that count.
-It queues only with `--yes`.
+`ingestion items replay --stage quality` runs the prompt in force over each scanned item whose
+side waits on a later input, and that holds no answer of that prompt. That is an item in review
+for want of a rule or an answer, or one that a model dropped or sent to review. An item that a
+tag, a rule, a person or a confident guess placed is left as it is. The replay first prints how
+many items it would run on, and the median tokens by kind of the stage's newest stored runs times
+that count. It queues only with `--yes`.
+
+A scan that ended under a release without the quality gate queued no quality task, so its item
+waits in review as `no-guess`. The replay is what runs the gate over such items.
 
 ### The side gate places each item, and a person places what it leaves
 
@@ -446,8 +455,8 @@ places the item by the first rung that decides it:
    `route.GuessFloor` sets. A guess below the floor, or `unsure`, sends it to review as
    `below-floor`.
 4. **Review.** An item that no tag or rule placed, and that holds no answer of the quality gate,
-   waits as `no-guess`. That is an item whose gate run failed, once an apply runs the side gate
-   again.
+   waits as `no-guess` once an apply runs the side gate again. That is an item whose quality task
+   failed, or whose scan could not read the set in force and so queued none.
 
 The gate runs again in the write that ends each later stage before it, such as the quality gate,
 and in the write that applies a changed set. Each run passes over an item whose newest parse is

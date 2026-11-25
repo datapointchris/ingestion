@@ -117,11 +117,12 @@ the prompt's version, and gets back the structured answer.
 
 - **The port has two adapters, and refuses with neither.**
   - `queue` posts the prompt and schema to an HTTP dispatch service and reads the answer back.
-  - `claude-cli` runs `claude -p` on the host with `--safe-mode`, `--setting-sources ""`,
-    `--permission-mode default`, `--permission-prompts none`, `--tools ""`,
-    `--no-session-persistence` and the stage's `--json-schema`, with the prompt on stdin. Without
-    `--safe-mode`, the host's own instructions ride beside the prompt. It runs through
-    `isolatedprocess`, inheriting only the variables that carry claude's own login.
+  - `claude-cli` runs `claude -p` on the host with the prompt on stdin, under the argv that
+    `modelport.ClaudeArgs` builds. That argv loads no settings, holds no tool, answers no
+    permission prompt and keeps no session on disk. It passes `--safe-mode`, because without it
+    the host's own instructions ride beside the prompt. It runs through `isolatedprocess`,
+    inheriting only the variables that carry claude's own login. A call that the account's usage
+    limit refused waits for the reset, and fails nothing.
 
   A model stage runs only where config names an adapter. With none named, the stage refuses, and
   the item waits there naming the missing setting. A stage never falls back to reaching a model

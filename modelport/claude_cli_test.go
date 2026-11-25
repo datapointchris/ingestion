@@ -3,11 +3,13 @@ package modelport_test
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/datapointchris/ingestion/modelport"
 	"github.com/datapointchris/ingestion/store"
@@ -76,5 +78,28 @@ func TestTheClaudeCLIAdapterRunsClaudeWithNoToolsAndReadsItsAnswer(t *testing.T)
 	if a == nil || a.State != modelport.Succeeded || string(a.Output) != `{"verdict":"pass"}` || a.Run != "session-1" || a.Model != "claude-haiku-4-5" ||
 		a.Tokens == nil || *a.Tokens != (store.Tokens{UncachedInput: 10, CacheWrite: 3000, Output: 50}) {
 		t.Errorf("the adapter answered %+v, want the structured output of session-1 on claude-haiku-4-5 with its model's tokens", a)
+	}
+}
+
+// A call that the account's usage limit refused exits 1 with the cause only on
+// stdout. The adapter answers it as a limit that resets, not a failed run, so
+// the stage waits for the reset rather than failing the item.
+func TestTheClaudeCLIAdapterAnswersAUsageLimitAsAWaitForItsReset(t *testing.T) {
+	bin := t.TempDir()
+	script := "#!/bin/sh\ncat > /dev/null\n" +
+		`printf '%s\n' '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1900000000,"rateLimitType":"five_hour"}}'` + "\n" +
+		`printf '%s\n' '{"type":"result","subtype":"success","is_error":true,"result":"You have hit your limit","session_id":"s"}'` + "\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	port, err := modelport.NewClaudeCLI("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = port.Start(t.Context(), modelport.Request{Stage: store.StageQuality, Schema: json.RawMessage(`{"type":"object"}`)})
+	var limit *modelport.LimitError
+	if !errors.As(err, &limit) || limit.Window != "five_hour" || !limit.ResetsAt.Equal(time.Unix(1900000000, 0)) || errors.Is(err, modelport.ErrRefused) {
+		t.Errorf("the adapter answered %v, want the five_hour limit until its reset", err)
 	}
 }

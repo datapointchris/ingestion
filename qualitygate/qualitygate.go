@@ -18,7 +18,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
-	"strings"
 
 	"github.com/datapointchris/ingestion/connectors"
 	"github.com/datapointchris/ingestion/prompts"
@@ -61,7 +60,7 @@ const (
 )
 
 // Answer is the model's answer, as prompts/quality/answer.schema.json holds
-// it.
+// it. readAnswer decodes it.
 type Answer struct {
 	Genre             string   `json:"genre"`
 	Domains           []string `json:"domains"`
@@ -74,12 +73,30 @@ type Answer struct {
 	SideConfidence    float64  `json:"side_confidence"`
 }
 
+// readAnswer checks raw against the answer's schema and decodes it. The
+// schema counts 7.0 as an integer, so quality decodes as a number and is kept
+// whole.
+func readAnswer(raw json.RawMessage) (Answer, error) {
+	if err := prompts.Quality.Check(raw); err != nil {
+		return Answer{}, err
+	}
+	var a struct {
+		Answer
+		Quality float64 `json:"quality"`
+	}
+	if err := json.Unmarshal(raw, &a); err != nil {
+		return Answer{}, fmt.Errorf("decode the quality answer: %w", err)
+	}
+	a.Answer.Quality = int(a.Quality)
+	return a.Answer, nil
+}
+
 // Decision is the gate's decision on an answer that run gave: pass, drop
 // where the model dropped the item at or above DropFloor, and review where
 // it was unsure or its drop fell below the floor.
 func Decision(a Answer, run string) store.Decision {
 	confidence := a.VerdictConfidence
-	d := store.Decision{Gate: store.GateQuality, DecidedBy: "model:" + run, Confidence: &confidence}
+	d := store.Decision{Gate: store.GateQuality, DecidedBy: route.ByModel(run), Confidence: &confidence}
 	switch {
 	case a.Verdict == AnswerPass:
 		d.Verdict, d.Cause = VerdictPass, CausePass
@@ -96,8 +113,9 @@ func Decision(a Answer, run string) store.Decision {
 // QueueAfterScan queues the item's quality task in the write that ends its
 // scan done, where the scan read the newest parse, no tag or rule places the
 // item, and the item never held a quality task. A connector's first fill
-// holds it past the first item. A later scan queues none, so only a replay
-// that a person confirms runs the gate again.
+// holds it past the first item. A later scan queues none. The gate runs again
+// only through a replay that a person confirms, or through `tasks retry` on a
+// failed task.
 func QueueAfterScan(ctx context.Context, tx *store.Tx, task store.Task) error {
 	key := *task.ItemKey
 	outputs, err := tx.Outputs(ctx, key)
@@ -112,15 +130,15 @@ func QueueAfterScan(ctx context.Context, tx *store.Tx, task store.Task) error {
 	}
 	set, err := connectors.AppliedSet(ctx, tx)
 	if err != nil {
-		// The side gate sends the item to review as gate-error, and an apply
-		// runs the gate again.
+		// The side gate sends the item to review as gate-error. No quality
+		// task is queued, so after an apply the item waits as no-guess.
 		return nil
 	}
 	sightings, err := tx.Sightings(ctx, key)
 	if err != nil {
 		return err
 	}
-	if route.Side(set, sightings, nil).Cause != route.CauseNoGuess {
+	if _, ruled := route.BeforeModel(set, sightings); ruled {
 		return nil
 	}
 	_, err = tx.Enqueue(ctx, store.Task{ItemKey: &key, Stage: store.StageQuality, Capability: Capability})
@@ -136,15 +154,15 @@ func DecideAfterAnswer(ctx context.Context, tx *store.Tx, task store.Task) error
 	if err != nil {
 		return err
 	}
-	newest := newestDone(outputs)
+	newest := store.NewestDone(outputs, store.StageQuality)
 	if newest == nil {
 		return nil
 	}
-	var a Answer
-	if err := json.Unmarshal(newest.Answer, &a); err != nil {
+	a, err := readAnswer(newest.Answer)
+	if err != nil {
 		return fmt.Errorf("read the quality answer on %s: %w", key, err)
 	}
-	d := Decision(a, runOf(*newest))
+	d := Decision(a, newest.Run())
 	if held, ok, err := tx.NewestDecision(ctx, key, store.GateQuality); err != nil {
 		return err
 	} else if ok && held.DecidedBy == d.DecidedBy && held.Verdict == d.Verdict {
@@ -155,30 +173,9 @@ func DecideAfterAnswer(ctx context.Context, tx *store.Tx, task store.Task) error
 	return err
 }
 
-// newestDone is the newest done output of the quality gate among outputs, as
-// route.GuessOf reads it, and nil where none is.
-func newestDone(outputs []store.Output) *store.Output {
-	var newest *store.Output
-	for i := range outputs {
-		o := &outputs[i]
-		if o.Stage == store.StageQuality && o.State == store.OutputDone && (newest == nil || o.UpdatedTS >= newest.UpdatedTS) {
-			newest = o
-		}
-	}
-	return newest
-}
-
-// runOf names the run that answered o, as route.GuessOf names it.
-func runOf(o store.Output) string {
-	if o.RunID != nil {
-		return *o.RunID
-	}
-	return o.Producer + "/" + o.ProducerVersion
-}
-
 // due says whether a replay runs the gate on an item: its newest parse is
 // scanned, no quality task of it is open, it holds no done answer of the
-// prompt in force, and no tag or rule placed it.
+// prompt in force, and its side decision, where it has one, is provisional.
 func due(outputs []store.Output, side store.Decision, sided, open bool) bool {
 	if open || !store.NewestParseScanned(outputs) {
 		return false
@@ -188,7 +185,7 @@ func due(outputs []store.Output, side store.Decision, sided, open bool) bool {
 	}) {
 		return false
 	}
-	return !sided || (side.DecidedBy != route.ByTag && !strings.HasPrefix(side.DecidedBy, "rule:"))
+	return !sided || route.Provisional(side)
 }
 
 // Replayable is the gate as a replay runs it again, such as with a new

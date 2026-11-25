@@ -20,7 +20,7 @@
           "title": {"type": ["string", "null"]},
           "url": {"type": ["string", "null"]},
           "reason": {
-            "description": "Why the item waits: its sightings' tags disagree, the guess fell below the floor, no tag or rule placed it and the quality gate gave no guess, the side gate could not read the set in force or the item's sightings, it has no usable parse, or the quality gate sent it to review.",
+            "description": "Why the item waits: its sightings' tags disagree, the guess fell below the floor, no tag or rule placed it and the quality gate gave no answer, because its run failed, its scan could not read the set in force, or it waited in review from before the quality gate ran, the side gate could not read the set in force or the item's sightings, it has no usable parse, or the quality gate sent it to review.",
             "enum": ["tags-disagree", "below-floor", "no-guess", "gate-error", "no-parse", "quality-review"]
           },
           "guess": {

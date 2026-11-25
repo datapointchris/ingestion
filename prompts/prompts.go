@@ -23,8 +23,7 @@ var files embed.FS
 // Prompt is one stage's prompt and answer schema at one version.
 type Prompt struct {
 	Stage string
-	// Version is the prompt's number and a digest of its files, such as
-	// 1-3fa9c1d2.
+	// Version is the prompt's number and a digest of its files.
 	Version  string
 	template *template.Template
 	// Schema is the answer's JSON Schema as the file holds it.

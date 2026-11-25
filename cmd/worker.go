@@ -67,7 +67,7 @@ func openModelPort(ctx context.Context, cfg modelConfig, issuer string, log *slo
 		return nil
 	case modelport.AdapterQueue:
 		var client *http.Client
-		if client, err = serviceHTTPClient(ctx, cfg.Queue.serviceClient, modelSecretEnv, issuer, cfg.Queue.Scopes); err == nil {
+		if client, err = serviceHTTPClient(ctx, cfg.Queue.serviceClient, modelSecretEnv, issuer, modelport.QueueScopes); err == nil {
 			port = modelport.NewQueue(cfg.Queue.API, cmp.Or(cfg.Queue.Agent, modelport.DefaultAgent), client)
 		}
 	case modelport.AdapterClaudeCLI:
@@ -183,7 +183,6 @@ var workerRunCmd = &cobra.Command{
 		"  [model.queue]      an HTTP dispatch service\n" +
 		"  api                its address\n" +
 		"  agent              the kind of run it starts (default " + modelport.DefaultAgent + ")\n" +
-		"  scopes             what the client's token asks for, as the service names them\n" +
 		"  client_id          the service client it dispatches as, whose secret is in\n" +
 		"                     " + modelSecretEnv + "\n" +
 		"  token_command      in place of client_id, a command that prints its token\n" +
@@ -192,7 +191,9 @@ var workerRunCmd = &cobra.Command{
 		"  command            the claude binary (default claude, found on PATH)\n" +
 		"  [model.quality]    what the quality gate asks its run for\n" +
 		"  model              the model (default " + qualitygate.DefaultModel + ")\n" +
-		"  effort             the effort (default " + qualitygate.DefaultEffort + ")",
+		"  effort             the effort (default " + qualitygate.DefaultEffort + ")\n" +
+		"\n" +
+		"The [model.queue] client needs the scopes " + strings.Join(modelport.QueueScopes, " ") + ".",
 	Example: "  # a worker, as a service client\n" +
 		"  INGESTION_CLIENT_SECRET=... ingestion worker run --config /etc/ingestion/config.toml",
 	Args: cobra.NoArgs,

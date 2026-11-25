@@ -142,6 +142,7 @@
         "run_id": {"description": "The run that answered the dispatch.", "type": ["string", "null"]},
         "model": {"description": "The model a model stage asked its run for, an alias such as haiku or a model id.", "type": ["string", "null"]},
         "effort": {"description": "The effort a model stage asked its run for, such as medium.", "type": ["string", "null"]},
+        "answered_model": {"description": "The model that a model stage's run reports answering on, such as a model id where the stage asked for an alias. Null while the run has not answered, or where it names none.", "type": ["string", "null"]},
         "tokens": {"anyOf": [{"$ref": "#/$defs/tokens"}, {"type": "null"}]},
         "findings": {
           "description": "The scan's findings, in the order the matches sit in the text. A done scan that found nothing holds an empty list. Each matched span ships as ingestion.text.",

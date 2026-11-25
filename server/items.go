@@ -89,7 +89,10 @@ type WaitingView struct {
 	HeldBy *string `json:"held_by"`
 	// DispatchID is the run's dispatch, where the port started one.
 	DispatchID *string `json:"dispatch_id"`
-	Message    string  `json:"message"`
+	// LastError is why the task's last try did not go through, such as a
+	// dispatch service that did not answer, where it ended so.
+	LastError *string `json:"last_error"`
+	Message   string  `json:"message"`
 }
 
 // UndeliveredView is why an item reaches no deliverer, in the words of
@@ -155,6 +158,7 @@ type OutputView struct {
 	DispatchID      *string         `json:"dispatch_id"`
 	Model           *string         `json:"model"`
 	Effort          *string         `json:"effort"`
+	AnsweredModel   *string         `json:"answered_model"`
 	Tokens          *store.Tokens   `json:"tokens"`
 	Error           *string         `json:"error"`
 }
@@ -333,7 +337,7 @@ func waitingView(rec store.ItemRecords, claimed map[string]bool) *WaitingView {
 	v := &WaitingView{Stage: stage}
 	for _, t := range rec.Tasks {
 		if t.Stage == stage && (t.State == store.TaskQueued || t.State == store.TaskLeased) {
-			v.Capability, v.HeldBy = t.Capability, t.HeldBy
+			v.Capability, v.HeldBy, v.LastError = t.Capability, t.HeldBy, t.Error
 		}
 	}
 	var dispatched *store.Output
@@ -358,6 +362,9 @@ func waitingView(rec store.ItemRecords, claimed map[string]bool) *WaitingView {
 	default:
 		v.Reason = WaitingQueued
 		v.Message = "a worker claims its task next"
+	}
+	if v.LastError != nil {
+		v.Message += ". Its last try did not go through: " + *v.LastError
 	}
 	return v
 }
@@ -485,7 +492,7 @@ func itemAnswer(rec store.ItemRecords) ItemAnswer {
 		view := OutputView{
 			Stage: o.Stage, Producer: o.Producer, ProducerVersion: o.ProducerVersion, Lens: o.Lens, LensVersion: o.LensVersion,
 			State: o.State, Answer: o.Answer, RunID: o.RunID, DispatchID: o.DispatchID, Model: o.Model, Effort: o.Effort,
-			Tokens: o.Tokens, Error: o.Error,
+			AnsweredModel: o.AnsweredModel, Tokens: o.Tokens, Error: o.Error,
 		}
 		if n, ok := rec.UnitCount(o); ok {
 			view.Units = &n

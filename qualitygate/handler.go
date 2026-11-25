@@ -3,7 +3,6 @@ package qualitygate
 import (
 	"cmp"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -110,13 +109,7 @@ func (h handler) Run(ctx context.Context, task worker.Task) worker.Result {
 		}
 		return result
 	}
-	out.RunID, out.Tokens = optional(a.Run), a.Tokens
-	if a.Model != "" {
-		out.Model = &a.Model
-	}
-	if a.Effort != "" {
-		out.Effort = &a.Effort
-	}
+	out.RunID, out.Tokens, out.AnsweredModel = optional(a.Run), a.Tokens, optional(a.Model)
 	if a.State == modelport.Failed {
 		reason := a.Failure
 		if a.Detail != "" {
@@ -127,15 +120,11 @@ func (h handler) Run(ctx context.Context, task worker.Task) worker.Result {
 		log.Warn("the quality gate's run failed", "dispatch", progress.Dispatch, "run", a.Run, "failure", a.Failure)
 		return worker.Result{Outcome: server.OutcomeFailed, Error: &failed, Outputs: []server.ReportOutput{out}}
 	}
-	if err := prompts.Quality.Check(a.Output); err != nil {
+	answer, err := readAnswer(a.Output)
+	if err != nil {
 		reason := err.Error()
 		out.State, out.Error = store.OutputFailed, &reason
 		return worker.Result{Outcome: server.OutcomeFailed, Error: &reason, Outputs: []server.ReportOutput{out}}
-	}
-	var answer Answer
-	if err := json.Unmarshal(a.Output, &answer); err != nil {
-		reason := err.Error()
-		return worker.Result{Outcome: server.OutcomeFailed, Error: &reason}
 	}
 	out.State, out.Answer = store.OutputDone, a.Output
 	out.Quality, out.SideGuess, out.SideConfidence = &answer.Quality, &answer.Side, &answer.SideConfidence
@@ -177,12 +166,21 @@ func (h handler) request(ctx context.Context, task worker.Task) (modelport.Reque
 	}, nil
 }
 
-// refusal is the result of a call that err ended. One that sending again
-// meets the same way fails the task, and its output says why, so `tasks
-// retry` sends it again once the cause is fixed. Any other tries again after
-// its backoff.
+// refusal is the result of a call that err ended. One that the account's
+// usage limit refused spent nothing, and tries again once the limit resets.
+// One that sending again meets the same way fails the task, and its output
+// says why, so `tasks retry` sends it again once the cause is fixed. Any other
+// tries again after its backoff.
 func (h handler) refusal(task worker.Task, own *server.StageOutput, err error) worker.Result {
 	reason := err.Error()
+	if limit := (*modelport.LimitError)(nil); errors.As(err, &limit) {
+		wait := followMost
+		if !limit.ResetsAt.IsZero() {
+			wait = max(time.Until(limit.ResetsAt), followFirst)
+		}
+		h.log.Warn("the account's usage limit refused the quality gate's call, which waits for its reset", "task", task.ID, "error", err)
+		return worker.Result{Outcome: server.OutcomeRetry, Error: &reason, RetryAfter: wait}
+	}
 	if !errors.Is(err, modelport.ErrRefused) {
 		h.log.Warn("the quality gate's call did not go through, and tries again", "task", task.ID, "error", err)
 		return worker.Result{Outcome: server.OutcomeRetry, Error: &reason, RetryAfter: followAfter(task.Attempts)}

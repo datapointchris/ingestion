@@ -349,17 +349,18 @@ func (r ItemRecords) NewestDecision(gate string) (Decision, bool) {
 // Unknown where one waits or a model stage's task is queued or leased, and
 // False where every one failed. A model stage's open task holds the item at
 // that stage, whether a first fill holds it, no worker claims it, or its
-// dispatch has not answered.
+// dispatch has not answered. A model stage's waiting output holds it only
+// while that task is open, because a placement that withdraws the task leaves
+// the output as it was.
 func (r ItemRecords) outputCondition(stage string) (Condition, bool) {
-	states := map[string]bool{}
+	model := slices.Contains(modelStages, stage)
+	open := model && slices.ContainsFunc(r.Tasks, func(t Task) bool {
+		return t.Stage == stage && (t.State == TaskQueued || t.State == TaskLeased)
+	})
+	states := map[string]bool{OutputWaiting: open}
 	for _, o := range r.Outputs {
-		if o.Stage == stage {
+		if o.Stage == stage && (o.State != OutputWaiting || !model || open) {
 			states[o.State] = true
-		}
-	}
-	for _, t := range r.Tasks {
-		if t.Stage == stage && slices.Contains(modelStages, stage) && (t.State == TaskQueued || t.State == TaskLeased) {
-			states[OutputWaiting] = true
 		}
 	}
 	switch {

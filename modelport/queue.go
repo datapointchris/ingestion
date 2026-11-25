@@ -20,6 +20,16 @@ import (
 // schema.
 const DefaultAgent = "outside-text"
 
+// QueueScopes are what the queue adapter's token asks for: the dispatch
+// service's scope that starts and reads a dispatch, and the one that reads a
+// run's answer.
+var QueueScopes = []string{"fleet.agents.dispatch", "fleet.outside-text-answers.read"}
+
+// queueCallTimeout bounds one request to the dispatch service, so a service
+// that never answers holds no worker slot. A call past it tries again after
+// the task's backoff.
+const queueCallTimeout = time.Minute
+
 // queue dispatches each call to an HTTP dispatch service and follows it.
 //
 // A dispatch is POST /api/v1/dispatches/ naming the agent, the inputs prompt
@@ -70,7 +80,6 @@ type storedAnswer struct {
 	Run              string          `json:"run"`
 	State            string          `json:"state"`
 	Model            string          `json:"model"`
-	Effort           string          `json:"effort"`
 	Failure          string          `json:"failure"`
 	FailureDetail    string          `json:"failure_detail"`
 	StructuredOutput json.RawMessage `json:"structured_output"`
@@ -150,7 +159,7 @@ func (q queue) progress(ctx context.Context, d dispatch) (Progress, error) {
 	if err != nil {
 		return Progress{}, fmt.Errorf("read the answer to dispatch %s: %w", d.ID, err)
 	}
-	answer := &Answer{Run: a.Run, State: a.State, Failure: a.Failure, Detail: a.FailureDetail, Model: a.Model, Effort: a.Effort}
+	answer := &Answer{Run: a.Run, State: a.State, Failure: a.Failure, Detail: a.FailureDetail, Model: a.Model}
 	if a.Tokens != nil {
 		answer.Tokens = &store.Tokens{UncachedInput: a.Tokens.Input, CacheWrite: a.Tokens.CacheWrite, CacheRead: a.Tokens.CacheRead, Output: a.Tokens.Output}
 	}
@@ -184,6 +193,8 @@ func (e *StatusError) Error() string {
 // the same answer. A 409 is an identical call already queued or running,
 // which a later try finds settled.
 func (q queue) call(ctx context.Context, method, path, idempotencyKey string, body []byte, into any) error {
+	ctx, cancel := context.WithTimeout(ctx, queueCallTimeout)
+	defer cancel()
 	var reader io.Reader = http.NoBody
 	if body != nil {
 		reader = bytes.NewReader(body)

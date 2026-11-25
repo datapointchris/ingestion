@@ -337,6 +337,9 @@ func writeItem(w io.Writer, a server.ItemAnswer) {
 			if o.Effort != nil {
 				out += " at " + *o.Effort
 			}
+			if o.AnsweredModel != nil && *o.AnsweredModel != *o.Model {
+				out += ", answered on " + *o.AnsweredModel
+			}
 		}
 		if o.DispatchID != nil {
 			out += "  dispatch " + *o.DispatchID

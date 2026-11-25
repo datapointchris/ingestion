@@ -3,7 +3,7 @@
 -- parse_units, so text and units stay null, kept for a store that holds them.
 -- text, units, spans, answer and error are outsider-written, so the outbox
 -- ships them as ingestion.text. A model stage's model and effort are what it
--- asked its run for.
+-- asked its run for, and answered_model is the model its run reports.
 
 CREATE TABLE IF NOT EXISTS outputs (
     item_key         TEXT NOT NULL REFERENCES items (key),
@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS outputs (
     run_id           TEXT,
     model            TEXT,
     effort           TEXT,
+    answered_model   TEXT,
     tokens           TEXT,
     findings         TEXT,
     quality          INTEGER,

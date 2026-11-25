@@ -34,7 +34,7 @@ var reviewListCmd = &cobra.Command{
 		"\n" +
 		"  tags-disagree   its sightings' tags name destinations on two sides\n" +
 		"  below-floor     the quality gate's guess fell below its confidence floor\n" +
-		"  no-guess        no tag or rule placed it, and the quality gate gave no guess\n" +
+		"  no-guess        no tag or rule placed it, and the quality gate gave no answer\n" +
 		"  gate-error      the side gate could not read the set in force or its sightings\n" +
 		"  no-parse        no parse of it is usable\n" +
 		"  quality-review  the quality gate sent it to review\n" +

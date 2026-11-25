@@ -76,9 +76,6 @@ type modelConfig struct {
 		serviceClient
 		// Agent is the kind of run the dispatch service starts.
 		Agent string `toml:"agent"`
-		// Scopes are what the client's token asks for, as the dispatch
-		// service names them.
-		Scopes []string `toml:"scopes"`
 	} `toml:"queue"`
 	ClaudeCLI struct {
 		// Command is the claude binary, by path or by name on PATH.

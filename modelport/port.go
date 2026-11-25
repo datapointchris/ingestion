@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/datapointchris/ingestion/store"
 )
@@ -58,7 +59,9 @@ type Request struct {
 }
 
 // IdempotencyKey names r across every retry, by its item, stage, prompt
-// version and the failed dispatch it replaces.
+// version and the failed dispatch it replaces. A dispatch service may match a
+// key only while its dispatch runs, so once a run ends, the dispatch id that
+// the stage stored is what keeps it from paying for a second.
 func (r Request) IdempotencyKey() string {
 	sum := sha256.Sum256([]byte(r.ItemKey + "\x00" + r.Stage + "\x00" + r.PromptVersion + "\x00" + r.Replaces))
 	return "ingestion-" + r.Stage + "-" + hex.EncodeToString(sum[:16])
@@ -71,7 +74,8 @@ const (
 )
 
 // NotRun is the failure of a dispatch that ended with no run, as one the
-// dispatch service dropped or refused.
+// dispatch service dropped or refused. It is this port's code, beside the
+// codes that an adapter passes on from its run.
 const NotRun = "not_run"
 
 // Answer is a finished run.
@@ -85,10 +89,27 @@ type Answer struct {
 	// the run's own words, which may quote the prompt.
 	Failure string
 	Detail  string
-	// Model and Effort are what the run ran on, where it says.
+	// Model is the model that answered, where the run says, such as a model
+	// id where the request named an alias.
 	Model  string
-	Effort string
 	Tokens *store.Tokens
+}
+
+// LimitError is a call that the account's usage limit refused before it ran.
+// The call did nothing wrong and spent nothing, so a stage sends it again once
+// the limit resets rather than failing it.
+type LimitError struct {
+	// Window is the limit that refused the call, as claude names it.
+	Window string
+	// ResetsAt is zero where the refusal named no reset.
+	ResetsAt time.Time
+}
+
+func (e *LimitError) Error() string {
+	if e.ResetsAt.IsZero() {
+		return fmt.Sprintf("the account's %s limit refused the call, and named no reset", e.Window)
+	}
+	return fmt.Sprintf("the account's %s limit refused the call until %s", e.Window, e.ResetsAt.UTC().Format(time.RFC3339))
 }
 
 // Progress is where one call stands.

@@ -150,6 +150,7 @@ type ReportOutput struct {
 	RunID           *string       `json:"run_id,omitempty"`
 	Model           *string       `json:"model,omitempty"`
 	Effort          *string       `json:"effort,omitempty"`
+	AnsweredModel   *string       `json:"answered_model,omitempty"`
 	Tokens          *store.Tokens `json:"tokens,omitempty"`
 	// InputProducer and InputVersion name the parse that a later stage read.
 	InputProducer *string `json:"input_producer,omitempty"`
@@ -174,7 +175,8 @@ func (o ReportOutput) output(task store.Task) store.Output {
 		ItemKey: *task.ItemKey, Stage: task.Stage, Producer: o.Producer, ProducerVersion: o.ProducerVersion,
 		Lens: o.Lens, LensVersion: o.LensVersion, InputProducer: o.InputProducer, InputVersion: o.InputVersion,
 		State: o.State, BlobSHA256: o.BlobSHA256,
-		DispatchID: o.DispatchID, RunID: o.RunID, Model: o.Model, Effort: o.Effort, Tokens: o.Tokens, Findings: o.Findings, Quality: o.Quality,
+		DispatchID: o.DispatchID, RunID: o.RunID, Model: o.Model, Effort: o.Effort, AnsweredModel: o.AnsweredModel, Tokens: o.Tokens,
+		Findings: o.Findings, Quality: o.Quality,
 		SideGuess: o.SideGuess, SideConfidence: o.SideConfidence, Spans: o.Spans, Answer: o.Answer, Error: o.Error,
 	}
 }
