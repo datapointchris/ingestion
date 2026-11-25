@@ -83,10 +83,14 @@ type Blob struct {
 
 // Home names where a file already lives, under a named root.
 type Home struct {
-	BlobSHA256 string  `json:"blob_sha256"`
-	Root       string  `json:"root"`
-	PathSHA256 string  `json:"path_sha256"`
-	Path       string  `json:"path"`
+	BlobSHA256 string `json:"blob_sha256"`
+	Root       string `json:"root"`
+	PathSHA256 string `json:"path_sha256"`
+	Path       string `json:"path"`
+	// ModifiedTS is the file's modification time, to the nanosecond, when its
+	// bytes were last hashed at Path. A file whose size or modification time
+	// differs is hashed again before it is read as the blob.
+	ModifiedTS *string `json:"modified_ts"`
 	FoundTS    string  `json:"found_ts"`
 	GoneTS     *string `json:"gone_ts"`
 }

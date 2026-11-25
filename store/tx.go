@@ -26,6 +26,34 @@ func (t *Tx) Now() time.Time { return t.at }
 
 func (t *Tx) stamp() string { return Stamp(t.at) }
 
+// Item reads the item under key as this write sees it, and false where the
+// store holds none.
+func (t *Tx) Item(ctx context.Context, key string) (Item, bool, error) {
+	return first[Item](ctx, t.tx, table("items"), `key = ?`, key)
+}
+
+// Children reads every item whose parent is key.
+func (t *Tx) Children(ctx context.Context, key string) ([]Item, error) {
+	return readInto[Item](ctx, t.tx, table("items"), `parent_key = ?`, key)
+}
+
+// Sighting reads connector's sighting of the item under key, and false where
+// the store holds none.
+func (t *Tx) Sighting(ctx context.Context, key, connector string) (Sighting, bool, error) {
+	return first[Sighting](ctx, t.tx, table("sightings"), `item_key = ? AND connector = ?`, key, connector)
+}
+
+// Blob reads the blob row for sum, and false where the store holds none.
+func (t *Tx) Blob(ctx context.Context, sum string) (Blob, bool, error) {
+	return first[Blob](ctx, t.tx, table("blobs"), `sha256 = ?`, sum)
+}
+
+// LiveHomesAt reads every home at root and pathSHA256 that is not gone,
+// whatever blob it names.
+func (t *Tx) LiveHomesAt(ctx context.Context, root, pathSHA256 string) ([]Home, error) {
+	return readInto[Home](ctx, t.tx, table("homes"), `root = ? AND path_sha256 = ? AND gone_ts IS NULL`, root, pathSHA256)
+}
+
 // PutItem writes item, keeping the created stamp and flow of a row already
 // there. An item new to the store starts a fresh flow where it names none.
 func (t *Tx) PutItem(ctx context.Context, item Item) error {
@@ -258,6 +286,17 @@ func ReadRows(ctx context.Context, db querier, tab Table, where string, args ...
 		out = append(out, row)
 	}
 	return out, rows.Err()
+}
+
+// first reads the first of tab's rows matching where into a record of type T,
+// and false where none matches.
+func first[T any](ctx context.Context, db querier, tab Table, where string, args ...any) (T, bool, error) {
+	records, err := readInto[T](ctx, db, tab, where+` LIMIT 1`, args...)
+	if err != nil || len(records) == 0 {
+		var none T
+		return none, false, err
+	}
+	return records[0], true, nil
 }
 
 // readInto reads tab's rows matching where into records of type T, by their

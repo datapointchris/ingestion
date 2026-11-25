@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS items (
     updated_ts     TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS items_by_stamp ON items (updated_ts);
+CREATE INDEX IF NOT EXISTS items_by_parent ON items (parent_key);
 
 CREATE TABLE IF NOT EXISTS sightings (
     item_key        TEXT NOT NULL REFERENCES items (key),
@@ -46,6 +47,7 @@ CREATE TABLE IF NOT EXISTS homes (
     root        TEXT NOT NULL,
     path_sha256 TEXT NOT NULL,
     path        TEXT NOT NULL,
+    modified_ts TEXT,
     found_ts    TEXT NOT NULL,
     gone_ts     TEXT,
     PRIMARY KEY (blob_sha256, root, path_sha256)

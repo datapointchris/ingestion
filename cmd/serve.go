@@ -16,6 +16,7 @@ import (
 	"github.com/datapointchris/goapiauth"
 	"github.com/spf13/cobra"
 
+	"github.com/datapointchris/ingestion/landing"
 	"github.com/datapointchris/ingestion/outbox"
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
@@ -32,9 +33,10 @@ const (
 var serveCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Run the service: the store, its API, and the outbox that ships every change",
-	Long: "serve is the one writer of the store. It holds the SQLite file under\n" +
-		"state_dir, answers the API on listen, and ships every change in the store to\n" +
-		"records_otlp_url as OTLP log records. Workers lease tasks from it through the API.\n" +
+	Long: "serve is the one writer of the store. It holds the SQLite file and the blob\n" +
+		"volume under state_dir, answers the API on listen, and ships every change in\n" +
+		"the store to records_otlp_url as OTLP log records. Workers lease tasks and move\n" +
+		"bytes through the API.\n" +
 		"\n" +
 		"It reads the config file's issuer and its [serve] table:\n" +
 		"\n" +
@@ -43,7 +45,9 @@ var serveCmd = &cobra.Command{
 		"  listen            the address the API answers on (default " + defaultListen + ")\n" +
 		"  state_dir         where the store lives (default $XDG_STATE_HOME/" + product + ")\n" +
 		"  public_url        where callers reach the API, served as RFC 9728 metadata\n" +
-		"  records_otlp_url  the OTLP/HTTP logs URL the outbox ships to (none ships nothing)",
+		"  records_otlp_url  the OTLP/HTTP logs URL the outbox ships to (none ships nothing)\n" +
+		"  [serve.homes]     each named root's directory, such as books = \"/srv/books\",\n" +
+		"                    whose files land by reference rather than as copies (none)",
 	Example: "  # the service, reading $XDG_CONFIG_HOME/ingestion/config.toml\n" +
 		"  ingestion serve\n" +
 		"\n" +
@@ -81,6 +85,14 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	defer func() { _ = st.Close() }()
+	blobs, err := landing.OpenBlobs(filepath.Join(stateDir(cfg), "blobs"))
+	if err != nil {
+		return err
+	}
+	lander, err := landing.New(landing.Config{Store: st, Blobs: blobs, Homes: cfg.Serve.Homes})
+	if err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
 	gate, err := goapiauth.NewConnecting(server.GateConfig(cfg.Issuer))
 	if err != nil {
 		return err
@@ -91,7 +103,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 	handler := server.Handler(server.Config{
 		Store: st, Gate: gate, Issuer: cfg.Issuer, PublicURL: cfg.Serve.PublicURL, Version: version, Log: log,
-	}, server.TaskRoutes(st, log))
+	}, server.TaskRoutes(st, log), server.BlobRoutes(lander, log), server.ItemRoutes(st, log))
 	srv := &http.Server{Addr: listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 
 	var wg sync.WaitGroup

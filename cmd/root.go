@@ -53,9 +53,17 @@ func exitCode(w io.Writer, err error) int {
 	if errors.Is(err, goclikit.ErrUsage) {
 		return 2
 	}
+	// 3 says a check ran and found what only a person can fix, so a scheduled
+	// check tells it from a check that could not run.
+	if errors.Is(err, errIssue) {
+		return 3
+	}
 	// 4 says the server gave no answer, so the command did nothing.
 	if errors.Is(err, errNoAnswer) {
 		return 4
 	}
 	return 1
 }
+
+// errIssue marks a check that ran and found what only a person can fix.
+var errIssue = errors.New("a person must look at each")

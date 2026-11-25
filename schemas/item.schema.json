@@ -2,16 +2,16 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/datapointchris/ingestion/schemas/item.schema.json",
   "title": "One item and every record it holds",
-  "description": "What GET /api/v1/items/{key} answers and `ingestion items show --json` prints: the item, each sighting, each stage's output, each gate decision, each delivery and its latest suggestion.",
+  "description": "What GET /api/v1/items/{key} answers and `ingestion items show --json` prints: the item, each home its file lives at, each sighting, each stage's output, each gate decision, each delivery and its latest suggestion.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "item", "sightings", "outputs", "decisions", "deliveries"],
+  "required": ["schema_version", "item", "homes", "sightings", "outputs", "decisions", "deliveries"],
   "properties": {
     "schema_version": {"const": 1},
     "item": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["key", "zone", "media_type", "flow_id", "created_ts"],
+      "required": ["key", "zone", "media_type", "flow_id", "phase", "created_ts"],
       "properties": {
         "key": {"type": "string"},
         "zone": {"enum": ["outside", "owner"]},
@@ -20,9 +20,28 @@
         "url": {"type": ["string", "null"]},
         "blob_sha256": {"type": ["string", "null"]},
         "size_bytes": {"type": ["integer", "null"]},
+        "md5": {"description": "The bytes' MD5, which a reader such as sioyek keys a book's annotations by.", "type": ["string", "null"]},
         "parent_key": {"type": ["string", "null"]},
         "flow_id": {"type": "string"},
+        "phase": {"$ref": "items-list.schema.json#/$defs/phase"},
+        "waiting_at": {"$ref": "items-list.schema.json#/$defs/waiting_at"},
         "created_ts": {"type": "string", "format": "date-time"}
+      }
+    },
+    "homes": {
+      "description": "Each place the item's file lives under a named root, where it was referenced rather than copied. A home gone from its root keeps its row.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["root", "path", "found_ts"],
+        "properties": {
+          "root": {"type": "string"},
+          "path": {"description": "The file's place below its root, with forward slashes.", "type": "string"},
+          "modified_ts": {"description": "The file's modification time, to the nanosecond, when its bytes were last hashed at this path.", "type": ["string", "null"], "format": "date-time"},
+          "found_ts": {"type": "string", "format": "date-time"},
+          "gone_ts": {"type": ["string", "null"], "format": "date-time"}
+        }
       }
     },
     "sightings": {
@@ -36,6 +55,7 @@
           "external_key": {"type": "string"},
           "tags": {"type": "array", "items": {"type": "string"}},
           "zone": {"enum": ["outside", "owner"]},
+          "cursor_position": {"description": "The connector's cursor where it last delivered the item.", "type": ["string", "null"]},
           "first_seen_ts": {"type": "string", "format": "date-time"},
           "last_seen_ts": {"type": "string", "format": "date-time"}
         }

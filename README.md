@@ -76,6 +76,11 @@ public_url = "https://ingestion.example.com"
 # outbox moves past it, so a record filed elsewhere first never ships again.
 records_otlp_url = "http://collector.example.com:4318/v1/logs"
 
+# Each named root's directory. A file under a root lands by reference, as
+# <root>:<path below it>, rather than as a copy in the blob volume.
+[serve.homes]
+books = "/srv/books"
+
 [worker]
 slots = 4     # tasks leased at once
 lease = "10m" # how long a lease holds without a heartbeat
@@ -88,8 +93,9 @@ poll = "10s"  # how often an idle worker asks for work
   with the client-credentials grant. The worker requires it, or a `token_command`.
 - **`NODE_NAME`**, where set, names the node in each shipped record's resource.
 - **The access token decides what a caller reaches.** A person's token reaches every route. A
-  service token reaches only the routes its scopes grant, and a worker needs
-  `ingestion.tasks.claim`.
+  service token reaches only the routes its scopes grant. A worker needs
+  `ingestion.tasks.claim`, which also reads and writes bytes through
+  `/api/v1/blobs/{sha256}`, and a service that reads items needs `ingestion.items.read`.
 
 `ingestion auth login`, `auth status` and `auth logout` hold a person's login. `ingestion tasks
 list` reads the service's open tasks and the workers it has heard from:
@@ -107,10 +113,39 @@ shape in `schemas/tasks-list.schema.json`. The list shows each worker heard from
 `--all-workers` lists every worker the service holds, since each process start is a worker of its
 own. A command exits 4 when the service gives no answer, and 2 when a flag is wrong.
 
+### Reading items and their bytes
+
+`ingestion items list` lists items, newest first, and `ingestion items show <key or url>` shows
+one with every record it holds. A URL resolves to the key of the artifact it names, so a Reddit
+or YouTube link reaches its post or video:
+
+```text
+$ ingestion items show https://www.reddit.com/r/golang/comments/aq7ggd/a_post/
+reddit/t3_aq7ggd   outside   landed
+  url      https://www.reddit.com/r/golang/comments/aq7ggd/a_post/
+  parent   file/5d41402abc4b2a76
+  sighted  reddit-exports  outside  2026-11-24 21:13:50 EST  tags none  external t3_aq7ggd
+  landed   2026-11-24 21:13:50 EST  application/x-reddit-save+json  blob 9f86d081884c  1.2 KiB  md5 …
+```
+
+A title is outsider text where the zone is `outside`. `items list --keys` prints the keys alone,
+one per line, so a script or a session can work through items without reading one. `--limit`
+bounds the list, and `ingestion items list --help` prints its default. `--json` prints the shapes
+in `schemas/items-list.schema.json` and `schemas/item.schema.json`. `items show` sends a URL to
+the service, which resolves it to its key.
+
+The service keeps each item's bytes under their SHA-256 in `blobs/sha256/<first two>/<rest>` below
+`state_dir`, with their MD5 beside them. A file under a `[serve.homes]` root is read where it lies
+instead. Its size and modification time are recorded when it lands. A file whose size or time
+differs is hashed again before it is served, and is not served where its bytes changed.
+`ingestion blobs unpaired` names each blob in the volume that no row names, and each row whose
+bytes are missing. It exits 3 where it names any, and 1 where it could not compare. It deletes
+nothing.
+
 ### Running it in a container
 
 Each release publishes the image `ghcr.io/datapointchris/ingestion:<version>`. It runs `serve`
-by default, and `worker run` when given those arguments. The store lives on a volume at
+by default, and `worker run` when given those arguments. The store and its blobs live on a volume at
 `/var/lib/ingestion`, and the config is read from `/etc/ingestion/config.toml`. The image runs as
 uid and gid 10600.
 

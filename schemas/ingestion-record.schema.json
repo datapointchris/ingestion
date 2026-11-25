@@ -51,7 +51,7 @@
         "key": {"$ref": "#/$defs/item_key"},
         "media_type": {"description": "The artifact's media type, such as text/html or application/pdf.", "type": "string"},
         "zone": {"$ref": "#/$defs/zone"},
-        "blob_sha256": {"description": "The landed bytes, or null where a home holds the file instead.", "anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+        "blob_sha256": {"description": "The SHA-256 of the item's bytes, which the blob volume or a home in homes holds. Null where the item landed no bytes, such as a link not yet fetched.", "anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
         "parent_key": {"description": "The item this one was split from, such as the export a Reddit save came in.", "anyOf": [{"$ref": "#/$defs/item_key"}, {"type": "null"}]},
         "flow_id": {"description": "The flow the item started.", "type": "string"},
         "parent_flow_id": {"description": "The flow of the write that landed the item.", "type": ["string", "null"]},
@@ -99,6 +99,7 @@
         "blob_sha256": {"$ref": "#/$defs/sha256"},
         "root": {"description": "The named root the path resolves under, such as books.", "type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
         "path_sha256": {"$ref": "#/$defs/sha256"},
+        "modified_ts": {"description": "The file's modification time, to the nanosecond, when its bytes were last hashed at this path. A file whose size or modification time differs is hashed again before it is read as the blob.", "anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
         "found_ts": {"$ref": "#/$defs/timestamp"},
         "gone_ts": {"description": "When the file left its root. The item stays.", "anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]}
       }
