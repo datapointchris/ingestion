@@ -1,0 +1,31 @@
+# Patterns are YARA-X regular expressions, matched without regard to case.
+title: "A link the item suggests"
+id: ingestion.link
+status: stable
+severity: info
+description: >
+  Lists each web link an item carries, so a person reading a suggestion sees
+  where it points before following it. A finding is a list entry, not an
+  attack.
+detection:
+  condition: any
+  conditions:
+    - field: content
+      operator: regex
+      value: 'https?:\/\/[a-z0-9][a-z0-9.\-]*[^\s<>"''`)\]]*'
+      description: "An http or https URL"
+test_cases:
+  true_positives:
+    - input: "See https://example.com/page?id=4 for the details."
+      expected: triggered
+      description: "A bare URL"
+    - input: "The [docs](http://example.org/a/b) cover it."
+      expected: triggered
+      description: "A Markdown link"
+  true_negatives:
+    - input: "No links here, only words."
+      expected: not_triggered
+      description: "Prose with no link"
+    - input: "The browser speaks the http protocol."
+      expected: not_triggered
+      description: "The protocol named in prose"

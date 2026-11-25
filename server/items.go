@@ -129,9 +129,8 @@ type OutputView struct {
 
 // FindingView is one scanner finding and the text it matched.
 type FindingView struct {
-	Rule     string  `json:"rule"`
-	Severity string  `json:"severity"`
-	Span     *string `json:"span"`
+	store.Finding
+	Span *string `json:"span"`
 }
 
 // DecisionView is one gate's decision.
@@ -179,12 +178,10 @@ type ParseAnswer struct {
 }
 
 // ParseFinding is one finding of the newest scan of the parse, with the text
-// it matched.
+// it matched. Its offset counts bytes from its unit's start.
 type ParseFinding struct {
-	Rule     string `json:"rule"`
-	Severity string `json:"severity"`
-	Unit     *int   `json:"unit"`
-	Span     string `json:"span"`
+	store.Finding
+	Span string `json:"span"`
 }
 
 // ItemRoutes are the routes for a person or a service holding
@@ -342,6 +339,12 @@ func (h itemHandlers) parse(w http.ResponseWriter, r *http.Request) {
 		h.internal(w, r, "read a parse", err)
 		return
 	}
+	JSON(w, http.StatusOK, parseAnswer(p))
+}
+
+// parseAnswer is p as the parse routes answer it, with the findings of the
+// newest scan that read it.
+func parseAnswer(p store.Parse) ParseAnswer {
 	answer := ParseAnswer{
 		SchemaVersion: 1, Key: p.Item.Key, Zone: p.Item.Zone, Title: p.Item.Title, URL: p.Item.URL, MediaType: p.Item.MediaType,
 		Extractor: p.Output.Producer, ExtractorVersion: p.Output.ProducerVersion, Text: p.Text(), Units: p.Units,
@@ -351,16 +354,17 @@ func (h itemHandlers) parse(w http.ResponseWriter, r *http.Request) {
 		answer.Units = []store.Unit{}
 	}
 	if p.Scan != nil {
-		answer.RulesVersion = &p.Scan.ProducerVersion
+		rules := store.ScanRules(p.Scan.ProducerVersion)
+		answer.RulesVersion = &rules
 		for i, f := range p.Scan.Findings {
-			finding := ParseFinding{Rule: f.Rule, Severity: f.Severity}
+			finding := ParseFinding{Finding: f}
 			if i < len(p.Scan.Spans) {
-				finding.Unit, finding.Span = p.Scan.Spans[i].Unit, p.Scan.Spans[i].Span
+				finding.Span = p.Scan.Spans[i].Span
 			}
 			answer.Findings = append(answer.Findings, finding)
 		}
 	}
-	JSON(w, http.StatusOK, answer)
+	return answer
 }
 
 // pickWords is the extractor and version that pick narrows to, as a phrase.
@@ -410,8 +414,11 @@ func itemAnswer(rec store.ItemRecords) ItemAnswer {
 		if n, ok := rec.UnitCount(o); ok {
 			view.Units = &n
 		}
+		if o.Findings != nil {
+			view.Findings = []FindingView{}
+		}
 		for i, f := range o.Findings {
-			finding := FindingView{Rule: f.Rule, Severity: f.Severity}
+			finding := FindingView{Finding: f}
 			if i < len(o.Spans) {
 				finding.Span = &o.Spans[i].Span
 			}

@@ -24,6 +24,7 @@ import (
 
 	"github.com/datapointchris/ingestion/deliver"
 	"github.com/datapointchris/ingestion/extract"
+	"github.com/datapointchris/ingestion/scan"
 	"github.com/datapointchris/ingestion/store"
 	"github.com/datapointchris/ingestion/worker"
 )
@@ -35,10 +36,10 @@ const (
 )
 
 // workerHandlers lists the stage handlers for a worker to run: each
-// extractor's, and each of deliverers by its name. A stage whose work runs in
-// a worker adds its handler here.
+// extractor's, the scan's, and each of deliverers by its name. A stage whose
+// work runs in a worker adds its handler here.
 func workerHandlers(client *worker.Client, deliverers map[string]deliver.Deliverer, log *slog.Logger) []worker.Handler {
-	handlers := extract.Builtin().Handlers(client, log)
+	handlers := append(extract.Builtin().Handlers(client, log), scan.Handlers(client, log)...)
 	for _, name := range slices.Sorted(maps.Keys(deliverers)) {
 		handlers = append(handlers, deliver.Handler(name, deliverers[name]))
 	}

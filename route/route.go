@@ -6,12 +6,14 @@
 // placed on a side is read as is or by a model: by its connector's read rule,
 // else its side's default.
 //
-// The service runs both gates in the write that ends each stage before the
-// side gate, so a parse and its side decision commit together. It runs them
-// again in the write that applies a changed set. Each run leaves an item that
-// a tag, a rule, a model or a person placed as it is. It decides again an item
-// that the gate itself sent to review, or a model's guess below the floor, so
-// a guess or a rule that arrives later reaches it. A person's placement from
+// The side gate places an item only once the scan of its newest parse is
+// done. The service runs both gates in the write that ends each stage after
+// the parse and before the side gate, so a scan and its side decision commit
+// together, and a parse's end places nothing. It runs them again in the write
+// that applies a changed set. Each run leaves an item that a tag, a rule, a
+// model or a person placed as it is. It decides again an item that the gate
+// itself sent to review, or a model's guess below the floor, so a guess or a
+// rule that arrives later reaches it. A person's placement from
 // review runs the read gate the same way. Each decision is appended, and the
 // newest at a gate decides. Each decision brings the item's delivery in line
 // in the same write: a read as is queues it, and a drop or a move withdraws
@@ -205,11 +207,11 @@ func Read(set connectors.Set, sightings []store.Sighting, side string, note *str
 }
 
 // AfterStage is the hook that serve runs in the write that ends a task done.
-// Where the task's stage comes before the side gate, it runs the gates over
-// the task's item.
+// Where the task's stage comes after the parse and before the side gate, such
+// as the scan, it runs the gates over the task's item.
 func AfterStage(log *slog.Logger) func(context.Context, *store.Tx, store.Task) error {
 	return func(ctx context.Context, tx *store.Tx, task store.Task) error {
-		if task.ItemKey == nil || !store.Precedes(task.Stage, store.GateSide) {
+		if task.ItemKey == nil || !store.Precedes(store.StageParse, task.Stage) || !store.Precedes(task.Stage, store.GateSide) {
 			return nil
 		}
 		if _, err := Gate(ctx, tx, *task.ItemKey, log); err != nil {
@@ -220,14 +222,14 @@ func AfterStage(log *slog.Logger) func(context.Context, *store.Tx, store.Task) e
 }
 
 // AfterApply is the hook that serve runs in the write that applies a changed
-// set. It runs the gates again over each parsed item that no side decision
+// set. It runs the gates again over each scanned item that no side decision
 // placed, so a rule the set adds places what it matches. It then reconciles
 // the delivery of each item read as is that holds no settled delivery, so a
 // side's default or a deliverer that the set adds reaches the items that
 // waited for one.
 func AfterApply(log *slog.Logger) connectors.AfterApply {
 	return func(ctx context.Context, tx *store.Tx) error {
-		keys, err := tx.UnplacedParsedKeys(ctx)
+		keys, err := tx.UnplacedScannedKeys(ctx)
 		if err != nil {
 			return err
 		}
@@ -252,13 +254,14 @@ func AfterApply(log *slog.Logger) connectors.AfterApply {
 // item on a side, the read gate, appending each decision. It answers the
 // decisions it appended.
 //
-// It runs only over an item with a done parse. It leaves an item that a tag, a
-// rule, a model or a person placed as it is, so a sighting that arrives after
+// It runs only over an item whose newest done parse holds a done scan, so no
+// item is placed before its scan. It leaves an item that a tag, a rule, a
+// model or a person placed as it is, so a sighting that arrives after
 // placement moves nothing. Where it decides again and answers what the item's
 // newest side decision already says, it appends nothing.
 //
 // Where it cannot read the set in force or the item's sightings, it sends the
-// item to review as CauseGateError and logs why, so the parse stands and the
+// item to review as CauseGateError and logs why, so the scan stands and the
 // next stage or apply runs the gate again.
 func Gate(ctx context.Context, tx *store.Tx, key string, log *slog.Logger) ([]store.Decision, error) {
 	newest, sided, err := tx.NewestDecision(ctx, key, store.GateSide)
@@ -266,9 +269,7 @@ func Gate(ctx context.Context, tx *store.Tx, key string, log *slog.Logger) ([]st
 		return nil, err
 	}
 	outputs, err := tx.Outputs(ctx, key)
-	if err != nil || !slices.ContainsFunc(outputs, func(o store.Output) bool {
-		return o.Stage == store.StageParse && o.State == store.OutputDone
-	}) {
+	if err != nil || !store.NewestParseScanned(outputs) {
 		return nil, err
 	}
 	set, sightings, err := inputs(ctx, tx, key)

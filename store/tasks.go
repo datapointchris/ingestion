@@ -324,6 +324,22 @@ func (s *Store) Heartbeat(ctx context.Context, id string, token int64, lease tim
 	return task, err
 }
 
+// Leased reads task id where token holds its lease, so a worker reads the
+// input of a task it holds and of no other. It answers ErrNoTask where there
+// is no such task, and ErrStaleLease where token does not hold its lease.
+func (s *Store) Leased(ctx context.Context, id string, token int64) (Task, error) {
+	task, found, err := first[Task](ctx, s.read, table("tasks"), `id = ?`, id)
+	switch {
+	case err != nil:
+		return task, err
+	case !found:
+		return task, fmt.Errorf("task %s: %w", id, ErrNoTask)
+	case task.State != TaskLeased || task.LeaseToken == nil || *task.LeaseToken != token:
+		return task, fmt.Errorf("task %s under token %d: %w", id, token, ErrStaleLease)
+	}
+	return task, nil
+}
+
 // Outcome is how a worker's task ended.
 type Outcome struct {
 	// State is TaskDone, TaskFailed, or TaskQueued to try again after

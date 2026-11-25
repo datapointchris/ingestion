@@ -123,23 +123,28 @@ type ReportDelivery struct {
 // item and stage from the task and stamps the row, so a column the store adds
 // for itself never changes what a worker sends.
 type ReportOutput struct {
-	Producer        string          `json:"producer"`
-	ProducerVersion string          `json:"producer_version"`
-	Lens            *string         `json:"lens,omitempty"`
-	LensVersion     *string         `json:"lens_version,omitempty"`
-	State           string          `json:"state"`
-	BlobSHA256      *string         `json:"blob_sha256,omitempty"`
-	DispatchID      *string         `json:"dispatch_id,omitempty"`
-	RunID           *string         `json:"run_id,omitempty"`
-	Tokens          *store.Tokens   `json:"tokens,omitempty"`
-	Findings        []store.Finding `json:"findings,omitempty"`
-	Quality         *int            `json:"quality,omitempty"`
-	SideGuess       *string         `json:"side_guess,omitempty"`
-	SideConfidence  *float64        `json:"side_confidence,omitempty"`
+	Producer        string        `json:"producer"`
+	ProducerVersion string        `json:"producer_version"`
+	Lens            *string       `json:"lens,omitempty"`
+	LensVersion     *string       `json:"lens_version,omitempty"`
+	State           string        `json:"state"`
+	BlobSHA256      *string       `json:"blob_sha256,omitempty"`
+	DispatchID      *string       `json:"dispatch_id,omitempty"`
+	RunID           *string       `json:"run_id,omitempty"`
+	Tokens          *store.Tokens `json:"tokens,omitempty"`
+	// InputProducer and InputVersion name the parse that a later stage read.
+	InputProducer *string `json:"input_producer,omitempty"`
+	InputVersion  *string `json:"input_version,omitempty"`
+	// Findings and Spans are a scan's. A scan that found nothing sends an
+	// empty list, which reads apart from a stage that sends none.
+	Findings       []store.Finding `json:"findings"`
+	Quality        *int            `json:"quality,omitempty"`
+	SideGuess      *string         `json:"side_guess,omitempty"`
+	SideConfidence *float64        `json:"side_confidence,omitempty"`
 	// Units are a parse's, numbered from 1 in order, which the service writes
 	// as rows of parse_units under the producer and its version.
 	Units  []store.Unit    `json:"units,omitempty"`
-	Spans  []store.Span    `json:"spans,omitempty"`
+	Spans  []store.Span    `json:"spans"`
 	Answer json.RawMessage `json:"answer,omitempty"`
 	Error  *string         `json:"error,omitempty"`
 }
@@ -148,7 +153,8 @@ type ReportOutput struct {
 func (o ReportOutput) output(task store.Task) store.Output {
 	return store.Output{
 		ItemKey: *task.ItemKey, Stage: task.Stage, Producer: o.Producer, ProducerVersion: o.ProducerVersion,
-		Lens: o.Lens, LensVersion: o.LensVersion, State: o.State, BlobSHA256: o.BlobSHA256,
+		Lens: o.Lens, LensVersion: o.LensVersion, InputProducer: o.InputProducer, InputVersion: o.InputVersion,
+		State: o.State, BlobSHA256: o.BlobSHA256,
 		DispatchID: o.DispatchID, RunID: o.RunID, Tokens: o.Tokens, Findings: o.Findings, Quality: o.Quality,
 		SideGuess: o.SideGuess, SideConfidence: o.SideConfidence, Spans: o.Spans, Answer: o.Answer, Error: o.Error,
 	}
@@ -192,13 +198,13 @@ type TasksAnswer struct {
 const WorkersHeardWithin = 10 * time.Minute
 
 // AfterStage runs in the write that ends an item's task done, after the
-// stage's outputs, such as the gates that follow an item's parse. An error
-// rolls the whole report back, so the task stays leased.
+// stage's outputs, such as the scan and the gates that follow an item's parse.
+// An error rolls the whole report back, so the task stays leased.
 type AfterStage func(ctx context.Context, tx *store.Tx, task store.Task) error
 
-// TaskRoutes are the routes for a worker to lease tasks through, and the
-// list for a person to read. after runs in the write that ends each item's
-// task done, and nil runs nothing.
+// TaskRoutes are the routes for a worker to lease tasks through and read a
+// task's input, and the list for a person to read. after runs in the write
+// that ends each item's task done, and nil runs nothing.
 func TaskRoutes(st *store.Store, log *slog.Logger, after AfterStage) Routes {
 	if log == nil {
 		log = slog.Default()
@@ -208,6 +214,7 @@ func TaskRoutes(st *store.Store, log *slog.Logger, after AfterStage) Routes {
 		r.Handle(RouteTaskClaims, h.claim)
 		r.Handle(RouteTaskHeartbeats, h.heartbeat)
 		r.Handle(RouteTaskReports, h.report)
+		r.Handle(RouteTaskParse, h.parse)
 		r.Handle(RouteTasks, h.list)
 	}
 }
@@ -326,6 +333,52 @@ func (h taskHandlers) report(w http.ResponseWriter, r *http.Request) {
 	h.log.Info("a task ended", "task", task.ID, "item", text(task.ItemKey), "connector", text(task.Connector), "stage", task.Stage,
 		"state", task.State, "outputs", len(body.Outputs))
 	JSON(w, http.StatusOK, viewOf(task, h.store.Now()))
+}
+
+// parse answers the newest done parse of the item whose task the caller
+// leases, under the lease's token in the token query, so a worker reads the
+// input of a task it holds and of no other.
+func (h taskHandlers) parse(w http.ResponseWriter, r *http.Request) {
+	token, err := strconv.ParseInt(r.URL.Query().Get("token"), 10, 64)
+	if err != nil {
+		Refuse(w, http.StatusBadRequest, CodeInvalidQuery, "token is the lease token of the task, not %q", r.URL.Query().Get("token"))
+		return
+	}
+	task, err := h.store.Leased(r.Context(), r.PathValue("id"), token)
+	if h.leaseRefused(w, r, err) {
+		return
+	}
+	if task.ItemKey == nil {
+		Refuse(w, http.StatusNotFound, CodeParseNotFound, "task %s is for no item, so it has no parse", task.ID)
+		return
+	}
+	p, err := h.store.Parse(r.Context(), *task.ItemKey, store.ParsePick{})
+	switch {
+	case errors.Is(err, store.ErrNoParse):
+		Refuse(w, http.StatusNotFound, CodeParseNotFound, "%s holds no done parse", *task.ItemKey)
+		return
+	case err != nil:
+		h.internal(w, r, "read a task's parse", err)
+		return
+	}
+	units := p.Units
+	if units == nil {
+		units = []store.Unit{}
+	}
+	JSON(w, http.StatusOK, TaskParseAnswer{
+		SchemaVersion: 1, Key: p.Item.Key, Extractor: p.Output.Producer, ExtractorVersion: p.Output.ProducerVersion, Units: units,
+	})
+}
+
+// TaskParseAnswer is what GET /api/v1/tasks/{id}/parse answers:
+// schemas/task-parse.schema.json. It carries the units alone, because the
+// parse's whole text is the units joined.
+type TaskParseAnswer struct {
+	SchemaVersion    int          `json:"schema_version"`
+	Key              string       `json:"key"`
+	Extractor        string       `json:"extractor"`
+	ExtractorVersion string       `json:"extractor_version"`
+	Units            []store.Unit `json:"units"`
 }
 
 func (h taskHandlers) list(w http.ResponseWriter, r *http.Request) {

@@ -75,9 +75,10 @@ type PlaceRequest struct {
 	Login       string  `json:"login,omitempty"`
 }
 
-// DropRequest drops an item, which keeps its row, for Cause.
+// DropRequest drops an item, which keeps its row. Cause names the aspect that
+// decided it, and a drop that names none is kept as unstated.
 type DropRequest struct {
-	Cause string  `json:"cause"`
+	Cause string  `json:"cause,omitempty"`
 	Note  *string `json:"note,omitempty"`
 	Login string  `json:"login,omitempty"`
 }
@@ -156,8 +157,8 @@ func (h reviewHandlers) drop(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &body) {
 		return
 	}
-	if !causeSpelling.MatchString(body.Cause) {
-		Refuse(w, http.StatusBadRequest, CodeInvalidBody, "a drop names its cause, a lowercase word or words joined by hyphens, such as subreddit, not %q", body.Cause)
+	if body.Cause != "" && !causeSpelling.MatchString(body.Cause) {
+		Refuse(w, http.StatusBadRequest, CodeInvalidBody, "cause is a lowercase word or words joined by hyphens, such as subreddit, not %q", body.Cause)
 		return
 	}
 	h.decide(w, r, route.Placement{Cause: body.Cause, Note: body.Note}, body.Login)

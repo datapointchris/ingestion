@@ -106,16 +106,16 @@ client_id = "life-svc-ingestion"
   unaffected.
 - **`NODE_NAME`**, where set, names the node in each shipped record's resource.
 - **The access token decides what a caller reaches.** A person's token reaches every route. A
-  service token reaches only the routes its scopes grant. A worker needs
-  `ingestion.tasks.claim`, which also reads and writes bytes through
-  `/api/v1/blobs/{sha256}`. A service that reads items needs `ingestion.items.read`, and one that
-  runs a stage again needs `ingestion.items.replay`. A job that applies declarations needs
-  `ingestion.declarations.apply`, one that reads connectors `ingestion.connectors.read`, one that
-  runs them `ingestion.connectors.run`, and a source that drops files `ingestion.items.drop`.
-  An app that shows the review queue needs `ingestion.review.read`, and one that places items
-  from it for a person needs `ingestion.review.place`.
-  Releasing a connector's first fill spends the model stages on every item it held, so it takes
-  `ingestion.first-fills.release`, which no other scope grants.
+  service token reaches only the routes its scopes grant. A worker needs `ingestion.tasks.claim`,
+  which also reads and writes bytes through `/api/v1/blobs/{sha256}`. A scan task reads its item's
+  parse through `/api/v1/tasks/{id}/parse`, under the task's lease. A service that reads items
+  needs `ingestion.items.read`, and one that runs a stage again needs `ingestion.items.replay`. A
+  job that applies declarations needs `ingestion.declarations.apply`, one that reads connectors
+  `ingestion.connectors.read`, one that runs them `ingestion.connectors.run`, and a source that
+  drops files `ingestion.items.drop`. An app that shows the review queue needs
+  `ingestion.review.read`, and one that places items from it for a person needs
+  `ingestion.review.place`. Releasing a connector's first fill spends the model stages on every
+  item it held, so it takes `ingestion.first-fills.release`, which no other scope grants.
 
 `ingestion auth login`, `auth status` and `auth logout` hold a person's login. `ingestion tasks
 list` reads the service's open tasks and the workers it has heard from:
@@ -304,10 +304,52 @@ holds no replay for with `stage_not_replayable`. It refuses a `--key` that names
 replay at an unchanged extractor version retries the items whose parse failed. An item whose
 parse is done keeps it, even where the rerun fails.
 
+### Scanning an item for what it suggests and what it hides
+
+A parse that is done queues the item's scan in the same write that reports it. A worker runs
+YARA-X's `yr` over the parse's units, joined as the parse's text joins them, with two rule sets:
+
+- Agent Threat Rules at a pinned commit, converted to YARA. A converted rule is kept only where
+  `yr` compiles it and it passes the true positives and true negatives that ATR ships with it.
+- ingestion's own rules in `scan/ingestion-rules/`. They list the commands, code and links an
+  item suggests, and find Unicode that hides text from a person reading it.
+
+`yr` reads the text as written, and again as ATR's own engine reads it: after NFKC, with every
+zero-width and bidirectional control removed and each Cyrillic or Greek letter that looks Latin
+folded to that letter. So `Ignоre all previous instructions` with a Cyrillic `о` matches as
+ATR's engine would match it. A rule marked `suppress_in_code_blocks` does not count a match inside
+markdown code.
+
+A finding names its rule, the rule's severity, the unit it starts in, its byte offset and length
+in that unit, and the span it matched, each in the text as written. It reads through the parse
+route, and through `ingestion items show`, which prints each span quoted with any hidden character
+escaped. A finding never drops an item. A scan that fails runs again, up to three runs, then fails
+its task. The item's phase then reads `failed` until a later scan of it is done, unless the item
+waits in review or a side decision dropped it.
+
+`ingestion items replay --stage scan` scans the selected items again, as a new rule set needs. A
+scan by new rules, or of a new parse, writes beside the old one. A scan that is done keeps its
+findings, even where a rerun fails.
+
+The image builds the rules once, and a worker reads them from
+`/usr/local/share/ingestion/scan-rules`. A worker with no `yr` or no built rules claims no scan
+task, and logs why. To build them by hand:
+
+```text
+release/install-tools ./bin yr
+release/download-atr-rules ./atr
+go run ./scan/build-rules --atr ./atr --yr ./bin/yr --out ./scan-rules
+```
+
+`build-rules` prints the rules' version, how many rules it kept, and each reason it dropped a rule
+with how many it dropped for that reason. `rules.json` beside the compiled rules records the
+decision on each rule.
+
 ### The side gate places each item, and a person places what it leaves
 
-When an item's parse is done, the service runs the side gate in the same write. The gate places
-the item by the first rung that decides it:
+When the scan of an item's newest parse is done, the service runs the side gate in the same
+write. A parse's end alone places nothing, so no item reaches a side before its scan. The gate
+places the item by the first rung that decides it:
 
 1. **Every sighting's tags.** A tag that a destination names places the item on that
    destination's side. Tags naming two sides send it to review as `tags-disagree`.
@@ -320,14 +362,17 @@ the item by the first rung that decides it:
    waits as `no-guess`.
 
 The gate runs again in the write that ends each later stage before it, such as the quality gate,
-and in the write that applies a changed set. Each run decides again an item that the gate sent to
+and in the write that applies a changed set. Each run passes over an item whose newest parse is
+not scanned yet. Each run decides again an item that the gate sent to
 review as `no-guess`, `below-floor` or `gate-error`, so a guess or a rule that arrives later
 places it. A placed item stays where it is: a later sighting or parse moves nothing, and only a
 person's placement moves it. Where the gate cannot read the set in force or the item's sightings,
-it logs why and sends the item to review as `gate-error`, and the parse stands.
+it logs why and sends the item to review as `gate-error`, and the scan stands.
 
 An item whose parse failed waits in review as `no-parse`. One that the quality gate sent to
-review before any side decision waits as `quality-review`.
+review before any side decision waits as `quality-review`. When an item's scan fails for good
+before any side decision, the item waits neither on a side nor in review. Its phase reads
+`failed` until `items replay --stage scan` scans it.
 
 Where the item lands on a side, the read gate chooses how it is read: as is, or by a model under
 the side's lens. The first connector that sighted it and declares a `read_rule` decides.
@@ -351,8 +396,8 @@ Dropped file/5d41402abc4b2a76, cause title.
 `schemas/review-list.schema.json`. `place` and `drop` post to `/api/v1/review/{key}/place` and
 `…/drop`, and print `schemas/review-placement.schema.json` with `--json`. A placement names a
 destination that the set in force declares, and any other is refused. `--cause` names the aspect
-that decided it, such as subreddit or title, and `--note` carries the questions that a model read
-answers. Sending the same placement again changes nothing. A service placing for a person names
+that decided it, such as subreddit or title, and a decision that names none is kept as
+`unstated`. `--note` carries the questions that a model read answers. Sending the same placement again changes nothing. A service placing for a person names
 the person's `login` in its body, because a service token carries no person. The decision keeps
 the service's client id beside the login.
 

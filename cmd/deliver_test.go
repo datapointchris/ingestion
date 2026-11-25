@@ -257,6 +257,7 @@ func TestASavePlacedOnLifesReadingListIsSavedThereOnceUnderItsKey(t *testing.T) 
 		redditSave("t3_dd4", "AskCulinary"), redditSave("t3_ee5", "Cooking"),
 	)})
 	p.parse(t, extract.Builtin())
+	p.scanFindingNothing(t)
 	other := "url/0123456789abcdef"
 	byHand := life.hold(text(p.shown(t, "reddit/t3_cc3").Item.URL), nil)
 	held := life.hold(text(p.shown(t, "reddit/t3_dd4").Item.URL), &other)
@@ -305,6 +306,7 @@ func TestASavePlacedOnLifesReadingListIsSavedThereOnceUnderItsKey(t *testing.T) 
 	}
 	p.landExports(t, map[string][]byte{"again": redditExport(redditSave("t3_aa1", "Cooking"), redditSave("t3_dd4", "AskCulinary"))})
 	p.parse(t, extract.Builtin())
+	p.scanFindingNothing(t)
 	if ran := p.run(t, lifeArticles); ran != 0 {
 		t.Errorf("after a replay and a second landing the worker ran %d deliveries, want none", ran)
 	}
@@ -333,6 +335,7 @@ func TestAPersonsDropOrMoveWithdrawsADeliveryThatHasNotRun(t *testing.T) {
 	life := newStandInLife(t, p.provider)
 	p.landExports(t, map[string][]byte{"first": redditExport(redditSave("t3_aa1", "Cooking"), redditSave("t3_cc3", "Cooking"))})
 	p.parse(t, extract.Builtin())
+	p.scanFindingNothing(t)
 	for _, args := range [][]string{
 		{"review", "drop", "reddit/t3_aa1", "--cause", "subreddit"},
 		{"review", "place", "reddit/t3_cc3", "work-inbox", "--cause", "subreddit"},
@@ -368,6 +371,7 @@ func TestAnItemPlacedOnASideAloneWaitsForThatSidesDefaultDestination(t *testing.
 	life := newStandInLife(t, p.provider)
 	p.landExports(t, map[string][]byte{"first": redditExport(redditSave("t3_bb2", "golang"))})
 	p.parse(t, extract.Builtin())
+	p.scanFindingNothing(t)
 	key, guess, sure, run := "reddit/t3_bb2", connectors.SidePersonal, 0.9, "run-1"
 	if err := p.st.Update(ctx, func(tx *store.Tx) error {
 		if err := tx.PutOutput(ctx, store.Output{
@@ -407,15 +411,16 @@ func TestAnItemPlacedOnASideAloneWaitsForThatSidesDefaultDestination(t *testing.
 // again. The exports are outsider text kept out of this public repo, so the
 // test reads them only from redditExportsEnv, and reports counts alone.
 func TestTheStoredRedditExportsSaveEachPersonalSaveInLifeOnce(t *testing.T) {
-	exportsDir, declarations := os.Getenv(redditExportsEnv), os.Getenv(declarationsEnv)
-	if exportsDir == "" || declarations == "" {
-		t.Skip(redditExportsEnv + " and " + declarationsEnv + " name no stored Reddit exports and no declaration set")
+	declarations := os.Getenv(declarationsEnv)
+	if declarations == "" {
+		t.Skip(declarationsEnv + " names no declaration set")
 	}
-	exports := storedExports(t, exportsDir)
+	exports := storedExports(t)
 	p := newGatedPipeline(t, declarations)
 	life := newStandInLife(t, p.provider)
 	p.landExports(t, exports)
 	p.parse(t, extract.Builtin())
+	p.scanFindingNothing(t)
 	lifeArticles := p.lifeDeliverer(t, life)
 	ran := p.run(t, lifeArticles)
 	readAsIs := p.count(t, `SELECT count(*) FROM items i WHERE
@@ -429,6 +434,7 @@ func TestTheStoredRedditExportsSaveEachPersonalSaveInLifeOnce(t *testing.T) {
 
 	p.landExports(t, exports)
 	p.parse(t, extract.Builtin())
+	p.scanFindingNothing(t)
 	queued := p.replayDeliveries(t)
 	rerun := p.run(t, lifeArticles)
 	again, createsAgain := life.counts()
@@ -445,24 +451,6 @@ func TestTheStoredRedditExportsSaveEachPersonalSaveInLifeOnce(t *testing.T) {
 		"%d delivered to an existing article, %d refused, %d pending; a second landing and a deliver replay queued %d and added %d articles",
 		len(exports), readAsIs, ran, articles, outcomes[store.DeliveryDeliveredToExisting], outcomes[store.DeliveryRefused],
 		outcomes[store.DeliveryPending], queued, again-articles)
-}
-
-// storedExports reads each stored export in dir, by its file's name.
-func storedExports(t *testing.T, dir string) map[string][]byte {
-	t.Helper()
-	files, err := filepath.Glob(filepath.Join(dir, "*.json"))
-	if err != nil || len(files) == 0 {
-		t.Fatalf("%s holds no JSON files: %v", dir, err)
-	}
-	exports := map[string][]byte{}
-	for _, path := range files {
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		exports[strings.TrimSuffix(filepath.Base(path), ".json")] = raw
-	}
-	return exports
 }
 
 // tasks is every task that is not done, as `tasks list --json` prints them.

@@ -72,6 +72,12 @@ spec:
                   name: ingestion-deliver-life-articles
                   key: secret
                   optional: true
+          # One scan of a 61 MiB parse, about the most a parse report carries,
+          # peaked at 336 MiB in the worker and 110 MiB in yr, and wrote 70 MiB
+          # of the text's two views to /tmp. Two slots hold two such scans, about
+          # 890 MiB in all. The worker's figure is scan.NewHandler's run over a
+          # served task-parse answer of that size, and yr's is
+          # `/usr/bin/time -f %M yr scan --compiled-rules rules.yarc <the views>`.
           resources:
             requests:
               cpu: 50m

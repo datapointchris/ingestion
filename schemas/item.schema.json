@@ -79,14 +79,10 @@
           "findings": {
             "type": ["array", "null"],
             "items": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["rule", "severity"],
-              "properties": {
-                "rule": {"type": "string"},
-                "severity": {"enum": ["info", "low", "medium", "high", "critical"]},
-                "span": {"type": ["string", "null"]}
-              }
+              "$ref": "ingestion-record.schema.json#/$defs/finding",
+              "required": ["span"],
+              "properties": {"span": {"description": "The matched text, at most its first 1024 bytes, and null where the scan holds no span for it.", "type": ["string", "null"]}},
+              "unevaluatedProperties": false
             }
           },
           "answer": {"description": "A model stage's structured answer.", "type": ["object", "null"]},

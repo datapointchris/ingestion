@@ -67,12 +67,13 @@ var reviewPlaceCmd = &cobra.Command{
 }
 
 var reviewDropCmd = &cobra.Command{
-	Use:   "drop <key or url> --cause <cause>",
+	Use:   "drop <key or url>",
 	Short: "Drop an item, which keeps its row, and name what decided it",
 	Long: "Drops the item as your decision, recorded under person:<login>. A drop is\n" +
 		"soft: the item keeps its row and every record, and a later placement moves\n" +
 		"it. --cause names the aspect that decided it, such as subreddit, channel,\n" +
-		"theme or title, so a filter can learn from it.",
+		"theme or title, so a filter can learn from it. Left out, the cause is\n" +
+		"unstated.",
 	Example: "  ingestion review drop reddit/t3_1hb0qa --cause subreddit",
 	Args:    cobra.ExactArgs(1),
 	RunE:    runReviewDrop,
@@ -86,7 +87,6 @@ func init() {
 		c.Flags().String("note", "", "Carry the questions and why the item was saved, for a model read to answer")
 		c.Flags().Bool("json", false, "Print the service's answer as JSON")
 	}
-	_ = reviewDropCmd.MarkFlagRequired("cause")
 	for _, c := range []*cobra.Command{reviewListCmd, reviewPlaceCmd, reviewDropCmd} {
 		c.Flags().String("api", "", "Call this server rather than the config file's api")
 		addConfigFlag(c)
