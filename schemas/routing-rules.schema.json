@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/datapointchris/ingestion/schemas/routing-rules.schema.json",
   "title": "The routing rules",
-  "description": "What routing-rules.yml holds in a directory that `ingestion connectors apply` sends. Each rule names the destination for the items its match holds for, and a placement made by a rule records rule:<name>.",
+  "description": "What routing-rules.yml holds in a directory that `ingestion connectors apply` sends. Each rule names one destination for the items that match it.",
   "type": "object",
   "additionalProperties": false,
   "properties": {

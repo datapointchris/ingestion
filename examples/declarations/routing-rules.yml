@@ -1,4 +1,4 @@
-# Each rule names the destination for the items its match holds for. Every
+# Each rule names one destination for the items that match it. Every
 # condition a match names must hold.
 rules:
   - name: cooking-subreddits

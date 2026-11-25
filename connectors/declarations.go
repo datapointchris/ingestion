@@ -88,8 +88,7 @@ type Connector struct {
 // after its last delivery.
 func (c Connector) Scheduled() bool { return c.Mode == ModePoll || c.Mode == ModeFolder }
 
-// RoutingRule names the destination for the items its match holds for. A
-// placement made by a rule records rule:<name>.
+// RoutingRule names one destination for the items that match it.
 type RoutingRule struct {
 	Name        string `json:"name" yaml:"name"`
 	Match       Match  `json:"match" yaml:"match"`
