@@ -30,10 +30,9 @@ type ConnectorCounts struct {
 }
 
 // connectorCounts reads each item a connector sighted against the records
-// that make its phase: a model stage's waiting output or held task, the newest
-// side or quality decision, a failed parse with no done parse and no side
-// decision, and its newest task past its parse. Its one %s takes a placeholder
-// for each of modelStages.
+// that make its phase: a model stage's waiting output or held task, and its
+// newest task past its parse. ConnectorCounts counts review from the review
+// queue. Its one %s takes a placeholder for each of modelStages.
 const connectorCounts = `
 SELECT s.connector,
 	count(*),
@@ -41,14 +40,6 @@ SELECT s.connector,
 		EXISTS (SELECT 1 FROM tasks t WHERE t.item_key = s.item_key AND t.state = 'queued' AND t.held_by IS NOT NULL)
 		OR EXISTS (SELECT 1 FROM outputs o WHERE o.item_key = s.item_key AND o.stage IN (%s) AND o.state = 'waiting'
 			AND NOT EXISTS (SELECT 1 FROM outputs d WHERE d.item_key = o.item_key AND d.stage = o.stage AND d.state = 'done'))
-	), 0),
-	coalesce(sum(
-		coalesce((SELECT verdict FROM decisions d WHERE d.item_key = s.item_key AND d.gate = 'side' ORDER BY sequence DESC LIMIT 1), '') = 'review'
-		OR (coalesce((SELECT verdict FROM decisions d WHERE d.item_key = s.item_key AND d.gate = 'quality' ORDER BY sequence DESC LIMIT 1), '') = 'review'
-			AND NOT EXISTS (SELECT 1 FROM decisions d WHERE d.item_key = s.item_key AND d.gate = 'side'))
-		OR (EXISTS (SELECT 1 FROM tasks t WHERE t.item_key = s.item_key AND t.stage = 'parse' AND t.state = 'failed')
-			AND NOT EXISTS (SELECT 1 FROM outputs o WHERE o.item_key = s.item_key AND o.stage = 'parse' AND o.state = 'done')
-			AND NOT EXISTS (SELECT 1 FROM decisions d WHERE d.item_key = s.item_key AND d.gate = 'side'))
 	), 0),
 	coalesce(sum(
 		coalesce((SELECT state FROM tasks t WHERE t.item_key = s.item_key AND t.stage != 'parse' ORDER BY updated_ts DESC, rowid DESC LIMIT 1), '') = 'failed'
@@ -76,12 +67,30 @@ func (s *Store) ConnectorCounts(ctx context.Context) (map[string]ConnectorCounts
 	for rows.Next() {
 		var name string
 		var c ConnectorCounts
-		if err := rows.Scan(&name, &c.Items, &c.Waiting, &c.Review, &c.Failed, &c.Held); err != nil {
+		if err := rows.Scan(&name, &c.Items, &c.Waiting, &c.Failed, &c.Held); err != nil {
 			return nil, fmt.Errorf("count each connector's items: %w", err)
 		}
 		out[name] = c
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	waiting, err := s.ReviewQueue(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, w := range waiting {
+		counted := map[string]bool{}
+		for _, sighting := range w.Sightings {
+			if !counted[sighting.Connector] {
+				counted[sighting.Connector] = true
+				c := out[sighting.Connector]
+				c.Review++
+				out[sighting.Connector] = c
+			}
+		}
+	}
+	return out, nil
 }
 
 // ItemZones reads each of keys' zone, by key, and leaves out each key with

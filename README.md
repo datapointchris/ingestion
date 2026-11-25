@@ -118,7 +118,8 @@ ingestion-worker-7c9d8f6b4-x2kqp-0f683526  0.4.0    parse:thread-text  2026-11-2
 `--state` narrows the list to one state and repeats, `--limit` caps it, and `--json` prints the
 shape in `schemas/tasks-list.schema.json`. The list shows each worker heard from lately, and
 `--all-workers` lists every worker the service holds, since each process start is a worker of its
-own. A command exits 4 when the service gives no answer, and 2 when a flag is wrong.
+own. A command exits 4 when the service gives no answer. It exits 2 when a flag is wrong, or when
+it names an item that the service holds no record of.
 
 ### Reading items and their bytes
 
@@ -222,7 +223,9 @@ reddit-exports    drop  5519f33  2026-11-24 23:50 EST      1        0       0   
 ```
 
 `ingestion connectors show <name>` adds its source, its tags, its last run and its first fill.
-`--json` on either prints the shape in `schemas/connectors-list.schema.json`.
+`--json` on either prints the shape in `schemas/connectors-list.schema.json`. REVIEW counts what
+`ingestion review list` lists, including an item whose parse failed. FAILED counts an item whose
+newest task past its parse failed.
 
 - **The service schedules each connector.** A poll or a folder is due at its schedule's next time.
   A drop or a push is due its `due_interval` after its last delivery, and reads overdue once that
@@ -290,13 +293,21 @@ the item by the first rung that decides it:
    destination's side. Tags naming two sides send it to review as `tags-disagree`.
 2. **A routing rule**: the first in the file whose match holds on one sighting. A Reddit save's
    sighting carries its `subreddit` field for a rule to match.
-3. **The quality gate's side guess**, where its confidence is 0.7 or more. A guess below that, or
-   `unsure`, sends the item to review as `below-floor`.
+3. **The quality gate's side guess**, where its confidence reaches the floor that
+   `route.GuessFloor` sets. A guess below the floor, or `unsure`, sends the item to review as
+   `below-floor`.
 4. **Review.** An item that no tag or rule placed, and that the quality gate gave no guess for,
    waits as `no-guess`.
 
-An item whose parse failed waits in review as `no-parse`. A placed item stays where it is: a
-later sighting or parse moves nothing, and only a person's placement moves it.
+The gate runs again in the write that ends each later stage before it, such as the quality gate,
+and in the write that applies a changed set. Each run decides again an item that the gate sent to
+review as `no-guess`, `below-floor` or `gate-error`, so a guess or a rule that arrives later
+places it. A placed item stays where it is: a later sighting or parse moves nothing, and only a
+person's placement moves it. Where the gate cannot read the set in force or the item's sightings,
+it logs why and sends the item to review as `gate-error`, and the parse stands.
+
+An item whose parse failed waits in review as `no-parse`. One that the quality gate sent to
+review before any side decision waits as `quality-review`.
 
 Where the item lands on a side, the read gate chooses how it is read: as is, or by a model under
 the side's lens. The first connector that sighted it and declares a `read_rule` decides.

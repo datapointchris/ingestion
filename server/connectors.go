@@ -182,7 +182,9 @@ type ConnectorConfig struct {
 	Scheduler *connectors.Scheduler
 	// Roots names each [serve.homes] root a folder connector may read.
 	Roots []string
-	Log   *slog.Logger
+	// AfterApply runs in the write that applies a changed set.
+	AfterApply connectors.AfterApply
+	Log        *slog.Logger
 }
 
 // ConnectorRoutes are the routes for a person to apply the declarations, read
@@ -220,7 +222,7 @@ func (h connectorHandlers) apply(w http.ResponseWriter, r *http.Request) {
 	if set.Connectors == nil {
 		set.Connectors = []connectors.Connector{}
 	}
-	applied, err := connectors.Apply(r.Context(), h.cfg.Store, set, body.Commit, body.Replaces, loginOf(r), h.cfg.Roots)
+	applied, err := connectors.Apply(r.Context(), h.cfg.Store, set, body.Commit, body.Replaces, loginOf(r), h.cfg.Roots, h.cfg.AfterApply)
 	var moved *connectors.MovedError
 	if errors.As(err, &moved) {
 		status := http.StatusConflict

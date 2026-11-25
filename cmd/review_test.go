@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/url"
@@ -32,19 +33,42 @@ import (
 // test skips.
 const declarationsEnv = "INGESTION_DECLARATIONS_DIR"
 
-// newGatedPipeline is a pipeline that runs the gates as serve does, under the
-// declaration set in dir.
+var quiet = slog.New(slog.NewTextHandler(io.Discard, nil))
+
+// newGatedPipeline is a pipeline that runs the gates as serve does. It applies
+// the declaration set in dir first, and none where dir is empty.
 func newGatedPipeline(t *testing.T, dir string) *pipeline {
 	t.Helper()
-	p := newPipeline(t, extract.Builtin(), route.AfterStage)
+	p := newPipeline(t, extract.Builtin(), route.AfterStage(quiet))
+	if dir != "" {
+		p.apply(t, dir)
+	}
+	return p
+}
+
+// apply applies the declaration set in dir as the first set, and runs the
+// gates again as serve does.
+func (p *pipeline) apply(t *testing.T, dir string) {
+	t.Helper()
 	set, err := connectors.Read(dir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := connectors.Apply(t.Context(), p.st, set, "test", nil, "person:test", nil); err != nil {
+	if _, err := connectors.Apply(t.Context(), p.st, set, "test", nil, "person:test", nil, route.AfterApply(quiet)); err != nil {
 		t.Fatal(err)
 	}
-	return p
+}
+
+// redditExport is a Reddit export holding saves, each from redditSave.
+func redditExport(saves ...string) []byte {
+	return []byte(`{"kind":"reddit-saved","exported_at":"2026-10-30T19:18:39Z","items":[` + strings.Join(saves, ",") + `]}`)
+}
+
+// redditSave is one self post saved from subreddit, as an export holds it.
+func redditSave(name, subreddit string) string {
+	post := `{"kind":"t3","data":{"name":"` + name + `","author":"op","subreddit":"` + subreddit + `","title":"A post","selftext":"Its body","is_self":true,` +
+		`"permalink":"/r/` + subreddit + `/comments/` + name[3:] + `/a_post/"}}`
+	return `{"child":` + post + `,"thread":[{"data":{"children":[` + post + `]}},{"data":{"children":[]}}]}`
 }
 
 // landExports lands each export through the reddit-exports connector.
@@ -124,13 +148,7 @@ func (p *pipeline) decisions(t *testing.T, key string) (all []server.DecisionVie
 func TestASaveIsPlacedByItsRuleOrWaitsInReviewForAPersonToPlace(t *testing.T) {
 	ctx := t.Context()
 	p := newGatedPipeline(t, mustAbs(t, "../examples/declarations"))
-	save := func(name, subreddit string) string {
-		post := `{"kind":"t3","data":{"name":"` + name + `","author":"op","subreddit":"` + subreddit + `","title":"A post","selftext":"Its body","is_self":true,` +
-			`"permalink":"/r/` + subreddit + `/comments/` + name[3:] + `/a_post/"}}`
-		return `{"child":` + post + `,"thread":[{"data":{"children":[` + post + `]}},{"data":{"children":[]}}]}`
-	}
-	p.landExports(t, map[string][]byte{"first": []byte(`{"kind":"reddit-saved","exported_at":"2026-10-30T19:18:39Z","items":[` +
-		save("t3_aa1", "Cooking") + `,` + save("t3_bb2", "golang") + `]}`)})
+	p.landExports(t, map[string][]byte{"first": redditExport(redditSave("t3_aa1", "Cooking"), redditSave("t3_bb2", "golang"))})
 	unparsable, err := p.lander.Land(ctx, landing.Arrival{
 		Connector: "reddit-exports", Zone: store.Outside, MediaType: redditexport.MediaTypeSave, Body: strings.NewReader("not a save"),
 	})
@@ -204,8 +222,50 @@ func TestASaveIsPlacedByItsRuleOrWaitsInReviewForAPersonToPlace(t *testing.T) {
 	}
 }
 
+// A save that the gate sent to review for want of a rule or a guess is placed
+// once either arrives after its parse: by the rule of a set applied later, as
+// on a first deploy that applies its set after the first parses, or by the
+// quality gate's confident guess. An apply that changes nothing for a save
+// appends nothing to it.
+func TestASaveWaitingOnTheGateIsPlacedByARuleOrGuessThatArrivesLater(t *testing.T) {
+	ctx := t.Context()
+	p := newGatedPipeline(t, "")
+	p.landExports(t, map[string][]byte{"first": redditExport(redditSave("t3_aa1", "Cooking"), redditSave("t3_bb2", "golang"))})
+	p.parse(t, extract.Builtin())
+	if c := p.gated(t); !maps.Equal(c.review, map[string]int{"no-guess": 2}) {
+		t.Fatalf("with no set applied the gate sent %v to review, want both saves as no-guess", c.review)
+	}
+
+	p.apply(t, mustAbs(t, "../examples/declarations"))
+	if _, side, read := p.decisions(t, "reddit/t3_aa1"); side.DecidedBy != "rule:cooking-subreddits" || read.Verdict != connectors.ReadAsIs {
+		t.Errorf("after the apply the Cooking save is %s by %s and read %s, want placed by its rule and read as-is", side.Verdict, side.DecidedBy, read.Verdict)
+	}
+	if d, _, _ := p.decisions(t, "reddit/t3_bb2"); len(d) != 1 {
+		t.Errorf("the apply appended to the save that no rule names, which holds %+v", d)
+	}
+
+	key, guess, sure, run := "reddit/t3_bb2", connectors.SideFleet, 0.95, "run-1"
+	if err := p.st.Update(ctx, func(tx *store.Tx) error {
+		if err := tx.PutOutput(ctx, store.Output{
+			ItemKey: key, Stage: store.StageQuality, Producer: "quality-gate", ProducerVersion: "1", State: store.OutputDone,
+			RunID: &run, SideGuess: &guess, SideConfidence: &sure,
+		}); err != nil {
+			return err
+		}
+		return route.AfterStage(quiet)(ctx, tx, store.Task{Stage: store.StageQuality, ItemKey: &key})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, side, read := p.decisions(t, key); side.Verdict != connectors.SideFleet || side.DecidedBy != "model:run-1" || read.Verdict != connectors.ReadModel {
+		t.Errorf("after a confident guess the save is %s by %s and read %s, want fleet by model:run-1 and read by a model", side.Verdict, side.DecidedBy, read.Verdict)
+	}
+	if c := p.gated(t); len(c.review) != 0 {
+		t.Errorf("the review queue still holds %v", c.review)
+	}
+}
+
 // The stored Reddit exports pass the side gate under the routing rules of the
-// declaration set in declarationsEnv. The exports are outsider text kept out
+// declaration set in declarationsEnv, and a rule places at least one save. The exports are outsider text kept out
 // of this public repo, so the test reads them only from redditExportsEnv, and
 // it reports counts alone.
 func TestTheStoredRedditExportsPassTheSideGateUnderTheDeclaredRules(t *testing.T) {
@@ -235,8 +295,8 @@ func TestTheStoredRedditExportsPassTheSideGateUnderTheDeclaredRules(t *testing.T
 		waiting += c.review[reason]
 		reasons.WriteString(" " + reason + "=" + strconv.Itoa(c.review[reason]))
 	}
-	if c.byRule+waiting != c.saves {
-		t.Errorf("%d placed by rule and %d in review make %d, want every one of %d saves", c.byRule, waiting, c.byRule+waiting, c.saves)
+	if c.byRule == 0 {
+		t.Errorf("no rule in the set placed any of the %d saves", c.saves)
 	}
 	t.Logf("%d exports, %d saves: %d placed by rule, %d sent to review:%s", len(files), c.saves, c.byRule, waiting, reasons.String())
 }

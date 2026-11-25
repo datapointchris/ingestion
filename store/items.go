@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -215,6 +216,12 @@ type Condition struct {
 // line is every stage and gate, in the order that an item passes them.
 var line = []string{StageLand, StageParse, StageScan, StageQuality, GateSide, GateRead, StageModelRead, StageDeliver}
 
+// Precedes says whether step comes before later on the line.
+func Precedes(step, later string) bool {
+	i, j := slices.Index(line, step), slices.Index(line, later)
+	return i >= 0 && j >= 0 && i < j
+}
+
 // Conditions derives each stage's and gate's condition from which records
 // exist, as Kubernetes derives a pod's status from its conditions. A stage
 // with no record is left out. So when a push sends an item past the gates, it
@@ -237,18 +244,17 @@ var reached = map[string]string{
 }
 
 // Phase is the item's phase in the words of schemas/items-list.schema.json:
-// dropped or review where the newest side decision says so, review where no
-// parse is usable and no side decision placed it, failed where another
-// stage's task failed, dropped or review where the quality gate says so,
-// waiting where a model stage holds it, and otherwise the furthest stage whose
-// condition is True. A person can place an item whose parse failed, which
-// moves it on from its parse.
+// dropped where the newest side decision drops it, review where WaitsOnPerson
+// says it waits, failed where another stage's task failed, dropped where the
+// quality gate drops it, waiting where a model stage holds it, and otherwise
+// the furthest stage whose condition is True. A person can place an item whose
+// parse failed, which moves it on from its parse.
 func (r ItemRecords) Phase() string {
 	side, sided := r.newestDecision(GateSide)
-	switch {
-	case sided && side.Verdict == "drop":
+	if sided && side.Verdict == "drop" {
 		return "dropped"
-	case sided && side.Verdict == "review", !sided && r.NoUsableParse():
+	}
+	if _, _, waits := r.WaitsOnPerson(); waits {
 		return "review"
 	}
 	for _, t := range r.Tasks {
@@ -256,12 +262,8 @@ func (r ItemRecords) Phase() string {
 			return "failed"
 		}
 	}
-	quality, decided := r.newestDecision(GateQuality)
-	if decided && quality.Verdict == "drop" {
+	if quality, decided := r.newestDecision(GateQuality); decided && quality.Verdict == "drop" {
 		return "dropped"
-	}
-	if decided && quality.Verdict == "review" && !sided {
-		return "review"
 	}
 	phase := ""
 	for _, c := range r.Conditions() {

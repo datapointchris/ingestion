@@ -7,10 +7,13 @@ import (
 	"strings"
 )
 
-// ReasonNoParse is why an item waits on a person where no parse is usable, in
+// Why an item waits on a person where no side decision sent it to review, in
 // the words of schemas/review-list.schema.json. Every other reason is the
 // cause of the side decision that sent the item to review.
-const ReasonNoParse = "no-parse"
+const (
+	ReasonNoParse       = "no-parse"
+	ReasonQualityReview = "quality-review"
+)
 
 // Waiting is one item that waits on a person's placement.
 type Waiting struct {
@@ -22,38 +25,38 @@ type Waiting struct {
 }
 
 // WaitsOnPerson says why the item waits on a person's placement, and since
-// when: the cause of a newest side decision that sent it to review, or
-// no-parse where no parse is usable and no side decision placed it. It is
-// false where the item waits on nobody.
+// when. It is the one answer that Phase, the review queue and each connector's
+// count read. An item waits where its newest side decision sent it to review,
+// under that decision's cause. Where no side decision holds it, the item waits
+// as no-parse where no parse is usable, and as quality-review where the quality
+// gate's newest decision sent it there. It is false where the item waits on
+// nobody.
 func (r ItemRecords) WaitsOnPerson() (reason, since string, ok bool) {
-	side, sided := r.newestDecision(GateSide)
-	if sided {
+	if side, sided := r.newestDecision(GateSide); sided {
 		return side.Cause, side.DecidedTS, side.Verdict == "review"
 	}
-	if !r.NoUsableParse() {
-		return "", "", false
-	}
-	since = r.Item.CreatedTS
-	for _, t := range r.Tasks {
-		if t.Stage == StageParse && t.State == TaskFailed && t.UpdatedTS > since {
-			since = t.UpdatedTS
+	if r.NoUsableParse() {
+		since = r.Item.CreatedTS
+		for _, t := range r.Tasks {
+			if t.Stage == StageParse && t.State == TaskFailed && t.UpdatedTS > since {
+				since = t.UpdatedTS
+			}
 		}
+		return ReasonNoParse, since, true
 	}
-	return ReasonNoParse, since, true
+	if quality, decided := r.newestDecision(GateQuality); decided && quality.Verdict == "review" {
+		return ReasonQualityReview, quality.DecidedTS, true
+	}
+	return "", "", false
 }
 
-// reviewCandidates selects every item that may wait on a person: one whose
-// newest side decision sent it to review, and one with a failed parse, no
-// done parse and no side decision. WaitsOnPerson decides each.
+// reviewCandidates selects every item that may wait on a person, as a superset
+// that WaitsOnPerson narrows: each one that a side decision sent to review, and
+// each one that holds no side decision.
 const reviewCandidates = `
-SELECT d.item_key FROM decisions d
-WHERE d.gate = 'side' AND d.verdict = 'review'
-	AND d.sequence = (SELECT max(x.sequence) FROM decisions x WHERE x.item_key = d.item_key AND x.gate = 'side')
+SELECT DISTINCT d.item_key FROM decisions d WHERE d.gate = 'side' AND d.verdict = 'review'
 UNION
-SELECT t.item_key FROM tasks t
-WHERE t.stage = 'parse' AND t.state = 'failed'
-	AND NOT EXISTS (SELECT 1 FROM decisions x WHERE x.item_key = t.item_key AND x.gate = 'side')
-	AND NOT EXISTS (SELECT 1 FROM outputs o WHERE o.item_key = t.item_key AND o.stage = 'parse' AND o.state = 'done')`
+SELECT i.key FROM items i WHERE NOT EXISTS (SELECT 1 FROM decisions x WHERE x.item_key = i.key AND x.gate = 'side')`
 
 // ReviewQueue reads every item that waits on a person's placement, the
 // longest waiting first.

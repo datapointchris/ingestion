@@ -198,7 +198,7 @@
         },
         "confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
         "cause": {
-          "description": "What decided. The side gate writes tags, tags-disagree, rule, guess, below-floor or no-guess, and the read gate connector or side-default. A person's decision names an aspect, such as subreddit, channel, theme or title, or unstated.",
+          "description": "What decided. The side gate writes tags, tags-disagree, rule, guess, below-floor, no-guess or gate-error, and the read gate connector or side-default. A person's decision names an aspect, such as subreddit, channel, theme or title, or unstated.",
           "type": "string",
           "pattern": "^[a-z][a-z-]*$"
         },

@@ -46,8 +46,11 @@ func commitOrNone(c *string) string {
 // other apply whose replaces is not the commit in force is a MovedError. An
 // invalid set is an InvalidError. Either writes nothing. A connector the set
 // drops keeps its cursor, and the scheduler no longer runs it. roots names the
-// [serve.homes] roots a folder may read.
-func Apply(ctx context.Context, st *store.Store, set Set, commit string, replaces *string, by string, roots []string) (Applied, error) {
+// [serve.homes] roots a folder may read. after, where it is not nil, runs in
+// the same write once the set is kept, and its error writes nothing.
+func Apply(ctx context.Context, st *store.Store, set Set, commit string, replaces *string, by string, roots []string,
+	after AfterApply,
+) (Applied, error) {
 	if invalid := Validate(set, roots); len(invalid) > 0 {
 		return Applied{}, &InvalidError{Invalid: invalid}
 	}
@@ -99,10 +102,17 @@ func Apply(ctx context.Context, st *store.Store, set Set, commit string, replace
 				return err
 			}
 		}
+		if after != nil {
+			return after(ctx, tx)
+		}
 		return nil
 	})
 	return applied, err
 }
+
+// AfterApply runs in the write that keeps a changed set, which tx then reads
+// as the set in force.
+type AfterApply func(ctx context.Context, tx *store.Tx) error
 
 func sameJSON(a, b []json.RawMessage) bool {
 	ja, errA := json.Marshal(a)

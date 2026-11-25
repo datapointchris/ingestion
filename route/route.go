@@ -6,16 +6,21 @@
 // placed on a side is read as is or by a model: by its connector's read rule,
 // else its side's default.
 //
-// The service runs both gates in the write that ends an item's parse, so no
-// item sits parsed with no side decision. A person's placement from review
-// runs the read gate the same way. Each decision is appended, and the newest
-// at a gate decides.
+// The service runs both gates in the write that ends each stage before the
+// side gate, so a parse and its side decision commit together. It runs them
+// again in the write that applies a changed set. Each run leaves an item that
+// a tag, a rule, a model or a person placed as it is. It decides again an item
+// that the gate itself sent to review, or a model's guess below the floor, so
+// a guess or a rule that arrives later reaches it. A person's placement from
+// review runs the read gate the same way. Each decision is appended, and the
+// newest at a gate decides.
 package route
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 
@@ -41,6 +46,9 @@ const (
 	// CauseNoGuess sends to review an item that no tag or rule placed and
 	// that the quality gate has given no guess for.
 	CauseNoGuess = "no-guess"
+	// CauseGateError sends to review an item whose gate could not read the
+	// set in force or the item's sightings. The item keeps its parse.
+	CauseGateError = "gate-error"
 	// CauseConnector and CauseSideDefault are the read gate's.
 	CauseConnector   = "connector"
 	CauseSideDefault = "side-default"
@@ -194,57 +202,120 @@ func Read(set connectors.Set, sightings []store.Sighting, side string, note *str
 	return d
 }
 
-// AfterStage runs the gates in the write that ends task done, where task is
-// an item's parse.
-func AfterStage(ctx context.Context, tx *store.Tx, task store.Task) error {
-	if task.Stage != store.StageParse || task.ItemKey == nil {
+// AfterStage is the hook that serve runs in the write that ends a task done.
+// Where the task's stage comes before the side gate, it runs the gates over
+// the task's item.
+func AfterStage(log *slog.Logger) func(context.Context, *store.Tx, store.Task) error {
+	return func(ctx context.Context, tx *store.Tx, task store.Task) error {
+		if task.ItemKey == nil || !store.Precedes(task.Stage, store.GateSide) {
+			return nil
+		}
+		if _, err := Gate(ctx, tx, *task.ItemKey, log); err != nil {
+			return fmt.Errorf("the side gate on %s: %w", *task.ItemKey, err)
+		}
 		return nil
 	}
-	_, err := Gate(ctx, tx, *task.ItemKey)
-	return err
+}
+
+// AfterApply is the hook that serve runs in the write that applies a changed
+// set. It runs the gates again over each parsed item that no side decision
+// placed, so a rule the set adds places what it matches.
+func AfterApply(log *slog.Logger) connectors.AfterApply {
+	return func(ctx context.Context, tx *store.Tx) error {
+		keys, err := tx.UnplacedParsedKeys(ctx)
+		if err != nil {
+			return err
+		}
+		for _, key := range keys {
+			if _, err := Gate(ctx, tx, key, log); err != nil {
+				return fmt.Errorf("the side gate on %s: %w", key, err)
+			}
+		}
+		return nil
+	}
 }
 
 // Gate runs the side gate over the item under key and, where it places the
-// item on a side, the read gate, appending each decision. It leaves an item
-// that a side decision already holds as it is, so a sighting or a parse that
-// arrives after placement moves nothing. It answers the decisions it appended.
+// item on a side, the read gate, appending each decision. It answers the
+// decisions it appended.
 //
-// The guess rung reads the quality gate's newest done output. With none, the
-// item goes to review with CauseNoGuess.
-func Gate(ctx context.Context, tx *store.Tx, key string) ([]store.Decision, error) {
-	if _, sided, err := tx.NewestDecision(ctx, key, store.GateSide); err != nil || sided {
+// It runs only over an item with a done parse. It leaves an item that a tag, a
+// rule, a model or a person placed as it is, so a sighting that arrives after
+// placement moves nothing. Where it decides again and answers what the item's
+// newest side decision already says, it appends nothing.
+//
+// Where it cannot read the set in force or the item's sightings, it sends the
+// item to review as CauseGateError and logs why, so the parse stands and the
+// next stage or apply runs the gate again.
+func Gate(ctx context.Context, tx *store.Tx, key string, log *slog.Logger) ([]store.Decision, error) {
+	newest, sided, err := tx.NewestDecision(ctx, key, store.GateSide)
+	if err != nil || (sided && !provisional(newest)) {
 		return nil, err
 	}
-	set, err := connectors.AppliedSet(ctx, tx)
+	outputs, err := tx.Outputs(ctx, key)
+	if err != nil || !slices.ContainsFunc(outputs, func(o store.Output) bool {
+		return o.Stage == store.StageParse && o.State == store.OutputDone
+	}) {
+		return nil, err
+	}
+	set, sightings, err := inputs(ctx, tx, key)
+	side := Side(set, sightings, GuessOf(outputs))
 	if err != nil {
-		return nil, err
+		log.ErrorContext(ctx, "the side gate could not read what it decides from, so the item waits in review", "item", key, "error", err)
+		side = store.Decision{Gate: store.GateSide, Verdict: VerdictReview, DecidedBy: ByGate, Cause: CauseGateError}
 	}
-	sightings, err := tx.Sightings(ctx, key)
-	if err != nil {
-		return nil, err
+	if sided && sameDecision(newest, side) {
+		return nil, nil
 	}
-	guess, err := guessOf(ctx, tx, key)
-	if err != nil {
-		return nil, err
-	}
-	return decide(ctx, tx, key, Side(set, sightings, guess), set, sightings, nil)
+	return decide(ctx, tx, key, side, set, sightings, nil)
 }
 
-// guessOf is the side guess of the quality gate's newest done output on the
-// item under key, and nil where it holds none.
-func guessOf(ctx context.Context, tx *store.Tx, key string) (*Guess, error) {
-	o, ok, err := tx.NewestOutput(ctx, key, store.StageQuality, store.OutputDone)
-	if err != nil || !ok || o.SideGuess == nil {
-		return nil, err
+// inputs reads the set in force and the item's sightings, which the side gate
+// decides from beside the quality gate's guess.
+func inputs(ctx context.Context, tx *store.Tx, key string) (connectors.Set, []store.Sighting, error) {
+	set, err := connectors.AppliedSet(ctx, tx)
+	if err != nil {
+		return connectors.Set{}, nil, err
 	}
-	g := &Guess{Side: *o.SideGuess, Run: o.Producer + "/" + o.ProducerVersion}
-	if o.SideConfidence != nil {
-		g.Confidence = *o.SideConfidence
+	sightings, err := tx.Sightings(ctx, key)
+	return set, sightings, err
+}
+
+// provisional says whether a side decision waits on a later input: a review
+// that the gate wrote for want of a rule or a guess, or for an error, and a
+// review for a model's guess below the floor.
+func provisional(d store.Decision) bool {
+	return d.Verdict == VerdictReview && (d.DecidedBy == ByGate || strings.HasPrefix(d.DecidedBy, byModel("")))
+}
+
+// sameDecision says whether b decides what a decides, by the same hand.
+func sameDecision(a, b store.Decision) bool {
+	return a.Verdict == b.Verdict && a.DecidedBy == b.DecidedBy && a.Cause == b.Cause &&
+		text(a.Destination) == text(b.Destination) && confidence(a) == confidence(b)
+}
+
+// GuessOf is the side guess of the quality gate's newest done output among
+// outputs, and nil where that output holds none. The side gate places by it,
+// and the review queue shows it.
+func GuessOf(outputs []store.Output) *Guess {
+	var newest *store.Output
+	for i := range outputs {
+		o := &outputs[i]
+		if o.Stage == store.StageQuality && o.State == store.OutputDone && (newest == nil || o.UpdatedTS >= newest.UpdatedTS) {
+			newest = o
+		}
 	}
-	if o.RunID != nil {
-		g.Run = *o.RunID
+	if newest == nil || newest.SideGuess == nil {
+		return nil
 	}
-	return g, nil
+	g := &Guess{Side: *newest.SideGuess, Run: newest.Producer + "/" + newest.ProducerVersion}
+	if newest.SideConfidence != nil {
+		g.Confidence = *newest.SideConfidence
+	}
+	if newest.RunID != nil {
+		g.Run = *newest.RunID
+	}
+	return g
 }
 
 // decide appends side, and the read gate's decision where side places the
@@ -385,4 +456,11 @@ func text(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+func confidence(d store.Decision) float64 {
+	if d.Confidence == nil {
+		return -1
+	}
+	return *d.Confidence
 }

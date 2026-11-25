@@ -25,8 +25,14 @@ const (
 )
 
 // CodeDestinationNotDeclared refuses a placement on a destination that the
-// set in force does not declare.
-const CodeDestinationNotDeclared = "destination_not_declared"
+// set in force does not declare. CodeActingForAnother refuses a person's
+// token whose body names another person's login.
+const (
+	CodeDestinationNotDeclared = "destination_not_declared"
+	CodeActingForAnother       = "acting_for_another"
+)
+
+var errActingForAnother = errors.New("a person's token places only as that person")
 
 // causeSpelling is how a decision's cause is spelled, as
 // schemas/ingestion-record.schema.json holds it.
@@ -121,13 +127,8 @@ func (h reviewHandlers) list(w http.ResponseWriter, r *http.Request) {
 		for _, s := range it.Sightings {
 			item.Connectors = append(item.Connectors, s.Connector)
 		}
-		for _, o := range it.Outputs {
-			if o.Stage == store.StageQuality && o.State == store.OutputDone && o.SideGuess != nil {
-				item.Guess = &ReviewGuess{Side: *o.SideGuess}
-				if o.SideConfidence != nil {
-					item.Guess.Confidence = *o.SideConfidence
-				}
-			}
+		if guess := route.GuessOf(it.Outputs); guess != nil {
+			item.Guess = &ReviewGuess{Side: guess.Side, Confidence: guess.Confidence}
 		}
 		answer.Items = append(answer.Items, item)
 	}
@@ -172,7 +173,10 @@ func (h reviewHandlers) decide(w http.ResponseWriter, r *http.Request, p route.P
 	if p.Note != nil && strings.TrimSpace(*p.Note) == "" {
 		p.Note = nil
 	}
-	if p.Login, p.ClientID, err = decider(r, login); err != nil {
+	if p.Login, p.ClientID, err = decider(r, login); errors.Is(err, errActingForAnother) {
+		Refuse(w, http.StatusForbidden, CodeActingForAnother, "%v", err)
+		return
+	} else if err != nil {
 		Refuse(w, http.StatusBadRequest, CodeInvalidBody, "%v", err)
 		return
 	}
@@ -217,7 +221,7 @@ func decider(r *http.Request, login string) (string, string, error) {
 	}
 	own := strings.TrimPrefix(requester(caller), "person:")
 	if login != "" && login != own {
-		return "", "", fmt.Errorf("this token is %s's, so a body naming %s is refused", own, login)
+		return "", "", fmt.Errorf("%w: this token is %s's, so a body naming %s is refused", errActingForAnother, own, login)
 	}
 	return own, caller.ClientID, nil
 }

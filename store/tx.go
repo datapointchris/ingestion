@@ -54,11 +54,33 @@ func (t *Tx) NewestDecision(ctx context.Context, key, gate string) (Decision, bo
 	return first[Decision](ctx, t.tx, table("decisions"), `item_key = ? AND gate = ? ORDER BY sequence DESC`, key, gate)
 }
 
-// NewestOutput reads the newest output of stage for the item under key in
-// state, and false where none is.
-func (t *Tx) NewestOutput(ctx context.Context, key, stage, state string) (Output, bool, error) {
-	return first[Output](ctx, t.tx, table("outputs"), `item_key = ? AND stage = ? AND state = ? ORDER BY updated_ts DESC, rowid DESC`,
-		key, stage, state)
+// Outputs reads every output of the item under key, oldest first, in the order
+// that Store.Outputs reads them.
+func (t *Tx) Outputs(ctx context.Context, key string) ([]Output, error) {
+	return readInto[Output](ctx, t.tx, table("outputs"), `item_key = ? ORDER BY created_ts, rowid`, key)
+}
+
+// UnplacedParsedKeys reads the key of each item with a done parse whose newest
+// side decision is a review, or that holds none.
+func (t *Tx) UnplacedParsedKeys(ctx context.Context) ([]string, error) {
+	rows, err := t.tx.QueryContext(ctx, `
+SELECT i.key FROM items i
+WHERE EXISTS (SELECT 1 FROM outputs o WHERE o.item_key = i.key AND o.stage = 'parse' AND o.state = 'done')
+	AND coalesce((SELECT d.verdict FROM decisions d WHERE d.item_key = i.key AND d.gate = 'side' ORDER BY d.sequence DESC LIMIT 1), 'review') = 'review'
+ORDER BY i.key`)
+	if err != nil {
+		return nil, fmt.Errorf("select the parsed items that no side decision placed: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var keys []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		keys = append(keys, key)
+	}
+	return keys, rows.Err()
 }
 
 // Blob reads the blob row for sum, and false where the store holds none.

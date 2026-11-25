@@ -26,7 +26,7 @@
       "title": "sightings",
       "type": "object",
       "additionalProperties": false,
-      "required": ["external_key", "fields"],
+      "required": ["external_key"],
       "properties": {
         "external_key": {"description": "The connector's own key for the artifact, such as a canonical URL or a post's id.", "type": "string"},
         "fields": {"description": "Values the connector read from the source's payload, by name, such as a Reddit save's subreddit, which a routing rule matches.", "type": "object", "additionalProperties": {"type": "string"}}

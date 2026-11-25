@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"text/tabwriter"
 
@@ -26,15 +27,17 @@ var reviewCmd = &cobra.Command{
 var reviewListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List the items that wait on a person's placement, the longest waiting first",
-	Long: "Lists each item that no tag, rule or confident guess placed, and each one\n" +
-		"that holds no usable parse, the longest waiting first. Each row shows the\n" +
-		"item's key, its zone, why it waits, the quality gate's side guess where it\n" +
-		"gave one, when it began to wait, and its title. A reason is one of:\n" +
+	Long: "Lists each item that the side gate sent to review, and each one that holds\n" +
+		"no usable parse, the longest waiting first. Each row shows the item's key,\n" +
+		"its zone, why it waits, the quality gate's side guess where it gave one,\n" +
+		"when it began to wait, and its title. A reason is one of:\n" +
 		"\n" +
-		"  tags-disagree  its sightings' tags name destinations on two sides\n" +
-		"  below-floor    the quality gate's guess fell below its confidence floor\n" +
-		"  no-guess       no tag or rule placed it, and the quality gate gave no guess\n" +
-		"  no-parse       no parse of it is usable\n" +
+		"  tags-disagree   its sightings' tags name destinations on two sides\n" +
+		"  below-floor     the quality gate's guess fell below its confidence floor\n" +
+		"  no-guess        no tag or rule placed it, and the quality gate gave no guess\n" +
+		"  gate-error      the side gate could not read the set in force or its sightings\n" +
+		"  no-parse        no parse of it is usable\n" +
+		"  quality-review  the quality gate sent it to review\n" +
 		"\n" +
 		"A title is outsider text where the zone is outside.",
 	Example: "  ingestion review list\n" +
@@ -143,6 +146,19 @@ func runReviewDrop(cmd *cobra.Command, args []string) error {
 	return sendReview(cmd, server.RouteReviewDrop, args[0], "drop", body)
 }
 
+// argumentRefusal is err as a usage error where the server refused what the
+// command line named: an item it holds no record of, a key it cannot read, or
+// a refusal whose code is one of codes. Every verb that names an item reads
+// it, so a missing item exits 2 on each.
+func argumentRefusal(err error, codes ...string) error {
+	var refused *refusal
+	if errors.As(err, &refused) && refused.Status < http.StatusInternalServerError &&
+		(refused.Code == server.CodeItemNotFound || refused.Code == server.CodeInvalidKey || slices.Contains(codes, refused.Code)) {
+		return fmt.Errorf("%w: %s", goclikit.ErrUsage, refused.Message)
+	}
+	return err
+}
+
 // sendReview posts body to the item's verb under route, and prints what the
 // decisions it made placed.
 func sendReview(cmd *cobra.Command, route server.Route, key, verb string, body any) error {
@@ -155,13 +171,7 @@ func sendReview(cmd *cobra.Command, route server.Route, key, verb string, body a
 	var answer server.PlacementAnswer
 	raw, err := sendJSON(cmd.Context(), configPath(cmd), api, route,
 		"/api/v1/review/"+url.PathEscape(strings.TrimSpace(key))+"/"+verb, encoded, &answer)
-	var refused *refusal
-	if errors.As(err, &refused) && refused.Status != http.StatusInternalServerError &&
-		(refused.Code == server.CodeItemNotFound || refused.Code == server.CodeInvalidKey ||
-			refused.Code == server.CodeDestinationNotDeclared || refused.Code == server.CodeInvalidBody) {
-		return fmt.Errorf("%w: %s", goclikit.ErrUsage, refused.Message)
-	}
-	if err != nil {
+	if err := argumentRefusal(err, server.CodeDestinationNotDeclared, server.CodeInvalidBody); err != nil {
 		return err
 	}
 	w := cmd.OutOrStdout()
