@@ -43,6 +43,14 @@ API answer. Each store table's columns are its fields in `ingestion-record.schem
 test in the package that writes a shape validates real output against its file. A data catalog
 builds its contracts from these files, so a reader points at them rather than copying the fields.
 
+`store/` holds one `.sql` file per stage, embedded and applied on every open with `CREATE TABLE IF
+NOT EXISTS`. There are no numbered migrations. A stage adds its tables in its own file, and declares
+each in `store/tables.go`, which names its key, its stamp, its text columns, and whether it appends
+or upserts. The outbox ships every declared table.
+
+`deploy/` holds the Kubernetes manifests, and `release/` the scripts that the release job runs to
+pin and publish them. The `Dockerfile` builds the one image that `serve` and `worker run` share.
+
 ## Every item passes one line of stages
 
 ```text
@@ -130,6 +138,11 @@ A push to `main` runs `release.yml`. It validates through `validate.yml`, then g
 tags a version from the conventional-commit types, and goreleaser builds linux and darwin archives
 for it. `allow-initial-development-versions` holds the major at 0. Drop that input once the API is
 settled enough to promise compatibility.
+
+A push that cut a version also builds the image `ghcr.io/datapointchris/ingestion:<version>`. It
+then pushes `deploy/` as the OCI artifact `ghcr.io/datapointchris/ingestion/manifests:<version>`,
+with that image pinned by digest, and signs both with cosign. `release/pin-manifests` writes the
+pinned copy, and `release/install-tools` installs kustomize, flux and cosign at pinned SHA-256s.
 
 ## Never write the breaking-change trailer in a commit message
 
