@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -24,8 +25,10 @@ import (
 	"github.com/datapointchris/ingestion/landing"
 	"github.com/datapointchris/ingestion/redditexport"
 	"github.com/datapointchris/ingestion/route"
+	"github.com/datapointchris/ingestion/scan"
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
+	"github.com/datapointchris/ingestion/worker"
 )
 
 // declarationsEnv names a declaration set's directory, for the test that
@@ -35,11 +38,12 @@ const declarationsEnv = "INGESTION_DECLARATIONS_DIR"
 
 var quiet = slog.New(slog.NewTextHandler(io.Discard, nil))
 
-// newGatedPipeline is a pipeline that runs the gates as serve does. It applies
-// the declaration set in dir first, and none where dir is empty.
+// newGatedPipeline is a pipeline that queues each scan and runs the gates as
+// serve does. It applies the declaration set in dir first, and none where dir
+// is empty.
 func newGatedPipeline(t *testing.T, dir string) *pipeline {
 	t.Helper()
-	p := newPipeline(t, extract.Builtin(), route.AfterStage(quiet))
+	p := newPipeline(t, extract.Builtin(), afterStage(quiet))
 	if dir != "" {
 		p.apply(t, dir)
 	}
@@ -57,6 +61,33 @@ func (p *pipeline) apply(t *testing.T, dir string) {
 	if _, err := connectors.Apply(t.Context(), p.st, set, "test", nil, "person:test", nil, route.AfterApply(quiet)); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// nothingFound is a scan worker that reads each leased task's parse through
+// the task parse route and reports a done scan of it with no findings. It
+// stands in for yr, which the tests of the gates do not need.
+type nothingFound struct{ client *worker.Client }
+
+func (nothingFound) Capability() string { return scan.Capability }
+
+func (h nothingFound) Run(ctx context.Context, task worker.Task) worker.Result {
+	parse, err := h.client.TaskParse(ctx, task.ID, task.LeaseToken)
+	if err != nil {
+		reason := err.Error()
+		return worker.Result{Outcome: server.OutcomeFailed, Error: &reason}
+	}
+	return worker.Result{Outcome: server.OutcomeDone, Outputs: []server.ReportOutput{{
+		Producer: scan.Producer, ProducerVersion: store.ScanVersion("none", parse.Extractor, parse.ExtractorVersion),
+		State: store.OutputDone, InputProducer: &parse.Extractor, InputVersion: &parse.ExtractorVersion,
+		Findings: []store.Finding{}, Spans: []store.Span{},
+	}}}
+}
+
+// scanFindingNothing runs every queued scan task through nothingFound, and
+// counts the tasks it ran.
+func (p *pipeline) scanFindingNothing(t *testing.T) int {
+	t.Helper()
+	return p.run(t, nothingFound{p.worker})
 }
 
 // redditExport is a Reddit export holding saves, each from redditSave.
@@ -88,7 +119,7 @@ type gateCounts struct {
 	review        map[string]int
 }
 
-// gated checks that every save with a done parse holds a side decision, reads
+// gated checks that every save with a done scan holds a side decision, reads
 // the review queue through `review list --json` held to its schema, and
 // counts. It names no save and quotes no text, because a real export is
 // outsider text.
@@ -97,9 +128,9 @@ func (p *pipeline) gated(t *testing.T) gateCounts {
 	c := gateCounts{review: map[string]int{}}
 	c.saves = p.count(t, `SELECT count(*) FROM items WHERE media_type = ?`, redditexport.MediaTypeSave)
 	if n := p.count(t, `SELECT count(*) FROM items i WHERE media_type = ?
-		AND EXISTS (SELECT 1 FROM outputs o WHERE o.item_key = i.key AND o.stage = 'parse' AND o.state = 'done')
+		AND EXISTS (SELECT 1 FROM outputs o WHERE o.item_key = i.key AND o.stage = 'scan' AND o.state = 'done')
 		AND NOT EXISTS (SELECT 1 FROM decisions d WHERE d.item_key = i.key AND d.gate = 'side')`, redditexport.MediaTypeSave); n != 0 {
-		t.Errorf("%d parsed saves hold no side decision", n)
+		t.Errorf("%d scanned saves hold no side decision", n)
 	}
 	c.byRule = p.count(t, `SELECT count(*) FROM decisions WHERE gate = 'side' AND decided_by LIKE 'rule:%'`)
 	out, err := runCLI(t, "review", "list", "--json", "--config", p.config)
@@ -156,6 +187,7 @@ func TestASaveIsPlacedByItsRuleOrWaitsInReviewForAPersonToPlace(t *testing.T) {
 		t.Fatal(err)
 	}
 	p.parse(t, extract.Builtin())
+	p.scanFindingNothing(t)
 
 	if c := p.gated(t); c.saves != 3 || c.byRule != 1 || !maps.Equal(c.review, map[string]int{"no-guess": 1, "no-parse": 1}) {
 		t.Fatalf("the gate placed %d of %d saves by rule and sent %v to review, want 1 of 3 and one each of no-guess and no-parse",
@@ -238,6 +270,7 @@ func TestASaveWaitingOnTheGateIsPlacedByARuleOrGuessThatArrivesLater(t *testing.
 	p := newGatedPipeline(t, "")
 	p.landExports(t, map[string][]byte{"first": redditExport(redditSave("t3_aa1", "Cooking"), redditSave("t3_bb2", "golang"))})
 	p.parse(t, extract.Builtin())
+	p.scanFindingNothing(t)
 	if c := p.gated(t); !maps.Equal(c.review, map[string]int{"no-guess": 2}) {
 		t.Fatalf("with no set applied the gate sent %v to review, want both saves as no-guess", c.review)
 	}
@@ -294,6 +327,7 @@ func TestTheStoredRedditExportsPassTheSideGateUnderTheDeclaredRules(t *testing.T
 	p := newGatedPipeline(t, declarations)
 	p.landExports(t, exports)
 	p.parse(t, extract.Builtin())
+	p.scanFindingNothing(t)
 	c := p.gated(t)
 	waiting := 0
 	var reasons bytes.Buffer

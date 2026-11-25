@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -112,6 +113,22 @@ func JoinUnits(units []Unit) (text string, starts []int) {
 // each parse keeps its own row beside the parse it read.
 func ScanVersion(rules, extractor, extractorVersion string) string {
 	return rules + "/" + extractor + "@" + extractorVersion
+}
+
+// NewestParseScanned says whether outputs, oldest first as Tx.Outputs reads
+// them, hold a done scan of the newest done parse among them. The side gate
+// places an item only then, so no item is placed before its scan.
+func NewestParseScanned(outputs []Output) bool {
+	var parse *Output
+	for i := range outputs {
+		if outputs[i].Stage == StageParse && outputs[i].State == OutputDone {
+			parse = &outputs[i]
+		}
+	}
+	return parse != nil && slices.ContainsFunc(outputs, func(o Output) bool {
+		return o.Stage == StageScan && o.State == OutputDone && o.InputProducer != nil && *o.InputProducer == parse.Producer &&
+			o.InputVersion != nil && *o.InputVersion == parse.ProducerVersion
+	})
 }
 
 // ScanRules is the rules version within a scan's producer version.

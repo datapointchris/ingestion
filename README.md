@@ -327,8 +327,9 @@ decision on each rule.
 
 ### The side gate places each item, and a person places what it leaves
 
-When an item's parse is done, the service runs the side gate in the same write. The gate places
-the item by the first rung that decides it:
+When the scan of an item's newest parse is done, the service runs the side gate in the same
+write. A parse's end alone places nothing, so no item reaches a side before its scan. The gate
+places the item by the first rung that decides it:
 
 1. **Every sighting's tags.** A tag that a destination names places the item on that
    destination's side. Tags naming two sides send it to review as `tags-disagree`.
@@ -341,14 +342,17 @@ the item by the first rung that decides it:
    waits as `no-guess`.
 
 The gate runs again in the write that ends each later stage before it, such as the quality gate,
-and in the write that applies a changed set. Each run decides again an item that the gate sent to
+and in the write that applies a changed set. Each run passes over an item whose newest parse is
+not scanned yet. Each run decides again an item that the gate sent to
 review as `no-guess`, `below-floor` or `gate-error`, so a guess or a rule that arrives later
 places it. A placed item stays where it is: a later sighting or parse moves nothing, and only a
 person's placement moves it. Where the gate cannot read the set in force or the item's sightings,
-it logs why and sends the item to review as `gate-error`, and the parse stands.
+it logs why and sends the item to review as `gate-error`, and the scan stands.
 
 An item whose parse failed waits in review as `no-parse`. One that the quality gate sent to
-review before any side decision waits as `quality-review`.
+review before any side decision waits as `quality-review`. When an item's scan fails for good
+before any side decision, the item waits neither on a side nor in review. Its phase reads
+`failed` until `items replay --stage scan` scans it.
 
 Where the item lands on a side, the read gate chooses how it is read: as is, or by a model under
 the side's lens. The first connector that sighted it and declares a `read_rule` decides.
