@@ -211,10 +211,12 @@ type Claim struct {
 
 // Leased is a leased task with its item's row, so a worker runs the task
 // holding no scope to read items. A poll task has no item, so its Item is
-// empty.
+// empty. A deliver task carries its delivery's row too, whose title and URL
+// every attempt sends.
 type Leased struct {
 	Task
-	Item Item
+	Item     Item
+	Delivery *Delivery
 }
 
 // Claim records the worker's heartbeat and leases it up to c.Max tasks whose
@@ -279,6 +281,15 @@ func (s *Store) Claim(ctx context.Context, c Claim) ([]Leased, error) {
 			if task.ItemKey != nil {
 				if leased.Item, _, err = tx.Item(ctx, *task.ItemKey); err != nil {
 					return err
+				}
+			}
+			if task.Stage == StageDeliver && task.ItemKey != nil && task.Destination != nil {
+				d, ok, err := tx.Delivery(ctx, *task.ItemKey, *task.Destination)
+				if err != nil {
+					return err
+				}
+				if ok {
+					leased.Delivery = &d
 				}
 			}
 			claimed = append(claimed, leased)

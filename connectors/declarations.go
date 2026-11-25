@@ -117,7 +117,7 @@ type Destination struct {
 	Side string   `json:"side,omitempty" yaml:"side"`
 	Tags []string `json:"tags" yaml:"tags"`
 	// Deliverer names the deliverer that writes each item placed here, as
-	// RegisterDeliverer registered it. Left out, nothing is delivered, as for
+	// deliver.Register registered it. Left out, nothing is delivered, as for
 	// a destination whose reader pulls its items itself.
 	Deliverer string `json:"deliverer,omitempty" yaml:"deliverer"`
 	// DefaultForSide makes this the destination of an item placed on its side
@@ -175,10 +175,16 @@ func (s Set) Tagged(tag string) (Destination, bool) {
 	return Destination{}, false
 }
 
-// AppliedSet reads the set in force as tx sees it, and an empty set where none
-// has been applied.
-func AppliedSet(ctx context.Context, tx *store.Tx) (Set, error) {
-	applied, ok, err := tx.AppliedDeclarations(ctx)
+// AppliedSource is what reads the set in force: a write, as a gate sees it, or
+// the store, as a read of an item sees it.
+type AppliedSource interface {
+	AppliedDeclarations(ctx context.Context) (store.Declarations, bool, error)
+}
+
+// AppliedSet reads the set in force from src, and an empty set where none has
+// been applied.
+func AppliedSet(ctx context.Context, src AppliedSource) (Set, error) {
+	applied, ok, err := src.AppliedDeclarations(ctx)
 	if err != nil {
 		return Set{}, err
 	}
@@ -340,7 +346,7 @@ func Validate(s Set, roots []string) []Invalid {
 			problems = append(problems, "another destination has this name")
 		}
 		destinations[d.Name] = true
-		if d.Deliverer != "" && !deliverers[d.Deliverer] {
+		if _, ok := deliverers[d.Deliverer]; d.Deliverer != "" && !ok {
 			problems = append(problems, fmt.Sprintf("deliverer %s names no deliverer this build registers", d.Deliverer))
 		}
 		if d.DefaultForSide && d.Side != "" {

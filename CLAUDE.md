@@ -28,10 +28,10 @@ package:
 | `extract` | one extractor per media type, each writing versioned text and units |
 | `scan` | the scanner, run over parsed text and again over each suggestion, and its stored findings |
 | `qualitygate` | the model stage that reads an item's opening and answers its quality, genre, domains, themes, a one-line idea and a side guess |
-| `route` | the side gate and the read gate, which serve runs in the write that ends each stage before them and in the write that applies a changed set: a sighting's tags, then a rule, then the quality gate's guess at or above its confidence floor, else review; a person's placement from review; and the delivery that a read as is queues in the same write |
+| `route` | the side gate and the read gate, which serve runs in the write that ends each stage before them and in the write that applies a changed set: a sighting's tags, then a rule, then the quality gate's guess at or above its confidence floor, else review; a person's placement from review; and `Due`, the one predicate for where an item is due a delivery, which each decision's write reconciles, queueing a read as is and withdrawing what a drop or a move no longer reaches |
 | `modelread` | the model stage that answers an item's note with a summary, a suggestion sentence, or both |
 | `connectors` | the declaration set, checked against its schemas, and its apply, the scheduler that makes each connector due, the folder scan, the drop handler each source registers under its format, the deliverer each destination names, and the side default that takes an item placed with no destination |
-| `deliver` | each deliverer, which a worker runs to upsert an item into its destination through that destination's own API under the item's key, and how its answer maps to an outcome |
+| `deliver` | each deliverer, registered with what it takes and how a worker opens it, which upserts an item into its destination through that destination's own API under the item's key, and how its answer maps to an outcome |
 | `modelport` | the one port that carries every model call, and its `queue` and `claude-cli` adapters |
 | `outbox` | the relay that ships each logged change past its mark, with outsider text on a channel of its own |
 | `server` | the HTTP API that `ingestion serve` answers, and its route table, whose rows name each route's scope and what a repeat does, read by the CLI's retry and the router's key check |
@@ -83,7 +83,8 @@ land → parse → scan → quality gate → side → read → model read → de
 - **A delivery writes through the destination's own API, and ingestion never queues a settled one
   again.** The destination keeps the item's key as its record's source key. A destination may
   later forget a record it held, so its own conflict answer cannot be the guard against a second
-  copy. The `deliveries` row is that guard.
+  copy. The `deliveries` row is that guard. It keeps the title and URL that the item had when the
+  delivery was first queued, and every attempt sends those, so a retry repeats the first request.
 
 ## The zone records who wrote the content, and the strictest sighting wins
 

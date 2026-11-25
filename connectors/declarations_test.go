@@ -11,9 +11,6 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/datapointchris/ingestion/connectors"
-	// The example set names the life-articles deliverer, which deliver
-	// registers.
-	_ "github.com/datapointchris/ingestion/deliver"
 )
 
 // The example set reads whole, and each of its files holds to the JSON Schema

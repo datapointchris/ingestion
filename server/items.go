@@ -10,6 +10,7 @@ import (
 
 	"github.com/datapointchris/ingestion/connectors"
 	"github.com/datapointchris/ingestion/itemkey"
+	"github.com/datapointchris/ingestion/route"
 	"github.com/datapointchris/ingestion/store"
 )
 
@@ -58,7 +59,7 @@ type ItemAnswer struct {
 	Decisions     []DecisionView `json:"decisions"`
 	Deliveries    []DeliveryView `json:"deliveries"`
 	// Undelivered says why an item placed on a side and read as is reaches
-	// no deliverer, and is null where it does or holds a delivery.
+	// no deliverer, and is null where it does.
 	Undelivered *UndeliveredView `json:"undelivered"`
 }
 
@@ -154,6 +155,9 @@ type DeliveryView struct {
 	Outcome       string  `json:"outcome"`
 	Attempts      int     `json:"attempts"`
 	LastError     *string `json:"last_error"`
+	// UnclaimedCapability is the capability of the delivery's queued task
+	// where no worker heard from lately holds it, and null otherwise.
+	UnclaimedCapability *string `json:"unclaimed_capability"`
 }
 
 // ParseAnswer is what GET /api/v1/items/{key}/parse answers:
@@ -264,31 +268,59 @@ func (h itemHandlers) show(w http.ResponseWriter, r *http.Request) {
 		h.internal(w, r, "read the set in force", err)
 		return
 	}
+	if err := h.markUnclaimed(r.Context(), rec, answer.Deliveries); err != nil {
+		h.internal(w, r, "read the workers", err)
+		return
+	}
 	JSON(w, http.StatusOK, answer)
 }
 
-// undelivered is why rec's item, placed on a side and read as is, reaches no
-// deliverer under the set in force, and nil where it does or holds a
-// delivery.
+// undelivered is why rec's item reaches no deliverer where route.Due sends it
+// somewhere under the set in force, and nil where it does.
 func (h itemHandlers) undelivered(ctx context.Context, rec store.ItemRecords) (*UndeliveredView, error) {
-	side, sided := rec.NewestDecision(store.GateSide)
-	read, readDecided := rec.NewestDecision(store.GateRead)
-	if _, onASide := rec.Side(); !sided || !onASide || !readDecided || read.Verdict != connectors.ReadAsIs || len(rec.Deliveries) > 0 {
-		return nil, nil
-	}
-	set := connectors.Set{}
-	if applied, ok, err := h.store.AppliedDeclarations(ctx); err != nil {
+	set, err := connectors.AppliedSet(ctx, h.store)
+	if err != nil {
 		return nil, err
-	} else if ok {
-		if set, err = connectors.Decode(applied); err != nil {
-			return nil, err
-		}
 	}
-	_, u := set.DeliveryTo(side)
+	side, _ := rec.NewestDecision(store.GateSide)
+	read, _ := rec.NewestDecision(store.GateRead)
+	_, u, _ := route.Due(set, rec.Item, side, read)
 	if u == nil {
 		return nil, nil
 	}
 	return &UndeliveredView{Reason: u.Reason, Side: u.Side, Destination: optional(u.Destination), Message: u.Error()}, nil
+}
+
+// markUnclaimed names, on each of views whose delivery waits on a queued task,
+// the task's capability where no worker heard from within WorkersHeardWithin
+// holds it. So a delivery that nothing here can write reads apart from one
+// that its destination failed.
+func (h itemHandlers) markUnclaimed(ctx context.Context, rec store.ItemRecords, views []DeliveryView) error {
+	waiting := map[string]string{}
+	for _, t := range rec.Tasks {
+		if t.Stage == store.StageDeliver && t.State == store.TaskQueued && t.Destination != nil {
+			waiting[*t.Destination] = t.Capability
+		}
+	}
+	if len(waiting) == 0 {
+		return nil
+	}
+	workers, _, err := h.store.Workers(ctx, store.Stamp(h.store.Now().Add(-WorkersHeardWithin)))
+	if err != nil {
+		return err
+	}
+	held := map[string]bool{}
+	for _, w := range workers {
+		for _, c := range w.Capabilities {
+			held[c] = true
+		}
+	}
+	for i, v := range views {
+		if capability, ok := waiting[v.Destination]; ok && !held[capability] {
+			views[i].UnclaimedCapability = &capability
+		}
+	}
+	return nil
 }
 
 func (h itemHandlers) parse(w http.ResponseWriter, r *http.Request) {

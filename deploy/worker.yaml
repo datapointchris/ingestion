@@ -4,12 +4,13 @@
 #
 # - The ConfigMap named ingestion-config, shared with serve. A worker reads
 #   its api, the service's address in the cluster; its issuer; its client_id,
-#   naming the worker's service client; its [worker] table; and a [deliver.*]
-#   table for each app that it delivers to.
+#   naming the worker's service client; its [worker] table; and a
+#   [deliver.<name>] table for each deliverer that it opens.
 # - A Secret named ingestion-worker-client. Its secret key holds that client's
 #   secret.
-# - A Secret named ingestion-life-client, where [deliver.life] is set. Its
-#   secret key holds the secret of the life client that table names.
+# - A Secret named ingestion-deliver-life-articles, where
+#   [deliver.life-articles] names a client_id. Its secret key holds that
+#   client's secret. Without it the worker runs on and opens no life-articles.
 # - A NetworkPolicy for each egress: the service, the identity provider, each
 #   outside source and each app that the worker delivers to.
 apiVersion: v1
@@ -65,10 +66,10 @@ spec:
                 secretKeyRef:
                   name: ingestion-worker-client
                   key: secret
-            - name: INGESTION_LIFE_CLIENT_SECRET
+            - name: INGESTION_DELIVER_LIFE_ARTICLES_CLIENT_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: ingestion-life-client
+                  name: ingestion-deliver-life-articles
                   key: secret
                   optional: true
           resources:

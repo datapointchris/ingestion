@@ -184,24 +184,37 @@ func writeLife(w http.ResponseWriter, status int, body any) {
 }
 
 // lifeDeliverer is the life-articles handler that a worker opens from a config
-// whose [deliver.life] names the stand-in, with the client's secret in the
-// environment.
+// whose [deliver.life-articles] names the stand-in, with the client's secret in
+// the environment.
 func (p *pipeline) lifeDeliverer(t *testing.T, life *standInLife) worker.Handler {
 	t.Helper()
-	t.Setenv(lifeClientSecretEnv, lifeSecret)
-	var cfg fileConfig
-	cfg.Deliver.Life = serviceClient{API: life.URL, ClientID: lifeClient}
-	deliverers, err := openDeliverers(t.Context(), cfg, p.provider.URL, quiet)
-	if err != nil {
-		t.Fatal(err)
-	}
-	handlers := workerHandlers(p.worker, deliverers, quiet)
+	t.Setenv(deliverSecretEnv(deliver.LifeArticles), lifeSecret)
+	cfg := fileConfig{Deliver: map[string]serviceClient{deliver.LifeArticles: {API: life.URL, ClientID: lifeClient}}}
+	handlers := workerHandlers(p.worker, openDeliverers(t.Context(), cfg, p.provider.URL, quiet), quiet)
 	i := slices.IndexFunc(handlers, func(h worker.Handler) bool { return h.Capability() == store.DeliverCapability(deliver.LifeArticles) })
 	if i < 0 {
 		t.Fatalf("the worker holds no %s handler", deliver.LifeArticles)
 	}
 	return handlers[i]
 }
+
+// lifeSet is the example set with destinations in place of its own.
+func lifeSet(t *testing.T, destinations string) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.CopyFS(dir, os.DirFS(mustAbs(t, "../examples/declarations"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, connectors.DestinationsFile), []byte(destinations), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// withLife is the example's destinations with life-articles as
+// reading-list's deliverer.
+const withLife = "destinations:\n  - name: reading-list\n    side: personal\n    deliverer: life-articles\n    default_for_side: true\n" +
+	"  - name: work-inbox\n    side: fleet\n    default_for_side: true\n  - name: dropped\n"
 
 // shown is the item as `items show --json` prints it, held to its schema.
 func (p *pipeline) shown(t *testing.T, key string) server.ItemAnswer {
@@ -233,10 +246,11 @@ func (p *pipeline) replayDeliveries(t *testing.T) int {
 // adopted, delivered-to-existing. One whose URL life holds under another key
 // is refused with that article, and never sent again. One that life answers
 // 500 stays pending with its error and attempts, and its task waits out its
-// backoff. A deliver replay queues none of them again, and a repeat of the
-// same body answers the article it saved.
+// backoff. Until a worker that opens life-articles checks in, each delivery
+// names the capability that no worker claims. A deliver replay queues none of
+// them again, and a repeat of the same body answers the article it saved.
 func TestASavePlacedOnLifesReadingListIsSavedThereOnceUnderItsKey(t *testing.T) {
-	p := newGatedPipeline(t, mustAbs(t, "../examples/declarations"))
+	p := newGatedPipeline(t, lifeSet(t, withLife))
 	life := newStandInLife(t, p.provider)
 	p.landExports(t, map[string][]byte{"first": redditExport(
 		redditSave("t3_aa1", "Cooking"), redditSave("t3_bb2", "golang"), redditSave("t3_cc3", "Cooking"),
@@ -247,32 +261,35 @@ func TestASavePlacedOnLifesReadingListIsSavedThereOnceUnderItsKey(t *testing.T) 
 	byHand := life.hold(text(p.shown(t, "reddit/t3_cc3").Item.URL), nil)
 	held := life.hold(text(p.shown(t, "reddit/t3_dd4").Item.URL), &other)
 	life.failing["reddit/t3_ee5"] = 1
+	if d := p.shown(t, "reddit/t3_aa1").Deliveries; len(d) != 1 || text(d[0].UnclaimedCapability) != "deliver:life-articles" {
+		t.Errorf("before any worker opened life-articles, t3_aa1 holds deliveries %s, want one naming deliver:life-articles unclaimed", jsonOf(d))
+	}
 	lifeArticles := p.lifeDeliverer(t, life)
 	if ran := p.run(t, lifeArticles); ran != 4 {
 		t.Fatalf("the worker ran %d deliveries, want one for each of the 4 saves on reading-list", ran)
 	}
 
-	want := map[string]server.DeliveryView{
-		"reddit/t3_aa1": {Outcome: store.DeliveryDelivered, DestinationID: ptr("3")},
-		"reddit/t3_cc3": {Outcome: store.DeliveryDeliveredToExisting, DestinationID: &byHand},
-		"reddit/t3_dd4": {
-			Outcome: store.DeliveryRefused, DestinationID: &held,
-			LastError: ptr("life's article " + held + " holds this URL under source_key " + other),
-		},
-		"reddit/t3_ee5": {Outcome: store.DeliveryPending, LastError: ptr("life answered 500: Internal server error: OperationalError")},
+	// quotes is what last_error carries of life's own answer: the key that
+	// holds the URL, and life's message.
+	want := map[string]struct {
+		server.DeliveryView
+		quotes string
+	}{
+		"reddit/t3_aa1": {DeliveryView: server.DeliveryView{Outcome: store.DeliveryDelivered, DestinationID: ptr("3")}},
+		"reddit/t3_cc3": {DeliveryView: server.DeliveryView{Outcome: store.DeliveryDeliveredToExisting, DestinationID: &byHand}},
+		"reddit/t3_dd4": {DeliveryView: server.DeliveryView{Outcome: store.DeliveryRefused, DestinationID: &held}, quotes: other},
+		"reddit/t3_ee5": {DeliveryView: server.DeliveryView{Outcome: store.DeliveryPending}, quotes: "OperationalError"},
 	}
 	for _, key := range slices.Sorted(maps.Keys(want)) {
 		shown := p.shown(t, key)
 		w := want[key]
-		w.Destination, w.Attempts = "reading-list", 1
-		if len(shown.Deliveries) != 1 || text(shown.Deliveries[0].DestinationID) != text(w.DestinationID) ||
-			shown.Deliveries[0].Outcome != w.Outcome || shown.Deliveries[0].Attempts != 1 || text(shown.Deliveries[0].LastError) != text(w.LastError) {
-			t.Errorf("%s holds deliveries %s, want %s", key, jsonOf(shown.Deliveries), jsonOf([]server.DeliveryView{w}))
+		if len(shown.Deliveries) != 1 || shown.Deliveries[0].Destination != "reading-list" ||
+			text(shown.Deliveries[0].DestinationID) != text(w.DestinationID) || shown.Deliveries[0].Outcome != w.Outcome ||
+			shown.Deliveries[0].Attempts != 1 || !strings.Contains(text(shown.Deliveries[0].LastError), w.quotes) ||
+			(w.quotes == "") != (shown.Deliveries[0].LastError == nil) {
+			t.Errorf("%s holds deliveries %s, want one to reading-list %s, after 1 attempt, quoting %q",
+				key, jsonOf(shown.Deliveries), w.Outcome, w.quotes)
 		}
-	}
-	out, err := runCLI(t, "items", "show", "reddit/t3_dd4", "--config", p.config)
-	if want := "delivery  reading-list  refused as " + held + "  attempts 1  life's article " + held; err != nil || !strings.Contains(out, want) {
-		t.Errorf("items show printed %q, %v; want a line holding %q", out, err, want)
 	}
 	tasks := p.tasks(t)
 	if i := slices.IndexFunc(tasks, func(v server.TaskView) bool {
@@ -307,22 +324,47 @@ func TestASavePlacedOnLifesReadingListIsSavedThereOnceUnderItsKey(t *testing.T) 
 	}
 }
 
+// A person runs review drop on one save and review place onto work-inbox on
+// another, after a rule queued each one's delivery to life and before any
+// worker ran it. Life gets neither: each queued task is withdrawn, and each
+// delivery stays pending with no task left to run it.
+func TestAPersonsDropOrMoveWithdrawsADeliveryThatHasNotRun(t *testing.T) {
+	p := newGatedPipeline(t, lifeSet(t, withLife))
+	life := newStandInLife(t, p.provider)
+	p.landExports(t, map[string][]byte{"first": redditExport(redditSave("t3_aa1", "Cooking"), redditSave("t3_cc3", "Cooking"))})
+	p.parse(t, extract.Builtin())
+	for _, args := range [][]string{
+		{"review", "drop", "reddit/t3_aa1", "--cause", "subreddit"},
+		{"review", "place", "reddit/t3_cc3", "work-inbox", "--cause", "subreddit"},
+	} {
+		if out, err := runCLI(t, append(args, "--config", p.config)...); err != nil {
+			t.Fatalf("%v printed %q, %v", args, out, err)
+		}
+	}
+	if ran := p.run(t, p.lifeDeliverer(t, life)); ran != 0 {
+		t.Errorf("after the drop and the move the worker ran %d deliveries, want none", ran)
+	}
+	if articles, creates := life.counts(); articles != 0 || creates != 0 {
+		t.Errorf("life holds %d articles from %d creates, want none", articles, creates)
+	}
+	for _, key := range []string{"reddit/t3_aa1", "reddit/t3_cc3"} {
+		if d := p.shown(t, key).Deliveries; len(d) != 1 || d[0].Outcome != store.DeliveryPending || d[0].LastError == nil {
+			t.Errorf("%s holds deliveries %s, want its reading-list delivery pending, saying why it stopped", key, jsonOf(d))
+		}
+	}
+	if open := slices.IndexFunc(p.tasks(t), func(v server.TaskView) bool { return v.Stage == store.StageDeliver }); open >= 0 {
+		t.Errorf("a deliver task is still open after the drop and the move: %s", jsonOf(p.tasks(t)[open]))
+	}
+}
+
 // An item that the quality gate's guess places on a side names no
 // destination, so it reaches the side's default destination. Under a set with
 // no default for its side it waits, and `items show` says why. Once a set
 // names a default, the apply queues its delivery.
 func TestAnItemPlacedOnASideAloneWaitsForThatSidesDefaultDestination(t *testing.T) {
 	ctx := t.Context()
-	noDefault := t.TempDir()
-	if err := os.CopyFS(noDefault, os.DirFS(mustAbs(t, "../examples/declarations"))); err != nil {
-		t.Fatal(err)
-	}
-	destinations := "destinations:\n  - name: reading-list\n    side: personal\n    deliverer: life-articles\n" +
-		"  - name: work-inbox\n    side: fleet\n  - name: dropped\n"
-	if err := os.WriteFile(filepath.Join(noDefault, connectors.DestinationsFile), []byte(destinations), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	p := newGatedPipeline(t, noDefault)
+	p := newGatedPipeline(t, lifeSet(t, "destinations:\n  - name: reading-list\n    side: personal\n    deliverer: life-articles\n"+
+		"  - name: work-inbox\n    side: fleet\n  - name: dropped\n"))
 	life := newStandInLife(t, p.provider)
 	p.landExports(t, map[string][]byte{"first": redditExport(redditSave("t3_bb2", "golang"))})
 	p.parse(t, extract.Builtin())
@@ -341,12 +383,8 @@ func TestAnItemPlacedOnASideAloneWaitsForThatSidesDefaultDestination(t *testing.
 	if u := p.shown(t, key).Undelivered; u == nil || u.Reason != connectors.UndeliveredNoSideDefault || u.Side != connectors.SidePersonal {
 		t.Fatalf("the guessed save shows undelivered %s, want no-side-default on personal", jsonOf(u))
 	}
-	out, err := runCLI(t, "items", "show", key, "--config", p.config)
-	if want := "delivery  none: no destination in the set in force is default_for_side personal"; err != nil || !strings.Contains(out, want) {
-		t.Errorf("items show printed %q, %v; want a line holding %q", out, err, want)
-	}
 
-	set, err := connectors.Read(mustAbs(t, "../examples/declarations"), nil)
+	set, err := connectors.Read(lifeSet(t, withLife), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

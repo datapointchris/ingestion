@@ -8,7 +8,9 @@ destinations:
   - name: reading-list
     side: personal
     tags: [read-later]
-    deliverer: life-articles
+    # Saves each item as an article in life, where a worker's config holds a
+    # [deliver.life-articles] table.
+    # deliverer: life-articles
     default_for_side: true
   - name: work-inbox
     side: fleet

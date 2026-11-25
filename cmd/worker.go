@@ -4,13 +4,16 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
+	"net/http"
 	"os"
 	"os/signal"
 	"slices"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -21,6 +24,7 @@ import (
 
 	"github.com/datapointchris/ingestion/deliver"
 	"github.com/datapointchris/ingestion/extract"
+	"github.com/datapointchris/ingestion/store"
 	"github.com/datapointchris/ingestion/worker"
 )
 
@@ -41,33 +45,64 @@ func workerHandlers(client *worker.Client, deliverers map[string]deliver.Deliver
 	return handlers
 }
 
-// openDeliverers is each deliverer that cfg sets up, by the name it registers.
-// issuer is the file's, which a destination's table takes where it names
-// none. A worker claims no task of a deliverer that it leaves out.
-func openDeliverers(ctx context.Context, cfg fileConfig, issuer string, log *slog.Logger) (map[string]deliver.Deliverer, error) {
+// openDeliverers opens the deliverer that each [deliver.<name>] table in cfg
+// names, by that name. issuer is the file's, which a table takes where it
+// names none. A table that names no deliverer this build registers, or that
+// cannot open, is logged and left out, so the worker's other stages run on.
+// A worker claims no task of a deliverer that it leaves out, and items show
+// names the capability of each delivery that no worker claims.
+func openDeliverers(ctx context.Context, cfg fileConfig, issuer string, log *slog.Logger) map[string]deliver.Deliverer {
 	out := map[string]deliver.Deliverer{}
-	life := cfg.Deliver.Life
-	if life.API == "" {
-		log.Info("[deliver.life] names no api, so this worker claims no " + deliver.LifeArticles + " task")
-		return out, nil
+	for _, name := range slices.Sorted(maps.Keys(cfg.Deliver)) {
+		table := cfg.Deliver[name]
+		r, ok := deliver.Lookup(name)
+		if !ok {
+			log.Error("[deliver."+name+"] names no deliverer this build registers, so the worker opens none for it",
+				"registered", strings.Join(deliver.Names(), ", "))
+			continue
+		}
+		client, err := deliverClient(ctx, name, table, issuer, r.Scopes)
+		if err != nil {
+			log.Error("[deliver."+name+"] cannot open, so the worker claims no "+store.DeliverCapability(name)+" task", "error", err)
+			continue
+		}
+		out[name] = r.Open(table.API, client)
 	}
-	if life.ClientID == "" {
-		return nil, fmt.Errorf("[deliver.life] names no client_id, the service client that life admits this worker as")
+	return out
+}
+
+// deliverClient is the HTTP client that carries the token of the service
+// client that table names: the token its token_command prints, or a
+// client-credentials token for its client_id, whose secret is in
+// deliverSecretEnv(name).
+func deliverClient(ctx context.Context, name string, table serviceClient, issuer string, scopes []string) (*http.Client, error) {
+	if table.API == "" {
+		return nil, errors.New("it names no api")
 	}
-	secret := os.Getenv(lifeClientSecretEnv)
-	if secret == "" {
-		return nil, fmt.Errorf("[deliver.life] names client %s, so set %s to its secret", life.ClientID, lifeClientSecretEnv)
+	var source oauth2.TokenSource
+	var err error
+	switch {
+	case len(table.TokenCommand) > 0 && table.ClientID != "":
+		return nil, errors.New("it names both token_command and client_id, and a client authenticates one way")
+	case len(table.TokenCommand) > 0:
+		source, err = goclilogin.CommandTokenSource(ctx, table.TokenCommand)
+	case table.ClientID != "":
+		secret := os.Getenv(deliverSecretEnv(name))
+		if secret == "" {
+			return nil, fmt.Errorf("it names client %s, so set %s to its secret", table.ClientID, deliverSecretEnv(name))
+		}
+		if table.Issuer != "" {
+			issuer = table.Issuer
+		}
+		source, err = goclilogin.ClientCredentialsTokenSource(ctx,
+			goclilogin.ServiceClient{Issuer: issuer, ClientID: table.ClientID, Scopes: scopes}, secret)
+	default:
+		return nil, errors.New("it names neither client_id nor token_command")
 	}
-	if life.Issuer != "" {
-		issuer = life.Issuer
-	}
-	source, err := goclilogin.ClientCredentialsTokenSource(ctx,
-		goclilogin.ServiceClient{Issuer: issuer, ClientID: life.ClientID, Scopes: deliver.LifeArticlesScopes}, secret)
 	if err != nil {
-		return nil, fmt.Errorf("[deliver.life]: %w", err)
+		return nil, err
 	}
-	out[deliver.LifeArticles] = deliver.NewLifeArticles(life.API, oauth2.NewClient(ctx, source))
-	return out, nil
+	return oauth2.NewClient(ctx, source), nil
 }
 
 var workerCmd = &cobra.Command{
@@ -90,14 +125,17 @@ var workerRunCmd = &cobra.Command{
 		"  lease  how long each lease runs before a heartbeat extends it (default " + shortDuration(defaultLease) + ")\n" +
 		"  poll   how often an idle worker claims again (default " + shortDuration(defaultPoll) + ")\n" +
 		"\n" +
-		"It delivers each item placed on a destination whose deliverer is " + deliver.LifeArticles + "\n" +
-		"where the file's [deliver.life] table names life's api. It writes to life as\n" +
-		"the service client that table names, with that client's secret in\n" +
-		lifeClientSecretEnv + ":\n" +
+		"It runs each deliverer that a [deliver.<name>] table opens, where <name> is a\n" +
+		"deliverer this build registers: " + strings.Join(deliver.Names(), ", ") + ". A table names:\n" +
 		"\n" +
-		"  api        life's address\n" +
-		"  client_id  the service client that life admits with scope " + deliver.LifeArticlesScopes[0] + "\n" +
-		"  issuer     the OIDC provider that signs its tokens (default the file's issuer)",
+		"  api            the app's address\n" +
+		"  client_id      the service client it writes as, whose secret is in\n" +
+		"                 INGESTION_DELIVER_<NAME>_CLIENT_SECRET, such as " + deliverSecretEnv(deliver.LifeArticles) + "\n" +
+		"  token_command  in place of client_id, a command that prints the client's token\n" +
+		"  issuer         the OIDC provider that signs its tokens (default the file's issuer)\n" +
+		"\n" +
+		deliver.LifeArticles + "'s client needs the scope " + strings.Join(deliver.LifeArticlesScopes, " ") + ". A table that cannot open\n" +
+		"is logged and left out, and the worker's other stages run on.",
 	Example: "  # a worker, as a service client\n" +
 		"  INGESTION_CLIENT_SECRET=... ingestion worker run --config /etc/ingestion/config.toml",
 	Args: cobra.NoArgs,
@@ -147,10 +185,7 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 	if run.Poll <= 0 {
 		run.Poll = defaultPoll
 	}
-	deliverers, err := openDeliverers(ctx, cfg, d.Issuer.Value, run.Log)
-	if err != nil {
-		return fmt.Errorf("%s: %w", path, err)
-	}
+	deliverers := openDeliverers(ctx, cfg, d.Issuer.Value, run.Log)
 	client := worker.NewClient(d.API.Value, oauth2.NewClient(ctx, source))
 	return worker.Run(ctx, client, run, workerHandlers(client, deliverers, run.Log)...)
 }

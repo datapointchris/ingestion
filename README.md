@@ -86,11 +86,12 @@ slots = 4     # tasks leased at once
 lease = "10m" # how long a lease holds without a heartbeat
 poll = "10s"  # how often an idle worker asks for work
 
-# Where set, the worker delivers to life's articles as this service client.
-# The client needs the scope life.articles.write.
-[deliver.life]
+# A table for each deliverer the worker opens, named for it. This one saves
+# items as life articles, as a client that holds the scope life.articles.write.
+[deliver.life-articles]
 api = "https://life.example.com"
 client_id = "life-svc-ingestion"
+# token_command = ["my-token-helper", "life"]  # in place of client_id
 # issuer = "..."  # the OIDC provider that signs life's tokens, if not the one above
 ```
 
@@ -98,9 +99,11 @@ client_id = "life-svc-ingestion"
 
 - **`INGESTION_CLIENT_SECRET`** is the worker's client secret. It makes the worker authenticate
   with the client-credentials grant. The worker requires it, or a `token_command`.
-- **`INGESTION_LIFE_CLIENT_SECRET`** is the secret of the client that `[deliver.life]` names. A
-  worker given that table refuses to start without it. A worker given no `[deliver.life]` claims
-  no delivery to life.
+- **`INGESTION_DELIVER_<NAME>_CLIENT_SECRET`** is the secret of the client that a
+  `[deliver.<name>]` table names by `client_id`, such as
+  `INGESTION_DELIVER_LIFE_ARTICLES_CLIENT_SECRET`. The worker logs a table that cannot open, such
+  as one whose secret is unset, and runs on without that deliverer. Its other stages are
+  unaffected.
 - **`NODE_NAME`**, where set, names the node in each shipped record's resource.
 - **The access token decides what a caller reaches.** A person's token reaches every route. A
   service token reaches only the routes its scopes grant. A worker needs
@@ -370,6 +373,7 @@ delivery  reading-list  delivered as 3  attempts 1
 delivery  reading-list  delivered-to-existing as 8  attempts 1
 delivery  reading-list  refused as 5  attempts 1  life's article 5 holds this key from another body
 delivery  reading-list  pending  attempts 2  life answered 500: …
+delivery  reading-list  pending  attempts 0  no worker heard from lately claims deliver:life-articles
 delivery  none: no destination in the set in force is default_for_side personal, so an item placed on that side with no destination named waits
 ```
 
@@ -378,15 +382,24 @@ delivery  none: no destination in the set in force is default_for_side personal,
   this key.
 - **`refused`**: the app holds a record that conflicts, such as one of the same URL under another
   key. The delivery names that record, and is never tried again.
-- **`pending`**: the app failed, timed out or answered in part. The task tries again 30 seconds
-  later, doubling each time up to an hour. An answer that refuses the body as invalid fails the
-  task instead, and the delivery stays pending with that answer.
+- **`pending`**: the app failed, timed out or answered in part. The task tries again after a wait
+  that doubles with each attempt, up to a cap that `deliver/deliver.go` sets. An answer that the
+  same request cannot mend, such as a refused token or an invalid body, fails the task instead.
+  The delivery then stays pending with that answer.
 - **`delivery  none:`** marks an item read as is that no deliverer takes. Its side has no default,
-  or its destination names no deliverer or is not declared. An apply that gives the side a default
-  or the destination a deliverer queues each such item.
+  its destination names no deliverer or is not declared, or the deliverer cannot take the item,
+  as `life-articles` cannot take one with no URL. An apply that changes any of these queues each
+  such item.
 
-A settled delivery is never queued again, so a second sighting or a replay writes nothing to the
-app. `ingestion items replay --stage deliver` queues each delivery that is still pending.
+Where no worker heard from lately claims a pending delivery's task, `items show` names the task's
+capability, as the sixth line shows. So a destination that failed reads apart from a deliverer
+that no worker here opens.
+
+A person's drop or move withdraws a delivery that has not run. Its task ends, and its `last_error`
+says why. A settled delivery is never queued again, so a second sighting or a replay writes
+nothing to the app. Every attempt sends the title and URL that the item had when its delivery was
+first queued, so a retry repeats the first request. `ingestion items replay --stage deliver`
+queues each delivery that is still pending.
 
 ### Running it in a container
 
@@ -401,8 +414,8 @@ uid and gid 10600.
 signed with cosign by the release workflow. The manifests leave two things for the cluster to
 supply: the ConfigMap `ingestion-config` holding `config.toml`, and the Secret
 `ingestion-worker-client` holding the worker's client secret under `secret`. Where the config
-sets `[deliver.life]`, the cluster also supplies the Secret `ingestion-life-client`, holding that
-client's secret under `secret`.
+sets `[deliver.life-articles]` with a `client_id`, the cluster also supplies the Secret
+`ingestion-deliver-life-articles`, holding that client's secret under `secret`.
 
 **An upgrade that changes a table copies the store first.** Before `serve` changes the store's
 tables, it writes a copy beside the store, named `ingestion.db.before-<UTC time>`. A column that

@@ -221,7 +221,11 @@ type Delivery struct {
 	Outcome       string  `json:"outcome"`
 	Attempts      int     `json:"attempts"`
 	LastError     *string `json:"last_error"`
-	UpdatedTS     string  `json:"updated_ts"`
+	// Title and URL are the item's when the delivery was first queued, which
+	// every attempt sends.
+	Title     *string `json:"title"`
+	URL       *string `json:"url"`
+	UpdatedTS string  `json:"updated_ts"`
 }
 
 // A connector's first fill: none until an item reaches a model stage, held

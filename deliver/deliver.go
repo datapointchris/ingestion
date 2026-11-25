@@ -4,23 +4,70 @@
 // destination once, however many connectors sighted it. This is reverse ETL,
 // as Hightouch and Census sync a warehouse's rows into each tool's API.
 //
-// A deliverer registers its name with connectors.RegisterDeliverer from this
-// package's init, so a destination's declaration may name it. The service
-// queues a deliver task where the read gate reads an item as is, and records
-// the delivery pending. A worker runs each deliverer that its config sets up
-// through Handler, and claims only those deliverers' tasks. The service then
-// records how each write ended, and never queues a settled delivery again,
-// because a destination may forget a record it held and save the item twice.
+// A deliverer's file calls Register from its own init, with the deliverer's
+// name, what it takes and how to open it, so a destination's declaration may
+// name it and a worker's config may open it. The service queues a deliver task
+// where the read gate reads an item as is, and records the delivery pending
+// with the title and URL that every attempt sends. A worker runs each
+// deliverer that its config opens through Handler, and claims only those
+// deliverers' tasks. The service then records how each write ended, and never
+// queues a settled delivery again, because a destination may forget a record
+// it held and save the item twice.
 package deliver
 
 import (
 	"context"
+	"net/http"
+	"slices"
 	"time"
 
+	"github.com/datapointchris/ingestion/connectors"
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
 	"github.com/datapointchris/ingestion/worker"
 )
+
+// Registration is one deliverer as this build carries it.
+type Registration struct {
+	// Name is what a destination's deliverer names, the suffix of its tasks'
+	// capability, and its table's name under [deliver] in a worker's config.
+	Name string
+	// Scopes is what the deliverer's service client asks its token for.
+	Scopes []string
+	// Takes answers why the deliverer cannot write an item, and nil where it
+	// can. The service asks it before queueing, so an item it cannot take
+	// waits with that reason rather than failing at the destination.
+	Takes func(store.Item) error
+	// Open is the deliverer that writes to the app at api through client,
+	// which carries the service client's token.
+	Open func(api string, client *http.Client) Deliverer
+}
+
+var registered = map[string]Registration{}
+
+// Register records r, and records its name and Takes with
+// connectors.RegisterDeliverer, so each name a set may give is one a worker
+// can open.
+func Register(r Registration) {
+	connectors.RegisterDeliverer(r.Name, r.Takes)
+	registered[r.Name] = r
+}
+
+// Lookup is the deliverer registered as name, and false where none is.
+func Lookup(name string) (Registration, bool) {
+	r, ok := registered[name]
+	return r, ok
+}
+
+// Names is the name of each deliverer this build registers, in order.
+func Names() []string {
+	names := make([]string, 0, len(registered))
+	for name := range registered {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
+}
 
 // Item is an item as its deliver task carries it.
 type Item struct {

@@ -67,7 +67,9 @@ type LeasedTask struct {
 	MediaType  string  `json:"media_type"`
 	BlobSHA256 *string `json:"blob_sha256"`
 	// Zone, Title, URL and LandedTS are the item's too, so a deliverer writes
-	// it holding no scope to read items. A poll carries none of them.
+	// it holding no scope to read items. A deliver task's Title and URL are
+	// its delivery's, as they were when it was first queued, so a retry sends
+	// what the first attempt sent. A poll carries none of them.
 	Zone     store.Zone `json:"zone,omitempty"`
 	Title    *string    `json:"title"`
 	URL      *string    `json:"url"`
@@ -243,11 +245,15 @@ func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
 	}
 	answer := ClaimAnswer{Tasks: []LeasedTask{}}
 	for _, t := range tasks {
-		answer.Tasks = append(answer.Tasks, LeasedTask{
+		leased := LeasedTask{
 			ID: t.ID, ItemKey: t.ItemKey, Connector: t.Connector, Stage: t.Stage, Capability: t.Capability, Attempts: t.Attempts,
 			LeaseToken: *t.LeaseToken, LeaseExpiresTS: *t.LeaseExpiresTS, MediaType: t.Item.MediaType, BlobSHA256: t.Item.BlobSHA256,
 			Zone: t.Item.Zone, Title: t.Item.Title, URL: t.Item.URL, LandedTS: t.Item.CreatedTS, Destination: t.Destination,
-		})
+		}
+		if t.Delivery != nil {
+			leased.Title, leased.URL = t.Delivery.Title, t.Delivery.URL
+		}
+		answer.Tasks = append(answer.Tasks, leased)
 	}
 	for _, t := range answer.Tasks {
 		h.log.Info("leased a task", "task", t.ID, "item", text(t.ItemKey), "connector", text(t.Connector), "stage", t.Stage,

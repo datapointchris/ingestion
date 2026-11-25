@@ -87,7 +87,9 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "last_error": {"description": "The destination's answer to the last write that failed, or what a refusal names.", "type": ["string", "null"]}
+        "last_error": {"description": "The destination's answer to the last write that failed, what a refusal names, or why the delivery was withdrawn.", "type": ["string", "null"]},
+        "title": {"description": "The item's title when the delivery was first queued, which every attempt sends.", "type": ["string", "null"]},
+        "url": {"description": "The item's URL when the delivery was first queued, which every attempt sends.", "type": ["string", "null"]}
       }
     },
     "tasks": {

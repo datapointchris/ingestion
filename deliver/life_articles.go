@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/datapointchris/ingestion/connectors"
 	"github.com/datapointchris/ingestion/store"
 )
 
@@ -24,7 +24,20 @@ const LifeArticles = "life-articles"
 // create that the deliverer saves through.
 var LifeArticlesScopes = []string{"life.articles.write"}
 
-func init() { connectors.RegisterDeliverer(LifeArticles) }
+func init() {
+	Register(Registration{Name: LifeArticles, Scopes: LifeArticlesScopes, Takes: lifeTakes, Open: NewLifeArticles})
+}
+
+// errNoURL is an item that life-articles cannot take.
+var errNoURL = errors.New("it holds no URL, which a life article needs")
+
+// lifeTakes takes an item that holds a URL.
+func lifeTakes(item store.Item) error {
+	if item.URL == nil || *item.URL == "" {
+		return errNoURL
+	}
+	return nil
+}
 
 const (
 	// lifeTimeout bounds one create, so a life that hangs frees its worker
@@ -46,8 +59,8 @@ type lifeArticles struct {
 	client *http.Client
 }
 
-// lifeArticle is the create's body, life's ArticleCreate. life's body holds
-// no zone, so an article does not carry its item's zone.
+// lifeArticle is the create's body, following life's ArticleCreate. It sends
+// no zone, so the item's zone does not reach life.
 type lifeArticle struct {
 	Title     string `json:"title"`
 	URL       string `json:"url"`
@@ -73,11 +86,13 @@ type lifeConflict struct {
 // 200 for the article that the key already names. A 200 with adopted true is
 // an article saved by hand under no key that took the key, which is
 // delivered-to-existing. Where life answers 409 naming an article, the
-// delivery is refused. The save date is when the item first landed, so a
-// repeat sends the same body.
+// delivery is refused. A 5xx, 408 or 429 leaves it pending to try again, and
+// any other answer fails the task, since sending the same request cannot mend
+// it. The save date is when the item first landed, and the title and URL are
+// the delivery's as first queued, so a repeat sends the same body.
 func (l lifeArticles) Deliver(ctx context.Context, item Item) Outcome {
-	if item.URL == nil || *item.URL == "" {
-		return permanent("the item holds no URL, which a life article needs")
+	if err := lifeTakes(store.Item{URL: item.URL}); err != nil {
+		return permanent("the item " + err.Error())
 	}
 	landed, err := time.Parse(store.StampLayout, item.LandedTS)
 	if err != nil {
@@ -130,10 +145,11 @@ func (l lifeArticles) Deliver(ctx context.Context, item Item) Outcome {
 			why = fmt.Sprintf("life's article %d holds this URL under source_key %s", c.ArticleID, orNone(c.SourceKey))
 		}
 		return Outcome{Outcome: store.DeliveryRefused, DestinationID: &id, Error: &why}
-	case http.StatusBadRequest, http.StatusRequestEntityTooLarge, http.StatusUnsupportedMediaType, http.StatusUnprocessableEntity:
-		return permanent(fmt.Sprintf("life refused the article with %d: %s", resp.StatusCode, quoted(raw)))
 	}
-	return pending(fmt.Sprintf("life answered %d: %s", resp.StatusCode, quoted(raw)))
+	if resp.StatusCode >= 500 || resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooManyRequests {
+		return pending(fmt.Sprintf("life answered %d: %s", resp.StatusCode, quoted(raw)))
+	}
+	return permanent(fmt.Sprintf("life answered %d, which the same request cannot mend: %s", resp.StatusCode, quoted(raw)))
 }
 
 func pending(why string) Outcome { return Outcome{Outcome: store.DeliveryPending, Error: &why} }
