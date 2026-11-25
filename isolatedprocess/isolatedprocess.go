@@ -1,6 +1,5 @@
-// Package isolatedprocess is the one place ingestion starts a process: an
-// extractor whose library is not Go, or the scanner. Each such program reads
-// outsider bytes, so it runs in an empty directory of its own, with an
+// Package isolatedprocess starts every program that reads outsider bytes.
+// Each such program runs in an empty directory of its own, with an
 // environment of PATH, HOME, TMPDIR and LANG alone, and inherits no
 // credential of the worker. A worker that runs one has called
 // worker.MarkUndumpable, so the program cannot read the worker's own
@@ -33,7 +32,7 @@ type Command struct {
 	Args []string
 	// Files are written into the run's directory before it starts, each
 	// under its name, so Args can name them by a relative path.
-	Files map[string][]byte
+	Files map[string]string
 	Stdin io.Reader
 	// Stdout reads the program's stdout while it runs. A read that fails
 	// kills the run, and Run answers the read's error. Nil discards stdout.
@@ -54,6 +53,16 @@ func (e *ExitError) Error() string {
 	return fmt.Sprintf("%s exited %d: %s", filepath.Base(e.Program), e.ExitCode, e.Stderr)
 }
 
+// writeFile writes body to a new file at path without copying it.
+func writeFile(path, body string) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	_, err = f.WriteString(body)
+	return errors.Join(err, f.Close())
+}
+
 // Run runs c until it exits or ctx ends, and answers the end of its stderr.
 // A program that exits non-zero answers an *ExitError.
 func Run(ctx context.Context, c Command) (string, error) {
@@ -66,7 +75,7 @@ func Run(ctx context.Context, c Command) (string, error) {
 		if name != filepath.Base(name) || name == "." || name == ".." {
 			return "", fmt.Errorf("a run's file is one filename, not %q", name)
 		}
-		if err := os.WriteFile(filepath.Join(dir, name), body, 0o600); err != nil {
+		if err := writeFile(filepath.Join(dir, name), body); err != nil {
 			return "", err
 		}
 	}

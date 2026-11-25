@@ -17,7 +17,10 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode"
 	"unicode/utf8"
+
+	"github.com/datapointchris/ingestion/schemas"
 )
 
 // Fields are the fields of an agent's event whose conditions the scan keeps.
@@ -27,8 +30,27 @@ import (
 // item's text plays none of those parts.
 var Fields = []string{"content", "user_input", "tool_response"}
 
-// Severities are what a rule's severity may be, from least to most severe.
-var Severities = []string{"info", "low", "medium", "high", "critical"}
+// Severities are what a rule's severity may be, from least to most severe,
+// as the $defs/severity of schemas/ingestion-record.schema.json lists them.
+var Severities = severities()
+
+func severities() []string {
+	var doc struct {
+		Defs struct {
+			Severity struct {
+				Enum []string `json:"enum"`
+			} `json:"severity"`
+		} `json:"$defs"`
+	}
+	raw, err := schemas.Files.ReadFile("ingestion-record.schema.json")
+	if err == nil {
+		err = json.Unmarshal(raw, &doc)
+	}
+	if err != nil || len(doc.Defs.Severity.Enum) == 0 {
+		panic(fmt.Sprintf("ingestion-record.schema.json lists no severity: %v", err))
+	}
+	return doc.Defs.Severity.Enum
+}
 
 // Why a rule is dropped. A decision's Detail says more, such as the fields it
 // reads or the refusal under yr's caret.
@@ -108,7 +130,6 @@ type BuildConfig struct {
 type candidate struct {
 	decision  *Decision
 	rule      Rule
-	ident     string
 	source    string
 	positives []string
 	negatives []string
@@ -258,9 +279,13 @@ func convert(r Rule, source string) (*candidate, string, string) {
 	case condition == "all" && len(others) > 0:
 		return nil, DroppedOtherFields, "every condition must hold, and one reads " + strings.Join(slices.Sorted(maps.Keys(others)), ", ")
 	}
-	cand := &candidate{rule: r, ident: identifier(r.ID)}
+	cand := &candidate{rule: r}
 	var b strings.Builder
-	fmt.Fprintf(&b, "rule %s {\n  meta:\n    id = %s\n    severity = %s\n  strings:\n", cand.ident, yaraString(r.ID), yaraString(r.Severity))
+	fmt.Fprintf(&b, "rule %s {\n  meta:\n    id = %s\n    severity = %s\n", identifier(r.ID), yaraString(r.ID), yaraString(r.Severity))
+	if r.Tags.SuppressInCodeBlocks {
+		fmt.Fprintf(&b, "    %s = \"true\"\n", suppressMeta)
+	}
+	b.WriteString("  strings:\n")
 	for i, cond := range kept {
 		pattern := cond.Value
 		if source == SourceATR {
@@ -342,19 +367,28 @@ func yaraString(s string) string {
 	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`, "\t", `\t`).Replace(s) + `"`
 }
 
-// yaraRegex is an ATR pattern as the body of a YARA regular expression. Each
-// change carries the pattern's meaning across, and none changes what it
-// matches: ATR's engine drops a leading flag group and matches every pattern
-// without regard to case, so the flags go and the string carries nocase. An
-// unescaped slash is escaped, because YARA delimits a regular expression
-// with slashes. A control character is written as its escape, because a
-// YARA regular expression is one line. And JavaScript reads \xE9 as the
+// yaraRegex is an ATR pattern as the body of a YARA regular expression.
+// ATR's engine drops a leading flag group and matches every pattern without
+// regard to case. So the flags go, the string carries nocase, and each letter
+// outside ASCII is written in lower case, as each of the scan's views writes
+// the text's. An unescaped slash is escaped, because YARA delimits a regular
+// expression with slashes. A control character is written as its escape,
+// because a YARA regular expression is one line. JavaScript reads \xE9 as the
 // character é, where YARA-X reads it as one byte, so an escape above \x7F is
-// written as the character's \u escape.
+// written as the character's \u escape. YARA-X's dot matches one byte, so a
+// dot under a quantifier other than * or + is written as one UTF-8
+// character.
 //
 // Every quantifier is made greedy. ATR's engine asks only whether a pattern
 // matches, never where, and whether a match exists does not depend on how
 // greedy its quantifiers are. YARA-X refuses a pattern that mixes the two.
+//
+// The dialects still differ. A negated class, \S, \W and \D each match one
+// byte of a character outside ASCII, where JavaScript's match the whole
+// character. YARA-X's \s is ASCII whitespace, where JavaScript's holds
+// Unicode's spaces too, most of which the normalized view writes as a space.
+// YARA-X refuses a class that holds a character outside ASCII, so such a rule
+// is dropped.
 func yaraRegex(value string) string {
 	value = leadingFlags.ReplaceAllString(value, "")
 	var b strings.Builder
@@ -366,7 +400,7 @@ func yaraRegex(value string) string {
 		quantified = false
 		switch {
 		case c == '\\' && i+1 < len(value):
-			i = writeEscape(&b, value, i)
+			i = writeEscape(&b, value, i, inClass)
 		case c == '/':
 			b.WriteString(`\/`)
 		case c < 0x20 || c == 0x7f:
@@ -374,6 +408,10 @@ func yaraRegex(value string) string {
 		case inClass:
 			b.WriteByte(c)
 			inClass = c != ']'
+		case c >= utf8.RuneSelf:
+			r, size := utf8.DecodeRuneInString(value[i:])
+			b.WriteRune(unicode.ToLower(r))
+			i += size - 1
 		case c == '[':
 			b.WriteByte(c)
 			inClass = true
@@ -381,6 +419,8 @@ func yaraRegex(value string) string {
 				b.WriteByte('^')
 				i++
 			}
+		case c == '.' && (i+1 == len(value) || (value[i+1] != '*' && value[i+1] != '+')):
+			b.WriteString(utf8Character)
 		case c == '(' && i+1 < len(value) && value[i+1] == '?':
 			b.WriteString("(?")
 			i++
@@ -403,21 +443,29 @@ func yaraRegex(value string) string {
 	return b.String()
 }
 
+// utf8Character is one UTF-8 character other than a newline, as YARA-X's
+// byte-wise regular expressions write it.
+const utf8Character = `(?:[\x00-\x09\x0b-\x7f]|[\xc2-\xdf][\x80-\xbf]|[\xe0-\xef][\x80-\xbf]{2}|[\xf0-\xf4][\x80-\xbf]{3})`
+
 // boundedRepeat is a quantifier such as {3}, {2,} or {0,30}.
 var boundedRepeat = regexp.MustCompile(`^\{\d+(,\d*)?\}`)
 
 // writeEscape writes the escape that starts at value[i] and answers the index
-// of its last byte. JavaScript's \xE9 is the character é, so an escape above
-// \x7F is written as that character's \u escape. A \u{…} escape is kept whole,
-// so its braces never read as a quantifier.
-func writeEscape(b *strings.Builder, value string, i int) int {
+// of its last byte. An escape of a character above \x7F, as \xE9, \u00E9 or
+// \u{E9}, is written as that character's \u escape, in lower case outside a
+// class.
+func writeEscape(b *strings.Builder, value string, i int, inClass bool) int {
 	next := value[i+1]
 	switch {
 	case next == 'x' && i+3 < len(value) && isHex(value[i+2]) && isHex(value[i+3]) && value[i+2] >= '8':
-		b.WriteString(`\u00` + value[i+2:i+4])
-		return i + 3
+		return writeRuneEscape(b, value[i+2:i+4], inClass, i+3)
+	case next == 'u' && i+5 < len(value) && isHex(value[i+2]) && isHex(value[i+3]) && isHex(value[i+4]) && isHex(value[i+5]):
+		return writeRuneEscape(b, value[i+2:i+6], inClass, i+5)
 	case next == 'u' && i+2 < len(value) && value[i+2] == '{':
 		if end := strings.IndexByte(value[i:], '}'); end > 0 {
+			if _, err := strconv.ParseUint(value[i+3:i+end], 16, 32); err == nil {
+				return writeRuneEscape(b, value[i+3:i+end], inClass, i+end)
+			}
 			b.WriteString(value[i : i+end+1])
 			return i + end
 		}
@@ -428,6 +476,22 @@ func writeEscape(b *strings.Builder, value string, i int) int {
 	b.WriteByte('\\')
 	b.WriteByte(next)
 	return i + 1
+}
+
+// writeRuneEscape writes the character whose code point hex names as a \u
+// escape, and answers last.
+func writeRuneEscape(b *strings.Builder, hex string, inClass bool, last int) int {
+	n, _ := strconv.ParseUint(hex, 16, 32)
+	r := rune(n)
+	if !inClass && r >= utf8.RuneSelf {
+		r = unicode.ToLower(r)
+	}
+	if r <= 0xFFFF {
+		fmt.Fprintf(b, `\u%04x`, r)
+	} else {
+		fmt.Fprintf(b, `\u{%x}`, r)
+	}
+	return last
 }
 
 // leadingFlags is a leading inline flag group, such as (?i) or (?is), as ATR's
@@ -482,8 +546,9 @@ func asRefusal(err error, into *yrRefusal) bool {
 }
 
 // testExamples compiles the candidates together and scans every example
-// once. A candidate that misses a true positive or fires on a true negative
-// is dropped with the case that showed it.
+// once, through the views that a scan reads. A candidate that misses a true
+// positive or fires on a true negative is dropped with the case that showed
+// it.
 func testExamples(ctx context.Context, yr string, candidates []*candidate) error {
 	if len(candidates) == 0 {
 		return nil
@@ -497,29 +562,29 @@ func testExamples(ctx context.Context, yr string, candidates []*candidate) error
 	if err := yrCompile(ctx, yr, ruleSet(candidates), compiled); err != nil {
 		return fmt.Errorf("compile the rules that each compiled alone: %w", err)
 	}
-	files := map[string][]byte{}
+	texts := map[string]string{}
 	for i, cand := range candidates {
 		for j, text := range cand.positives {
-			files[fmt.Sprintf("%d-p-%d", i, j)] = []byte(text)
+			texts[fmt.Sprintf("%d-p-%d", i, j)] = text
 		}
 		for j, text := range cand.negatives {
-			files[fmt.Sprintf("%d-n-%d", i, j)] = []byte(text)
+			texts[fmt.Sprintf("%d-n-%d", i, j)] = text
 		}
 	}
-	matches, err := yrScan(ctx, yr, compiled, files, 1, 1)
+	matches, err := matchTexts(ctx, yr, compiled, texts, 1, 1)
 	if err != nil {
 		return err
 	}
 	fired := map[string]map[string]bool{}
 	for _, m := range matches {
-		if fired[m.File] == nil {
-			fired[m.File] = map[string]bool{}
+		if fired[m.text] == nil {
+			fired[m.text] = map[string]bool{}
 		}
-		fired[m.File][m.Identifier] = true
+		fired[m.text][m.rule] = true
 	}
 	for i, cand := range candidates {
 		for j := range cand.positives {
-			if !fired[fmt.Sprintf("%d-p-%d", i, j)][cand.ident] {
+			if !fired[fmt.Sprintf("%d-p-%d", i, j)][cand.rule.ID] {
 				cand.decision.Reason, cand.decision.Detail = DroppedMissesPositive, fmt.Sprintf("true positive %d of %d", j+1, len(cand.positives))
 				break
 			}
@@ -528,7 +593,7 @@ func testExamples(ctx context.Context, yr string, candidates []*candidate) error
 			continue
 		}
 		for j := range cand.negatives {
-			if fired[fmt.Sprintf("%d-n-%d", i, j)][cand.ident] {
+			if fired[fmt.Sprintf("%d-n-%d", i, j)][cand.rule.ID] {
 				cand.decision.Reason, cand.decision.Detail = DroppedFiresNegative, fmt.Sprintf("true negative %d of %d", j+1, len(cand.negatives))
 				break
 			}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"maps"
 	"net/http"
@@ -26,7 +27,7 @@ import (
 	"github.com/datapointchris/ingestion/extract"
 	"github.com/datapointchris/ingestion/landing"
 	"github.com/datapointchris/ingestion/redditexport"
-	"github.com/datapointchris/ingestion/scan"
+	"github.com/datapointchris/ingestion/schemas"
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
 	"github.com/datapointchris/ingestion/worker"
@@ -44,7 +45,9 @@ type pipeline struct {
 	api    *httptest.Server
 	config string
 	person *http.Client
-	worker *worker.Client
+	// service is the worker's own client, under its service token.
+	service *http.Client
+	worker  *worker.Client
 }
 
 func newPipeline(t *testing.T, extractors *extract.Registry) *pipeline {
@@ -68,9 +71,10 @@ func newPipeline(t *testing.T, extractors *extract.Registry) *pipeline {
 	provider.Register("ingestion-svc-worker", "worker-secret", server.ScopeTasksClaim)
 	gate := verifiedGate{provider.Verifier(t, "ingestion-cli-", "ingestion-svc-")}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	next, replayable := stageWiring(extractors)
 	api := httptest.NewServer(server.Handler(server.Config{Store: st, Gate: gate, Issuer: provider.URL, Version: "test", Log: log},
-		server.TaskRoutes(st, log, scan.QueueAfterParse), server.BlobRoutes(lander, log), server.ItemRoutes(st, log),
-		server.ReplayRoutes(st, map[string]server.Replayable{store.StageParse: extractors.Replayable(), store.StageScan: scan.Replayable(extractors)}, log)))
+		server.TaskRoutes(st, log, next), server.BlobRoutes(lander, log), server.ItemRoutes(st, log),
+		server.ReplayRoutes(st, replayable, log)))
 	t.Cleanup(api.Close)
 	person := provider.Person(t, "ingestion-cli-test", "person")
 	tokenFile, config := filepath.Join(dir, "token.json"), filepath.Join(dir, "config.toml")
@@ -88,7 +92,7 @@ func newPipeline(t *testing.T, extractors *extract.Registry) *pipeline {
 		Scopes: []string{server.ScopeTasksClaim},
 	}).Client(ctx)
 	return &pipeline{
-		st: st, lander: lander, api: api, config: config, worker: worker.NewClient(api.URL, service),
+		st: st, lander: lander, api: api, config: config, service: service, worker: worker.NewClient(api.URL, service),
 		person: oauth2.NewClient(ctx, oauth2.StaticTokenSource(&oauth2.Token{AccessToken: person})),
 	}
 }
@@ -178,7 +182,25 @@ func holdsTo(t *testing.T, raw []byte, file string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	schema, err := jsonschema.NewCompiler().Compile(mustAbs(t, filepath.Join("..", "schemas", file)))
+	c := jsonschema.NewCompiler()
+	names, err := fs.Glob(schemas.Files, "*.schema.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range names {
+		raw, err := schemas.Files.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := c.AddResource(schemas.Base+name, doc); err != nil {
+			t.Fatal(err)
+		}
+	}
+	schema, err := c.Compile(schemas.Base + file)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,15 +231,6 @@ func (p *pipeline) replay(t *testing.T, idempotencyKey, connector string) (int, 
 		_ = json.Unmarshal(raw, &answer)
 	}
 	return resp.StatusCode, answer
-}
-
-func mustAbs(t *testing.T, path string) string {
-	t.Helper()
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return abs
 }
 
 // parsedThenReplayed lands each export, parses every save with thread-text

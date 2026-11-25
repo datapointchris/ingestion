@@ -113,12 +113,8 @@ type OutputView struct {
 
 // FindingView is one scanner finding and the text it matched.
 type FindingView struct {
-	Rule     string  `json:"rule"`
-	Severity string  `json:"severity"`
-	Unit     *int    `json:"unit"`
-	Offset   int     `json:"offset"`
-	Length   int     `json:"length"`
-	Span     *string `json:"span"`
+	store.Finding
+	Span *string `json:"span"`
 }
 
 // DecisionView is one gate's decision.
@@ -142,9 +138,9 @@ type DeliveryView struct {
 	LastError     *string `json:"last_error"`
 }
 
-// ParseAnswer is what GET /api/v1/items/{key}/parse and a worker's
-// GET /api/v1/tasks/{id}/parse answer: schemas/item-parse.schema.json. Text is
-// the units' text in order, joined by a blank line.
+// ParseAnswer is what GET /api/v1/items/{key}/parse answers:
+// schemas/item-parse.schema.json. Text is the units' text in order, joined by
+// a blank line.
 type ParseAnswer struct {
 	SchemaVersion    int            `json:"schema_version"`
 	Key              string         `json:"key"`
@@ -163,12 +159,8 @@ type ParseAnswer struct {
 // ParseFinding is one finding of the newest scan of the parse, with the text
 // it matched. Its offset counts bytes from its unit's start.
 type ParseFinding struct {
-	Rule     string `json:"rule"`
-	Severity string `json:"severity"`
-	Unit     *int   `json:"unit"`
-	Offset   int    `json:"offset"`
-	Length   int    `json:"length"`
-	Span     string `json:"span"`
+	store.Finding
+	Span string `json:"span"`
 }
 
 // ItemRoutes are the routes for a person or a service holding
@@ -284,9 +276,10 @@ func parseAnswer(p store.Parse) ParseAnswer {
 		answer.Units = []store.Unit{}
 	}
 	if p.Scan != nil {
-		answer.RulesVersion = &p.Scan.ProducerVersion
+		rules := store.ScanRules(p.Scan.ProducerVersion)
+		answer.RulesVersion = &rules
 		for i, f := range p.Scan.Findings {
-			finding := ParseFinding{Rule: f.Rule, Severity: f.Severity, Unit: f.Unit, Offset: f.Offset, Length: f.Length}
+			finding := ParseFinding{Finding: f}
 			if i < len(p.Scan.Spans) {
 				finding.Span = p.Scan.Spans[i].Span
 			}
@@ -347,7 +340,7 @@ func itemAnswer(rec store.ItemRecords) ItemAnswer {
 			view.Findings = []FindingView{}
 		}
 		for i, f := range o.Findings {
-			finding := FindingView{Rule: f.Rule, Severity: f.Severity, Unit: f.Unit, Offset: f.Offset, Length: f.Length}
+			finding := FindingView{Finding: f}
 			if i < len(o.Spans) {
 				finding.Span = &o.Spans[i].Span
 			}

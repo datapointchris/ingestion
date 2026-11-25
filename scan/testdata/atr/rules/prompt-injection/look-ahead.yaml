@@ -1,0 +1,13 @@
+id: ATR-TEST-00005
+title: A rule that needs look-ahead, which YARA-X refuses
+status: experimental
+severity: high
+detection:
+  condition: any
+  conditions:
+    - field: content
+      operator: regex
+      value: 'password(?=\s*:)'
+test_cases:
+  true_positives:
+    - input: "password: hunter2"

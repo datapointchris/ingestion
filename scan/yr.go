@@ -58,7 +58,7 @@ func firstLine(s string) string {
 func yrCompile(ctx context.Context, yr, source, out string) error {
 	stderr, err := isolatedprocess.Run(ctx, isolatedprocess.Command{
 		Path: yr, Args: []string{"compile", "--disable-warnings", "-o", out, "rules.yar"},
-		Files: map[string][]byte{"rules.yar": []byte(source)},
+		Files: map[string]string{"rules.yar": source},
 	})
 	var exit *isolatedprocess.ExitError
 	if errors.As(err, &exit) {
@@ -67,7 +67,7 @@ func yrCompile(ctx context.Context, yr, source, out string) error {
 	return err
 }
 
-// yrVersion is the version that yr --version prints, such as 1.24.0.
+// yrVersion is the version number that yr --version prints.
 func yrVersion(ctx context.Context, yr string) (string, error) {
 	var out bytes.Buffer
 	_, err := isolatedprocess.Run(ctx, isolatedprocess.Command{
@@ -113,7 +113,7 @@ type yrLine struct {
 // at rules, an absolute path, and answers every match. It prints at most
 // printed bytes of each match. yr exits 0 where it cannot read a file, and
 // says so only on stderr, so anything on stderr fails the scan.
-func yrScan(ctx context.Context, yr, rules string, files map[string][]byte, printed, perPattern int) ([]yrMatch, error) {
+func yrScan(ctx context.Context, yr, rules string, files map[string]string, printed, perPattern int) ([]yrMatch, error) {
 	var matches []yrMatch
 	stderr, err := isolatedprocess.Run(ctx, isolatedprocess.Command{
 		Path: yr,

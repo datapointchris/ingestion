@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/datapointchris/ingestion/schemas/item-parse.schema.json",
   "title": "One item's newest parse, with the scanner's findings",
-  "description": "What GET /api/v1/items/{key}/parse answers, and GET /api/v1/tasks/{id}/parse answers the worker whose lease token names the task. `ingestion push` hands the same document to its destination, so the findings travel with the text.",
+  "description": "What GET /api/v1/items/{key}/parse answers. `ingestion push` hands the same document to its destination, so the findings travel with the text.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "key", "zone", "media_type", "extractor", "extractor_version", "text", "units", "findings"],
@@ -33,17 +33,10 @@
     "findings": {
       "type": "array",
       "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["rule", "severity", "unit", "offset", "length", "span"],
-        "properties": {
-          "rule": {"type": "string"},
-          "severity": {"enum": ["info", "low", "medium", "high", "critical"]},
-          "unit": {"type": ["integer", "null"]},
-          "offset": {"description": "Bytes from the start of the unit the match starts in.", "type": "integer"},
-          "length": {"description": "The match's length in bytes, which its span may keep only the start of.", "type": "integer"},
-          "span": {"type": "string"}
-        }
+        "$ref": "ingestion-record.schema.json#/$defs/finding",
+        "required": ["span"],
+        "properties": {"span": {"description": "The matched text, at most its first 1024 bytes.", "type": "string"}},
+        "unevaluatedProperties": false
       }
     }
   }

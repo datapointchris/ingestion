@@ -66,6 +66,13 @@ func init() {
 	rootCmd.AddCommand(serveCmd)
 }
 
+// stageWiring is what the service queues after each stage ends, keyed by that
+// stage, and how a replay queues each stage again.
+func stageWiring(extractors *extract.Registry) (map[string]server.QueueNext, map[string]server.Replayable) {
+	return map[string]server.QueueNext{store.StageParse: scan.QueueAfterParse},
+		map[string]server.Replayable{store.StageParse: extractors.Replayable(), store.StageScan: scan.Replayable(extractors)}
+}
+
 func runServe(cmd *cobra.Command, _ []string) error {
 	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
@@ -111,13 +118,12 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	for root := range cfg.Serve.Homes {
 		roots = append(roots, root)
 	}
+	next, replayable := stageWiring(extractors)
 	handler := server.Handler(server.Config{
 		Store: st, Gate: gate, Issuer: cfg.Issuer, PublicURL: cfg.Serve.PublicURL, Version: version, Log: log,
-	}, server.TaskRoutes(st, log, scan.QueueAfterParse), server.BlobRoutes(lander, log), server.ItemRoutes(st, log),
+	}, server.TaskRoutes(st, log, next), server.BlobRoutes(lander, log), server.ItemRoutes(st, log),
 		server.ConnectorRoutes(server.ConnectorConfig{Store: st, Lander: lander, Scheduler: scheduler, Roots: roots, Log: log}),
-		server.ReplayRoutes(st, map[string]server.Replayable{
-			store.StageParse: extractors.Replayable(), store.StageScan: scan.Replayable(extractors),
-		}, log))
+		server.ReplayRoutes(st, replayable, log))
 	srv := &http.Server{Addr: listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 
 	var wg sync.WaitGroup

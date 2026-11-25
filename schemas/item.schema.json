@@ -78,17 +78,10 @@
           "findings": {
             "type": ["array", "null"],
             "items": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["rule", "severity", "unit", "offset", "length", "span"],
-              "properties": {
-                "rule": {"type": "string"},
-                "severity": {"enum": ["info", "low", "medium", "high", "critical"]},
-                "unit": {"type": ["integer", "null"]},
-                "offset": {"description": "Bytes from the start of the unit the match starts in.", "type": "integer"},
-                "length": {"description": "The match's length in bytes, which its span may keep only the start of.", "type": "integer"},
-                "span": {"type": ["string", "null"]}
-              }
+              "$ref": "ingestion-record.schema.json#/$defs/finding",
+              "required": ["span"],
+              "properties": {"span": {"description": "The matched text, at most its first 1024 bytes, and null where the scan holds no span for it.", "type": ["string", "null"]}},
+              "unevaluatedProperties": false
             }
           },
           "answer": {"description": "A model stage's structured answer.", "type": ["object", "null"]},

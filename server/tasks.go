@@ -170,14 +170,14 @@ type TasksAnswer struct {
 const WorkersHeardWithin = 10 * time.Minute
 
 // QueueNext queues the stage that follows task's, in the write that ends
-// task, from the outputs that its report wrote. Each one checks the task's
-// stage itself, so a stage's own package says what follows it.
+// task, from the outputs that its report wrote.
 type QueueNext func(ctx context.Context, tx *store.Tx, task store.Task, outputs []store.Output) error
 
 // TaskRoutes are the routes for a worker to lease tasks through and read a
-// task's input, and the list for a person to read. Each of next runs in the
-// write that ends a task.
-func TaskRoutes(st *store.Store, log *slog.Logger, next ...QueueNext) Routes {
+// task's input, and the list for a person to read. next holds what follows
+// each stage, keyed by the stage, and runs in the write that ends a task of
+// that stage.
+func TaskRoutes(st *store.Store, log *slog.Logger, next map[string]QueueNext) Routes {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -194,7 +194,7 @@ func TaskRoutes(st *store.Store, log *slog.Logger, next ...QueueNext) Routes {
 type taskHandlers struct {
 	store *store.Store
 	log   *slog.Logger
-	next  []QueueNext
+	next  map[string]QueueNext
 }
 
 func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
@@ -281,10 +281,8 @@ func (h taskHandlers) report(w http.ResponseWriter, r *http.Request) {
 			}
 			outputs = append(outputs, o.output(task))
 		}
-		for _, next := range h.next {
-			if err := next(r.Context(), tx, task, outputs); err != nil {
-				return err
-			}
+		if next, ok := h.next[task.Stage]; ok {
+			return next(r.Context(), tx, task, outputs)
 		}
 		return nil
 	})
@@ -322,7 +320,24 @@ func (h taskHandlers) parse(w http.ResponseWriter, r *http.Request) {
 		h.internal(w, r, "read a task's parse", err)
 		return
 	}
-	JSON(w, http.StatusOK, parseAnswer(p))
+	units := p.Units
+	if units == nil {
+		units = []store.Unit{}
+	}
+	JSON(w, http.StatusOK, TaskParseAnswer{
+		SchemaVersion: 1, Key: p.Item.Key, Extractor: p.Output.Producer, ExtractorVersion: p.Output.ProducerVersion, Units: units,
+	})
+}
+
+// TaskParseAnswer is what GET /api/v1/tasks/{id}/parse answers:
+// schemas/task-parse.schema.json. It carries the units alone, because the
+// parse's whole text is the units joined.
+type TaskParseAnswer struct {
+	SchemaVersion    int          `json:"schema_version"`
+	Key              string       `json:"key"`
+	Extractor        string       `json:"extractor"`
+	ExtractorVersion string       `json:"extractor_version"`
+	Units            []store.Unit `json:"units"`
 }
 
 func (h taskHandlers) list(w http.ResponseWriter, r *http.Request) {

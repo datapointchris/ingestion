@@ -288,11 +288,21 @@ YARA-X's `yr` over the parse's units, joined as the parse's text joins them, wit
 - ingestion's own rules in `scan/ingestion-rules/`. They list the commands, code and links an
   item suggests, and find Unicode that hides text from a person reading it.
 
+`yr` reads the text as written, and again as ATR's own engine reads it: after NFKC, with every
+zero-width and bidirectional control removed and each Cyrillic or Greek letter that looks Latin
+folded to that letter. So `Ignоre all previous instructions` with a Cyrillic `о` matches as
+ATR's engine would match it. A rule marked `suppress_in_code_blocks` does not count a match inside
+markdown code.
+
 A finding names its rule, the rule's severity, the unit it starts in, its byte offset and length
-in that unit, and the span it matched. It reads through the parse route, and through
-`ingestion items show`, which prints each span quoted with any hidden character escaped. A
-finding never drops an item. `ingestion items replay --stage scan` scans the selected items
-again, as a new rule set needs.
+in that unit, and the span it matched, each in the text as written. It reads through the parse
+route, and through `ingestion items show`, which prints each span quoted with any hidden character
+escaped. A finding never drops an item. A scan that fails runs again, up to three runs, then fails
+its task, and the item's phase reads `failed` until a later scan of it is done.
+
+`ingestion items replay --stage scan` scans the selected items again, as a new rule set needs. A
+scan by new rules, or of a new parse, writes beside the old one. A scan that is done keeps its
+findings, even where a rerun fails.
 
 The image builds the rules once, and a worker reads them from
 `/usr/local/share/ingestion/scan-rules`. A worker with no `yr` or no built rules claims no scan

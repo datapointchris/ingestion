@@ -18,10 +18,18 @@ type Rule struct {
 	Title     string    `yaml:"title"`
 	Status    string    `yaml:"status"`
 	Severity  string    `yaml:"severity"`
+	Tags      Tags      `yaml:"tags"`
 	Detection Detection `yaml:"detection"`
 	TestCases TestCases `yaml:"test_cases"`
 	// File is the rule's path below the directory it was read from.
 	File string `yaml:"-"`
+}
+
+// Tags are what ATR's engine reads of a rule's tags.
+type Tags struct {
+	// SuppressInCodeBlocks drops a match inside markdown code: a fenced
+	// block, inline code, or a quoted string on a table's row.
+	SuppressInCodeBlocks bool `yaml:"suppress_in_code_blocks"`
 }
 
 // Detection is how a rule matches: Condition is any or all of Conditions.

@@ -237,16 +237,20 @@ var reached = map[string]string{
 }
 
 // Phase is the item's phase in the words of schemas/items-list.schema.json:
-// review where no parse is usable, failed where another stage's task failed,
-// dropped or review where the newest gate decision says so, waiting where a
-// model stage holds it, and otherwise the furthest stage whose condition is
-// True.
+// review where no parse is usable, failed where another stage's newest task
+// failed, dropped or review where the newest gate decision says so, waiting
+// where a model stage holds it, and otherwise the furthest stage whose
+// condition is True.
 func (r ItemRecords) Phase() string {
 	if r.NoUsableParse() {
 		return "review"
 	}
+	newest := map[string]Task{}
 	for _, t := range r.Tasks {
-		if t.State == TaskFailed && t.Stage != StageParse {
+		newest[t.Stage] = t
+	}
+	for stage, t := range newest {
+		if t.State == TaskFailed && stage != StageParse {
 			return "failed"
 		}
 	}

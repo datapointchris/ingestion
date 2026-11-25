@@ -49,7 +49,7 @@
         "text": {"description": "Null. A parse's text is its parse_units rows joined by a blank line.", "type": "null"},
         "units": {"description": "Null. A parse's units are rows of parse_units.", "type": "null"},
         "spans": {
-          "description": "Each finding's matched text, in the order of the record's findings.",
+          "description": "Each finding's matched text: item i is the span of finding i in the ingestion.record of the same kind, id and version.",
           "type": ["array", "null"],
           "items": {
             "type": "object",
@@ -57,7 +57,6 @@
             "required": ["rule", "span"],
             "properties": {
               "rule": {"type": "string"},
-              "unit": {"description": "The unit the span sits in.", "type": ["integer", "null"]},
               "span": {"type": "string"}
             }
           }

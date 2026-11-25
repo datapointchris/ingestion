@@ -1,8 +1,7 @@
 // Package scan is the scan stage. It runs VirusTotal's YARA-X, as the yr
 // program, over an item's parsed text with Agent Threat Rules converted to
 // YARA and ingestion's own rules, and stores each finding: the rule, its
-// severity and the text it matched. A finding never drops an item. The model
-// read calls the same Scanner on each suggestion sentence it writes.
+// severity and the text it matched. A finding never drops an item.
 //
 // The rules are built once per image by build-rules, which keeps each
 // converted rule only where yr compiles it and it passes its own examples.
@@ -11,7 +10,6 @@
 package scan
 
 import (
-	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -30,7 +28,8 @@ const (
 	RulesDir = "/usr/local/share/ingestion/scan-rules"
 	// Yr is where the worker image installs yr.
 	Yr = "/usr/local/bin/yr"
-	// Producer names each scan output. Its version is the rules' version.
+	// Producer names each scan output. Its version is the rules' version and
+	// the parse it read, as store.ScanVersion writes them.
 	Producer = "rules"
 	// SpanKept bounds the bytes of the span that a finding keeps. The
 	// finding's length still counts the whole match.
@@ -82,38 +81,28 @@ func (s *Scanner) Version() string { return s.manifest.Version }
 // Manifest is what the rules' build decided.
 func (s *Scanner) Manifest() Manifest { return s.manifest }
 
-// Scan scans one text, such as a suggestion sentence, and answers each
-// finding and its span in the order they sit in the text. No finding names a
-// unit.
+// Scan scans one text that belongs to no parse, and answers each finding and
+// its span in the order they sit in the text. No finding names a unit, and
+// each offset counts from the text's start.
 func (s *Scanner) Scan(ctx context.Context, text string) ([]store.Finding, []store.Span, error) {
-	return s.scan(ctx, text, nil)
+	return s.scan(ctx, text, nil, nil)
 }
 
-// ScanUnits scans a parse's units as one text, joined by a blank line as
-// store.Parse.Text joins them, so a rule reads across them as it would read a
-// page. Each finding names the unit it starts in, and its offset counts from
-// that unit's start.
+// ScanUnits scans a parse's units as the one text that store.JoinUnits makes
+// of them, so a rule reads across them as it would read a page. Each finding
+// names the unit it starts in, and its offset counts from that unit's start.
 func (s *Scanner) ScanUnits(ctx context.Context, units []store.Unit) ([]store.Finding, []store.Span, error) {
-	texts := make([]string, len(units))
-	starts := make([]placed, len(units))
-	at := 0
+	text, starts := store.JoinUnits(units)
+	numbers := make([]int, len(units))
 	for i, u := range units {
-		texts[i] = u.Text
-		starts[i] = placed{n: u.N, start: at}
-		at += len(u.Text) + len("\n\n")
+		numbers[i] = u.N
 	}
-	return s.scan(ctx, strings.Join(texts, "\n\n"), starts)
+	return s.scan(ctx, text, starts, numbers)
 }
 
-// placed is where one unit starts in the joined text.
-type placed struct{ n, start int }
-
-func (s *Scanner) scan(ctx context.Context, text string, units []placed) ([]store.Finding, []store.Span, error) {
+func (s *Scanner) scan(ctx context.Context, text string, starts, numbers []int) ([]store.Finding, []store.Span, error) {
 	findings, spans := []store.Finding{}, []store.Span{}
-	if text == "" {
-		return findings, spans, nil
-	}
-	matches, err := yrScan(ctx, s.yr, s.compiled, map[string][]byte{"text": []byte(text)}, SpanKept, MatchesPerRule)
+	matches, err := matchTexts(ctx, s.yr, s.compiled, map[string]string{"text": text}, SpanKept, MatchesPerRule)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -122,29 +111,22 @@ func (s *Scanner) scan(ctx context.Context, text string, units []placed) ([]stor
 		at      int
 		span    string
 	}
-	var all []found
+	all := make([]found, 0, len(matches))
 	for _, m := range matches {
-		end := m.Offset + len(m.Printed)
-		if m.Offset < 0 || end > len(text) || !bytes.Equal(m.Printed, []byte(text[m.Offset:end])) {
-			return nil, nil, fmt.Errorf("yr named a match at offset %d that is not the text there", m.Offset)
+		f := store.Finding{Rule: m.rule, Severity: cmp.Or(m.severity, Severities[0]), Offset: m.start, Length: m.end - m.start}
+		if len(starts) > 0 {
+			i, _ := slices.BinarySearch(starts, m.start+1)
+			i = max(i-1, 0)
+			f.Unit, f.Offset = &numbers[i], m.start-starts[i]
 		}
-		f := store.Finding{
-			Rule: cmp.Or(m.Meta["id"], m.Identifier), Severity: cmp.Or(m.Meta["severity"], "info"),
-			Offset: m.Offset, Length: len(m.Printed) + m.More,
-		}
-		if len(units) > 0 {
-			i, _ := slices.BinarySearchFunc(units, m.Offset, func(p placed, offset int) int { return cmp.Compare(p.start, offset+1) })
-			unit := units[max(i-1, 0)]
-			f.Unit, f.Offset = &unit.n, m.Offset-unit.start
-		}
-		all = append(all, found{finding: f, at: m.Offset, span: whole(text[m.Offset:end])})
+		all = append(all, found{finding: f, at: m.start, span: whole(text[m.start:min(m.end, m.start+SpanKept)])})
 	}
 	slices.SortStableFunc(all, func(a, b found) int {
 		return cmp.Or(cmp.Compare(a.at, b.at), cmp.Compare(a.finding.Rule, b.finding.Rule), cmp.Compare(b.finding.Length, a.finding.Length))
 	})
-	// Two patterns of one rule often match one place, such as a command
-	// inside inline code, so a match that overlaps a kept one of its rule is
-	// the same finding.
+	// Two patterns of one rule, or one pattern in both of a text's views,
+	// often match one place, so a match that overlaps a kept one of its rule
+	// is the same finding.
 	perRule, keptUntil := map[string]int{}, map[string]int{}
 	for _, f := range all {
 		rule := f.finding.Rule
@@ -156,7 +138,7 @@ func (s *Scanner) scan(ctx context.Context, text string, units []placed) ([]stor
 			continue
 		}
 		findings = append(findings, f.finding)
-		spans = append(spans, store.Span{Rule: f.finding.Rule, Unit: f.finding.Unit, Span: f.span})
+		spans = append(spans, store.Span{Rule: f.finding.Rule, Span: f.span})
 	}
 	return findings, spans, nil
 }

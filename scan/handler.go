@@ -17,11 +17,16 @@ import (
 const (
 	// Capability is the capability of every scan task.
 	Capability = store.StageScan
-	// Timeout bounds one scan of one parse. A scan past it fails its task.
+	// Timeout bounds one scan of one parse, and a scan past it runs again. A
+	// 61 MiB parse, about the most a parse report carries, scanned in five
+	// and a half minutes, and in under nine where its text held no line break.
 	Timeout = 10 * time.Minute
-	// parseRetry is how long a scan waits to read its parse again after the
-	// service gave no answer.
-	parseRetry = 30 * time.Second
+	// Attempts bounds the claims of one scan task. A scan whose parse read
+	// or yr run fails is queued again until its task's claims reach it, and
+	// then fails.
+	Attempts = 3
+	// retryAfter is how long a scan waits to run again after one failed.
+	retryAfter = 30 * time.Second
 )
 
 // Handlers is the scan's worker handler where yr and the built rules are
@@ -61,7 +66,9 @@ func (h handler) Capability() string { return Capability }
 // finding beside the parse it read. A finding never fails the task or drops
 // the item. Where the item holds no done parse yet, the task ends with
 // nothing scanned, because the parse's own report queues a scan once it is
-// done.
+// done. A read that the service refuses fails the task. A read that it gave
+// no answer to, or a scan that fails, runs again until the task's claims
+// reach Attempts.
 func (h handler) Run(ctx context.Context, task worker.Task) worker.Result {
 	parse, err := h.client.TaskParse(ctx, task.ID, task.LeaseToken)
 	var refused *worker.StatusError
@@ -70,43 +77,49 @@ func (h handler) Run(ctx context.Context, task worker.Task) worker.Result {
 		h.log.Info("the task's item holds no done parse, so nothing was scanned", "task", task.ID)
 		return worker.Result{Outcome: server.OutcomeDone}
 	case errors.As(err, &refused) && refused.Status != http.StatusTooManyRequests && refused.Status < 500:
-		return h.failed(fmt.Sprintf("read the item's parse: %v", err), nil)
-	case err != nil:
 		reason := fmt.Sprintf("read the item's parse: %v", err)
-		return worker.Result{Outcome: server.OutcomeRetry, Error: &reason, RetryAfter: parseRetry}
+		return worker.Result{Outcome: server.OutcomeFailed, Error: &reason}
+	case err != nil:
+		return h.failed(task, fmt.Sprintf("read the item's parse: %v", err), nil)
 	}
 	runCtx, cancel := context.WithTimeout(ctx, Timeout)
 	defer cancel()
 	findings, spans, err := h.scanner.ScanUnits(runCtx, parse.Units)
 	if err != nil && ctx.Err() == nil && errors.Is(runCtx.Err(), context.DeadlineExceeded) {
-		return h.failed(fmt.Sprintf("the scan ran past its %s limit", Timeout), &parse)
+		err = fmt.Errorf("the scan ran past its %s limit", Timeout)
 	}
 	if err != nil {
-		return h.failed(err.Error(), &parse)
+		return h.failed(task, err.Error(), &parse)
 	}
 	return worker.Result{Outcome: server.OutcomeDone, Outputs: []server.ReportOutput{{
-		Producer: Producer, ProducerVersion: h.scanner.Version(), State: store.OutputDone,
-		InputProducer: &parse.Extractor, InputVersion: &parse.ExtractorVersion, Findings: findings, Spans: spans,
+		Producer: Producer, ProducerVersion: store.ScanVersion(h.scanner.Version(), parse.Extractor, parse.ExtractorVersion),
+		State: store.OutputDone, InputProducer: &parse.Extractor, InputVersion: &parse.ExtractorVersion,
+		Findings: findings, Spans: spans,
 	}}}
 }
 
-// failed fails the task with reason, and records the scan as failed with it
-// beside the parse it read, where it read one.
-func (h handler) failed(reason string, parse *server.ParseAnswer) worker.Result {
-	out := server.ReportOutput{Producer: Producer, ProducerVersion: h.scanner.Version(), State: store.OutputFailed, Error: &reason}
-	if parse != nil {
-		out.InputProducer, out.InputVersion = &parse.Extractor, &parse.ExtractorVersion
+// failed queues the task again with reason while its claims are under
+// Attempts, and otherwise fails it. A failed task records the scan as failed
+// beside the parse it read, where it read one, and a done scan of that parse
+// keeps its row.
+func (h handler) failed(task worker.Task, reason string, parse *server.TaskParseAnswer) worker.Result {
+	if task.Attempts < Attempts {
+		return worker.Result{Outcome: server.OutcomeRetry, Error: &reason, RetryAfter: retryAfter}
 	}
-	return worker.Result{Outcome: server.OutcomeFailed, Error: &reason, Outputs: []server.ReportOutput{out}}
+	result := worker.Result{Outcome: server.OutcomeFailed, Error: &reason}
+	if parse != nil {
+		result.Outputs = []server.ReportOutput{{
+			Producer: Producer, ProducerVersion: store.ScanVersion(h.scanner.Version(), parse.Extractor, parse.ExtractorVersion),
+			State: store.OutputFailed, Error: &reason, InputProducer: &parse.Extractor, InputVersion: &parse.ExtractorVersion,
+		}}
+	}
+	return result
 }
 
 // QueueAfterParse queues a scan of the item in the write that ends its parse
 // task, where the parse reported done. So every parsed item is scanned, and a
 // parse that failed waits in review unscanned.
 func QueueAfterParse(ctx context.Context, tx *store.Tx, task store.Task, outputs []store.Output) error {
-	if task.Stage != store.StageParse {
-		return nil
-	}
 	for _, o := range outputs {
 		if o.State == store.OutputDone {
 			_, err := tx.Enqueue(ctx, store.Task{ItemKey: task.ItemKey, Stage: store.StageScan, Capability: Capability})
