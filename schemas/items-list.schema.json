@@ -32,7 +32,7 @@
   },
   "$defs": {
     "phase": {
-      "description": "The furthest stage the item's records reach, or waiting where a model stage holds it, review where a person must place it, and failed where a task failed.",
+      "description": "The furthest stage the item's records reach, or waiting where a model stage holds it, review where it waits on a person, and failed where a task other than its parse failed. An item waits in review where no tag, rule or confident guess placed it, or where it holds no usable parse, the review list's no-parse reason.",
       "enum": ["landed", "parsed", "scanned", "gated", "placed", "read", "delivered", "dropped", "waiting", "review", "failed"]
     },
     "waiting_at": {"description": "The model stage the item waits at.", "enum": ["quality", "model-read", null]}

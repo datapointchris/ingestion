@@ -27,9 +27,6 @@ const (
 // MaxListed is the most tasks one list answers.
 const MaxListed = 1000
 
-// errReportRefused is a report whose outputs the task's stage does not hold.
-var errReportRefused = errors.New("the report is refused")
-
 // ClaimRequest is a worker asking for up to Max tasks whose capability it
 // holds, each leased for LeaseSeconds.
 type ClaimRequest struct {
@@ -164,10 +161,10 @@ func TaskRoutes(st *store.Store, log *slog.Logger) Routes {
 	}
 	h := taskHandlers{store: st, log: log}
 	return func(r *Router) {
-		r.Handle("POST /api/v1/tasks/claims", ScopeTasksClaim, h.claim)
-		r.Handle("POST /api/v1/tasks/{id}/heartbeats", ScopeTasksClaim, h.heartbeat)
-		r.Handle("POST /api/v1/tasks/{id}/reports", ScopeTasksClaim, h.report)
-		r.Handle("GET /api/v1/tasks", "", h.list)
+		r.Handle(RouteTaskClaims, h.claim)
+		r.Handle(RouteTaskHeartbeats, h.heartbeat)
+		r.Handle(RouteTaskReports, h.report)
+		r.Handle(RouteTasks, h.list)
 	}
 }
 
@@ -250,13 +247,7 @@ func (h taskHandlers) report(w http.ResponseWriter, r *http.Request) {
 	}
 	task, err := h.store.Report(r.Context(), r.PathValue("id"), body.Token, outcome, func(tx *store.Tx, task store.Task) error {
 		for _, o := range body.Outputs {
-			if len(o.Units) > 0 && task.Stage != store.StageParse {
-				return fmt.Errorf("%w: a %s task reports units, which only a parse holds", errReportRefused, task.Stage)
-			}
-			if err := tx.PutOutput(r.Context(), o.output(task)); err != nil {
-				return err
-			}
-			if err := tx.PutUnits(r.Context(), task.ItemKey, o.Producer, o.ProducerVersion, o.Units); err != nil {
+			if err := tx.PutOutputWithUnits(r.Context(), o.output(task), o.Units); err != nil {
 				return err
 			}
 		}
@@ -338,7 +329,7 @@ func (h taskHandlers) leaseRefused(w http.ResponseWriter, r *http.Request, err e
 		Refuse(w, http.StatusConflict, CodeStaleLease, "%v", err)
 	case errors.Is(err, store.ErrNoItem):
 		Refuse(w, http.StatusUnprocessableEntity, CodeItemNotFound, "%v", err)
-	case errors.Is(err, errReportRefused), errors.Is(err, store.ErrUnitsOutOfOrder):
+	case errors.Is(err, store.ErrUnitsOutsideParse), errors.Is(err, store.ErrUnitsOutOfOrder):
 		Refuse(w, http.StatusUnprocessableEntity, CodeInvalidBody, "%v", err)
 	default:
 		h.internal(w, r, "update a task", err)

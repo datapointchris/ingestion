@@ -28,10 +28,13 @@ const (
 	CodeIdempotencyKeyMissing = "idempotency_key_missing"
 	CodeIdempotencyKeyReused  = "idempotency_key_reused"
 	CodeStageNotReplayable    = "stage_not_replayable"
+	CodeNoItemFromConnector   = "no_item_from_connector"
 )
 
-// replayStages are the stages that schemas/replay.schema.json names.
-var replayStages = []string{store.StageParse, store.StageScan, store.StageQuality, store.StageModelRead, store.StageDeliver}
+// ReplayStages are the stages that a replay request may name, as
+// schemas/replay.schema.json's stage enum holds them. ReplayRoutes takes the
+// stages that the service replays.
+var ReplayStages = []string{store.StageParse, store.StageScan, store.StageQuality, store.StageModelRead, store.StageDeliver}
 
 // ReplayRequest asks to run Stage again over the items that Connector and Key
 // select, each absent selecting every item. Confirm runs a model stage once a
@@ -75,7 +78,7 @@ func ReplayRoutes(st *store.Store, stages map[string]Replayable, log *slog.Logge
 	}
 	h := replayHandlers{store: st, stages: stages, log: log}
 	return func(r *Router) {
-		r.Handle("POST /api/v1/replays", ScopeItemsReplay, h.replay)
+		r.Handle(RouteReplays, h.replay)
 	}
 }
 
@@ -96,13 +99,13 @@ func (h replayHandlers) replay(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &body) {
 		return
 	}
-	if !slices.Contains(replayStages, body.Stage) {
-		Refuse(w, http.StatusBadRequest, CodeInvalidBody, "stage is one of %s, not %q", strings.Join(replayStages, ", "), body.Stage)
+	if !slices.Contains(ReplayStages, body.Stage) {
+		Refuse(w, http.StatusBadRequest, CodeInvalidBody, "stage is one of %s, not %q", strings.Join(ReplayStages, ", "), body.Stage)
 		return
 	}
 	stage, ok := h.stages[body.Stage]
 	if !ok {
-		Refuse(w, http.StatusUnprocessableEntity, CodeStageNotReplayable, "no replay runs the %s stage yet, so nothing was queued", body.Stage)
+		Refuse(w, http.StatusUnprocessableEntity, CodeStageNotReplayable, "the service holds no replay of the %s stage, so nothing was queued", body.Stage)
 		return
 	}
 	if body.Connector != nil && *body.Connector == "" {
@@ -130,6 +133,9 @@ func (h replayHandlers) replay(w http.ResponseWriter, r *http.Request) {
 			"this %s already named a replay of another stage or other items, so nothing was queued", IdempotencyKey)
 		return
 	}
+	if selectionRefused(w, err) {
+		return
+	}
 	if err != nil {
 		h.log.ErrorContext(r.Context(), "queue a replay", "error", err, "stage", body.Stage)
 		Refuse(w, http.StatusInternalServerError, CodeInternal, "the server could not queue the replay")
@@ -148,24 +154,14 @@ func (h replayHandlers) replay(w http.ResponseWriter, r *http.Request) {
 // estimate answers a model stage's count and tokens by kind over the items
 // the replay selects, and queues nothing.
 func (h replayHandlers) estimate(w http.ResponseWriter, r *http.Request, stage Replayable, answer ReplayAnswer) {
-	sel := store.ItemSelection{}
-	if answer.Connector != nil {
-		sel.Connector = *answer.Connector
+	items, err := h.store.ReplayItems(r.Context(), store.Replay{Stage: answer.Stage, Connector: answer.Connector, ItemKey: answer.Key}, stage.Capability)
+	if selectionRefused(w, err) {
+		return
 	}
-	if answer.Key != nil {
-		sel.Key = *answer.Key
-	}
-	selected, err := h.store.SelectItems(r.Context(), sel)
 	if err != nil {
 		h.log.ErrorContext(r.Context(), "select a replay's items", "error", err)
 		Refuse(w, http.StatusInternalServerError, CodeInternal, "the server could not select the replay's items")
 		return
-	}
-	var items []store.Item
-	for _, item := range selected {
-		if _, ok := stage.Capability(item); ok {
-			items = append(items, item)
-		}
 	}
 	tokens, err := stage.Estimate(r.Context(), items)
 	if err != nil {
@@ -175,6 +171,23 @@ func (h replayHandlers) estimate(w http.ResponseWriter, r *http.Request, stage R
 	}
 	answer.Items, answer.Estimate = len(items), &tokens
 	JSON(w, http.StatusOK, answer)
+}
+
+// selectionRefused answers 404 where a replay's key names no item or its
+// connector sighted none, so a mistyped selection is refused rather than
+// queued over nothing, and says whether it answered.
+func selectionRefused(w http.ResponseWriter, err error) bool {
+	switch {
+	case errors.Is(err, store.ErrNoItem), errors.Is(err, store.ErrNoSighting):
+		code := CodeItemNotFound
+		if errors.Is(err, store.ErrNoSighting) {
+			code = CodeNoItemFromConnector
+		}
+		Refuse(w, http.StatusNotFound, code, "%v, so nothing was queued", err)
+	default:
+		return false
+	}
+	return true
 }
 
 // replayID names a replay by its caller and Idempotency-Key, so two callers

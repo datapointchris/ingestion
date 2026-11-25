@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/datapointchris/goapiauth/authtest"
 	"github.com/santhosh-tekuri/jsonschema/v6"
@@ -314,11 +315,17 @@ func TestLandedSavesParseOnceEachAndAReplayWritesTheNextVersionBeside(t *testing
 }
 
 // An extractor program reads the item's bytes on stdin and writes a unit per
-// line, with none of the worker's environment. One that exits non-zero fails
-// its task with its stderr kept, and its item waits in review.
-func TestAnExtractorProgramThatExitsNonZeroFailsItsTaskWithItsStderrAndItsItemWaitsInReview(t *testing.T) {
+// line, and neither inherits nor can read the worker's environment. One that
+// exits non-zero fails its task with its stderr kept, and one that hangs
+// fails at its time limit, and each item waits in review. A replay at an
+// unchanged version whose rerun fails keeps the done parse, and a replay
+// naming an item or connector that is not there is refused.
+func TestAnExtractorProgramThatFailsOrHangsFailsItsTaskAndAFailedRerunKeepsTheDoneParse(t *testing.T) {
 	ctx := t.Context()
 	t.Setenv(clientSecretEnv, "the worker's secret")
+	if err := worker.MarkUndumpable(); err != nil {
+		t.Fatal(err)
+	}
 	dir := t.TempDir()
 	script := func(name, body string) string {
 		path := filepath.Join(dir, name)
@@ -328,17 +335,21 @@ func TestAnExtractorProgramThatExitsNonZeroFailsItsTaskWithItsStderrAndItsItemWa
 		return path
 	}
 	failing := script("failing", "cat >/dev/null\necho 'cannot read page 3' >&2\nexit 3\n")
+	hanging := script("hanging", "cat >/dev/null\nexec sleep 60\n")
 	working := script("working", `[ -z "$`+clientSecretEnv+`" ] || { echo "the worker's secret reached the program" >&2; exit 9; }`+"\n"+
+		`! cat "/proc/$PPID/environ" >/dev/null 2>&1 || { echo "the worker's environment is readable" >&2; exit 8; }`+"\n"+
 		"cat >/dev/null\n"+`printf '%s\n' '{"label":"page 1","text":"one"}' '' '{"text":"two"}'`+"\n")
+	hangs := extract.Program("hanging", "1", "application/x-hanging", hanging)
+	hangs.Timeout = 200 * time.Millisecond
 	extractors, err := extract.NewRegistry(
-		extract.Program("failing", "1", "application/x-failing", failing),
+		extract.Program("failing", "1", "application/x-failing", failing), hangs,
 		extract.Program("working", "1", "application/x-working", working))
 	if err != nil {
 		t.Fatal(err)
 	}
 	p := newPipeline(t, extractors)
 	keys := map[string]string{}
-	for _, name := range []string{"failing", "working"} {
+	for _, name := range []string{"failing", "hanging", "working"} {
 		landed, err := p.lander.Land(ctx, landing.Arrival{
 			Connector: "folder", Zone: store.Outside, MediaType: "application/x-" + name, Body: strings.NewReader(name),
 		})
@@ -349,21 +360,50 @@ func TestAnExtractorProgramThatExitsNonZeroFailsItsTaskWithItsStderrAndItsItemWa
 	}
 	p.parse(t, extractors)
 
-	records, err := p.st.Item(ctx, keys["failing"])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if task := records.Tasks[0]; task.State != store.TaskFailed || task.Error == nil || *task.Error != "failing exited 3: cannot read page 3" {
-		t.Errorf("the failing program's task is %s with error %v, want failed with its exit and stderr", task.State, task.Error)
-	}
-	out, err := runCLI(t, "items", "show", keys["failing"], "--json", "--config", p.config)
-	var shown server.ItemAnswer
-	if err != nil || json.Unmarshal([]byte(out), &shown) != nil || shown.Item.Phase != "review" {
-		t.Errorf("items show of the failed parse printed phase %q, %v; want review", shown.Item.Phase, err)
+	for name, want := range map[string]string{"failing": "failing exited 3: cannot read page 3", "hanging": "hanging ran past its 200ms limit"} {
+		records, err := p.st.Item(ctx, keys[name])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if task := records.Tasks[0]; task.State != store.TaskFailed || task.Error == nil || *task.Error != want {
+			t.Errorf("the %s program's task is %s with error %v, want failed with %q", name, task.State, task.Error, want)
+		}
+		if phase := p.phase(t, keys[name]); phase != "review" {
+			t.Errorf("items show of the %s parse printed phase %q, want review", name, phase)
+		}
 	}
 	if parse := p.readParse(t, keys["working"], ""); parse.Text != "one\n\ntwo" || len(parse.Units) != 2 || *parse.Units[0].Label != "page 1" {
 		t.Errorf("the working program's parse is %+v, want its two lines as units", parse)
 	}
+
+	script("working", "cat >/dev/null\nexit 137\n")
+	if out, err := runCLI(t, "items", "replay", "--stage", "parse", "--key", keys["working"], "--config", p.config); err != nil || out != "Queued parse on 1 items.\n" {
+		t.Fatalf("items replay of the working item printed %q, %v", out, err)
+	}
+	p.parse(t, extractors)
+	if parse := p.readParse(t, keys["working"], ""); parse.Text != "one\n\ntwo" {
+		t.Errorf("after a failed rerun at an unchanged version the parse is %+v, want the done one kept", parse)
+	}
+	if phase := p.phase(t, keys["working"]); phase != "parsed" {
+		t.Errorf("after a failed rerun the working item's phase is %q, want parsed", phase)
+	}
+	for _, selection := range [][]string{{"--key", "reddit/t3_nosuch"}, {"--connector", "no-such-connector"}} {
+		out, err := runCLI(t, append([]string{"items", "replay", "--stage", "parse", "--config", p.config}, selection...)...)
+		if err == nil {
+			t.Errorf("items replay %v printed %q and succeeded, want it refused", selection, out)
+		}
+	}
+}
+
+// phase is the item's phase as items show --json prints it.
+func (p *pipeline) phase(t *testing.T, key string) string {
+	t.Helper()
+	out, err := runCLI(t, "items", "show", key, "--json", "--config", p.config)
+	var shown server.ItemAnswer
+	if err != nil || json.Unmarshal([]byte(out), &shown) != nil {
+		t.Fatalf("items show %s printed %q, %v", key, out, err)
+	}
+	return shown.Item.Phase
 }
 
 // The stored Reddit exports parse as the synthetic one does: one thread-text

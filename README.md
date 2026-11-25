@@ -164,8 +164,11 @@ Queued parse on 12 items.
 ```
 
 The command posts to `POST /api/v1/replays` under one `Idempotency-Key`, so a retry queues
-nothing twice. The answer is `schemas/replay.schema.json`. Parse is the one stage that replays so
-far, and the service refuses the others with `stage_not_replayable`.
+nothing twice. The answer is `schemas/replay.schema.json`. The service refuses a stage that it
+holds no replay for with `stage_not_replayable`. It refuses a `--key` that names no item with
+`item_not_found`, and a `--connector` that sighted no item with `no_item_from_connector`. A
+replay at an unchanged extractor version retries the items whose parse failed. An item whose
+parse is done keeps it, even where the rerun fails.
 
 ### Running it in a container
 

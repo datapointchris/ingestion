@@ -118,6 +118,8 @@
         "producer": {"description": "What wrote the output: an extractor, a rule set or a stage's prompt.", "type": "string"},
         "producer_version": {"description": "The extractor's, the rules' or the prompt's version, so a new one replays beside the old.", "type": "string"},
         "lens": {"description": "The lens a model read answered under.", "type": ["string", "null"]},
+        "input_producer": {"description": "The producer of the parse this output read, such as the parse a scan's findings index the units of.", "type": ["string", "null"]},
+        "input_version": {"description": "The producer version of the parse this output read.", "type": ["string", "null"]},
         "lens_version": {"type": ["string", "null"]},
         "state": {"description": "waiting holds a model stage's dispatch, done holds its output, failed holds why in the text.", "enum": ["waiting", "done", "failed"]},
         "blob_sha256": {"description": "The output's bytes.", "anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},

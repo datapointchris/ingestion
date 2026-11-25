@@ -14,6 +14,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
@@ -35,6 +36,10 @@ type Extractor struct {
 	Program string
 	// Extract reads body and answers its units in order.
 	Extract func(ctx context.Context, body io.Reader) ([]Unit, error)
+	// Timeout bounds one run of Extract, and none where it is zero. A run
+	// past it fails its task, so a program that hangs on one item's bytes
+	// frees its worker slot and the item waits in review.
+	Timeout time.Duration
 }
 
 // Unit is one part of a parse, as an extractor writes it. The parse numbers

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/datapointchris/ingestion/schemas/review-list.schema.json",
   "title": "Items waiting on a person's placement",
-  "description": "What GET /api/v1/review answers and `ingestion review list --json` prints: each item no tag, rule or confident guess placed, oldest first. POST /api/v1/review/{key}/place takes one of the destinations the destinations file names.",
+  "description": "What GET /api/v1/review answers and `ingestion review list --json` prints: each item that waits on a person, oldest first: one that no tag, rule or confident guess placed, or one that holds no usable parse. POST /api/v1/review/{key}/place takes one of the destinations the destinations file names.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "items"],

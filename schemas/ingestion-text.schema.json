@@ -45,6 +45,8 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "text": {"description": "Null. A parse's text is its parse_units rows joined by a blank line.", "type": "null"},
+        "units": {"description": "Null. A parse's units are rows of parse_units.", "type": "null"},
         "spans": {
           "description": "Each finding's matched text, in the order of the record's findings.",
           "type": ["array", "null"],

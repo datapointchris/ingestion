@@ -18,6 +18,10 @@ import (
 // ProgramDir is where the worker image installs each extractor program.
 const ProgramDir = "/usr/local/libexec/ingestion/extractors"
 
+// ProgramTimeout is a program extractor's Timeout unless its registration
+// sets another.
+const ProgramTimeout = 30 * time.Minute
+
 const (
 	// stderrKept bounds the stderr that a failed run keeps, from its end.
 	stderrKept = 64 << 10
@@ -35,10 +39,11 @@ const (
 //	{"label": "Chapter 1", "text": "It was a bright cold day…"}
 //
 // label may be null or left out, and any other field is refused. A run that
-// exits non-zero fails its task, with the end of its stderr kept.
+// exits non-zero fails its task, with the end of its stderr kept, and so does
+// a run past ProgramTimeout.
 func Program(name, version, mediaType, path string, args ...string) Extractor {
 	return Extractor{
-		Name: name, Version: version, MediaType: mediaType, Program: path,
+		Name: name, Version: version, MediaType: mediaType, Program: path, Timeout: ProgramTimeout,
 		Extract: func(ctx context.Context, body io.Reader) ([]Unit, error) { return runProgram(ctx, path, args, body) },
 	}
 }
@@ -51,13 +56,18 @@ type ProgramError struct {
 }
 
 func (e *ProgramError) Error() string {
+	if e.Stderr == "" {
+		return fmt.Sprintf("%s exited %d and wrote nothing to stderr", filepath.Base(e.Program), e.ExitCode)
+	}
 	return fmt.Sprintf("%s exited %d: %s", filepath.Base(e.Program), e.ExitCode, e.Stderr)
 }
 
 // runProgram is the one place ingestion starts a process. The program runs in
 // an empty directory of its own, with an environment of PATH, HOME, TMPDIR
-// and LANG alone. So no credential of the worker, such as its client secret,
-// reaches a program that reads outsider bytes.
+// and LANG alone, so it inherits no credential of the worker. A worker that
+// runs it has called worker.MarkUndumpable, so the program cannot read the
+// worker's own environment through /proc either. Both matter because the
+// program reads outsider bytes.
 func runProgram(ctx context.Context, path string, args []string, body io.Reader) ([]Unit, error) {
 	dir, err := os.MkdirTemp("", "ingestion-extract-")
 	if err != nil {

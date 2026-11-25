@@ -3,11 +3,14 @@ package cmd
 import (
 	"bytes"
 	"context"
+	crand "crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math/rand/v2"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -93,7 +96,7 @@ func runTasksList(cmd *cobra.Command, _ []string) error {
 		q.Set("workers", "all")
 	}
 	var answer server.TasksAnswer
-	raw, err := getJSON(cmd.Context(), configPath(cmd), api, "/api/v1/tasks?"+q.Encode(), &answer)
+	raw, err := getJSON(cmd.Context(), configPath(cmd), api, server.RouteTasks, "/api/v1/tasks?"+q.Encode(), &answer)
 	if err != nil {
 		return err
 	}
@@ -158,19 +161,22 @@ func localTime(stamp string) string {
 	return at.Local().Format("2006-01-02 15:04:05 MST")
 }
 
-// getJSON reads route from the server the config file at path names, or api
-// where it is set, into into, and answers the body as it came.
-func getJSON(ctx context.Context, path, api, route string, into any) ([]byte, error) {
-	return sendJSON(ctx, path, api, http.MethodGet, route, nil, nil, into)
+// getJSON reads target, a path that route's pattern matches, from the server
+// the config file at path names, or api where it is set, into into, and
+// answers the body as it came.
+func getJSON(ctx context.Context, path, api string, route server.Route, target string, into any) ([]byte, error) {
+	return sendJSON(ctx, path, api, route, target, nil, into)
 }
 
-// sendJSON sends method to route on the server the config file at path names,
-// or api where it is set, with header and body, and reads a 200 or 201 answer
-// into into. It answers the body as it came. It tries a bounded few times
-// within one deadline, again on no answer and on 429, 502, 503 or 504, so a
-// write it sends is one its route reads as safe to repeat. A server that
-// gives no answer is errNoAnswer, naming the server and what chose it.
-func sendJSON(ctx context.Context, path, api, method, route string, header http.Header, body []byte, into any) ([]byte, error) {
+// sendJSON sends route's method to target, a path that route's pattern
+// matches, on the server the config file at path names, or api where it is
+// set, and reads a 200 or 201 answer into into. It answers the body as it
+// came. Within one deadline it sends again on no answer and on 429, 502, 503
+// or 504, as route's repeat kind allows. A keyed route carries one
+// Idempotency-Key across every try. A once route goes again only where its
+// first copy never reached the server. A server that gives no answer is
+// errNoAnswer, naming the server and what chose it.
+func sendJSON(ctx context.Context, path, api string, route server.Route, target string, body []byte, into any) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, answerDeadline)
 	defer cancel()
 	d, err := loadDeployment(ctx, path, api)
@@ -194,51 +200,73 @@ func sendJSON(ctx context.Context, path, api, method, route string, header http.
 	client := oauth2.NewClient(ctx, oauth2.ReuseTokenSource(token, source))
 	base := strings.TrimRight(d.API.Value, "/")
 	named := base + " " + chosenBy(d.API, d.Path)
+	method := route.Method()
+	header := http.Header{}
+	if body != nil {
+		header.Set("Content-Type", "application/json")
+	}
+	if route.Repeat == server.RepeatKeyed {
+		key := make([]byte, 16)
+		_, _ = crand.Read(key)
+		header.Set(server.IdempotencyKey, hex.EncodeToString(key))
+	}
 	var lastErr error
-	for attempt := range answerAttempts {
-		if attempt > 0 {
-			wait := time.Duration(attempt)*time.Second + rand.N(500*time.Millisecond)
+	tries := 0
+	for tries < answerAttempts {
+		if tries > 0 {
+			wait := time.Duration(tries)*time.Second + rand.N(500*time.Millisecond)
 			select {
 			case <-ctx.Done():
 				return nil, fmt.Errorf("%w: %s, within %s: %v", errNoAnswer, named, answerDeadline, lastErr)
 			case <-time.After(wait):
 			}
 		}
+		tries++
 		var sent io.Reader
 		if body != nil {
 			sent = bytes.NewReader(body)
 		}
-		req, err := http.NewRequestWithContext(ctx, method, base+route, sent)
+		req, err := http.NewRequestWithContext(ctx, method, base+target, sent)
 		if err != nil {
 			return nil, err
 		}
-		for name, values := range header {
-			req.Header[name] = values
-		}
-		if body != nil {
-			req.Header.Set("Content-Type", "application/json")
-		}
+		req.Header = header.Clone()
 		resp, err := client.Do(req)
 		if err != nil {
 			lastErr = err
+			if route.Repeat == server.RepeatOnce && !neverReached(err) {
+				break
+			}
 			continue
 		}
 		raw, err := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
 		if err != nil {
 			lastErr = err
+			if route.Repeat == server.RepeatOnce {
+				break
+			}
 			continue
 		}
 		switch resp.StatusCode {
 		case http.StatusOK, http.StatusCreated:
 			return raw, json.Unmarshal(raw, into)
 		case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
-			lastErr = fmt.Errorf("it answered %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
-			continue
+			if route.Repeat != server.RepeatOnce {
+				lastErr = fmt.Errorf("it answered %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+				continue
+			}
 		}
-		return nil, refusalOf(named, method, route, resp.StatusCode, raw)
+		return nil, refusalOf(named, method, target, resp.StatusCode, raw)
 	}
-	return nil, fmt.Errorf("%w: %s, after %d tries: %v", errNoAnswer, named, answerAttempts, lastErr)
+	return nil, fmt.Errorf("%w: %s, after %d tries: %v", errNoAnswer, named, tries, lastErr)
+}
+
+// neverReached says whether err is a request that failed while dialing, so
+// no byte of it reached the server.
+func neverReached(err error) bool {
+	var op *net.OpError
+	return errors.As(err, &op) && op.Op == "dial"
 }
 
 // refusal is the server refusing a call. Code and Message are what its body

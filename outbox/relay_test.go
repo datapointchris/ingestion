@@ -53,12 +53,9 @@ func TestAnItemGainsEachStageRecordAndEachChangeReachesTheCollectorOnce(t *testi
 			return tx.PutSighting(ctx, store.Sighting{ItemKey: key, Connector: "reddit-exports", Zone: store.Outside, ExternalKey: "https://redd.it/aq7ggd"})
 		}},
 		{"parsed", func(tx *store.Tx) error {
-			if err := tx.PutOutput(ctx, store.Output{
+			return tx.PutOutputWithUnits(ctx, store.Output{
 				ItemKey: key, Stage: store.StageParse, Producer: "thread-text", ProducerVersion: "1", State: store.OutputDone,
-			}); err != nil {
-				return err
-			}
-			return tx.PutUnits(ctx, key, "thread-text", "1", []store.Unit{{N: 1, Text: text}})
+			}, []store.Unit{{N: 1, Text: text}})
 		}},
 		{"scanned", func(tx *store.Tx) error {
 			return tx.PutOutput(ctx, store.Output{

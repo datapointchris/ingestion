@@ -14,11 +14,39 @@ var ErrNoParse = errors.New("no done parse")
 // ErrUnitsOutOfOrder is a parse whose units are not numbered 1, 2, 3 in order.
 var ErrUnitsOutOfOrder = errors.New("a parse's units are numbered from 1 in their order")
 
-// PutUnits writes the units that extractor at version made of the item under
-// key. A version's units are written once, so where that version already
-// wrote units, they stay as they are and units is not read. A changed
-// extractor takes a new version, which writes beside the old.
-func (t *Tx) PutUnits(ctx context.Context, key, extractor, version string, units []Unit) error {
+// ErrUnitsOutsideParse is a stage other than parse reporting units.
+var ErrUnitsOutsideParse = errors.New("only a parse holds units")
+
+// PutOutputWithUnits writes o, a stage's output, and the units that only a parse
+// holds. A version whose parse is done keeps it, output and units alike, so
+// a rerun of that version that fails leaves the done parse readable and
+// fails only its task. A changed extractor takes a new version, which writes
+// beside the old.
+func (t *Tx) PutOutputWithUnits(ctx context.Context, o Output, units []Unit) error {
+	if o.Stage != StageParse {
+		if len(units) > 0 {
+			return fmt.Errorf("%w: a %s output carries %d units", ErrUnitsOutsideParse, o.Stage, len(units))
+		}
+		return t.PutOutput(ctx, o)
+	}
+	var state string
+	err := t.tx.QueryRowContext(ctx, `SELECT state FROM outputs WHERE item_key = ? AND stage = ? AND producer = ? AND producer_version = ?`,
+		o.ItemKey, o.Stage, o.Producer, o.ProducerVersion).Scan(&state)
+	switch {
+	case err == nil && state == OutputDone:
+		return nil
+	case err != nil && !errors.Is(err, sql.ErrNoRows):
+		return fmt.Errorf("read %s's parse by %s v%s: %w", o.ItemKey, o.Producer, o.ProducerVersion, err)
+	}
+	if err := t.PutOutput(ctx, o); err != nil {
+		return err
+	}
+	return t.putUnits(ctx, o.ItemKey, o.Producer, o.ProducerVersion, units)
+}
+
+// putUnits writes the units that extractor at version made of the item under
+// key, once. Where that version already wrote units, they stay as they are.
+func (t *Tx) putUnits(ctx context.Context, key, extractor, version string, units []Unit) error {
 	for i, u := range units {
 		if u.N != i+1 {
 			return fmt.Errorf("%w: unit %d is numbered %d", ErrUnitsOutOfOrder, i+1, u.N)
@@ -48,12 +76,12 @@ type ParsePick struct {
 	Version   string
 }
 
-// Parse is one item's done parse with its units, and the newest done scan.
+// Parse is one item's done parse with its units, and the newest done scan of it.
 type Parse struct {
 	Item   Item
 	Output Output
 	Units  []Unit
-	// Scan is the item's newest done scan output, and nil where none is.
+	// Scan is the newest done scan that read this parse, and nil where none did.
 	Scan *Output
 }
 
@@ -105,8 +133,9 @@ func (s *Store) Parse(ctx context.Context, key string, pick ParsePick) (Parse, e
 	for i, u := range units {
 		p.Units[i] = Unit{N: u.N, Label: u.Label, Text: u.Text}
 	}
-	scan, found, err := first[Output](ctx, tx, table("outputs"), `item_key = ? AND stage = ? AND state = ? ORDER BY created_ts DESC, rowid DESC`,
-		key, StageScan, OutputDone)
+	scan, found, err := first[Output](ctx, tx, table("outputs"),
+		`item_key = ? AND stage = ? AND state = ? AND input_producer = ? AND input_version = ? ORDER BY created_ts DESC, rowid DESC`,
+		key, StageScan, OutputDone, p.Output.Producer, p.Output.ProducerVersion)
 	if found {
 		p.Scan = &scan
 	}

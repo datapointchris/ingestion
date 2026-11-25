@@ -66,7 +66,15 @@ func (h handler) Run(ctx context.Context, task worker.Task) worker.Result {
 		return worker.Result{Outcome: server.OutcomeRetry, Error: &reason, RetryAfter: blobRetry}
 	}
 	defer func() { _ = body.Close() }()
-	units, err := h.extractor.Extract(ctx, body)
+	runCtx, cancel := ctx, context.CancelFunc(func() {})
+	if h.extractor.Timeout > 0 {
+		runCtx, cancel = context.WithTimeout(ctx, h.extractor.Timeout)
+	}
+	defer cancel()
+	units, err := h.extractor.Extract(runCtx, body)
+	if err != nil && ctx.Err() == nil && errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+		return h.failed(fmt.Sprintf("%s ran past its %s limit", h.extractor.Name, h.extractor.Timeout))
+	}
 	if err != nil {
 		return h.failed(err.Error())
 	}

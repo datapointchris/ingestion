@@ -157,7 +157,8 @@ type ParseAnswer struct {
 	Findings         []ParseFinding `json:"findings"`
 }
 
-// ParseFinding is one of the newest scan's findings with the text it matched.
+// ParseFinding is one finding of the newest scan of the parse, with the text
+// it matched.
 type ParseFinding struct {
 	Rule     string `json:"rule"`
 	Severity string `json:"severity"`
@@ -176,9 +177,9 @@ func ItemRoutes(st *store.Store, log *slog.Logger) Routes {
 	}
 	h := itemHandlers{store: st, log: log}
 	return func(r *Router) {
-		r.Handle("GET /api/v1/items", ScopeItemsRead, h.list)
-		r.Handle("GET /api/v1/items/{key}", ScopeItemsRead, h.show)
-		r.Handle("GET /api/v1/items/{key}/parse", ScopeItemsRead, h.parse)
+		r.Handle(RouteItems, h.list)
+		r.Handle(RouteItem, h.show)
+		r.Handle(RouteItemParse, h.parse)
 	}
 }
 

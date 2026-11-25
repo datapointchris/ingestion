@@ -157,26 +157,30 @@ const (
 
 // Output is one stage's output for one item from one producer at one version.
 type Output struct {
-	ItemKey         string          `json:"item_key"`
-	Stage           string          `json:"stage"`
-	Producer        string          `json:"producer"`
-	ProducerVersion string          `json:"producer_version"`
-	Lens            *string         `json:"lens"`
-	LensVersion     *string         `json:"lens_version"`
-	State           string          `json:"state"`
-	BlobSHA256      *string         `json:"blob_sha256"`
-	DispatchID      *string         `json:"dispatch_id"`
-	RunID           *string         `json:"run_id"`
-	Tokens          *Tokens         `json:"tokens"`
-	Findings        []Finding       `json:"findings"`
-	Quality         *int            `json:"quality"`
-	SideGuess       *string         `json:"side_guess"`
-	SideConfidence  *float64        `json:"side_confidence"`
-	Spans           []Span          `json:"spans"`
-	Answer          json.RawMessage `json:"answer"`
-	Error           *string         `json:"error"`
-	CreatedTS       string          `json:"created_ts"`
-	UpdatedTS       string          `json:"updated_ts"`
+	ItemKey         string  `json:"item_key"`
+	Stage           string  `json:"stage"`
+	Producer        string  `json:"producer"`
+	ProducerVersion string  `json:"producer_version"`
+	Lens            *string `json:"lens"`
+	LensVersion     *string `json:"lens_version"`
+	// InputProducer and InputVersion name the parse a later stage read, such
+	// as the parse a scan's findings index the units of.
+	InputProducer  *string         `json:"input_producer"`
+	InputVersion   *string         `json:"input_version"`
+	State          string          `json:"state"`
+	BlobSHA256     *string         `json:"blob_sha256"`
+	DispatchID     *string         `json:"dispatch_id"`
+	RunID          *string         `json:"run_id"`
+	Tokens         *Tokens         `json:"tokens"`
+	Findings       []Finding       `json:"findings"`
+	Quality        *int            `json:"quality"`
+	SideGuess      *string         `json:"side_guess"`
+	SideConfidence *float64        `json:"side_confidence"`
+	Spans          []Span          `json:"spans"`
+	Answer         json.RawMessage `json:"answer"`
+	Error          *string         `json:"error"`
+	CreatedTS      string          `json:"created_ts"`
+	UpdatedTS      string          `json:"updated_ts"`
 }
 
 // Decision is one gate's decision on one item. The newest at a gate decides.

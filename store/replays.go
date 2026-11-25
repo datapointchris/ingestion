@@ -10,35 +10,59 @@ import (
 // another stage, connector or key.
 var ErrReplayDiffers = errors.New("the replay's id names a replay of another stage or other items")
 
-// ItemSelection selects items by a connector that sighted them and by key.
-// An empty field selects every item.
-type ItemSelection struct {
-	Connector string
-	Key       string
+// ErrNoSighting is a replay naming a connector that sighted no item.
+var ErrNoSighting = errors.New("the connector sighted no item")
+
+// ReplayItems reads the items that r covers, oldest first: each item that r's
+// connector sighted and r's key names, or every item where neither is set,
+// that capability takes. capability answers the task's capability for an
+// item, and false where the stage does not run on it. It answers ErrNoItem
+// where r's key names no item, and ErrNoSighting where r's connector sighted
+// none.
+func (s *Store) ReplayItems(ctx context.Context, r Replay, capability func(Item) (string, bool)) ([]Item, error) {
+	return replayItems(ctx, s.read, r, capability)
 }
 
-// SelectItems reads the items sel selects, oldest first.
-func (s *Store) SelectItems(ctx context.Context, sel ItemSelection) ([]Item, error) {
-	return selectItems(ctx, s.read, sel)
-}
-
-func selectItems(ctx context.Context, db querier, sel ItemSelection) ([]Item, error) {
+func replayItems(ctx context.Context, db querier, r Replay, capability func(Item) (string, bool)) ([]Item, error) {
 	where, args := `1`, []any{}
-	if sel.Connector != "" {
-		where, args = where+` AND key IN (SELECT item_key FROM sightings WHERE connector = ?)`, append(args, sel.Connector)
+	if connector := deref(r.Connector); connector != "" {
+		_, found, err := first[Sighting](ctx, db, table("sightings"), `connector = ?`, connector)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			return nil, fmt.Errorf("%s: %w", connector, ErrNoSighting)
+		}
+		where, args = where+` AND key IN (SELECT item_key FROM sightings WHERE connector = ?)`, append(args, connector)
 	}
-	if sel.Key != "" {
-		where, args = where+` AND key = ?`, append(args, sel.Key)
+	if key := deref(r.ItemKey); key != "" {
+		_, found, err := first[Item](ctx, db, table("items"), `key = ?`, key)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			return nil, fmt.Errorf("%s: %w", key, ErrNoItem)
+		}
+		where, args = where+` AND key = ?`, append(args, key)
 	}
-	return readInto[Item](ctx, db, table("items"), where+` ORDER BY created_ts, key`, args...)
+	selected, err := readInto[Item](ctx, db, table("items"), where+` ORDER BY created_ts, key`, args...)
+	if err != nil {
+		return nil, err
+	}
+	var items []Item
+	for _, item := range selected {
+		if _, ok := capability(item); ok {
+			items = append(items, item)
+		}
+	}
+	return items, nil
 }
 
-// Replay queues a task of r.Stage for each item that r's connector and key
-// select and capability takes, then records r with its count, in one write.
-// capability answers the task's capability for an item, and false where the
-// stage does not run on it. A replay already recorded under r.ID answers as
-// recorded and queues nothing, and one recorded with another stage, connector
-// or key answers ErrReplayDiffers. The bool says whether this call queued.
+// Replay queues a task of r.Stage for each item that ReplayItems answers for
+// r, then records r with its count, in one write. A replay already recorded
+// under r.ID answers as recorded and queues nothing, and one recorded with
+// another stage, connector or key answers ErrReplayDiffers. The bool says
+// whether this call queued.
 func (s *Store) Replay(ctx context.Context, r Replay, capability func(Item) (string, bool)) (Replay, bool, error) {
 	queued := false
 	err := s.Update(ctx, func(tx *Tx) error {
@@ -53,22 +77,17 @@ func (s *Store) Replay(ctx context.Context, r Replay, capability func(Item) (str
 			r = held
 			return nil
 		}
-		items, err := selectItems(ctx, tx.tx, ItemSelection{Connector: deref(r.Connector), Key: deref(r.ItemKey)})
+		items, err := replayItems(ctx, tx.tx, r, capability)
 		if err != nil {
 			return err
 		}
-		r.Items = 0
 		for _, item := range items {
-			c, ok := capability(item)
-			if !ok {
-				continue
-			}
+			c, _ := capability(item)
 			if _, err := tx.Enqueue(ctx, Task{ItemKey: item.Key, Stage: r.Stage, Capability: c}); err != nil {
 				return err
 			}
-			r.Items++
 		}
-		r.RequestedTS = tx.stamp()
+		r.Items, r.RequestedTS = len(items), tx.stamp()
 		queued = true
 		return tx.put(ctx, table("replays"), r)
 	})
