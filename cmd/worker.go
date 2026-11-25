@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -39,13 +40,13 @@ var workerRunCmd = &cobra.Command{
 		"holds, runs each, extends the lease while it runs, and reports how it ended. It\n" +
 		"holds no store, and reads and writes only through the service's API.\n" +
 		"\n" +
-		"It authenticates as the service client the config file's client_id names,\n" +
-		"with that client's secret in INGESTION_CLIENT_SECRET, and calls the file's api.\n" +
-		"It reads the file's [worker] table:\n" +
+		"It authenticates with the token the file's token_command prints, or else as\n" +
+		"the service client the file's client_id names, with that client's secret in\n" +
+		"INGESTION_CLIENT_SECRET. It calls the file's api, and reads its [worker] table:\n" +
 		"\n" +
-		"  slots  how many tasks run at once (default 2)\n" +
-		"  lease  how long each lease runs before a heartbeat extends it (default 5m)\n" +
-		"  poll   how often an idle worker claims again (default 5s)",
+		"  slots  how many tasks run at once (default " + strconv.Itoa(defaultSlots) + ")\n" +
+		"  lease  how long each lease runs before a heartbeat extends it (default " + shortDuration(defaultLease) + ")\n" +
+		"  poll   how often an idle worker claims again (default " + shortDuration(defaultPoll) + ")",
 	Example: "  # a worker, as a service client\n" +
 		"  INGESTION_CLIENT_SECRET=... ingestion worker run --config /etc/ingestion/config.toml",
 	Args: cobra.NoArgs,

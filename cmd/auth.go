@@ -59,6 +59,9 @@ var authLogoutCmd = &cobra.Command{
 func init() {
 	goclikit.AsNamespace(authCmd)
 	authLoginCmd.Flags().String("client-id", "", "Log in as this client where the config file names none (default ingestion-cli-<short hostname>)")
+	for _, c := range []*cobra.Command{authLoginCmd, authStatusCmd, authLogoutCmd} {
+		addConfigFlag(c)
+	}
 	authCmd.AddCommand(authLoginCmd, authStatusCmd, authLogoutCmd)
 	rootCmd.AddCommand(authCmd)
 }
@@ -74,7 +77,7 @@ func runAuthLogin(cmd *cobra.Command, args []string) error {
 	clientID, _ := cmd.Flags().GetString("client-id")
 	ctx, cancel := context.WithTimeout(cmd.Context(), loginTimeout)
 	defer cancel()
-	d, err := goclilogin.DeploymentForLogin(ctx, product, url, clientID)
+	d, err := goclilogin.DeploymentForLoginFrom(ctx, product, configPath(cmd), url, clientID)
 	if err != nil {
 		return err
 	}
@@ -112,7 +115,7 @@ func runAuthLogin(cmd *cobra.Command, args []string) error {
 }
 
 func runAuthStatus(cmd *cobra.Command, _ []string) error {
-	d, err := goclilogin.LoadDeployment(cmd.Context(), product, "")
+	d, err := loadDeployment(cmd.Context(), configPath(cmd), "")
 	out := cmd.OutOrStdout()
 	goclilogin.WriteDeployment(out, d)
 	if err != nil {
@@ -132,7 +135,7 @@ func runAuthStatus(cmd *cobra.Command, _ []string) error {
 }
 
 func runAuthLogout(cmd *cobra.Command, _ []string) error {
-	d, err := goclilogin.LoadDeployment(cmd.Context(), product, "")
+	d, err := loadDeployment(cmd.Context(), configPath(cmd), "")
 	if err != nil && !errors.Is(err, goclilogin.ErrNotConfigured) {
 		return err
 	}

@@ -23,8 +23,9 @@ import (
 
 const (
 	defaultListen = ":8080"
-	// shutdownGrace is how long a stopping service lets requests finish, inside
-	// the 30 seconds the pod's grace period gives.
+	// shutdownGrace is how long a stopping service lets requests finish. It
+	// stays under terminationGracePeriodSeconds in deploy/serve.yaml, so the
+	// kubelet never kills a request mid-write.
 	shutdownGrace = 20 * time.Second
 )
 
@@ -39,8 +40,8 @@ var serveCmd = &cobra.Command{
 		"\n" +
 		"  issuer            the OIDC provider whose tokens the API accepts (required)\n" +
 		"  [serve]\n" +
-		"  listen            the address the API answers on (default :8080)\n" +
-		"  state_dir         where the store lives (default $XDG_STATE_HOME/ingestion)\n" +
+		"  listen            the address the API answers on (default " + defaultListen + ")\n" +
+		"  state_dir         where the store lives (default $XDG_STATE_HOME/" + product + ")\n" +
 		"  public_url        where callers reach the API, served as RFC 9728 metadata\n" +
 		"  records_otlp_url  the OTLP/HTTP logs URL the outbox ships to (none ships nothing)",
 	Example: "  # the service, reading $XDG_CONFIG_HOME/ingestion/config.toml\n" +
