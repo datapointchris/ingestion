@@ -64,20 +64,25 @@ client_id = "ingestion-cli-laptop"
 # token_command = ["my-token-helper", "ingestion"]
 
 [serve]
-listen = ":8080"               # the default
-state_dir = "/var/lib/ingestion" # default $XDG_STATE_HOME/ingestion
+listen = ":8080"
+state_dir = "/var/lib/ingestion"
 # The address callers reach the API at. With it, serve publishes RFC 9728
 # metadata, and `ingestion auth login <public_url>` finds the issuer there.
 public_url = "https://ingestion.example.com"
 # The OTLP/HTTP logs endpoint the outbox ships every change to. With none,
-# serve keeps every record and ships nothing.
+# serve keeps every record and ships nothing. Set it only once the collector
+# routes ingestion.record and ingestion.text each to a table of its own that
+# folds on kind, id and version: the outbox moves past each record the
+# collector accepts, so a record filed elsewhere first never ships again.
 records_otlp_url = "http://collector.example.com:4318/v1/logs"
 
 [worker]
-slots = 2    # tasks leased at once, the default
-lease = "5m" # how long a lease holds without a heartbeat, the default
-poll = "5s"  # how often an idle worker asks for work, the default
+slots = 4     # tasks leased at once
+lease = "10m" # how long a lease holds without a heartbeat
+poll = "10s"  # how often an idle worker asks for work
 ```
+
+`ingestion serve --help` and `ingestion worker run --help` print each setting's default.
 
 - **`INGESTION_CLIENT_SECRET`** is the worker's client secret. It makes the worker authenticate
   with the client-credentials grant. The worker requires it, or a `token_command`.
@@ -91,14 +96,16 @@ list` reads the service's open tasks and the workers it has heard from:
 
 ```text
 TASK                              ITEM              STAGE  CAPABILITY       STATE   ATTEMPTS  LEASE  UPDATED
-8a35d7545c3cb9c4cfdf1bb5128fddfd  reddit:t3_aq7ggd  parse  parse:text/html  queued  0         —      2026-11-24 21:13:50 EST
+8a35d7545c3cb9c4cfdf1bb5128fddfd  reddit/t3_aq7ggd  parse  parse:text/html  queued  0         —      2026-11-24 21:13:50 EST
 
 WORKER                                     VERSION  CAPABILITIES  STARTED                  LAST HEARTBEAT
 ingestion-worker-7c9d8f6b4-x2kqp-0f683526  0.4.0    —             2026-11-24 21:13:50 EST  2026-11-24 21:13:53 EST
 ```
 
 `--state` narrows the list to one state and repeats, `--limit` caps it, and `--json` prints the
-shape in `schemas/tasks-list.schema.json`. A command exits 4 when the service gives no answer.
+shape in `schemas/tasks-list.schema.json`. The list shows each worker heard from lately, and
+`--all-workers` lists every worker the service holds, since each process start is a worker of its
+own. A command exits 4 when the service gives no answer, and 2 when a flag is wrong.
 
 ### Running it in a container
 

@@ -3,8 +3,8 @@
 # The cluster supplies what this directory does not create:
 #
 # - The ConfigMap named ingestion-config, shared with serve. A worker reads
-#   four of its settings: api, the service's address in the cluster; issuer;
-#   client_id, naming the worker's service client; and the [worker] table.
+#   its api, the service's address in the cluster; its issuer; its client_id,
+#   naming the worker's service client; and its [worker] table.
 # - A Secret named ingestion-worker-client. Its secret key holds that client's
 #   secret.
 # - A NetworkPolicy for each egress: the service, the identity provider and

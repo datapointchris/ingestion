@@ -315,7 +315,7 @@ func stampOf(t store.Table, row store.Row) string {
 
 // Version counts a row's record: the Unix milliseconds of its stamp where
 // each write is a version, and 1 where the row is written once, zero-padded
-// to 20 digits.
+// to versionDigits.
 func Version(t store.Table, stamp string) string {
 	n := int64(1)
 	if t.Writes == store.Upserts {

@@ -5,6 +5,9 @@
 # - A ConfigMap named ingestion-config, whose config.toml key is the config
 #   file. serve reads its issuer and its [serve] table. records_otlp_url names
 #   the outbox's collector, and public_url names the API's public address.
+#   Set records_otlp_url only once the collector routes ingestion.record and
+#   ingestion.text each to a table that folds on kind, id and version. The
+#   outbox moves past each record the collector accepts.
 # - Node placement, by a patch on this StatefulSet.
 # - A route to the Service for each caller outside the namespace.
 # - A NetworkPolicy for each egress: the identity provider and the collector.
@@ -75,7 +78,8 @@ spec:
         fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
-      # Above the 20 seconds serve gives requests to finish.
+      # Above shutdownGrace in cmd/serve.go, so serve finishes its requests
+      # before the kubelet kills it.
       terminationGracePeriodSeconds: 30
       containers:
         - name: serve
