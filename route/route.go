@@ -68,6 +68,11 @@ const (
 	CauseSideDefault = "side-default"
 	// CauseUnstated is a person's placement that names no cause.
 	CauseUnstated = "unstated"
+	// CauseTitle and CauseTheme are a person's causes naming the item's title
+	// or its theme. A person may also name a field of a sighting, such as
+	// subreddit.
+	CauseTitle = "title"
+	CauseTheme = "theme"
 )
 
 // GuessFloor is the confidence at or above which the quality gate's side

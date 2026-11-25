@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/datapointchris/ingestion/schemas/tui-review.schema.json",
+  "title": "The review tab's snapshot",
+  "description": "What `ingestion tui --view review --json` prints: each item that waits on a person, ordered by the board's default grouping, the digit that places on each destination, and how each read stands. A change to its shape bumps schema_version.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "taken_at", "grouping", "destinations", "items", "sources"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "taken_at": {"description": "When the snapshot was taken, in UTC.", "type": "string", "format": "date-time"},
+    "grouping": {"description": "The board's default grouping, which orders the items. A display the person left grouped otherwise does not change it.", "enum": ["reason", "source", "none"]},
+    "destinations": {
+      "description": "Each destination a digit places on, in the order the set in force declares them, up to nine. Null where the queue came without its destinations or was not read.",
+      "type": ["array", "null"],
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key", "name", "side"],
+        "properties": {
+          "key": {"type": "string", "pattern": "^[1-9]$"},
+          "name": {"type": "string"},
+          "side": {"enum": ["personal", "fleet", null]}
+        }
+      }
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["group", "source", "item"],
+        "properties": {
+          "group": {"description": "The key of the group the item draws under, such as reason/quality-review.", "type": "string"},
+          "source": {"description": "What the row's first column names: a field of the item's source, such as r/<subreddit>, or else its connectors.", "type": "string"},
+          "item": {"$ref": "review-list.schema.json#/properties/items/items"}
+        }
+      }
+    },
+    "sources": {
+      "description": "Each read the tab makes, as its last read left it.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "every"],
+        "properties": {
+          "name": {"type": "string"},
+          "every": {"type": "string"},
+          "read_at": {"type": "string", "format": "date-time"},
+          "took": {"type": "string"},
+          "tried_at": {"type": "string", "format": "date-time"},
+          "fault": {"type": "string"},
+          "note": {"type": "string"},
+          "reading": {"type": "boolean"}
+        }
+      }
+    },
+    "unread_sources": {
+      "description": "The reads with no good answer yet, so an empty items list is unknown rather than empty.",
+      "type": "array",
+      "items": {"type": "string"}
+    }
+  }
+}

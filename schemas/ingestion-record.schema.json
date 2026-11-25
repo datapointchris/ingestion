@@ -212,7 +212,7 @@
         "cause": {
           "description": "What decided. The quality gate writes pass, drop, unsure, or below-drop-floor where it would drop the item below its confidence floor. The side gate writes tags, tags-disagree, rule, guess, below-floor, no-guess, gate-error, quality-drop or quality-review, and the read gate connector or side-default. A person's decision names an aspect, such as subreddit, channel, theme or title, or unstated.",
           "type": "string",
-          "pattern": "^[a-z][a-z-]*$"
+          "pattern": "^[a-z][a-z-]{0,63}$"
         },
         "destination": {"description": "A placement's destination, one the destinations file names.", "type": ["string", "null"]},
         "note": {"description": "The questions and why the item was saved, as a person wrote them, on their placement and on the model read it chose.", "type": ["string", "null"]},

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/datapointchris/goapiauth"
 
+	"github.com/datapointchris/ingestion/connectors"
 	"github.com/datapointchris/ingestion/itemkey"
 	"github.com/datapointchris/ingestion/route"
 	"github.com/datapointchris/ingestion/store"
@@ -38,11 +40,18 @@ var errActingForAnother = errors.New("a person's token places only as that perso
 // schemas/ingestion-record.schema.json holds it.
 var causeSpelling = regexp.MustCompile(`^[a-z][a-z-]{0,63}$`)
 
+// ValidCause reports whether cause is spelled as the place and drop routes
+// take one.
+func ValidCause(cause string) bool { return causeSpelling.MatchString(cause) }
+
 // ReviewAnswer is what GET /api/v1/review answers:
-// schemas/review-list.schema.json.
+// schemas/review-list.schema.json. Destinations are those a placement takes,
+// in the order the set in force declares them, and nil where the set in force
+// could not be read.
 type ReviewAnswer struct {
-	SchemaVersion int          `json:"schema_version"`
-	Items         []ReviewItem `json:"items"`
+	SchemaVersion int                 `json:"schema_version"`
+	Items         []ReviewItem        `json:"items"`
+	Destinations  []ReviewDestination `json:"destinations"`
 }
 
 // ReviewItem is one item that waits on a person's placement, and why.
@@ -51,17 +60,37 @@ type ReviewItem struct {
 	Zone  store.Zone `json:"zone"`
 	Title *string    `json:"title"`
 	URL   *string    `json:"url"`
-	// Reason is tags-disagree, below-floor, no-guess or no-parse.
-	Reason         string       `json:"reason"`
-	Guess          *ReviewGuess `json:"guess"`
-	Connectors     []string     `json:"connectors"`
-	WaitingSinceTS string       `json:"waiting_since_ts"`
+	// Reason is why the item waits, as schemas/review-list.schema.json
+	// enumerates it.
+	Reason string       `json:"reason"`
+	Guess  *ReviewGuess `json:"guess"`
+	// QualityAnswer is the quality gate's newest done answer as the store
+	// keeps it, and null where the gate gave none.
+	QualityAnswer  json.RawMessage  `json:"quality_answer"`
+	Connectors     []string         `json:"connectors"`
+	Sightings      []ReviewSighting `json:"sightings"`
+	WaitingSinceTS string           `json:"waiting_since_ts"`
 }
 
 // ReviewGuess is the quality gate's side guess on an item.
 type ReviewGuess struct {
 	Side       string  `json:"side"`
 	Confidence float64 `json:"confidence"`
+}
+
+// ReviewSighting is one connector's arrival of a waiting item: the tags the
+// side gate read and the source's fields, such as a Reddit save's subreddit.
+type ReviewSighting struct {
+	Connector string            `json:"connector"`
+	Tags      []string          `json:"tags"`
+	Fields    map[string]string `json:"fields"`
+}
+
+// ReviewDestination is a declared destination and the side it gives an item.
+// Side is null where the destination drops what it takes.
+type ReviewDestination struct {
+	Name string  `json:"name"`
+	Side *string `json:"side"`
 }
 
 // PlaceRequest places an item on Destination, one the set in force declares.
@@ -119,21 +148,41 @@ func (h reviewHandlers) list(w http.ResponseWriter, r *http.Request) {
 		Refuse(w, http.StatusInternalServerError, CodeInternal, "the server could not read the review queue")
 		return
 	}
-	answer := ReviewAnswer{SchemaVersion: 1, Items: make([]ReviewItem, 0, len(waiting))}
+	answer := ReviewAnswer{SchemaVersion: 1, Items: make([]ReviewItem, 0, len(waiting)), Destinations: h.destinations(r)}
 	for _, it := range waiting {
 		item := ReviewItem{
 			Key: it.Item.Key, Zone: it.Item.Zone, Title: it.Item.Title, URL: it.Item.URL, Reason: it.Reason,
-			Connectors: []string{}, WaitingSinceTS: it.Since,
+			Connectors: []string{}, Sightings: []ReviewSighting{}, WaitingSinceTS: it.Since,
 		}
 		for _, s := range it.Sightings {
 			item.Connectors = append(item.Connectors, s.Connector)
+			item.Sightings = append(item.Sightings, ReviewSighting{Connector: s.Connector, Tags: s.Tags, Fields: s.Fields})
 		}
 		if guess := route.GuessOf(it.Outputs); guess != nil {
 			item.Guess = &ReviewGuess{Side: guess.Side, Confidence: guess.Confidence}
 		}
+		if quality := store.NewestDone(it.Outputs, store.StageQuality); quality != nil && len(quality.Answer) > 0 {
+			item.QualityAnswer = quality.Answer
+		}
 		answer.Items = append(answer.Items, item)
 	}
 	JSON(w, http.StatusOK, answer)
+}
+
+// destinations are those the set in force declares. A set that cannot be read
+// answers nil, which the answer carries as null, so the queue itself still
+// reads and a reader tells the fault from a set that declares none.
+func (h reviewHandlers) destinations(r *http.Request) []ReviewDestination {
+	set, err := connectors.AppliedSet(r.Context(), h.store)
+	if err != nil {
+		h.log.ErrorContext(r.Context(), "read the set in force for the review queue's destinations", "error", err)
+		return nil
+	}
+	out := make([]ReviewDestination, 0, len(set.Destinations))
+	for _, d := range set.Destinations {
+		out = append(out, ReviewDestination{Name: d.Name, Side: optional(d.Side)})
+	}
+	return out
 }
 
 func (h reviewHandlers) place(w http.ResponseWriter, r *http.Request) {
@@ -145,7 +194,7 @@ func (h reviewHandlers) place(w http.ResponseWriter, r *http.Request) {
 		Refuse(w, http.StatusBadRequest, CodeInvalidBody, "a placement names its destination")
 		return
 	}
-	if body.Cause != "" && !causeSpelling.MatchString(body.Cause) {
+	if body.Cause != "" && !ValidCause(body.Cause) {
 		Refuse(w, http.StatusBadRequest, CodeInvalidBody, "cause is a lowercase word or words joined by hyphens, such as subreddit, not %q", body.Cause)
 		return
 	}
@@ -157,7 +206,7 @@ func (h reviewHandlers) drop(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &body) {
 		return
 	}
-	if body.Cause != "" && !causeSpelling.MatchString(body.Cause) {
+	if body.Cause != "" && !ValidCause(body.Cause) {
 		Refuse(w, http.StatusBadRequest, CodeInvalidBody, "cause is a lowercase word or words joined by hyphens, such as subreddit, not %q", body.Cause)
 		return
 	}
