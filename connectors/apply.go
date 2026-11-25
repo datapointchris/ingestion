@@ -94,11 +94,11 @@ func Apply(ctx context.Context, st *store.Store, set Set, commit string, replace
 			if err != nil {
 				return err
 			}
-			if held && cur.DueAt == store.Stamp(due) {
+			if held && cur.DueAt == store.Stamp(due) && sameStamp(cur.StaleAt, StaleAt(c, cur)) {
 				continue
 			}
 			cur.DueAt = store.Stamp(due)
-			if err := tx.PutCursor(ctx, cur); err != nil {
+			if err := putCursor(ctx, tx, c, cur); err != nil {
 				return err
 			}
 		}
@@ -134,5 +134,5 @@ func Delivered(ctx context.Context, tx *store.Tx, c Connector) error {
 		return err
 	}
 	cur.DueAt = store.Stamp(due)
-	return tx.PutCursor(ctx, cur)
+	return putCursor(ctx, tx, c, cur)
 }

@@ -51,7 +51,7 @@ func TestTheSchedulerLandsEachNewFileOnceMakesOnePollTaskAndKeepsAFailedScan(t *
 		t.Fatal(err)
 	}
 	set := connectors.Set{Connectors: []connectors.Connector{
-		{Name: "books-folder", Mode: connectors.ModeFolder, Source: "local-books", Schedule: "*/15 * * * *", Zone: store.Outside, Root: "books"},
+		{Name: "books-folder", Mode: connectors.ModeFolder, Source: "local-books", Schedule: "*/15 * * * *", Freshness: "30m", Zone: store.Outside, Root: "books"},
 		{Name: "feed-reader", Mode: connectors.ModePoll, Source: "rss-feeds", Schedule: "@hourly", Zone: store.Outside},
 	}}
 	if _, err := connectors.Apply(ctx, st, set, "0123456", nil, "test", []string{"books"}, nil); err != nil {
@@ -94,10 +94,33 @@ func TestTheSchedulerLandsEachNewFileOnceMakesOnePollTaskAndKeepsAFailedScan(t *
 	if err != nil || cur.LastDeliveryTS == nil || cur.DueAt != store.Stamp(time.Date(2026, 11, 24, 11, 15, 0, 0, time.UTC)) {
 		t.Errorf("after its scan books-folder's cursor is %+v, %v, want a delivery and due at 11:15", cur, err)
 	}
-
+	delivered, _ := time.Parse(store.StampLayout, *cur.LastDeliveryTS)
+	if want := store.Stamp(delivered.Add(30 * time.Minute)); cur.StaleAt == nil || *cur.StaleAt != want {
+		t.Errorf("books-folder's stale time is %v, want its delivery plus its 30m freshness, %s", cur.StaleAt, want)
+	}
+	// An earlier release leaves a stale time from before the last delivery,
+	// and a pass before the folder is due again writes the right one.
+	want := *cur.StaleAt
+	if err := st.Update(ctx, func(tx *store.Tx) error {
+		old := store.Stamp(delivered.Add(-time.Hour))
+		cur.StaleAt = &old
+		return tx.PutCursor(ctx, cur)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	pass()
+	if cur, _, err := st.Cursor(ctx, "books-folder"); err != nil || cur.StaleAt == nil || *cur.StaleAt != want {
+		t.Errorf("after a pass books-folder's stale time is %v, %v, want %s again", cur.StaleAt, err, want)
+	}
 	advance(time.Hour)
 	if items, polls := pass(); items != 2 || len(polls) != 1 {
 		t.Errorf("a rerun over the same files landed to %d items and %d polls, want 2 and the one in flight", items, len(polls))
+	}
+	// The rerun moved its due time on and delivered nothing, so only its stale
+	// time makes it overdue, since that time.
+	cur, _, err = st.Cursor(ctx, "books-folder")
+	if since, overdue := connectors.OverdueSince(cur, clock()); err != nil || !overdue || since != want {
+		t.Errorf("an hour past its last delivery books-folder reads overdue %t since %q, %v; want overdue since %s", overdue, since, err, want)
 	}
 	write("c.txt", "a new file")
 	advance(15 * time.Minute)

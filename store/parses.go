@@ -188,8 +188,8 @@ func (s *Store) Parse(ctx context.Context, key string, pick ParsePick) (Parse, e
 type parseVersion struct{ item, extractor, version string }
 
 // unitCounts counts each parse's units among the items under keys.
-func (s *Store) unitCounts(ctx context.Context, keys []any) (map[parseVersion]int, error) {
-	rows, err := s.read.QueryContext(ctx, `SELECT item_key, extractor, extractor_version, count(*) FROM parse_units
+func unitCounts(ctx context.Context, db querier, keys []any) (map[parseVersion]int, error) {
+	rows, err := db.QueryContext(ctx, `SELECT item_key, extractor, extractor_version, count(*) FROM parse_units
 		WHERE item_key IN (?`+strings.Repeat(", ?", len(keys)-1)+`) GROUP BY item_key, extractor, extractor_version`, keys...)
 	if err != nil {
 		return nil, fmt.Errorf("count each parse's units: %w", err)

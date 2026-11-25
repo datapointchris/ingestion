@@ -29,36 +29,24 @@ type ConnectorCounts struct {
 	Held int
 }
 
-// connectorCounts reads each item a connector sighted against the records
-// that make its phase: a model stage's waiting output or held task, and its
-// newest task past its parse. ConnectorCounts counts review from the review
-// queue. Its one %s takes a placeholder for each of modelStages.
+// connectorCounts counts each item a connector sighted by the phase on its
+// row, which the outbox ships, so a reader of the records counts the same.
 const connectorCounts = `
 SELECT s.connector,
 	count(*),
-	coalesce(sum(
-		EXISTS (SELECT 1 FROM tasks t WHERE t.item_key = s.item_key AND t.state = 'queued' AND t.held_by IS NOT NULL)
-		OR EXISTS (SELECT 1 FROM outputs o WHERE o.item_key = s.item_key AND o.stage IN (%s) AND o.state = 'waiting'
-			AND NOT EXISTS (SELECT 1 FROM outputs d WHERE d.item_key = o.item_key AND d.stage = o.stage AND d.state = 'done'))
-	), 0),
-	coalesce(sum(
-		coalesce((SELECT state FROM tasks t WHERE t.item_key = s.item_key AND t.stage != 'parse' ORDER BY updated_ts DESC, rowid DESC LIMIT 1), '') = 'failed'
-	), 0),
+	coalesce(sum(i.phase = 'waiting'), 0),
+	coalesce(sum(i.phase = 'review'), 0),
+	coalesce(sum(i.phase = 'failed'), 0),
 	coalesce(sum(
 		EXISTS (SELECT 1 FROM tasks t WHERE t.item_key = s.item_key AND t.state = 'queued' AND t.held_by = s.connector)
 	), 0)
-FROM sightings s
+FROM sightings s JOIN items i ON i.key = s.item_key
 GROUP BY s.connector`
 
 // ConnectorCounts reads every connector's counts, by its name. A connector
 // that sighted nothing is absent.
 func (s *Store) ConnectorCounts(ctx context.Context) (map[string]ConnectorCounts, error) {
-	stages := make([]any, len(modelStages))
-	for i, stage := range modelStages {
-		stages[i] = stage
-	}
-	query := fmt.Sprintf(connectorCounts, strings.TrimSuffix(strings.Repeat("?, ", len(stages)), ", "))
-	rows, err := s.read.QueryContext(ctx, query, stages...)
+	rows, err := s.read.QueryContext(ctx, connectorCounts)
 	if err != nil {
 		return nil, fmt.Errorf("count each connector's items: %w", err)
 	}
@@ -67,30 +55,12 @@ func (s *Store) ConnectorCounts(ctx context.Context) (map[string]ConnectorCounts
 	for rows.Next() {
 		var name string
 		var c ConnectorCounts
-		if err := rows.Scan(&name, &c.Items, &c.Waiting, &c.Failed, &c.Held); err != nil {
+		if err := rows.Scan(&name, &c.Items, &c.Waiting, &c.Review, &c.Failed, &c.Held); err != nil {
 			return nil, fmt.Errorf("count each connector's items: %w", err)
 		}
 		out[name] = c
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	waiting, err := s.ReviewQueue(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for _, w := range waiting {
-		counted := map[string]bool{}
-		for _, sighting := range w.Sightings {
-			if !counted[sighting.Connector] {
-				counted[sighting.Connector] = true
-				c := out[sighting.Connector]
-				c.Review++
-				out[sighting.Connector] = c
-			}
-		}
-	}
-	return out, nil
+	return out, rows.Err()
 }
 
 // ItemZones reads each of keys' zone, by key, and leaves out each key with

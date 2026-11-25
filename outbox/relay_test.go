@@ -111,6 +111,9 @@ func TestAnItemGainsEachStageRecordAndEachChangeReachesTheCollectorOnce(t *testi
 			t.Errorf("after the %s records the item's phase is %q, from %+v", step.phase, got, records.Conditions())
 		}
 		drain(t, relay)
+		if got := collector.phase(key); got != step.phase {
+			t.Errorf("after the %s records the item shipped phase %q", step.phase, got)
+		}
 	}
 	if err := st.Update(ctx, func(tx *store.Tx) error {
 		_, err := tx.Enqueue(ctx, store.Task{ItemKey: &key, Stage: store.StageParse, Capability: "reddit"})
@@ -160,9 +163,10 @@ func TestAnItemGainsEachStageRecordAndEachChangeReachesTheCollectorOnce(t *testi
 			t.Errorf("no %s row reached the collector as %s", tab.Name, RecordKind)
 		}
 	}
-	// The item changed in place only once, so it ships one version.
-	if n := collector.count(RecordKind, "items"); n != 1 {
-		t.Errorf("the items table shipped %d records, want the one version", n)
+	// Each write that moved the item's phase shipped it again. The second read
+	// step and the task writes after delivery left it, so they shipped none.
+	if n := collector.count(RecordKind, "items"); n != 7 {
+		t.Errorf("the items table shipped %d records, want one for each of the 7 phases", n)
 	}
 	// Each task change ships a version: the enqueue and the claim.
 	if n := collector.count(RecordKind, "tasks"); n != 2 {
@@ -213,6 +217,60 @@ func TestAnItemGainsEachStageRecordAndEachChangeReachesTheCollectorOnce(t *testi
 	}
 	if collector.has(TextKind, "tasks") {
 		t.Errorf("a task with no error shipped an %s record", TextKind)
+	}
+}
+
+// A write that moves an item's phase ships the item again with it, however the
+// write reached the item's records: the side gate's decision, a failed parse's
+// output, or a worker's report that fails a task.
+func TestAWriteThatMovesAnItemsPhaseShipsTheItemWithIt(t *testing.T) {
+	ctx := t.Context()
+	st := openStore(t)
+	collector := newCollector(t)
+	relay := openRelay(t, st, collector.url)
+	land := func(tx *store.Tx, key string) error {
+		return tx.PutItem(ctx, store.Item{Key: key, MediaType: "text/html", Zone: store.Outside})
+	}
+	sided, unparsed, unscanned := "url/0000000000000001", "url/0000000000000002", "url/0000000000000003"
+	if err := st.Update(ctx, func(tx *store.Tx) error {
+		for _, key := range []string{sided, unparsed, unscanned} {
+			if err := land(tx, key); err != nil {
+				return err
+			}
+		}
+		for _, key := range []string{sided, unscanned} {
+			if err := tx.PutOutput(ctx, store.Output{ItemKey: key, Stage: store.StageParse, Producer: "html", ProducerVersion: "1", State: store.OutputDone}); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.AddDecision(ctx, store.Decision{ItemKey: unscanned, Gate: store.GateSide, Verdict: "fleet", DecidedBy: "tag", Cause: "tag"}); err != nil {
+			return err
+		}
+		_, err := tx.Enqueue(ctx, store.Task{ItemKey: &unscanned, Stage: store.StageScan, Capability: "scan"})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Update(ctx, func(tx *store.Tx) error {
+		if _, err := tx.AddDecision(ctx, store.Decision{ItemKey: sided, Gate: store.GateSide, Verdict: "review", DecidedBy: "rule:none", Cause: "no-rule"}); err != nil {
+			return err
+		}
+		return tx.PutOutput(ctx, store.Output{ItemKey: unparsed, Stage: store.StageParse, Producer: "html", ProducerVersion: "1", State: store.OutputFailed})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	leased, err := st.Claim(ctx, store.Claim{Worker: store.Worker{ID: "w1", Capabilities: []string{"scan"}, Version: "test"}, Max: 1, Lease: time.Minute})
+	if err != nil || len(leased) != 1 {
+		t.Fatalf("the scan's claim leased %+v: %v", leased, err)
+	}
+	if _, err := st.Report(ctx, leased[0].ID, *leased[0].LeaseToken, store.Outcome{State: store.TaskFailed}, nil); err != nil {
+		t.Fatal(err)
+	}
+	drain(t, relay)
+	for key, want := range map[string]string{sided: "review", unparsed: "review", unscanned: "failed"} {
+		if got := collector.phase(key); got != want {
+			t.Errorf("%s shipped phase %q, want %q", key, got, want)
+		}
 	}
 }
 
@@ -456,6 +514,17 @@ func (c *collector) count(fleetKind, kind string) int {
 }
 
 func (c *collector) has(fleetKind, kind string) bool { return c.count(fleetKind, kind) > 0 }
+
+// phase is the phase that the newest items record of key carries.
+func (c *collector) phase(key string) string {
+	got := ""
+	for _, r := range c.records() {
+		if r.fleetKind == RecordKind && r.kind == "items" && r.id == key {
+			got, _ = r.body["phase"].(string)
+		}
+	}
+	return got
+}
 
 // folded is every record as a ReplacingMergeTree ordered by kind, id and
 // version keeps it: one body per key, the last received.

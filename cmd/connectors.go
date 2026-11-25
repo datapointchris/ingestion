@@ -348,8 +348,11 @@ func dueText(c server.ConnectorView, now time.Time) string {
 	case c.Failures > 1:
 		cadence += fmt.Sprintf(" · %d runs failed", c.Failures)
 	}
+	if c.Overdue && c.OverdueSince != nil {
+		return cadence + " · overdue since " + shortTime(*c.OverdueSince)
+	}
 	if c.Overdue {
-		return cadence + " · overdue since " + shortTime(c.DueAt)
+		return cadence + " · overdue"
 	}
 	at, err := time.Parse(store.StampLayout, c.DueAt)
 	if err == nil && !at.After(now) {

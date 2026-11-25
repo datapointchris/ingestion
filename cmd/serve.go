@@ -162,6 +162,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	served := make(chan error, 1)
 	go func() { served <- srv.ListenAndServe() }()
 	log.Info("ingestion serves", "listen", listen, "store", stateDir(cfg), "issuer", cfg.Issuer, "version", version)
+	wg.Go(func() { settlePhases(background, st, log) })
 	select {
 	case err := <-served:
 		return err
@@ -176,4 +177,18 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	return nil
+}
+
+// settlePhases settles every item's phase once the service listens, so a
+// large store delays no request, and logs how long it took.
+func settlePhases(ctx context.Context, st *store.Store, log *slog.Logger) {
+	started := time.Now()
+	items, moved, err := st.SettlePhases(ctx)
+	if err != nil {
+		if ctx.Err() == nil {
+			log.ErrorContext(ctx, "settle each item's phase", "items", items, "moved", moved, "error", err)
+		}
+		return
+	}
+	log.InfoContext(ctx, "settled each item's phase", "items", items, "moved", moved, "took", time.Since(started).String())
 }
