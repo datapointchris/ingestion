@@ -3,6 +3,7 @@ package connectors
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -88,30 +89,47 @@ func StaleAt(c Connector, cur store.Cursor) *string {
 	return &at
 }
 
-// Overdue says whether the connector whose cursor is cur is overdue at now:
-// once its due time passed with no delivery since, or once its stale time
-// passed.
-func Overdue(cur store.Cursor, now time.Time) bool {
+// OverdueSince is when the connector whose cursor is cur went overdue, and
+// false where it is not overdue at now. It goes overdue once its due time
+// passes with no delivery since, or once its stale time passes, whichever
+// comes first.
+func OverdueSince(cur store.Cursor, now time.Time) (string, bool) {
 	var delivered time.Time
 	if cur.LastDeliveryTS != nil {
 		delivered, _ = time.Parse(store.StampLayout, *cur.LastDeliveryTS)
 	}
-	due, err := time.Parse(store.StampLayout, cur.DueAt)
-	if err == nil && now.After(due) && delivered.Before(due) {
-		return true
+	var since []string
+	if due, err := time.Parse(store.StampLayout, cur.DueAt); err == nil && now.After(due) && delivered.Before(due) {
+		since = append(since, cur.DueAt)
 	}
-	if cur.StaleAt == nil {
-		return false
+	if cur.StaleAt != nil {
+		if stale, err := time.Parse(store.StampLayout, *cur.StaleAt); err == nil && now.After(stale) {
+			since = append(since, *cur.StaleAt)
+		}
 	}
-	stale, err := time.Parse(store.StampLayout, *cur.StaleAt)
-	return err == nil && now.After(stale)
+	if len(since) == 0 {
+		return "", false
+	}
+	return slices.Min(since), true
 }
 
 // putCursor writes cur with the stale time that c's freshness gives it. Each
-// cursor write in this package runs through it, so Overdue reads a current one.
+// cursor write in this package runs through it, so OverdueSince reads a
+// current one.
 func putCursor(ctx context.Context, tx *store.Tx, c Connector, cur store.Cursor) error {
 	cur.StaleAt = StaleAt(c, cur)
 	return tx.PutCursor(ctx, cur)
+}
+
+// keepStaleAt writes c's cursor again where its stale time differs from the
+// one that c's freshness gives it. A cursor that an earlier release wrote
+// holds none, or one from before its last delivery.
+func keepStaleAt(ctx context.Context, tx *store.Tx, c Connector) error {
+	cur, ok, err := tx.Cursor(ctx, c.Name)
+	if err != nil || !ok || sameStamp(cur.StaleAt, StaleAt(c, cur)) {
+		return err
+	}
+	return putCursor(ctx, tx, c, cur)
 }
 
 func sameStamp(a, b *string) bool {

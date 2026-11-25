@@ -120,6 +120,8 @@ type ConnectorView struct {
 	Freshness   *string `json:"freshness"`
 	DueAt       string  `json:"due_at"`
 	Overdue     bool    `json:"overdue"`
+	// OverdueSince is when the connector went overdue, and null while it is not.
+	OverdueSince *string `json:"overdue_since"`
 	// FirstFill is answered on one connector alone.
 	FirstFill *FirstFillView `json:"first_fill,omitempty"`
 }
@@ -382,13 +384,14 @@ func (h connectorHandlers) view(w http.ResponseWriter, r *http.Request, c connec
 	if tags == nil {
 		tags = []string{}
 	}
+	since, overdue := connectors.OverdueSince(cur, h.cfg.Store.Now())
 	return ConnectorView{
 		Name: c.Name, Mode: c.Mode, Zone: c.Zone, Source: c.Source, Tags: tags, AppliedCommit: commit,
 		LastRunTS: cur.LastRunTS, LastDeliveryTS: cur.LastDeliveryTS,
 		LastError: cur.LastError, LastErrorTS: cur.LastErrorTS, Failures: cur.Failures,
 		Items: n.Items, Waiting: n.Waiting, Review: n.Review, Failed: n.Failed,
 		Schedule: optional(c.Schedule), DueInterval: optional(c.DueInterval), Freshness: optional(c.Freshness),
-		DueAt: cur.DueAt, Overdue: connectors.Overdue(cur, h.cfg.Store.Now()),
+		DueAt: cur.DueAt, Overdue: overdue, OverdueSince: optional(since),
 	}, true
 }
 

@@ -85,7 +85,8 @@ func (s *Scheduler) Run(ctx context.Context) {
 
 // Pass runs each poll and folder connector in the set in force whose due time
 // has come, and answers the earliest due time left. One connector's failed run
-// is recorded on its cursor and logged, and leaves the rest to run.
+// is recorded on its cursor and logged, and leaves the rest to run. It first
+// rewrites each cursor whose stale time differs from what its freshness gives.
 func (s *Scheduler) Pass(ctx context.Context) (time.Time, error) {
 	now := s.store.Now()
 	next := now.Add(maxWait)
@@ -99,14 +100,19 @@ func (s *Scheduler) Pass(ctx context.Context) (time.Time, error) {
 	}
 	var failed []error
 	for _, c := range set.Connectors {
-		if !c.Scheduled() {
-			continue
-		}
 		cur, ok, err := s.store.Cursor(ctx, c.Name)
 		if err != nil {
 			return next, err
 		}
 		if !ok {
+			continue
+		}
+		if !sameStamp(cur.StaleAt, StaleAt(c, cur)) {
+			if err := s.store.Update(ctx, func(tx *store.Tx) error { return keepStaleAt(ctx, tx, c) }); err != nil {
+				failed = append(failed, fmt.Errorf("keep connector %s's stale time: %w", c.Name, err))
+			}
+		}
+		if !c.Scheduled() {
 			continue
 		}
 		due, err := time.Parse(store.StampLayout, cur.DueAt)
