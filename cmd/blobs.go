@@ -13,6 +13,8 @@ import (
 var blobsCmd = &cobra.Command{
 	Use:   "blobs",
 	Short: "Read the bytes the service keeps under their SHA-256",
+	Example: "  # each stored blob with no row, and each blob row whose bytes are missing\n" +
+		"  ingestion blobs unpaired",
 }
 
 var blobsUnpairedCmd = &cobra.Command{

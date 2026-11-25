@@ -23,6 +23,11 @@ import (
 var reviewCmd = &cobra.Command{
 	Use:   "review",
 	Short: "Read the items that wait on a person, and place or drop one",
+	Example: "  # the items waiting on a person, the longest waiting first\n" +
+		"  ingestion review list\n" +
+		"\n" +
+		"  # place one on a destination, naming what decided it\n" +
+		"  ingestion review place reddit/t3_1h9xk2 reading-list --cause subreddit",
 }
 
 var reviewListCmd = &cobra.Command{

@@ -16,6 +16,8 @@ import (
 var gatesCmd = &cobra.Command{
 	Use:   "gates",
 	Short: "Read how the quality gate and the side gate decide",
+	Example: "  # how often each gate's answer agrees with a person's placement\n" +
+		"  ingestion gates agreement",
 }
 
 var gatesAgreementCmd = &cobra.Command{

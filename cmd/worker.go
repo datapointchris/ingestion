@@ -157,6 +157,8 @@ func serviceHTTPClient(ctx context.Context, table serviceClient, secretEnv, issu
 var workerCmd = &cobra.Command{
 	Use:   "worker",
 	Short: "Run a worker that leases tasks from the service",
+	Example: "  # a worker, as a service client\n" +
+		"  INGESTION_CLIENT_SECRET=... ingestion worker run --config /etc/ingestion/config.toml",
 }
 
 var workerRunCmd = &cobra.Command{

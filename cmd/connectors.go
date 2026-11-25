@@ -33,6 +33,11 @@ var connectorsCmd = &cobra.Command{
 		"due interval, its default tags and zone. `connectors apply` sends a directory\n" +
 		"of them to the service whole, with the routing rules and the destinations.\n" +
 		"The service's scheduler then owns when each one is due.",
+	Example: "  # each applied connector, its counts, and when it is next due\n" +
+		"  ingestion connectors list\n" +
+		"\n" +
+		"  # apply a directory of declarations as the set in force\n" +
+		"  ingestion connectors apply ./declarations",
 }
 
 var connectorsApplyCmd = &cobra.Command{

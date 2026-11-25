@@ -29,6 +29,11 @@ import (
 var itemsCmd = &cobra.Command{
 	Use:   "items",
 	Short: "Read the items the service holds",
+	Example: "  # the newest items\n" +
+		"  ingestion items list\n" +
+		"\n" +
+		"  # one item and every record it holds\n" +
+		"  ingestion items show reddit/t3_aq7ggd",
 }
 
 var itemsListCmd = &cobra.Command{

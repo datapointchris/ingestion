@@ -41,6 +41,11 @@ const (
 var tasksCmd = &cobra.Command{
 	Use:   "tasks",
 	Short: "Read the work the service holds in flight",
+	Example: "  # work in flight, and the live workers\n" +
+		"  ingestion tasks list\n" +
+		"\n" +
+		"  # the failed tasks, to retry one\n" +
+		"  ingestion tasks list --state failed",
 }
 
 var tasksListCmd = &cobra.Command{

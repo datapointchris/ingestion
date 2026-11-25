@@ -26,6 +26,11 @@ var authCmd = &cobra.Command{
 		"Where ingestion is pointed comes from one config file,\n" +
 		"$XDG_CONFIG_HOME/ingestion/config.toml: its api, issuer and client_id. `ingestion\n" +
 		"auth login <url>` fills in whatever it lacks, and `ingestion auth status` prints it.",
+	Example: "  # log this machine in to the service at a url\n" +
+		"  ingestion auth login https://ingestion.example.com\n" +
+		"\n" +
+		"  # where this machine is pointed, and whether its login still holds\n" +
+		"  ingestion auth status",
 }
 
 var authLoginCmd = &cobra.Command{
