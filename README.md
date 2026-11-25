@@ -331,8 +331,8 @@ Dropped file/5d41402abc4b2a76, cause title.
 `schemas/review-list.schema.json`. `place` and `drop` post to `/api/v1/review/{key}/place` and
 `…/drop`, and print `schemas/review-placement.schema.json` with `--json`. A placement names a
 destination that the set in force declares, and any other is refused. `--cause` names the aspect
-that decided it, such as subreddit or title, and `--note` carries the questions that a model read
-answers. Sending the same placement again changes nothing. A service placing for a person names
+that decided it, such as subreddit or title, and a decision that names none is kept as
+`unstated`. `--note` carries the questions that a model read answers. Sending the same placement again changes nothing. A service placing for a person names
 the person's `login` in its body, because a service token carries no person. The decision keeps
 the service's client id beside the login.
 

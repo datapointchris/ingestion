@@ -220,6 +220,12 @@ func TestASaveIsPlacedByItsRuleOrWaitsInReviewForAPersonToPlace(t *testing.T) {
 		out != "Dropped reddit/t3_aa1, cause subreddit.\n" || p.phase(t, "reddit/t3_aa1") != "dropped" {
 		t.Errorf("review drop printed %q, %v, and left the save %s", out, err, p.phase(t, "reddit/t3_aa1"))
 	}
+	if out, err := runCLI(t, "review", "drop", "reddit/t3_bb2", "--config", p.config); err != nil || out != "Dropped reddit/t3_bb2, cause unstated.\n" {
+		t.Errorf("a drop naming no cause printed %q, %v, want it kept as unstated", out, err)
+	}
+	if out, err := runCLI(t, "items", "show", "reddit/t3_bb2", "--config", p.config); err != nil || !strings.Contains(out, "drop  by person:") || !strings.Contains(out, "cause unstated") {
+		t.Errorf("items show printed %q, %v, want the drop with its unstated cause", out, err)
+	}
 }
 
 // A save that the gate sent to review for want of a rule or a guess is placed
