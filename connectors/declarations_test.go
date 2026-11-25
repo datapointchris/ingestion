@@ -11,6 +11,8 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/datapointchris/ingestion/connectors"
+	// Registers the reddit-export format that the example set names.
+	_ "github.com/datapointchris/ingestion/redditexport"
 )
 
 // The example set reads whole, and each of its files holds to the JSON Schema

@@ -497,7 +497,9 @@ func (h connectorHandlers) firstFill(w http.ResponseWriter, r *http.Request) {
 // source's drop handler. The body's Content-Type is the file's media type, and
 // its Content-Disposition names the file. It is keyed, as Stripe's API keys a
 // request: a retry under one Idempotency-Key answers what the first attempt
-// landed, and a different file under it answers 409.
+// landed, and a different file under it answers 409. A file that its handler
+// refuses answers 422. A drop that stopped partway answers 500 and keeps no
+// answer under its key, so the same drop sent again lands the rest.
 func (h connectorHandlers) drop(w http.ResponseWriter, r *http.Request) {
 	key := requestKey(r)
 	c, _, ok := h.connector(w, r)
@@ -536,9 +538,16 @@ func (h connectorHandlers) drop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	landed, err := connectors.LandDrop(r.Context(), h.cfg.Lander, connectors.Drop{Connector: c, Name: name, MediaType: mediaType, Body: body})
-	if err != nil {
-		h.cfg.Log.Warn("a drop did not land", "connector", c.Name, "error", err)
+	if connectors.IsRefused(err) {
+		h.cfg.Log.Warn("a drop was refused", "connector", c.Name, "error", err)
 		Refuse(w, http.StatusUnprocessableEntity, CodeInvalidDrop, "%s did not land the file: %v", c.Name, err)
+		return
+	}
+	if err != nil {
+		// Each item landed so far is found again, so a second drop lands the rest.
+		h.cfg.Log.ErrorContext(r.Context(), "a drop stopped partway", "connector", c.Name, "error", err)
+		Refuse(w, http.StatusInternalServerError, CodeInternal,
+			"the server could not land every item the file holds, and dropping it again lands the rest")
 		return
 	}
 	keys := make([]string, len(landed))

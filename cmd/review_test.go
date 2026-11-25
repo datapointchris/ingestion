@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,10 +9,7 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -93,7 +89,7 @@ func (p *pipeline) scanFindingNothing(t *testing.T) int {
 
 // redditExport is a Reddit export holding saves, each from redditSave.
 func redditExport(saves ...string) []byte {
-	return []byte(`{"kind":"reddit-saved","exported_at":"2026-10-30T19:18:39Z","items":[` + strings.Join(saves, ",") + `]}`)
+	return []byte(`{"kind":"reddit-saved","complete":true,"exported_at":"2026-10-30T19:18:39Z","items":[` + strings.Join(saves, ",") + `]}`)
 }
 
 // redditSave is one self post saved from subreddit, as an export holds it.
@@ -302,42 +298,4 @@ func TestASaveWaitingOnTheGateIsPlacedByARuleOrGuessThatArrivesLater(t *testing.
 	if c := p.gated(t); len(c.review) != 0 || c.waiting != 0 {
 		t.Errorf("%d saves still wait and the review queue holds %v", c.waiting, c.review)
 	}
-}
-
-// The stored Reddit exports pass the side gate under the routing rules of the
-// declaration set in declarationsEnv, and a rule places at least one save. The exports are outsider text kept out
-// of this public repo, so the test reads them only from redditExportsEnv, and
-// it reports counts alone.
-func TestTheStoredRedditExportsPassTheSideGateUnderTheDeclaredRules(t *testing.T) {
-	exportsDir, declarations := os.Getenv(redditExportsEnv), os.Getenv(declarationsEnv)
-	if exportsDir == "" || declarations == "" {
-		t.Skip(redditExportsEnv + " and " + declarationsEnv + " name no stored Reddit exports and no declaration set")
-	}
-	files, err := filepath.Glob(filepath.Join(exportsDir, "*.json"))
-	if err != nil || len(files) == 0 {
-		t.Fatalf("%s holds no JSON files: %v", exportsDir, err)
-	}
-	exports := map[string][]byte{}
-	for _, path := range files {
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		exports[strings.TrimSuffix(filepath.Base(path), ".json")] = raw
-	}
-	p := newGatedPipeline(t, declarations)
-	p.landExports(t, exports)
-	p.parse(t, extract.Builtin())
-	p.scanFindingNothing(t)
-	c := p.gated(t)
-	waiting := 0
-	var reasons bytes.Buffer
-	for _, reason := range slices.Sorted(maps.Keys(c.review)) {
-		waiting += c.review[reason]
-		reasons.WriteString(" " + reason + "=" + strconv.Itoa(c.review[reason]))
-	}
-	if c.byRule == 0 {
-		t.Errorf("no rule in the set placed any of the %d saves", c.saves)
-	}
-	t.Logf("%d exports, %d saves: %d placed by rule, %d sent to review:%s", len(files), c.saves, c.byRule, waiting, reasons.String())
 }

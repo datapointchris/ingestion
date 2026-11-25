@@ -107,7 +107,7 @@ func TestASaveInTwoExportsLandsOnceUnderTheFirst(t *testing.T) {
 	ctx := t.Context()
 	l, st := newLander(t)
 	export := func(thread string) []byte {
-		return []byte(`{"kind":"reddit-saved","exported_at":"2026-10-30T19:18:39Z","items":[{"child":` + post("t3_aa1") + `,"thread":` + thread + `}]}`)
+		return []byte(`{"kind":"reddit-saved","complete":true,"exported_at":"2026-10-30T19:18:39Z","items":[{"child":` + post("t3_aa1") + `,"thread":` + thread + `}]}`)
 	}
 	first, err := redditexport.Land(ctx, l, redditexport.Drop{Connector: "reddit-exports", Name: "first", Raw: export(thread("t3_aa1"))})
 	if err != nil || len(first.Saves) != 1 || !first.Saves[0].ItemAdded {

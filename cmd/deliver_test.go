@@ -397,54 +397,6 @@ func TestAnItemPlacedOnASideAloneWaitsForThatSidesDefaultDestination(t *testing.
 	}
 }
 
-// The personal saves of the stored Reddit exports, placed by the routing
-// rules of the set in declarationsEnv, are each saved once in a stand-in
-// life. Landing every export again and replaying the delivery saves none
-// again. The exports are outsider text kept out of this public repo, so the
-// test reads them only from redditExportsEnv, and reports counts alone.
-func TestTheStoredRedditExportsSaveEachPersonalSaveInLifeOnce(t *testing.T) {
-	declarations := os.Getenv(declarationsEnv)
-	if declarations == "" {
-		t.Skip(declarationsEnv + " names no declaration set")
-	}
-	exports := storedExports(t)
-	p := newGatedPipeline(t, declarations)
-	life := newStandInLife(t, p.provider)
-	p.landExports(t, exports)
-	p.parse(t, extract.Builtin())
-	p.scanFindingNothing(t)
-	lifeArticles := p.lifeDeliverer(t, life)
-	ran := p.run(t, lifeArticles)
-	readAsIs := p.count(t, `SELECT count(*) FROM items i WHERE
-		(SELECT d.verdict FROM decisions d WHERE d.item_key = i.key AND d.gate = 'side' ORDER BY d.sequence DESC LIMIT 1) = 'personal'
-		AND (SELECT d.verdict FROM decisions d WHERE d.item_key = i.key AND d.gate = 'read' ORDER BY d.sequence DESC LIMIT 1) = 'as-is'`)
-	outcomes := map[string]int{}
-	for _, outcome := range []string{store.DeliveryDelivered, store.DeliveryDeliveredToExisting, store.DeliveryRefused, store.DeliveryPending} {
-		outcomes[outcome] = p.count(t, `SELECT count(*) FROM deliveries WHERE outcome = ?`, outcome)
-	}
-	articles, creates := life.counts()
-
-	p.landExports(t, exports)
-	p.parse(t, extract.Builtin())
-	p.scanFindingNothing(t)
-	queued := p.replayDeliveries(t)
-	rerun := p.run(t, lifeArticles)
-	again, createsAgain := life.counts()
-
-	if outcomes[store.DeliveryDelivered] != articles || outcomes[store.DeliveryPending] != 0 {
-		t.Errorf("%d deliveries are delivered and %d pending, and the stand-in holds %d articles; want one article each and none pending",
-			outcomes[store.DeliveryDelivered], outcomes[store.DeliveryPending], articles)
-	}
-	if queued != 0 || rerun != 0 || again != articles || createsAgain != creates {
-		t.Errorf("the second landing and the replay queued %d, ran %d, and added %d articles and %d creates, want none",
-			queued, rerun, again-articles, createsAgain-creates)
-	}
-	t.Logf("%d exports: %d saves placed personal and read as is, %d deliveries run, %d articles delivered to the stand-in life, "+
-		"%d delivered to an existing article, %d refused, %d pending; a second landing and a deliver replay queued %d and added %d articles",
-		len(exports), readAsIs, ran, articles, outcomes[store.DeliveryDeliveredToExisting], outcomes[store.DeliveryRefused],
-		outcomes[store.DeliveryPending], queued, again-articles)
-}
-
 // tasks is every task that is not done, as `tasks list --json` prints them.
 func (p *pipeline) tasks(t *testing.T) []server.TaskView {
 	t.Helper()

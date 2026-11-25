@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -21,10 +22,13 @@ import (
 // connectors apply sends the example set from a git checkout, and connectors
 // list prints its commit on every connector. A checkout behind the set in
 // force is refused until --replacing names it. A directory holding no
-// declarations exits 2. A set naming an unknown mode, zone or destination, or
-// a root the service does not hold, is refused whole, naming each invalid
-// declaration, exits 3, and leaves the set in force. A file dropped twice
-// lands once, and a copy under another name is one more sighting.
+// declarations exits 2. A set naming an unknown mode, zone or destination, a
+// root the service does not hold, or a zone its connector's format does not
+// land, is refused whole, naming each invalid declaration, exits 3, and leaves
+// the set in force. A Reddit export dropped into reddit-exports lands as one
+// item and a child per save. Dropped twice, it lands once, and a copy under
+// another name adds no item. An export the bookmarklet did not finish is
+// refused with the bookmarklet's error, and lands nothing.
 func TestConnectorsApplyTheExampleSetAndAnInvalidSetChangesNothing(t *testing.T) {
 	ctx := t.Context()
 	dir, books := t.TempDir(), t.TempDir()
@@ -126,6 +130,8 @@ func TestConnectorsApplyTheExampleSetAndAnInvalidSetChangesNothing(t *testing.T)
 	}{
 		{invalid, []string{"connector stream", "routing rule to-nowhere"}},
 		{map[string]string{"connectors/music.yml": "name: music\nmode: folder\nsource: local-music\nschedule: '@daily'\nzone: outside\nroot: music\n"}, []string{"connector music"}},
+		{map[string]string{"connectors/reddit-exports.yml": "name: reddit-exports\nmode: drop\nsource: reddit-bookmarklet-exports\n" +
+			"due_interval: 30d\nzone: owner\nformat: reddit-export\n"}, []string{"connector reddit-exports"}},
 	} {
 		edited := filepath.Join(t.TempDir(), "library")
 		if err := os.CopyFS(edited, os.DirFS(filepath.Join("..", "examples", "declarations"))); err != nil {
@@ -150,17 +156,32 @@ func TestConnectorsApplyTheExampleSetAndAnInvalidSetChangesNothing(t *testing.T)
 
 	export, copied := filepath.Join(dir, "export.json"), filepath.Join(dir, "export (1).json")
 	for _, file := range []string{export, copied} {
-		if err := os.WriteFile(file, []byte(`{"saves": []}`), 0o600); err != nil {
+		if err := os.WriteFile(file, redditExport(redditSave("t3_aa1", "Cooking"), redditSave("t3_bb2", "golang")), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
 	for _, drop := range []struct{ file, want string }{
-		{export, "Dropped export.json into reddit-exports: it holds 1 item, 1 of them new.\n"},
-		{export, "export.json was already dropped into reddit-exports, so nothing landed: it holds 1 item.\n"},
-		{copied, "Dropped export (1).json into reddit-exports: it holds 1 item, 0 of them new.\n"},
+		{export, "Dropped export.json into reddit-exports: it holds 3 items, 3 of them new.\n"},
+		{export, "export.json was already dropped into reddit-exports, so nothing landed: it holds 3 items.\n"},
+		{copied, "Dropped export (1).json into reddit-exports: it holds 3 items, 0 of them new.\n"},
 	} {
 		if out, err := runCLI(t, "items", "drop", drop.file, "--connector", "reddit-exports", "--config", config); err != nil || out != drop.want {
 			t.Errorf("items drop printed %q, %v; want %q", out, err, drop.want)
 		}
+	}
+	unfinished, reason := filepath.Join(dir, "reddit-saved-2026-11-25.json"), "/user/undefined/saved.json returned HTTP 404"
+	if err := os.WriteFile(unfinished, []byte(`{"kind":"reddit-saved","complete":false,"error":"`+reason+`",`+
+		`"exported_at":"2026-11-25T09:00:00Z","items":[`+redditSave("t3_cc3", "golang")+`]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = runCLI(t, "items", "drop", unfinished, "--connector", "reddit-exports", "--config", config)
+	var items int
+	if scanErr := st.Reader().QueryRowContext(ctx, `SELECT count(*) FROM items`).Scan(&items); scanErr != nil {
+		t.Fatal(scanErr)
+	}
+	var refused *refusal
+	if !errors.As(err, &refused) || refused.Code != server.CodeInvalidDrop || !strings.Contains(refused.Message, reason) || items != 3 {
+		t.Errorf("dropping an export the bookmarklet did not finish answered %v and left %d items, "+
+			"want it refused naming the bookmarklet's error and the 3 items alone", err, items)
 	}
 }
