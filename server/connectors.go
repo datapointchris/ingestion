@@ -388,7 +388,7 @@ func (h connectorHandlers) view(w http.ResponseWriter, r *http.Request, c connec
 		LastError: cur.LastError, LastErrorTS: cur.LastErrorTS, Failures: cur.Failures,
 		Items: n.Items, Waiting: n.Waiting, Review: n.Review, Failed: n.Failed,
 		Schedule: optional(c.Schedule), DueInterval: optional(c.DueInterval), Freshness: optional(c.Freshness),
-		DueAt: cur.DueAt, Overdue: connectors.Overdue(c, cur, h.cfg.Store.Now()),
+		DueAt: cur.DueAt, Overdue: connectors.Overdue(cur, h.cfg.Store.Now()),
 	}, true
 }
 

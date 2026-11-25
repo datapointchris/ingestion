@@ -72,7 +72,7 @@ func (s *Store) ReviewQueue(ctx context.Context) ([]Waiting, error) {
 	if err != nil {
 		return nil, err
 	}
-	records, err := s.recordsOf(ctx, items)
+	records, err := recordsOf(ctx, s.read, items)
 	if err != nil {
 		return nil, err
 	}

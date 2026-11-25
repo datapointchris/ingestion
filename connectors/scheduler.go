@@ -181,7 +181,7 @@ func (s *Scheduler) run(ctx context.Context, c Connector) (time.Time, error) {
 			return err
 		}
 		cur.DueAt = store.Stamp(due)
-		return tx.PutCursor(ctx, cur)
+		return putCursor(ctx, tx, c, cur)
 	})
 	if err != nil {
 		s.log.ErrorContext(ctx, "a connector's run failed", "connector", c.Name, "error", err)
@@ -195,7 +195,7 @@ func (s *Scheduler) run(ctx context.Context, c Connector) (time.Time, error) {
 				return err
 			}
 			cur.DueAt = store.Stamp(due)
-			return tx.PutCursor(ctx, cur)
+			return putCursor(ctx, tx, c, cur)
 		})
 		err = errors.Join(err, recorded)
 	}
@@ -242,7 +242,7 @@ func DueNow(ctx context.Context, tx *store.Tx, c Connector) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("connector %s: %w", c.Name, store.ErrNoCursor)
 	}
 	cur.DueAt = store.Stamp(tx.Now())
-	return tx.Now(), tx.PutCursor(ctx, cur)
+	return tx.Now(), putCursor(ctx, tx, c, cur)
 }
 
 func earliest(a, b time.Time) time.Time {

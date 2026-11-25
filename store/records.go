@@ -58,8 +58,10 @@ type Item struct {
 	ParentFlowID *string `json:"parent_flow_id"`
 	Title        *string `json:"title"`
 	URL          *string `json:"url"`
-	CreatedTS    string  `json:"created_ts"`
-	UpdatedTS    string  `json:"updated_ts"`
+	// Phase is left out of a put, so only the write's settling writes it.
+	Phase     *string `json:"phase,omitempty"`
+	CreatedTS string  `json:"created_ts"`
+	UpdatedTS string  `json:"updated_ts"`
 }
 
 // Sighting is one connector's arrival of an item.
@@ -234,9 +236,11 @@ const (
 
 // Cursor is one connector's position and when it is next due.
 type Cursor struct {
-	Connector        string  `json:"connector"`
-	Position         *string `json:"position"`
-	DueAt            string  `json:"due_at"`
+	Connector string  `json:"connector"`
+	Position  *string `json:"position"`
+	DueAt     string  `json:"due_at"`
+	// StaleAt is written by the connectors package, which holds the freshness.
+	StaleAt          *string `json:"stale_at"`
 	LastRunTS        *string `json:"last_run_ts"`
 	LastDeliveryTS   *string `json:"last_delivery_ts"`
 	LastError        *string `json:"last_error"`

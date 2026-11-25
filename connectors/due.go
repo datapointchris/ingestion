@@ -1,6 +1,7 @@
 package connectors
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -69,10 +70,28 @@ func NextDue(c Connector, cur store.Cursor) (time.Time, error) {
 	return since(cur.LastDeliveryTS).Add(interval).UTC(), nil
 }
 
-// Overdue says whether c is overdue at now. Any connector is, once its due
-// time passed with no delivery since. A poll or a folder declaring a
-// freshness also is once its last delivery is older than that.
-func Overdue(c Connector, cur store.Cursor, now time.Time) bool {
+// StaleAt is when c goes stale from its cursor: its last delivery plus its
+// freshness. It is nil where c declares no freshness or has delivered nothing.
+func StaleAt(c Connector, cur store.Cursor) *string {
+	if c.Freshness == "" || cur.LastDeliveryTS == nil {
+		return nil
+	}
+	freshness, err := ParseInterval(c.Freshness)
+	if err != nil {
+		return nil
+	}
+	delivered, err := time.Parse(store.StampLayout, *cur.LastDeliveryTS)
+	if err != nil {
+		return nil
+	}
+	at := store.Stamp(delivered.Add(freshness))
+	return &at
+}
+
+// Overdue says whether the connector whose cursor is cur is overdue at now:
+// once its due time passed with no delivery since, or once its stale time
+// passed.
+func Overdue(cur store.Cursor, now time.Time) bool {
 	var delivered time.Time
 	if cur.LastDeliveryTS != nil {
 		delivered, _ = time.Parse(store.StampLayout, *cur.LastDeliveryTS)
@@ -81,9 +100,20 @@ func Overdue(c Connector, cur store.Cursor, now time.Time) bool {
 	if err == nil && now.After(due) && delivered.Before(due) {
 		return true
 	}
-	if c.Freshness == "" || cur.LastDeliveryTS == nil {
+	if cur.StaleAt == nil {
 		return false
 	}
-	freshness, err := ParseInterval(c.Freshness)
-	return err == nil && now.Sub(delivered) > freshness
+	stale, err := time.Parse(store.StampLayout, *cur.StaleAt)
+	return err == nil && now.After(stale)
+}
+
+// putCursor writes cur with the stale time that c's freshness gives it. Each
+// cursor write in this package runs through it, so Overdue reads a current one.
+func putCursor(ctx context.Context, tx *store.Tx, c Connector, cur store.Cursor) error {
+	cur.StaleAt = StaleAt(c, cur)
+	return tx.PutCursor(ctx, cur)
+}
+
+func sameStamp(a, b *string) bool {
+	return (a == nil) == (b == nil) && (a == nil || *a == *b)
 }

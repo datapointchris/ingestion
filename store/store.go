@@ -7,7 +7,9 @@
 // converged on every open. A stage adds a table in its file and declares it in
 // Tables, and Open refuses a table that is in neither Tables nor unlogged.
 // Every write runs through Update, which stamps it later than every write
-// before it, so the outbox reads each table in commit order by stamp.
+// before it, so the outbox reads each table in commit order by stamp. Update
+// also settles the phase of each item the write touched, on the item's row, so
+// the outbox ships the phase that ItemRecords.Phase decides.
 package store
 
 import (
@@ -45,6 +47,9 @@ type Store struct {
 	read  *sql.DB
 	clock func() time.Time
 
+	// itemColumns names each logged table's column that names an item.
+	itemColumns []itemColumn
+
 	mu sync.Mutex
 	// last is the newest stamp taken, so the next is later.
 	last time.Time
@@ -60,7 +65,8 @@ func WithClock(clock func() time.Time) Option {
 }
 
 // Open opens the database at path, creating it and its directory where they
-// are missing, and converges every schema file and every logged table's guard.
+// are missing, and converges every schema file, every logged table's guard and
+// every item's phase.
 func Open(ctx context.Context, path string, options ...Option) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return nil, fmt.Errorf("create the store's directory: %w", err)
@@ -82,6 +88,10 @@ func Open(ctx context.Context, path string, options ...Option) (*Store, error) {
 	}
 	s.read.SetMaxOpenConns(readConnections)
 	if err := s.converge(ctx); err != nil {
+		_ = s.Close()
+		return nil, err
+	}
+	if err := s.convergePhases(ctx); err != nil {
 		_ = s.Close()
 		return nil, err
 	}
@@ -139,6 +149,9 @@ func (s *Store) converge(ctx context.Context) error {
 		}
 	}
 	if err := checkDeclared(ctx, declared); err != nil {
+		return err
+	}
+	if s.itemColumns, err = itemColumns(ctx, declared); err != nil {
 		return err
 	}
 	changes, err := planChanges(ctx, declared, s.write)
@@ -452,7 +465,7 @@ func (s *Store) stamp() time.Time {
 
 // Update runs fn inside one writing transaction, and commits what it wrote
 // only where fn returns nil. Every row fn writes carries the transaction's
-// stamp.
+// stamp. Before it commits, it settles the phase of each item that fn touched.
 func (s *Store) Update(ctx context.Context, fn func(*Tx) error) error {
 	sqlTx, err := s.write.BeginTx(ctx, nil)
 	if err != nil {
@@ -466,6 +479,10 @@ func (s *Store) Update(ctx context.Context, fn func(*Tx) error) error {
 		return fmt.Errorf("stamp a write: %w", err)
 	}
 	if err := fn(tx); err != nil {
+		_ = sqlTx.Rollback()
+		return err
+	}
+	if err := s.settleTouched(ctx, tx); err != nil {
 		_ = sqlTx.Rollback()
 		return err
 	}

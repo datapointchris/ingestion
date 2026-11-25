@@ -33,7 +33,7 @@ func (s *Store) Item(ctx context.Context, key string) (ItemRecords, error) {
 	if len(items) == 0 {
 		return ItemRecords{}, fmt.Errorf("%s: %w", key, ErrNoItem)
 	}
-	records, err := s.recordsOf(ctx, items)
+	records, err := recordsOf(ctx, s.read, items)
 	if err != nil {
 		return ItemRecords{}, err
 	}
@@ -79,12 +79,12 @@ func (s *Store) Items(ctx context.Context, page ItemPage) ([]ItemRecords, string
 		last := items[len(items)-1]
 		next = base64.RawURLEncoding.EncodeToString([]byte(last.CreatedTS + "\x00" + last.Key))
 	}
-	records, err := s.recordsOf(ctx, items)
+	records, err := recordsOf(ctx, s.read, items)
 	return records, next, err
 }
 
 // recordsOf reads every record of items, one query per table.
-func (s *Store) recordsOf(ctx context.Context, items []Item) ([]ItemRecords, error) {
+func recordsOf(ctx context.Context, db querier, items []Item) ([]ItemRecords, error) {
 	out := make([]ItemRecords, len(items))
 	if len(items) == 0 {
 		return out, nil
@@ -103,42 +103,42 @@ func (s *Store) recordsOf(ctx context.Context, items []Item) ([]ItemRecords, err
 	in := func(column string, n int) string {
 		return column + ` IN (?` + strings.Repeat(", ?", n-1) + `)`
 	}
-	sightings, err := readInto[Sighting](ctx, s.read, table("sightings"), in("item_key", len(keys))+` ORDER BY first_seen_ts, rowid`, keys...)
+	sightings, err := readInto[Sighting](ctx, db, table("sightings"), in("item_key", len(keys))+` ORDER BY first_seen_ts, rowid`, keys...)
 	if err != nil {
 		return nil, err
 	}
 	for _, r := range sightings {
 		out[at[r.ItemKey]].Sightings = append(out[at[r.ItemKey]].Sightings, r)
 	}
-	outputs, err := readInto[Output](ctx, s.read, table("outputs"), in("item_key", len(keys))+` ORDER BY created_ts, rowid`, keys...)
+	outputs, err := readInto[Output](ctx, db, table("outputs"), in("item_key", len(keys))+` ORDER BY created_ts, rowid`, keys...)
 	if err != nil {
 		return nil, err
 	}
 	for _, r := range outputs {
 		out[at[r.ItemKey]].Outputs = append(out[at[r.ItemKey]].Outputs, r)
 	}
-	decisions, err := readInto[Decision](ctx, s.read, table("decisions"), in("item_key", len(keys))+` ORDER BY gate, sequence`, keys...)
+	decisions, err := readInto[Decision](ctx, db, table("decisions"), in("item_key", len(keys))+` ORDER BY gate, sequence`, keys...)
 	if err != nil {
 		return nil, err
 	}
 	for _, r := range decisions {
 		out[at[r.ItemKey]].Decisions = append(out[at[r.ItemKey]].Decisions, r)
 	}
-	deliveries, err := readInto[Delivery](ctx, s.read, table("deliveries"), in("item_key", len(keys))+` ORDER BY destination`, keys...)
+	deliveries, err := readInto[Delivery](ctx, db, table("deliveries"), in("item_key", len(keys))+` ORDER BY destination`, keys...)
 	if err != nil {
 		return nil, err
 	}
 	for _, r := range deliveries {
 		out[at[r.ItemKey]].Deliveries = append(out[at[r.ItemKey]].Deliveries, r)
 	}
-	tasks, err := readInto[Task](ctx, s.read, table("tasks"), in("item_key", len(keys))+` ORDER BY created_ts, rowid`, keys...)
+	tasks, err := readInto[Task](ctx, db, table("tasks"), in("item_key", len(keys))+` ORDER BY created_ts, rowid`, keys...)
 	if err != nil {
 		return nil, err
 	}
 	for _, r := range tasks {
 		out[at[*r.ItemKey]].Tasks = append(out[at[*r.ItemKey]].Tasks, r)
 	}
-	counts, err := s.unitCounts(ctx, keys)
+	counts, err := unitCounts(ctx, db, keys)
 	if err != nil {
 		return nil, err
 	}
@@ -148,11 +148,11 @@ func (s *Store) recordsOf(ctx context.Context, items []Item) ([]ItemRecords, err
 	if len(sums) == 0 {
 		return out, nil
 	}
-	blobs, err := readInto[Blob](ctx, s.read, table("blobs"), in("sha256", len(sums)), sums...)
+	blobs, err := readInto[Blob](ctx, db, table("blobs"), in("sha256", len(sums)), sums...)
 	if err != nil {
 		return nil, err
 	}
-	homes, err := readInto[Home](ctx, s.read, table("homes"), in("blob_sha256", len(sums))+` ORDER BY found_ts, rowid`, sums...)
+	homes, err := readInto[Home](ctx, db, table("homes"), in("blob_sha256", len(sums))+` ORDER BY found_ts, rowid`, sums...)
 	if err != nil {
 		return nil, err
 	}

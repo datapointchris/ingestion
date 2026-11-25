@@ -4,7 +4,8 @@
 -- are values its connector read from the source's payload, such as a Reddit
 -- save's subreddit, which a routing rule matches. title, url, external_key,
 -- fields and path are outsider-written, so the outbox ships them as
--- ingestion.text.
+-- ingestion.text. An item's phase is what ItemRecords.Phase decides from its
+-- records, which every write that touches the item settles.
 
 CREATE TABLE IF NOT EXISTS items (
     key            TEXT PRIMARY KEY,
@@ -16,6 +17,7 @@ CREATE TABLE IF NOT EXISTS items (
     parent_flow_id TEXT,
     title          TEXT,
     url            TEXT,
+    phase          TEXT,
     created_ts     TEXT NOT NULL,
     updated_ts     TEXT NOT NULL
 );
