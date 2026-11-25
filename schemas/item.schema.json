@@ -80,10 +80,13 @@
             "items": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["rule", "severity"],
+              "required": ["rule", "severity", "unit", "offset", "length", "span"],
               "properties": {
                 "rule": {"type": "string"},
                 "severity": {"enum": ["info", "low", "medium", "high", "critical"]},
+                "unit": {"type": ["integer", "null"]},
+                "offset": {"description": "Bytes from the start of the unit the match starts in.", "type": "integer"},
+                "length": {"description": "The match's length in bytes, which its span may keep only the start of.", "type": "integer"},
                 "span": {"type": ["string", "null"]}
               }
             }

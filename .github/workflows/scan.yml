@@ -1,0 +1,42 @@
+name: Scan
+
+# The tests built with the yr tag, which run YARA-X's yr. They build the scan's
+# rules from Agent Threat Rules at its pinned commit, so a converter change
+# shows its kept and dropped counts in the run's log.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+
+  yr:
+    name: "Scan rules and the tests that run yr"
+    runs-on: ubuntu-26.04
+    steps:
+
+      - name: Check out the commit
+        uses: actions/checkout@v7
+
+      - name: Install the Go ./go.mod names
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: "./go.mod"
+          cache: true
+          cache-dependency-path: "./go.sum"
+
+      - name: Install yr and check out Agent Threat Rules
+        run: |
+          release/install-tools "$RUNNER_TEMP/bin" yr
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          release/download-atr-rules "$RUNNER_TEMP/atr"
+          echo "INGESTION_ATR_DIR=$RUNNER_TEMP/atr" >> "$GITHUB_ENV"
+
+      # The cmd tests that run yr carry Scan in their names, so the rest of
+      # that package, which validate.yml runs, does not run twice.
+      - run: go test -tags yr -v ./scan/...
+      - run: go test -tags yr -run Scan ./cmd/

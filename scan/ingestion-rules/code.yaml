@@ -1,0 +1,34 @@
+# Patterns are YARA-X regular expressions, matched without regard to case.
+title: "Code the item suggests"
+id: ingestion.code
+status: stable
+severity: info
+description: >
+  Lists each block of code an item carries: a fenced Markdown block, and an
+  HTML script tag. A finding is a list entry, not an attack.
+detection:
+  condition: any
+  conditions:
+    - field: content
+      operator: regex
+      value: '```[^`]{1,4000}```|~~~[^~]{1,4000}~~~'
+      description: "A fenced code block"
+    - field: content
+      operator: regex
+      value: '<script\b[^>]{0,300}>'
+      description: "An HTML script tag"
+test_cases:
+  true_positives:
+    - input: "Try this:\n\n```python\nimport os\nos.system('ls')\n```\n\nIt lists the files."
+      expected: triggered
+      description: "A fenced Python block"
+    - input: 'Paste <script src="https://example.com/x.js"></script> into the page.'
+      expected: triggered
+      description: "A script tag that loads code"
+  true_negatives:
+    - input: "Use three backticks to start a block, and indent the code inside."
+      expected: not_triggered
+      description: "Prose about code blocks"
+    - input: "I wrote some code today and the tests pass."
+      expected: not_triggered
+      description: "Prose about code"

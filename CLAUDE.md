@@ -26,7 +26,8 @@ package:
 | `landing` | an artifact's bytes written under their SHA-256 or referenced under a named root, the item and one sighting per connector, and the report of blobs and rows that disagree |
 | `redditexport` | the Reddit bookmarklet's export, as a store keeps it, split into one save each and landed as an item with a child per save |
 | `extract` | one extractor per media type, each writing versioned text and units |
-| `scan` | the scanner, run over parsed text and again over each suggestion, and its stored findings |
+| `isolatedprocess` | the one door that starts a program over outsider bytes, in a temporary directory of its own with an environment that holds no secret |
+| `scan` | the scanner, which runs YARA-X's `yr` over parsed text and again over each suggestion, its stored findings, and `build-rules`, which converts Agent Threat Rules and tests each by its own examples |
 | `qualitygate` | the model stage that reads an item's opening and answers its quality, genre, domains, themes, a one-line idea and a side guess |
 | `route` | the side gate and the read rule: a sighting's tags, then a rule, then the quality gate's guess above its confidence floor, else review |
 | `modelread` | the model stage that answers an item's note with a summary, a suggestion sentence, or both |
@@ -130,10 +131,17 @@ the prompt's version, and gets back the structured answer.
   uses.
 - **An extractor whose library is Python runs as a program in the worker image.** It lives in
   `extract.ProgramDir`, and `extract.Program` registers it. It reads the item's bytes on stdin
-  and writes one `{"label", "text"}` line per unit on stdout. It runs through
-  `extract/program.go` alone, whose environment carries none of the worker's secrets, because
-  the program reads outsider bytes. The worker marks itself undumpable for the same reason, so
-  the program cannot read the worker's environment through `/proc`.
+  and writes one `{"label", "text"}` line per unit on stdout. It runs through `isolatedprocess`
+  alone, as `yr` does, whose environment carries none of the worker's secrets, because the
+  program reads outsider bytes. The worker marks itself undumpable for the same reason, so the
+  program cannot read the worker's environment through `/proc`.
+- **The scan runs `yr` from the worker image over a parse's units, joined as the parse's text
+  joins them.** `release/download-atr-rules` pins Agent Threat Rules to a commit, and
+  `release/install-tools` pins `yr`. The image build runs `scan/build-rules`, which keeps a
+  converted rule only where `yr` compiles it and it passes its own examples, and counts each drop
+  by reason. Ingestion's own rules in `scan/ingestion-rules/` take ATR's shape and are written in
+  YARA-X's regex dialect. A scan's output carries the rules' version, so a new rule set replays
+  beside the old. A finding never drops an item, and its span ships only as outsider text.
 - **A parse's units are rows of `parse_units`, one per unit.** The parse's `outputs` row holds no
   text. Its whole text is the units joined by a blank line, so the text has one owner. A version
   whose parse is done keeps it, so a failed rerun of that version fails only its task.
@@ -147,6 +155,10 @@ the prompt's version, and gets back the structured answer.
 `go test -short ./...`, so a slow test checks `testing.Short()` and skips. A new test pins behavior
 that a user reaches and no other test already pins.
 
+A test that runs `yr` carries the `yr` build tag, and `scan.yml` runs those tests with the pinned
+`yr` and ATR checkout. Each test that reads real outsider text takes its directory from an
+environment variable and skips without it, and it reports counts and rule ids alone.
+
 ## Releasing
 
 A push to `main` runs `release.yml`. It validates through `validate.yml`, then go-semantic-release
@@ -157,7 +169,8 @@ settled enough to promise compatibility.
 A push that cut a version also builds the image `ghcr.io/datapointchris/ingestion:<version>`. It
 then pushes `deploy/` as the OCI artifact `ghcr.io/datapointchris/ingestion/manifests:<version>`,
 with that image pinned by digest, and signs both with cosign. `release/pin-manifests` writes the
-pinned copy, and `release/install-tools` installs kustomize, flux and cosign at pinned SHA-256s.
+pinned copy, and `release/install-tools` installs kustomize, flux, cosign and `yr` at pinned
+SHA-256s.
 
 ## Never write the breaking-change trailer in a commit message
 

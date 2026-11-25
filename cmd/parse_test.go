@@ -26,6 +26,7 @@ import (
 	"github.com/datapointchris/ingestion/extract"
 	"github.com/datapointchris/ingestion/landing"
 	"github.com/datapointchris/ingestion/redditexport"
+	"github.com/datapointchris/ingestion/scan"
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
 	"github.com/datapointchris/ingestion/worker"
@@ -68,8 +69,8 @@ func newPipeline(t *testing.T, extractors *extract.Registry) *pipeline {
 	gate := verifiedGate{provider.Verifier(t, "ingestion-cli-", "ingestion-svc-")}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	api := httptest.NewServer(server.Handler(server.Config{Store: st, Gate: gate, Issuer: provider.URL, Version: "test", Log: log},
-		server.TaskRoutes(st, log), server.BlobRoutes(lander, log), server.ItemRoutes(st, log),
-		server.ReplayRoutes(st, map[string]server.Replayable{store.StageParse: extractors.Replayable()}, log)))
+		server.TaskRoutes(st, log, scan.QueueAfterParse), server.BlobRoutes(lander, log), server.ItemRoutes(st, log),
+		server.ReplayRoutes(st, map[string]server.Replayable{store.StageParse: extractors.Replayable(), store.StageScan: scan.Replayable(extractors)}, log)))
 	t.Cleanup(api.Close)
 	person := provider.Person(t, "ingestion-cli-test", "person")
 	tokenFile, config := filepath.Join(dir, "token.json"), filepath.Join(dir, "config.toml")
@@ -96,10 +97,17 @@ func newPipeline(t *testing.T, extractors *extract.Registry) *pipeline {
 // worker does, and counts the tasks it ran.
 func (p *pipeline) parse(t *testing.T, extractors *extract.Registry) int {
 	t.Helper()
+	return p.run(t, extractors.Handlers(p.worker, slog.New(slog.NewTextHandler(io.Discard, nil)))...)
+}
+
+// run runs every queued task that one of handlers claims, as a worker does,
+// and counts the tasks it ran.
+func (p *pipeline) run(t *testing.T, all ...worker.Handler) int {
+	t.Helper()
 	ctx := t.Context()
 	handlers := map[string]worker.Handler{}
 	var capabilities []string
-	for _, h := range extractors.Handlers(p.worker, slog.New(slog.NewTextHandler(io.Discard, nil))) {
+	for _, h := range all {
 		handlers[h.Capability()] = h
 		capabilities = append(capabilities, h.Capability())
 	}
@@ -411,6 +419,15 @@ func (p *pipeline) phase(t *testing.T, key string) string {
 // out of this public repo, so the test reads them only from redditExportsEnv,
 // and it reports counts alone.
 func TestTheStoredRedditExportsParseOnceEachSaveAndReplayBeside(t *testing.T) {
+	exports := storedExports(t)
+	saves, units := parsedThenReplayed(t, exports)
+	t.Logf("%d exports, %d saves, each parsed by thread-text v1 and v2, %d units at v1", len(exports), saves, units)
+}
+
+// storedExports reads each stored Reddit export under redditExportsEnv by its
+// name, and skips the test where the variable names no directory.
+func storedExports(t *testing.T) map[string][]byte {
+	t.Helper()
 	dir := os.Getenv(redditExportsEnv)
 	if dir == "" {
 		t.Skip(redditExportsEnv + " names no directory of stored Reddit exports")
@@ -427,6 +444,5 @@ func TestTheStoredRedditExportsParseOnceEachSaveAndReplayBeside(t *testing.T) {
 		}
 		exports[strings.TrimSuffix(filepath.Base(path), ".json")] = raw
 	}
-	saves, units := parsedThenReplayed(t, exports)
-	t.Logf("%d exports, %d saves, each parsed by thread-text v1 and v2, %d units at v1", len(files), saves, units)
+	return exports
 }

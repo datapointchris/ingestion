@@ -127,15 +127,18 @@
         "run_id": {"description": "The run that answered the dispatch.", "type": ["string", "null"]},
         "tokens": {"anyOf": [{"$ref": "#/$defs/tokens"}, {"type": "null"}]},
         "findings": {
-          "description": "The scan's findings, each with its rule and severity. Each matched span ships as ingestion.text.",
+          "description": "The scan's findings, each with its rule, its severity and where its match sits, in the order the matches sit in the text. A done scan that found nothing holds an empty list. Each matched span ships as ingestion.text.",
           "type": ["array", "null"],
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["rule", "severity"],
+            "required": ["rule", "severity", "unit", "offset", "length"],
             "properties": {
-              "rule": {"description": "The rule's id: a converted ATR rule's, or one of ingestion's own rules'.", "type": "string"},
-              "severity": {"enum": ["info", "low", "medium", "high", "critical"]}
+              "rule": {"description": "The rule's id: a converted ATR rule's, such as ATR-2026-00001, or one of ingestion's own, such as ingestion.command.", "type": "string"},
+              "severity": {"enum": ["info", "low", "medium", "high", "critical"]},
+              "unit": {"description": "The unit of the parse that the match starts in, and null for a scan of one sentence.", "type": ["integer", "null"]},
+              "offset": {"description": "Where the match starts, in bytes from its unit's start, or from the sentence's.", "type": "integer", "minimum": 0},
+              "length": {"description": "The match's length in bytes. Its span keeps at most the first 1024.", "type": "integer", "minimum": 0}
             }
           }
         },

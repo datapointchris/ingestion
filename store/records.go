@@ -103,10 +103,15 @@ type Tokens struct {
 	Output        int64 `json:"output"`
 }
 
-// Finding is one scanner rule's match, without its span.
+// Finding is one scanner rule's match, without its span: where it starts and
+// how many bytes it covers. Unit names the parse's unit it starts in, and its
+// offset counts from that unit's start. A scan of one sentence names no unit.
 type Finding struct {
 	Rule     string `json:"rule"`
 	Severity string `json:"severity"`
+	Unit     *int   `json:"unit"`
+	Offset   int    `json:"offset"`
+	Length   int    `json:"length"`
 }
 
 // Unit is one part of a parse, such as a post or a page, numbered from 1.

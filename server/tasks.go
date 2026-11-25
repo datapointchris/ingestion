@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -88,23 +89,28 @@ type ReportRequest struct {
 // item and stage from the task and stamps the row, so a column the store adds
 // for itself never changes what a worker sends.
 type ReportOutput struct {
-	Producer        string          `json:"producer"`
-	ProducerVersion string          `json:"producer_version"`
-	Lens            *string         `json:"lens,omitempty"`
-	LensVersion     *string         `json:"lens_version,omitempty"`
-	State           string          `json:"state"`
-	BlobSHA256      *string         `json:"blob_sha256,omitempty"`
-	DispatchID      *string         `json:"dispatch_id,omitempty"`
-	RunID           *string         `json:"run_id,omitempty"`
-	Tokens          *store.Tokens   `json:"tokens,omitempty"`
-	Findings        []store.Finding `json:"findings,omitempty"`
-	Quality         *int            `json:"quality,omitempty"`
-	SideGuess       *string         `json:"side_guess,omitempty"`
-	SideConfidence  *float64        `json:"side_confidence,omitempty"`
+	Producer        string        `json:"producer"`
+	ProducerVersion string        `json:"producer_version"`
+	Lens            *string       `json:"lens,omitempty"`
+	LensVersion     *string       `json:"lens_version,omitempty"`
+	State           string        `json:"state"`
+	BlobSHA256      *string       `json:"blob_sha256,omitempty"`
+	DispatchID      *string       `json:"dispatch_id,omitempty"`
+	RunID           *string       `json:"run_id,omitempty"`
+	Tokens          *store.Tokens `json:"tokens,omitempty"`
+	// InputProducer and InputVersion name the parse that a later stage read.
+	InputProducer *string `json:"input_producer,omitempty"`
+	InputVersion  *string `json:"input_version,omitempty"`
+	// Findings and Spans are a scan's. A scan that found nothing sends an
+	// empty list, which reads apart from a stage that sends none.
+	Findings       []store.Finding `json:"findings"`
+	Quality        *int            `json:"quality,omitempty"`
+	SideGuess      *string         `json:"side_guess,omitempty"`
+	SideConfidence *float64        `json:"side_confidence,omitempty"`
 	// Units are a parse's, numbered from 1 in order, which the service writes
 	// as rows of parse_units under the producer and its version.
 	Units  []store.Unit    `json:"units,omitempty"`
-	Spans  []store.Span    `json:"spans,omitempty"`
+	Spans  []store.Span    `json:"spans"`
 	Answer json.RawMessage `json:"answer,omitempty"`
 	Error  *string         `json:"error,omitempty"`
 }
@@ -113,7 +119,8 @@ type ReportOutput struct {
 func (o ReportOutput) output(task store.Task) store.Output {
 	return store.Output{
 		ItemKey: task.ItemKey, Stage: task.Stage, Producer: o.Producer, ProducerVersion: o.ProducerVersion,
-		Lens: o.Lens, LensVersion: o.LensVersion, State: o.State, BlobSHA256: o.BlobSHA256,
+		Lens: o.Lens, LensVersion: o.LensVersion, InputProducer: o.InputProducer, InputVersion: o.InputVersion,
+		State: o.State, BlobSHA256: o.BlobSHA256,
 		DispatchID: o.DispatchID, RunID: o.RunID, Tokens: o.Tokens, Findings: o.Findings, Quality: o.Quality,
 		SideGuess: o.SideGuess, SideConfidence: o.SideConfidence, Spans: o.Spans, Answer: o.Answer, Error: o.Error,
 	}
@@ -153,17 +160,24 @@ type TasksAnswer struct {
 // workers that stopped outnumber the live ones within a few releases.
 const WorkersHeardWithin = 10 * time.Minute
 
-// TaskRoutes are the routes for a worker to lease tasks through, and the
-// list for a person to read.
-func TaskRoutes(st *store.Store, log *slog.Logger) Routes {
+// QueueNext queues the stage that follows task's, in the write that ends
+// task, from the outputs that its report wrote. Each one checks the task's
+// stage itself, so a stage's own package says what follows it.
+type QueueNext func(ctx context.Context, tx *store.Tx, task store.Task, outputs []store.Output) error
+
+// TaskRoutes are the routes for a worker to lease tasks through and read a
+// task's input, and the list for a person to read. Each of next runs in the
+// write that ends a task.
+func TaskRoutes(st *store.Store, log *slog.Logger, next ...QueueNext) Routes {
 	if log == nil {
 		log = slog.Default()
 	}
-	h := taskHandlers{store: st, log: log}
+	h := taskHandlers{store: st, log: log, next: next}
 	return func(r *Router) {
 		r.Handle(RouteTaskClaims, h.claim)
 		r.Handle(RouteTaskHeartbeats, h.heartbeat)
 		r.Handle(RouteTaskReports, h.report)
+		r.Handle(RouteTaskParse, h.parse)
 		r.Handle(RouteTasks, h.list)
 	}
 }
@@ -171,6 +185,7 @@ func TaskRoutes(st *store.Store, log *slog.Logger) Routes {
 type taskHandlers struct {
 	store *store.Store
 	log   *slog.Logger
+	next  []QueueNext
 }
 
 func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
@@ -246,8 +261,15 @@ func (h taskHandlers) report(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	task, err := h.store.Report(r.Context(), r.PathValue("id"), body.Token, outcome, func(tx *store.Tx, task store.Task) error {
+		outputs := make([]store.Output, 0, len(body.Outputs))
 		for _, o := range body.Outputs {
 			if err := tx.PutOutputWithUnits(r.Context(), o.output(task), o.Units); err != nil {
+				return err
+			}
+			outputs = append(outputs, o.output(task))
+		}
+		for _, next := range h.next {
+			if err := next(r.Context(), tx, task, outputs); err != nil {
 				return err
 			}
 		}
@@ -258,6 +280,31 @@ func (h taskHandlers) report(w http.ResponseWriter, r *http.Request) {
 	}
 	h.log.Info("a task ended", "task", task.ID, "item", task.ItemKey, "stage", task.Stage, "state", task.State, "outputs", len(body.Outputs))
 	JSON(w, http.StatusOK, viewOf(task, h.store.Now()))
+}
+
+// parse answers the newest done parse of the item whose task the caller
+// leases, under the lease's token in the token query, so a worker reads the
+// input of a task it holds and of no other.
+func (h taskHandlers) parse(w http.ResponseWriter, r *http.Request) {
+	token, err := strconv.ParseInt(r.URL.Query().Get("token"), 10, 64)
+	if err != nil {
+		Refuse(w, http.StatusBadRequest, CodeInvalidQuery, "token is the lease token of the task, not %q", r.URL.Query().Get("token"))
+		return
+	}
+	task, err := h.store.Leased(r.Context(), r.PathValue("id"), token)
+	if h.leaseRefused(w, r, err) {
+		return
+	}
+	p, err := h.store.Parse(r.Context(), task.ItemKey, store.ParsePick{})
+	switch {
+	case errors.Is(err, store.ErrNoParse):
+		Refuse(w, http.StatusNotFound, CodeParseNotFound, "%s holds no done parse", task.ItemKey)
+		return
+	case err != nil:
+		h.internal(w, r, "read a task's parse", err)
+		return
+	}
+	JSON(w, http.StatusOK, parseAnswer(p))
 }
 
 func (h taskHandlers) list(w http.ResponseWriter, r *http.Request) {

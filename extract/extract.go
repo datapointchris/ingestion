@@ -5,7 +5,7 @@
 //
 // An extractor registers by joining builtin. One written in Go sets Extract.
 // One whose library is not Go is a Program from the worker image, run through
-// this package's one subprocess door. Each output is keyed by item, extractor
+// isolatedprocess. Each output is keyed by item, extractor
 // and version, so a changed extractor takes a new version and its outputs
 // write beside the old.
 package extract

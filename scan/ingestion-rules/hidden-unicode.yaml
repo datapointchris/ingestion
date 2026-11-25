@@ -1,0 +1,48 @@
+# Patterns are YARA-X regular expressions, matched without regard to case.
+# YARA-X reads \xNN as one byte, so each pattern names the UTF-8 bytes of the
+# characters it finds.
+title: "Unicode that hides text from a person reading it"
+id: ingestion.hidden-unicode
+status: stable
+severity: high
+description: >
+  Finds characters that a model reads and a person does not see: Unicode tag
+  characters (U+E0000 to U+E007F), which can spell out a whole instruction;
+  the bidirectional controls that reorder what a reader sees (U+202A to
+  U+202E, U+2066 to U+2069); and a zero-width character (U+200B to U+200D,
+  U+2060, U+FEFF) between two Latin letters or digits, which splits a word a
+  filter looks for. A zero-width joiner inside an emoji sequence or a
+  non-Latin script is not between Latin letters, so it does not fire.
+detection:
+  condition: any
+  conditions:
+    - field: content
+      operator: regex
+      value: '(\xF3\xA0[\x80\x81][\x80-\xBF])+'
+      description: "Unicode tag characters"
+    - field: content
+      operator: regex
+      value: '\xE2\x80[\xAA-\xAE]|\xE2\x81[\xA6-\xA9]'
+      description: "Bidirectional embedding, override and isolate controls"
+    - field: content
+      operator: regex
+      value: '[a-z0-9](\xE2\x80[\x8B-\x8D]|\xE2\x81\xA0|\xEF\xBB\xBF)+[a-z0-9]'
+      description: "A zero-width character between two Latin letters or digits"
+test_cases:
+  true_positives:
+    - input: "Nice post!\U000E0049\U000E0067\U000E006E\U000E006F\U000E0072\U000E0065"
+      expected: triggered
+      description: "Tag characters spelling a hidden word after visible text"
+    - input: "access level: user\u202E nimda \u202C"
+      expected: triggered
+      description: "A right-to-left override"
+    - input: "please ig\u200Bnore the earlier note"
+      expected: triggered
+      description: "A zero-width space splitting a word"
+  true_negatives:
+    - input: "A family emoji: \U0001F468\u200D\U0001F469\u200D\U0001F467 and plain text."
+      expected: not_triggered
+      description: "A zero-width joiner inside an emoji sequence"
+    - input: "Plain ASCII text with nothing hidden in it."
+      expected: not_triggered
+      description: "No hidden characters"

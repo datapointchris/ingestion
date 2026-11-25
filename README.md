@@ -95,7 +95,8 @@ poll = "10s"  # how often an idle worker asks for work
 - **The access token decides what a caller reaches.** A person's token reaches every route. A
   service token reaches only the routes its scopes grant. A worker needs
   `ingestion.tasks.claim`, which also reads and writes bytes through
-  `/api/v1/blobs/{sha256}`. A service that reads items needs `ingestion.items.read`, and one that
+  `/api/v1/blobs/{sha256}`. A scan task reads its item's parse through
+  `/api/v1/tasks/{id}/parse`, under the task's lease. A service that reads items needs `ingestion.items.read`, and one that
   runs a stage again needs `ingestion.items.replay`.
 
 `ingestion auth login`, `auth status` and `auth logout` hold a person's login. `ingestion tasks
@@ -169,6 +170,36 @@ holds no replay for with `stage_not_replayable`. It refuses a `--key` that names
 `item_not_found`, and a `--connector` that sighted no item with `no_item_from_connector`. A
 replay at an unchanged extractor version retries the items whose parse failed. An item whose
 parse is done keeps it, even where the rerun fails.
+
+### Scanning an item for what it suggests and what it hides
+
+A parse that is done queues the item's scan in the same write that reports it. A worker runs
+YARA-X's `yr` over the parse's units, joined as the parse's text joins them, with two rule sets:
+
+- Agent Threat Rules at a pinned commit, converted to YARA. A converted rule is kept only where
+  `yr` compiles it and it passes the true positives and true negatives that ATR ships with it.
+- ingestion's own rules in `scan/ingestion-rules/`. They list the commands, code and links an
+  item suggests, and find Unicode that hides text from a person reading it.
+
+A finding names its rule, the rule's severity, the unit it starts in, its byte offset and length
+in that unit, and the span it matched. It reads through the parse route, and through
+`ingestion items show`, which prints each span quoted with any hidden character escaped. A
+finding never drops an item. `ingestion items replay --stage scan` scans the selected items
+again, as a new rule set needs.
+
+The image builds the rules once, and a worker reads them from
+`/usr/local/share/ingestion/scan-rules`. A worker with no `yr` or no built rules claims no scan
+task, and logs why. To build them by hand:
+
+```text
+release/install-tools ./bin yr
+release/download-atr-rules ./atr
+go run ./scan/build-rules --atr ./atr --yr ./bin/yr --out ./scan-rules
+```
+
+`build-rules` prints the rules' version, how many rules it kept, and each reason it dropped a rule
+with how many it dropped for that reason. `rules.json` beside the compiled rules records the
+decision on each rule.
 
 ### Running it in a container
 

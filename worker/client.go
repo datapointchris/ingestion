@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -64,6 +65,37 @@ func (c *Client) Heartbeat(ctx context.Context, id string, req server.HeartbeatR
 // Report ends the lease on task id.
 func (c *Client) Report(ctx context.Context, id string, req server.ReportRequest) error {
 	return c.post(ctx, "/api/v1/tasks/"+url.PathEscape(id)+"/reports", req, nil)
+}
+
+// TaskParse reads the newest done parse of the item that task id is for. The
+// worker names its lease by token, and the service answers only while that
+// token holds the lease, refusing with ErrStaleLease otherwise. A task whose
+// item holds no done parse answers a StatusError coded parse_not_found.
+func (c *Client) TaskParse(ctx context.Context, id string, token int64) (server.ParseAnswer, error) {
+	ctx, cancel := context.WithTimeout(ctx, blobTimeout)
+	defer cancel()
+	path := "/api/v1/tasks/" + url.PathEscape(id) + "/parse"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path+"?token="+strconv.FormatInt(token, 10), http.NoBody)
+	if err != nil {
+		return server.ParseAnswer{}, err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return server.ParseAnswer{}, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusConflict:
+		return server.ParseAnswer{}, fmt.Errorf("GET %s: %w", path, ErrStaleLease)
+	default:
+		return server.ParseAnswer{}, refusal(http.MethodGet, path, resp)
+	}
+	var answer server.ParseAnswer
+	if err := json.NewDecoder(resp.Body).Decode(&answer); err != nil {
+		return answer, fmt.Errorf("read the answer to GET %s: %w", path, err)
+	}
+	return answer, nil
 }
 
 // blobTimeout bounds one blob's transfer, which may be a whole book.
