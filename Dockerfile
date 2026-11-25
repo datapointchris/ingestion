@@ -20,6 +20,19 @@ RUN --mount=type=cache,target=/go/pkg/mod \
       -ldflags "-s -w -X github.com/datapointchris/ingestion/cmd.version=${VERSION} -X github.com/datapointchris/ingestion/cmd.commit=${COMMIT} -X github.com/datapointchris/ingestion/cmd.date=${DATE}" \
       -o /out/ingestion .
 
+# The scan's rules: Agent Threat Rules at the commit download-atr-rules pins,
+# converted by build-rules with the yr that install-tools pins, beside
+# ingestion's own. ATR is MIT licensed, so its license ships with the rules.
+RUN --mount=type=bind,source=release,target=/src/release \
+    release/install-tools /usr/local/bin yr \
+    && release/download-atr-rules /atr
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=bind,target=. \
+    go build -o /usr/local/bin/build-rules ./scan/build-rules \
+    && build-rules --atr /atr --yr /usr/local/bin/yr --out /out/scan-rules \
+    && cp /atr/LICENSE /out/scan-rules/ATR-LICENSE
+
 # Debian rather than a static base, because the worker runs extractors whose
 # libraries are Python as programs in this image.
 FROM debian:trixie-slim
@@ -38,6 +51,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     && install -d -o ingestion -g ingestion /var/lib/ingestion /etc/ingestion
 
 COPY --from=build /out/ingestion /usr/local/bin/ingestion
+# Where scan.Yr and scan.RulesDir name them.
+COPY --from=build /usr/local/bin/yr /usr/local/bin/yr
+COPY --from=build /out/scan-rules /usr/local/share/ingestion/scan-rules
 
 # Numeric, so a pod with runAsNonRoot can verify it without reading /etc/passwd.
 USER 10600:10600

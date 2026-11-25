@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Checks out Agent Threat Rules at the commit pinned here, for build-rules to
+# convert.
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: download-atr-rules <directory>
+
+Checks out Agent Threat Rules at the commit pinned here into <directory>, which
+must not exist yet. `go run ./scan/build-rules --atr <directory>` converts it.
+
+A bump edits the commit. The rules' version names the commit, so findings made
+under the new rules replay beside the old.
+EOF
+}
+
+repository=https://github.com/Agent-Threat-Rule/agent-threat-rules.git
+commit=84a377d51d2b36e7d339120ce60da626104ca3bd
+
+if [ $# -ne 1 ]; then
+  usage >&2
+  exit 2
+fi
+directory=$1
+if [ -e "$directory" ]; then
+  printf 'download-atr-rules: %s already exists\n' "$directory" >&2
+  exit 1
+fi
+
+git init --quiet "$directory"
+git -C "$directory" fetch --quiet --depth 1 "$repository" "$commit"
+git -C "$directory" -c advice.detachedHead=false checkout --quiet FETCH_HEAD
+echo "checked out Agent Threat Rules at $commit"

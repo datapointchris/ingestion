@@ -16,6 +16,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/datapointchris/ingestion/extract"
+	"github.com/datapointchris/ingestion/scan"
 	"github.com/datapointchris/ingestion/worker"
 )
 
@@ -28,7 +29,7 @@ const (
 // workerHandlers lists the stage handlers for a worker to run. A stage whose work
 // runs in a worker adds its handler here.
 func workerHandlers(client *worker.Client, log *slog.Logger) []worker.Handler {
-	return extract.Builtin().Handlers(client, log)
+	return append(extract.Builtin().Handlers(client, log), scan.Handlers(client, log)...)
 }
 
 var workerCmd = &cobra.Command{

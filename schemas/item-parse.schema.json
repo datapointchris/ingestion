@@ -33,15 +33,10 @@
     "findings": {
       "type": "array",
       "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["rule", "severity", "span"],
-        "properties": {
-          "rule": {"type": "string"},
-          "severity": {"enum": ["info", "low", "medium", "high", "critical"]},
-          "unit": {"type": ["integer", "null"]},
-          "span": {"type": "string"}
-        }
+        "$ref": "ingestion-record.schema.json#/$defs/finding",
+        "required": ["span"],
+        "properties": {"span": {"description": "The matched text, at most its first 1024 bytes.", "type": "string"}},
+        "unevaluatedProperties": false
       }
     }
   }

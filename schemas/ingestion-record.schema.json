@@ -32,6 +32,19 @@
     "sha256": {"description": "A SHA-256, in lowercase hex.", "type": "string", "pattern": "^[0-9a-f]{64}$"},
     "stage": {"description": "A stage that writes an output or holds a task. A poll's task fetches a connector's source before any item lands.", "enum": ["poll", "land", "parse", "scan", "quality", "model-read", "deliver"]},
     "timestamp": {"type": "string", "format": "date-time"},
+    "severity": {"description": "A scan finding's severity, from least to most severe.", "enum": ["info", "low", "medium", "high", "critical"]},
+    "finding": {
+      "description": "One scan finding without its span: its rule, its severity and where its match sits.",
+      "type": "object",
+      "required": ["rule", "severity", "unit", "offset", "length"],
+      "properties": {
+        "rule": {"description": "The rule's id: a converted ATR rule's, such as ATR-2026-00001, or one of ingestion's own, such as ingestion.command.", "type": "string"},
+        "severity": {"$ref": "#/$defs/severity"},
+        "unit": {"description": "The unit of the parse that the match starts in, and null for a text that belongs to no parse.", "type": ["integer", "null"]},
+        "offset": {"description": "Where the match starts, in bytes from its unit's start, or from the text's.", "type": "integer", "minimum": 0},
+        "length": {"description": "The match's length in bytes. Its span keeps at most the first 1024.", "type": "integer", "minimum": 0}
+      }
+    },
     "tokens": {
       "description": "A model run's tokens by kind.",
       "type": "object",
@@ -129,17 +142,9 @@
         "run_id": {"description": "The run that answered the dispatch.", "type": ["string", "null"]},
         "tokens": {"anyOf": [{"$ref": "#/$defs/tokens"}, {"type": "null"}]},
         "findings": {
-          "description": "The scan's findings, each with its rule and severity. Each matched span ships as ingestion.text.",
+          "description": "The scan's findings, in the order the matches sit in the text. A done scan that found nothing holds an empty list. Each matched span ships as ingestion.text.",
           "type": ["array", "null"],
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["rule", "severity"],
-            "properties": {
-              "rule": {"description": "The rule's id: a converted ATR rule's, or one of ingestion's own rules'.", "type": "string"},
-              "severity": {"enum": ["info", "low", "medium", "high", "critical"]}
-            }
-          }
+          "items": {"$ref": "#/$defs/finding", "unevaluatedProperties": false}
         },
         "quality": {"description": "The quality gate's score.", "type": ["integer", "null"], "minimum": 0, "maximum": 10},
         "side_guess": {"description": "The quality gate's guess at the side.", "enum": ["personal", "fleet", "unsure", null]},

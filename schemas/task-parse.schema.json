@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/datapointchris/ingestion/schemas/task-parse.schema.json",
+  "title": "A leased task's parse, as its units",
+  "description": "What GET /api/v1/tasks/{id}/parse answers the worker whose lease token names the task: the newest done parse of the task's item. The parse's whole text is its units joined by a blank line, so the answer carries the units alone.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "key", "extractor", "extractor_version", "units"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "key": {"type": "string"},
+    "extractor": {"type": "string"},
+    "extractor_version": {"type": "string"},
+    "units": {"$ref": "item-parse.schema.json#/properties/units"}
+  }
+}
