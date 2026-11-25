@@ -1,0 +1,144 @@
+# ingestion's service: the one writer of the SQLite store, behind a Service.
+#
+# The cluster supplies what this directory does not create:
+#
+# - A ConfigMap named ingestion-config, whose config.toml key is the config
+#   file. serve reads its issuer and its [serve] table. records_otlp_url names
+#   the outbox's collector, and public_url names the API's public address.
+# - Node placement, by a patch on this StatefulSet.
+# - A route to the Service for each caller outside the namespace.
+# - A NetworkPolicy for each egress: the identity provider and the collector.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ingestion-serve
+  labels:
+    app.kubernetes.io/instance: ingestion-serve
+    app.kubernetes.io/component: serve
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ingestion-serve
+  labels:
+    app.kubernetes.io/instance: ingestion-serve
+    app.kubernetes.io/component: serve
+spec:
+  selector:
+    app.kubernetes.io/name: ingestion
+    app.kubernetes.io/instance: ingestion-serve
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+# A StatefulSet of one, because a SQLite file takes one writer. A Deployment
+# replaces a deleted pod while the old one is still terminating, and
+# ReadWriteOnce lets both mount the volume on one node.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ingestion-serve
+  labels:
+    app.kubernetes.io/instance: ingestion-serve
+    app.kubernetes.io/component: serve
+  annotations:
+    kubernetes.io/description: ingestion's service, holding each item's records in SQLite, leasing tasks to workers and shipping every change
+spec:
+  replicas: 1
+  serviceName: ingestion-serve
+  # The default, OrderedReady, holds a rollout until the current pod is Ready,
+  # so a release whose service crashes at start would block the next release.
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ingestion
+      app.kubernetes.io/instance: ingestion-serve
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: ingestion-serve
+        app.kubernetes.io/component: serve
+    spec:
+      serviceAccountName: ingestion-serve
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10600
+        runAsGroup: 10600
+        fsGroup: 10600
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      # Above the 20 seconds serve gives requests to finish.
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: serve
+          image: ingestion
+          imagePullPolicy: IfNotPresent
+          args: [serve]
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            # The outbox names the node in each record's resource.
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          # /ready answers 503 until the store answers and the identity
+          # provider's keys are read.
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 20
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/ingestion
+            - name: config
+              mountPath: /etc/ingestion
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: ingestion-config
+        - name: tmp
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: state
+        labels:
+          app.kubernetes.io/name: ingestion
+          app.kubernetes.io/instance: ingestion-serve
+          app.kubernetes.io/component: serve
+          app.kubernetes.io/part-of: ingestion
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 10Gi
