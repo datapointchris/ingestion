@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/datapointchris/ingestion/store"
@@ -21,8 +22,10 @@ const (
 	minLease     = 10 * time.Second
 	maxLease     = time.Hour
 	maxClaim     = 50
-	maxListed    = 1000
 )
+
+// MaxListed is the most tasks one list answers.
+const MaxListed = 1000
 
 // ClaimRequest is a worker asking for up to Max tasks whose capability it
 // holds, each leased for LeaseSeconds.
@@ -72,7 +75,43 @@ type ReportRequest struct {
 	Outcome           string         `json:"outcome"`
 	Error             *string        `json:"error,omitempty"`
 	RetryAfterSeconds int            `json:"retry_after_seconds,omitempty"`
-	Outputs           []store.Output `json:"outputs,omitempty"`
+	Outputs           []ReportOutput `json:"outputs,omitempty"`
+}
+
+// ReportOutput is one output a worker reports: each field of an outputs row
+// that the stage's work decides. The service takes the item and stage from
+// the task and stamps the row, so a column the store adds for itself never
+// changes what a worker sends.
+type ReportOutput struct {
+	Producer        string          `json:"producer"`
+	ProducerVersion string          `json:"producer_version"`
+	Lens            *string         `json:"lens,omitempty"`
+	LensVersion     *string         `json:"lens_version,omitempty"`
+	State           string          `json:"state"`
+	BlobSHA256      *string         `json:"blob_sha256,omitempty"`
+	DispatchID      *string         `json:"dispatch_id,omitempty"`
+	RunID           *string         `json:"run_id,omitempty"`
+	Tokens          *store.Tokens   `json:"tokens,omitempty"`
+	Findings        []store.Finding `json:"findings,omitempty"`
+	Quality         *int            `json:"quality,omitempty"`
+	SideGuess       *string         `json:"side_guess,omitempty"`
+	SideConfidence  *float64        `json:"side_confidence,omitempty"`
+	Text            *string         `json:"text,omitempty"`
+	Units           []store.Unit    `json:"units,omitempty"`
+	Spans           []store.Span    `json:"spans,omitempty"`
+	Answer          json.RawMessage `json:"answer,omitempty"`
+	Error           *string         `json:"error,omitempty"`
+}
+
+// output is o as the row it writes for task.
+func (o ReportOutput) output(task store.Task) store.Output {
+	return store.Output{
+		ItemKey: task.ItemKey, Stage: task.Stage, Producer: o.Producer, ProducerVersion: o.ProducerVersion,
+		Lens: o.Lens, LensVersion: o.LensVersion, State: o.State, BlobSHA256: o.BlobSHA256,
+		DispatchID: o.DispatchID, RunID: o.RunID, Tokens: o.Tokens, Findings: o.Findings, Quality: o.Quality,
+		SideGuess: o.SideGuess, SideConfidence: o.SideConfidence, Text: o.Text, Units: o.Units, Spans: o.Spans,
+		Answer: o.Answer, Error: o.Error,
+	}
 }
 
 // TaskView is one task as the list shows it. It leaves out the lease token
@@ -99,7 +138,15 @@ type TaskView struct {
 type TasksAnswer struct {
 	Tasks   []TaskView     `json:"tasks"`
 	Workers []store.Worker `json:"workers"`
+	// WorkersHidden counts the workers not heard from within
+	// WorkersHeardWithin, which the list leaves out unless asked for all.
+	WorkersHidden int `json:"workers_hidden"`
 }
+
+// WorkersHeardWithin is how recently a worker was heard from for the list to
+// show it by default. Each process start is a worker of its own, so the
+// workers that stopped outnumber the live ones within a few releases.
+const WorkersHeardWithin = 10 * time.Minute
 
 // TaskRoutes are the routes for a worker to lease tasks through, and the
 // list for a person to read.
@@ -195,28 +242,18 @@ func (h taskHandlers) report(w http.ResponseWriter, r *http.Request) {
 	}
 	task, err := h.store.Report(r.Context(), r.PathValue("id"), body.Token, outcome, func(tx *store.Tx, task store.Task) error {
 		for _, o := range body.Outputs {
-			if o.ItemKey != task.ItemKey || o.Stage != task.Stage {
-				return fmt.Errorf("%w: an output for %s at %s, from task %s on %s at %s",
-					errOutputElsewhere, o.ItemKey, o.Stage, task.ID, task.ItemKey, task.Stage)
-			}
-			if err := tx.PutOutput(r.Context(), o); err != nil {
+			if err := tx.PutOutput(r.Context(), o.output(task)); err != nil {
 				return err
 			}
 		}
 		return nil
 	})
-	if errors.Is(err, errOutputElsewhere) {
-		Refuse(w, http.StatusUnprocessableEntity, CodeOutputElsewhere, "%v", err)
-		return
-	}
 	if h.leaseRefused(w, r, err) {
 		return
 	}
 	h.log.Info("a task ended", "task", task.ID, "item", task.ItemKey, "stage", task.Stage, "state", task.State, "outputs", len(body.Outputs))
 	JSON(w, http.StatusOK, viewOf(task, h.store.Now()))
 }
-
-var errOutputElsewhere = errors.New("a report writes outputs only for its own task's item and stage")
 
 func (h taskHandlers) list(w http.ResponseWriter, r *http.Request) {
 	q := store.TaskQuery{States: r.URL.Query()["state"]}
@@ -230,8 +267,8 @@ func (h taskHandlers) list(w http.ResponseWriter, r *http.Request) {
 	}
 	if raw := r.URL.Query().Get("limit"); raw != "" {
 		n, err := strconv.Atoi(raw)
-		if err != nil || n < 1 || n > maxListed {
-			Refuse(w, http.StatusBadRequest, CodeInvalidQuery, "limit is from 1 to %d, not %q", maxListed, raw)
+		if err != nil || n < 1 || n > MaxListed {
+			Refuse(w, http.StatusBadRequest, CodeInvalidQuery, "limit is from 1 to %d, not %q", MaxListed, raw)
 			return
 		}
 		q.Limit = n
@@ -241,13 +278,22 @@ func (h taskHandlers) list(w http.ResponseWriter, r *http.Request) {
 		h.internal(w, r, "list tasks", err)
 		return
 	}
-	workers, err := h.store.Workers(r.Context())
+	now := h.store.Now()
+	since := store.Stamp(now.Add(-WorkersHeardWithin))
+	switch r.URL.Query().Get("workers") {
+	case "":
+	case "all":
+		since = ""
+	default:
+		Refuse(w, http.StatusBadRequest, CodeInvalidQuery, "workers is all or absent, not %q", r.URL.Query().Get("workers"))
+		return
+	}
+	workers, hidden, err := h.store.Workers(r.Context(), since)
 	if err != nil {
 		h.internal(w, r, "list workers", err)
 		return
 	}
-	now := h.store.Now()
-	answer := TasksAnswer{Tasks: make([]TaskView, 0, len(tasks)), Workers: workers}
+	answer := TasksAnswer{Tasks: make([]TaskView, 0, len(tasks)), Workers: workers, WorkersHidden: hidden}
 	if answer.Workers == nil {
 		answer.Workers = []store.Worker{}
 	}
@@ -302,14 +348,34 @@ func leaseOf(w http.ResponseWriter, seconds int) (time.Duration, bool) {
 	return lease, true
 }
 
-// decode reads r's JSON body into into, refusing an unknown field, and says
-// whether it could.
+// decode reads r's JSON body into into, and says whether it could. An unknown
+// field is refused with 422 naming it, apart from a body that does not parse,
+// so a worker built ahead of the service can tell the two apart.
 func decode(w http.ResponseWriter, r *http.Request, into any) bool {
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<20))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(into); err != nil {
-		Refuse(w, http.StatusBadRequest, CodeInvalidBody, "the body is not one this route reads: %v", err)
+	err := decoder.Decode(into)
+	if err == nil {
+		return true
+	}
+	if field, ok := strings.CutPrefix(err.Error(), "json: unknown field "); ok {
+		field = strings.Trim(field, `"`)
+		status := http.StatusUnprocessableEntity
+		JSON(w, status, unknownField{
+			refusal: refusal{
+				Error: http.StatusText(status), Code: CodeUnknownField,
+				Message: fmt.Sprintf("this route reads no field %s, so the caller may be built ahead of this service", field),
+			},
+			Field: field,
+		})
 		return false
 	}
-	return true
+	Refuse(w, http.StatusBadRequest, CodeInvalidBody, "the body is not one this route reads: %v", err)
+	return false
+}
+
+// unknownField is the refusal of a body naming a field the route does not read.
+type unknownField struct {
+	refusal
+	Field string `json:"field"`
 }

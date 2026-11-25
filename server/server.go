@@ -97,6 +97,11 @@ func Handler(cfg Config, routes ...Routes) http.Handler {
 	r.mux.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
 		Refuse(w, http.StatusNotFound, CodeRouteNotFound, "no route serves %s %s", req.Method, req.URL.Path)
 	})
+	// The version a caller compares its own with, behind the same token as
+	// the routes it calls.
+	r.Handle("GET /api/v1/version", ScopeTasksClaim, func(w http.ResponseWriter, _ *http.Request) {
+		JSON(w, http.StatusOK, map[string]string{"version": cfg.Version})
+	})
 	for _, register := range routes {
 		register(r)
 	}
@@ -115,14 +120,14 @@ func ready(ctx context.Context, cfg Config) error {
 // Refusal codes, by the status each answers with. A client branches on the
 // code, and the message is for a person.
 const (
-	CodeInvalidBody     = "invalid_body"
-	CodeInvalidQuery    = "invalid_query"
-	CodeRouteNotFound   = "route_not_found"
-	CodeTaskNotFound    = "task_not_found"
-	CodeItemNotFound    = "item_not_found"
-	CodeStaleLease      = "stale_lease"
-	CodeInternal        = "internal"
-	CodeOutputElsewhere = "output_elsewhere"
+	CodeInvalidBody   = "invalid_body"
+	CodeInvalidQuery  = "invalid_query"
+	CodeRouteNotFound = "route_not_found"
+	CodeTaskNotFound  = "task_not_found"
+	CodeItemNotFound  = "item_not_found"
+	CodeStaleLease    = "stale_lease"
+	CodeInternal      = "internal"
+	CodeUnknownField  = "unknown_field"
 )
 
 // refusal is the body of every answer that refuses a request, as goapiauth's

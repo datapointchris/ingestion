@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"sync"
 	"time"
 
@@ -32,7 +33,7 @@ type Result struct {
 	RetryAfter time.Duration
 	// Outputs are the stage's records for the task's item, which the service
 	// writes in the transaction that ends the lease.
-	Outputs []store.Output
+	Outputs []server.ReportOutput
 }
 
 // Handler runs the tasks of one capability.
@@ -135,7 +136,10 @@ func runTask(ctx context.Context, client *Client, cfg Config, h Handler, task Ta
 				return
 			case <-ticker.C:
 			}
-			err := client.Heartbeat(runCtx, task.ID, server.HeartbeatRequest{Token: task.LeaseToken, LeaseSeconds: int(cfg.Lease.Seconds())})
+			// Bounded by the next beat, so one hung call never outlasts the lease.
+			beatCtx, beatDone := context.WithTimeout(runCtx, cfg.Lease/3)
+			err := client.Heartbeat(beatCtx, task.ID, server.HeartbeatRequest{Token: task.LeaseToken, LeaseSeconds: int(cfg.Lease.Seconds())})
+			beatDone()
 			if errors.Is(err, ErrStaleLease) {
 				log.Warn("the task's lease was lost, so its run stops", "error", err)
 				cancel()
@@ -150,7 +154,7 @@ func runTask(ctx context.Context, client *Client, cfg Config, h Handler, task Ta
 	if runCtx.Err() != nil && ctx.Err() == nil {
 		return
 	}
-	err := client.Report(ctx, task.ID, server.ReportRequest{
+	err := report(ctx, runCtx, client, cfg, log, task, server.ReportRequest{
 		Token: task.LeaseToken, Outcome: result.Outcome, Error: result.Error,
 		RetryAfterSeconds: int(result.RetryAfter.Seconds()), Outputs: result.Outputs,
 	})
@@ -158,10 +162,49 @@ func runTask(ctx context.Context, client *Client, cfg Config, h Handler, task Ta
 	case errors.Is(err, ErrStaleLease):
 		log.Warn("the service refused the report, because a later claim holds the task", "error", err)
 	case err != nil:
-		log.Error("report a task", "error", err)
+		log.Error("a task's result is lost, so a later claim runs it again", "error", err)
 	default:
 		log.Info("reported a task", "outcome", result.Outcome, "outputs", len(result.Outputs))
 	}
+}
+
+// report sends req, and sends it again with backoff while the service gives no
+// answer, answers that it is busy or down, or reads no field req carries. The
+// last is a service one release behind this worker, as while serve rolls. The
+// heartbeat keeps the lease through the retries, and they stop once the lease
+// is lost or held a whole lease with no answer. The service answers a repeat
+// under the same token with the task as the first report ended it.
+func report(ctx, leaseCtx context.Context, client *Client, cfg Config, log *slog.Logger, task Task, req server.ReportRequest) error {
+	deadline := time.Now().Add(cfg.Lease)
+	wait := time.Second
+	for {
+		err := client.Report(ctx, task.ID, req)
+		if err == nil || !retryable(err) || time.Now().Add(wait).After(deadline) {
+			return err
+		}
+		log.Warn("report a task, and try again", "error", err, "retry_in", wait.String())
+		select {
+		case <-leaseCtx.Done():
+			return fmt.Errorf("the lease was lost while the report waited: %w", err)
+		case <-time.After(wait):
+		}
+		wait = min(2*wait, 30*time.Second)
+	}
+}
+
+// retryable says whether a call that failed with err may land if sent again.
+func retryable(err error) bool {
+	var refused *StatusError
+	if !errors.As(err, &refused) {
+		return !errors.Is(err, ErrStaleLease) && !errors.Is(err, context.Canceled)
+	}
+	switch {
+	case refused.Status == http.StatusTooManyRequests, refused.Status >= 500:
+		return true
+	case refused.Status == http.StatusUnprocessableEntity && refused.Code == server.CodeUnknownField:
+		return true
+	}
+	return false
 }
 
 // run is h's result for task, and a failure where h panics.

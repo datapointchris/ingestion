@@ -2,10 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/datapointchris/ingestion/schemas/tasks-list.schema.json",
   "title": "Tasks in flight, and every worker",
-  "description": "What GET /api/v1/tasks answers and `ingestion tasks list --json` prints: the tasks in the states asked for, the most recently changed first, and every worker with its last heartbeat. A task's error can quote outsider text, so the answer carries only whether one is kept.",
+  "description": "What GET /api/v1/tasks answers and `ingestion tasks list --json` prints: the tasks in the states asked for, the most recently changed first, and each worker with its last heartbeat. A task's error can quote outsider text, so the answer carries only whether one is kept.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["tasks", "workers"],
+  "required": ["tasks", "workers", "workers_hidden"],
   "properties": {
     "tasks": {
       "type": "array",
@@ -31,6 +31,7 @@
       }
     },
     "workers": {
+      "description": "Each worker heard from recently enough to list by default, or every worker the service holds where the request asked for workers=all. Each process start is a worker of its own.",
       "type": "array",
       "items": {
         "type": "object",
@@ -44,6 +45,7 @@
           "heartbeat_ts": {"type": "string", "format": "date-time"}
         }
       }
-    }
+    },
+    "workers_hidden": {"description": "How many workers the default list leaves out, because none was heard from recently enough.", "type": "integer", "minimum": 0}
   }
 }

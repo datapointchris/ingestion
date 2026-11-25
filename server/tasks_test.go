@@ -100,7 +100,7 @@ func TestTwoWorkersRaceOneTaskALapsedLeaseReturnsItAndTheStaleReportIsRefused(t 
 	text := "page text"
 	err = winner.Report(ctx, stale.ID, server.ReportRequest{
 		Token: stale.LeaseToken, Outcome: server.OutcomeDone,
-		Outputs: []store.Output{{ItemKey: key, Stage: store.StageParse, Producer: "html", ProducerVersion: "1", State: store.OutputDone, Text: &text}},
+		Outputs: []server.ReportOutput{{Producer: "html", ProducerVersion: "1", State: store.OutputDone, Text: &text}},
 	})
 	if !errors.Is(err, worker.ErrStaleLease) {
 		t.Errorf("a report under the stale token answered %v, want the stale lease refused", err)
@@ -108,11 +108,17 @@ func TestTwoWorkersRaceOneTaskALapsedLeaseReturnsItAndTheStaleReportIsRefused(t 
 	if records, _ := st.Item(ctx, key); len(records.Outputs) != 0 {
 		t.Errorf("a refused report wrote %d outputs", len(records.Outputs))
 	}
-	if err := loser.Report(ctx, stale.ID, server.ReportRequest{
+	current := server.ReportRequest{
 		Token: 2, Outcome: server.OutcomeDone,
-		Outputs: []store.Output{{ItemKey: key, Stage: store.StageParse, Producer: "html", ProducerVersion: "1", State: store.OutputDone, Text: &text}},
-	}); err != nil {
+		Outputs: []server.ReportOutput{{Producer: "html", ProducerVersion: "1", State: store.OutputDone, Text: &text}},
+	}
+	if err := loser.Report(ctx, stale.ID, current); err != nil {
 		t.Fatalf("the current token's report: %v", err)
+	}
+	// A worker whose report's answer was lost, as while serve rolls, sends it
+	// again under the same token and is answered as the first report ended it.
+	if err := loser.Report(ctx, stale.ID, current); err != nil {
+		t.Errorf("the same report sent again answered %v, want the ended task", err)
 	}
 	records, err := st.Item(ctx, key)
 	if err != nil {

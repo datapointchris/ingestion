@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/datapointchris/ingestion/server"
 )
@@ -17,6 +18,23 @@ import (
 // ErrStaleLease is the service refusing a heartbeat or report, because the
 // lease lapsed and a later claim took the task.
 var ErrStaleLease = errors.New("the service refused the lease's token")
+
+// StatusError is the service refusing a call with a status other than 409.
+type StatusError struct {
+	Path   string
+	Status int
+	// Code is the refusal's code, where its body carries one.
+	Code string
+	Body string
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("POST %s answered %d: %s", e.Path, e.Status, e.Body)
+}
+
+// callTimeout bounds each call, so a service that takes the connection and
+// never answers cannot hold a claim, a heartbeat or a report.
+const callTimeout = 30 * time.Second
 
 // Client calls the service's task routes.
 type Client struct {
@@ -48,6 +66,8 @@ func (c *Client) Report(ctx context.Context, id string, req server.ReportRequest
 }
 
 func (c *Client) post(ctx context.Context, path string, body, into any) error {
+	ctx, cancel := context.WithTimeout(ctx, callTimeout)
+	defer cancel()
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return err
@@ -70,7 +90,14 @@ func (c *Client) post(ctx context.Context, path string, body, into any) error {
 		return fmt.Errorf("POST %s: %w: %s", path, ErrStaleLease, raw)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("POST %s answered %d: %s", path, resp.StatusCode, raw)
+		refused := &StatusError{Path: path, Status: resp.StatusCode, Body: string(raw)}
+		var answer struct {
+			Code string `json:"code"`
+		}
+		if json.Unmarshal(raw, &answer) == nil {
+			refused.Code = answer.Code
+		}
+		return refused
 	}
 	if into == nil {
 		return nil

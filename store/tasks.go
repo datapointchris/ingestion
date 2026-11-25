@@ -16,6 +16,17 @@ const (
 	TaskFailed = "failed"
 )
 
+const (
+	// LapsedClaimsFail is the claim whose lapsed lease fails its task rather
+	// than return it to the next claim. A run that ends its worker, such as an
+	// extractor killed for its memory, never reports, and would otherwise take
+	// down a worker every lease.
+	LapsedClaimsFail = 3
+	// HeartbeatEvery is how often a worker's claims write its row, which is
+	// how fresh a worker's last heartbeat reads.
+	HeartbeatEvery = time.Minute
+)
+
 var (
 	// ErrNoTask is a call naming a task the store does not hold.
 	ErrNoTask = errors.New("no such task")
@@ -98,7 +109,7 @@ func (s *Store) Claim(ctx context.Context, c Claim) ([]Task, error) {
 			worker.StartedTS = now
 		}
 		worker.HeartbeatTS = now
-		if err := tx.put(ctx, table("workers"), worker); err != nil {
+		if err := tx.keepWorker(ctx, worker); err != nil {
 			return err
 		}
 		if len(c.Worker.Capabilities) == 0 || c.Max <= 0 {
@@ -119,6 +130,18 @@ func (s *Store) Claim(ctx context.Context, c Claim) ([]Task, error) {
 		}
 		expires := Stamp(tx.at.Add(c.Lease))
 		for _, id := range ids {
+			lapsed, err := tx.task(ctx, id)
+			if err != nil {
+				return err
+			}
+			if lapsed.State == TaskLeased && lapsed.Attempts >= LapsedClaimsFail {
+				reason := fmt.Sprintf("its lease lapsed on claim %d with no report, so its run likely ends its worker", lapsed.Attempts)
+				if _, err := tx.tx.ExecContext(ctx, `UPDATE tasks SET state = 'failed', error = ?, updated_ts = ? WHERE id = ?`,
+					reason, now, id); err != nil {
+					return fmt.Errorf("fail task %s: %w", id, err)
+				}
+				continue
+			}
 			if _, err := tx.tx.ExecContext(ctx, `UPDATE tasks SET state = 'leased', lease_holder = ?,
 				lease_token = coalesce(lease_token, 0) + 1, lease_expires_ts = ?, attempts = attempts + 1, updated_ts = ?
 				WHERE id = ?`, c.Worker.ID, expires, now, id); err != nil {
@@ -173,7 +196,9 @@ type Outcome struct {
 // in the same transaction before the lease ends, so a stage's records, such
 // as a model stage's dispatch id, are stored exactly when the task ends. The
 // store refuses a token that does not hold the lease with ErrStaleLease, and
-// write never runs.
+// write never runs. A report repeated under the token that ended the task
+// answers the task as it ended, and write never runs again, so a worker whose
+// answer was lost can send its report again.
 func (s *Store) Report(ctx context.Context, id string, token int64, outcome Outcome, write func(*Tx, Task) error) (Task, error) {
 	switch outcome.State {
 	case TaskDone, TaskFailed, TaskQueued:
@@ -183,7 +208,11 @@ func (s *Store) Report(ctx context.Context, id string, token int64, outcome Outc
 	var task Task
 	err := s.Update(ctx, func(tx *Tx) error {
 		var err error
-		if task, err = tx.leased(ctx, id, token); err != nil {
+		task, err = tx.leased(ctx, id, token)
+		if errors.Is(err, ErrStaleLease) && reportedUnder(task, token) {
+			return nil
+		}
+		if err != nil {
 			return err
 		}
 		if write != nil {
@@ -232,9 +261,44 @@ func (s *Store) Tasks(ctx context.Context, q TaskQuery) ([]Task, error) {
 		`state IN (?`+strings.Repeat(", ?", len(states)-1)+`) ORDER BY updated_ts DESC, rowid DESC LIMIT ?`, args...)
 }
 
-// Workers lists every worker, the most recent heartbeat first.
-func (s *Store) Workers(ctx context.Context) ([]Worker, error) {
-	return readInto[Worker](ctx, s.read, table("workers"), `1 = 1 ORDER BY heartbeat_ts DESC`)
+// Workers lists each worker heard from at or after since, the most recent
+// heartbeat first, and counts the workers left out. Every since lists every
+// worker the store holds.
+func (s *Store) Workers(ctx context.Context, since string) ([]Worker, int, error) {
+	workers, err := readInto[Worker](ctx, s.read, table("workers"), `heartbeat_ts >= ? ORDER BY heartbeat_ts DESC`, since)
+	if err != nil {
+		return nil, 0, err
+	}
+	var hidden int
+	if err := s.read.QueryRowContext(ctx, `SELECT count(*) FROM workers WHERE heartbeat_ts < ?`, since).Scan(&hidden); err != nil {
+		return nil, 0, fmt.Errorf("count the workers left out: %w", err)
+	}
+	return workers, hidden, nil
+}
+
+// keepWorker writes w's row where it is new, where its capabilities or version
+// changed, or where its last heartbeat is HeartbeatEvery old. A claim
+// every poll would otherwise ship a version of the row each poll.
+func (t *Tx) keepWorker(ctx context.Context, w Worker) error {
+	held, err := readInto[Worker](ctx, t.tx, table("workers"), `id = ?`, w.ID)
+	if err != nil {
+		return err
+	}
+	if len(held) == 1 {
+		last, err := time.Parse(StampLayout, held[0].HeartbeatTS)
+		same := held[0].Version == w.Version && strings.Join(held[0].Capabilities, ",") == strings.Join(w.Capabilities, ",")
+		if err == nil && same && t.at.Sub(last) < HeartbeatEvery {
+			return nil
+		}
+	}
+	return t.put(ctx, table("workers"), w)
+}
+
+// reportedUnder says whether task already ended under token, so a report
+// repeated after its answer was lost finds the task as the first one left it.
+// A later claim raises the token, so a repeat after one is still stale.
+func reportedUnder(task Task, token int64) bool {
+	return task.State != TaskLeased && task.LeaseToken != nil && *task.LeaseToken == token
 }
 
 // leased is task id where token holds its lease, ErrNoTask where there is no
