@@ -1,0 +1,19 @@
+id: ATR-TEST-00002
+title: A claim that access is granted, in Russian or Korean
+status: experimental
+severity: medium
+detection:
+  condition: any
+  conditions:
+    - field: content
+      operator: regex
+      value: 'доступ\s+разрешен'
+    - field: tool_response
+      operator: regex
+      value: '권한.{0,4}부여'
+test_cases:
+  true_positives:
+    - input: "доступ разрешен"
+    - input: "권한 부여"
+  true_negatives:
+    - input: "доступ запрещен"

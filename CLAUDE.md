@@ -26,9 +26,10 @@ package:
 | `landing` | an artifact's bytes written under their SHA-256 or referenced under a named root, the item and one sighting per connector, and the report of blobs and rows that disagree |
 | `redditexport` | the Reddit bookmarklet's export, as a store keeps it, split into one save each and landed as an item with a child per save |
 | `extract` | one extractor per media type, each writing versioned text and units |
-| `scan` | the scanner, run over parsed text and again over each suggestion, and its stored findings |
+| `isolatedprocess` | the one door that starts a program over outsider bytes, in a temporary directory of its own with an environment that holds no secret |
+| `scan` | the scanner, which runs YARA-X's `yr` over a parse's text or over one sentence, its stored findings, and `build-rules`, which converts Agent Threat Rules and tests each by its own examples |
 | `qualitygate` | the model stage that reads an item's opening and answers its quality, genre, domains, themes, a one-line idea and a side guess |
-| `route` | the side gate and the read gate, which serve runs in the write that ends each stage before them and in the write that applies a changed set: a sighting's tags, then a rule, then the quality gate's guess at or above its confidence floor, else review; and a person's placement from review |
+| `route` | the side gate and the read gate, which serve runs in the write that ends each stage between the parse and them, once the item's newest parse is scanned, and in the write that applies a changed set: a sighting's tags, then a rule, then the quality gate's guess at or above its confidence floor, else review; and a person's placement from review |
 | `modelread` | the model stage that answers an item's note with a summary, a suggestion sentence, or both |
 | `connectors` | the declaration set, checked against its schemas, and its apply, the scheduler that makes each connector due, the folder scan, and the drop handler each source registers under its format |
 | `deliver` | the upsert into each destination through that destination's own write path, keyed by the item |
@@ -134,13 +135,25 @@ the prompt's version, and gets back the structured answer.
   uses.
 - **An extractor whose library is Python runs as a program in the worker image.** It lives in
   `extract.ProgramDir`, and `extract.Program` registers it. It reads the item's bytes on stdin
-  and writes one `{"label", "text"}` line per unit on stdout. It runs through
-  `extract/program.go` alone, whose environment carries none of the worker's secrets, because
-  the program reads outsider bytes. The worker marks itself undumpable for the same reason, so
-  the program cannot read the worker's environment through `/proc`.
+  and writes one `{"label", "text"}` line per unit on stdout. It runs through `isolatedprocess`
+  alone, as `yr` does, whose environment carries none of the worker's secrets, because the
+  program reads outsider bytes. The worker marks itself undumpable for the same reason, so the
+  program cannot read the worker's environment through `/proc`.
+- **The scan runs `yr` from the worker image over a parse's units, joined as the parse's text
+  joins them.** It scans the text as written and again as ATR's engine normalizes it: NFKC, no
+  zero-width or bidirectional controls, homoglyphs folded to Latin. Each view lowers the case of
+  every letter outside ASCII, because YARA-X folds only ASCII's. Each finding maps back to the
+  text as written. `release/download-atr-rules` pins Agent Threat Rules to a commit, and
+  `release/install-tools` pins `yr`. The image build runs `scan/build-rules`, which keeps a
+  converted rule only where `yr` compiles it and it passes its own examples, and counts each drop
+  by reason. Ingestion's own rules in `scan/ingestion-rules/` take ATR's shape and are written in
+  YARA-X's regex dialect. A scan's version is the rules' version and the parse it read, so a new
+  rule set replays beside the old, and each parse keeps its own scan. A finding never drops an
+  item, and its span ships only as outsider text.
 - **A parse's units are rows of `parse_units`, one per unit.** The parse's `outputs` row holds no
-  text. Its whole text is the units joined by a blank line, so the text has one owner. A version
-  whose parse is done keeps it, so a failed rerun of that version fails only its task.
+  text. Its whole text is the units joined by a blank line, which `store.JoinUnits` alone writes.
+  A done output is kept against a later one that is not done, so a failed rerun fails only its
+  task.
 - **Each route's row in `server/routes.go` declares what a repeat does.** The CLI's sender reads
   the row to decide a retry, and sets the `Idempotency-Key` of a keyed route itself.
 - **A CLI command whose server gave no answer exits 4**, and does nothing locally.
@@ -150,6 +163,12 @@ the prompt's version, and gets back the structured answer.
 `task test` runs `go test ./...`, the whole suite, which is also what CI runs. The commit hook runs
 `go test -short ./...`, so a slow test checks `testing.Short()` and skips. A new test pins behavior
 that a user reaches and no other test already pins.
+
+A test that runs `yr` carries the `yr` build tag, and `validate.yml` runs those tests with the
+pinned `yr` over the ATR-shaped rules in `scan/testdata/atr`. Its `image` job builds the
+Dockerfile and runs `yr` in the image over a known post. Each test that reads real outsider text
+takes its directory from an environment variable and skips without it, and it reports counts and
+rule ids alone.
 
 ## Releasing
 
@@ -161,7 +180,7 @@ settled enough to promise compatibility.
 A push that cut a version also builds the image `ghcr.io/datapointchris/ingestion:<version>`. It
 then pushes `deploy/` as the OCI artifact `ghcr.io/datapointchris/ingestion/manifests:<version>`,
 with that image pinned by digest, and signs both with cosign. `release/pin-manifests` writes the
-pinned copy, and `release/install-tools` installs kustomize, flux and cosign at pinned SHA-256s.
+pinned copy, and `release/install-tools` installs each tool it names at a pinned SHA-256.
 
 ## Never write the breaking-change trailer in a commit message
 

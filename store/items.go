@@ -245,10 +245,10 @@ var reached = map[string]string{
 
 // Phase is the item's phase in the words of schemas/items-list.schema.json:
 // dropped where the newest side decision drops it, review where WaitsOnPerson
-// says it waits, failed where another stage's task failed, dropped where the
-// quality gate drops it, waiting where a model stage holds it, and otherwise
-// the furthest stage whose condition is True. A person can place an item whose
-// parse failed, which moves it on from its parse.
+// says it waits, failed where another stage's newest task failed, dropped
+// where the quality gate drops it, waiting where a model stage holds it, and
+// otherwise the furthest stage whose condition is True. A person can place an
+// item whose parse failed, which moves it on from its parse.
 func (r ItemRecords) Phase() string {
 	side, sided := r.newestDecision(GateSide)
 	if sided && side.Verdict == "drop" {
@@ -257,8 +257,12 @@ func (r ItemRecords) Phase() string {
 	if _, _, waits := r.WaitsOnPerson(); waits {
 		return "review"
 	}
+	newest := map[string]Task{}
 	for _, t := range r.Tasks {
-		if t.State == TaskFailed && t.Stage != StageParse {
+		newest[t.Stage] = t
+	}
+	for stage, t := range newest {
+		if t.State == TaskFailed && stage != StageParse {
 			return "failed"
 		}
 	}

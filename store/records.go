@@ -108,10 +108,16 @@ type Tokens struct {
 	Output        int64 `json:"output"`
 }
 
-// Finding is one scanner rule's match, without its span.
+// Finding is one scanner rule's match, without its span: where it starts and
+// how many bytes it covers. Unit names the parse's unit it starts in, and its
+// offset counts from that unit's start. A finding from Scanner.Scan names no
+// unit.
 type Finding struct {
 	Rule     string `json:"rule"`
 	Severity string `json:"severity"`
+	Unit     *int   `json:"unit"`
+	Offset   int    `json:"offset"`
+	Length   int    `json:"length"`
 }
 
 // Unit is one part of a parse, such as a post or a page, numbered from 1.
@@ -146,10 +152,10 @@ type Replay struct {
 	RequestedTS string `json:"requested_ts"`
 }
 
-// Span is the text one finding matched.
+// Span is the text one finding matched. An output's spans hold one per
+// finding, in the findings' order.
 type Span struct {
 	Rule string `json:"rule"`
-	Unit *int   `json:"unit"`
 	Span string `json:"span"`
 }
 

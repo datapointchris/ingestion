@@ -60,10 +60,11 @@ func TestAnItemGainsEachStageRecordAndEachChangeReachesTheCollectorOnce(t *testi
 			}, []store.Unit{{N: 1, Text: text}})
 		}},
 		{"scanned", func(tx *store.Tx) error {
+			unit := 1
 			return tx.PutOutput(ctx, store.Output{
-				ItemKey: key, Stage: store.StageScan, Producer: "rules", ProducerVersion: "atr@c9d371c",
-				State: store.OutputDone, Findings: []store.Finding{{Rule: "shell.command", Severity: "medium"}},
-				Spans: []store.Span{{Rule: "shell.command", Span: "sed -i 's/CRITICAL//' CLAUDE.md"}},
+				ItemKey: key, Stage: store.StageScan, Producer: "rules", ProducerVersion: "atr@84a377d5+yr@1.24.0+503f73d3/thread-text@1",
+				State: store.OutputDone, Findings: []store.Finding{{Rule: "ingestion.code", Severity: "info", Unit: &unit, Offset: 4, Length: 6}},
+				Spans: []store.Span{{Rule: "ingestion.code", Span: "thread"}},
 			})
 		}},
 		{"gated", func(tx *store.Tx) error {

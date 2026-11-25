@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -18,28 +19,28 @@ var ErrUnitsOutOfOrder = errors.New("a parse's units are numbered from 1 in thei
 var ErrUnitsOutsideParse = errors.New("only a parse holds units")
 
 // PutOutputWithUnits writes o, a stage's output, and the units that only a parse
-// holds. A version whose parse is done keeps it, output and units alike, so
-// a rerun of that version that fails leaves the done parse readable and
-// fails only its task. A changed extractor takes a new version, which writes
-// beside the old.
+// holds. A done output is kept against a later one that is not done, so a
+// rerun that fails leaves the done output readable and fails only its task. A
+// done parse is kept against any later one, output and units alike. A changed
+// extractor takes a new version, which writes beside the old.
 func (t *Tx) PutOutputWithUnits(ctx context.Context, o Output, units []Unit) error {
-	if o.Stage != StageParse {
-		if len(units) > 0 {
-			return fmt.Errorf("%w: a %s output carries %d units", ErrUnitsOutsideParse, o.Stage, len(units))
-		}
-		return t.PutOutput(ctx, o)
+	if o.Stage != StageParse && len(units) > 0 {
+		return fmt.Errorf("%w: a %s output carries %d units", ErrUnitsOutsideParse, o.Stage, len(units))
 	}
 	var state string
 	err := t.tx.QueryRowContext(ctx, `SELECT state FROM outputs WHERE item_key = ? AND stage = ? AND producer = ? AND producer_version = ?`,
 		o.ItemKey, o.Stage, o.Producer, o.ProducerVersion).Scan(&state)
 	switch {
-	case err == nil && state == OutputDone:
-		return nil
 	case err != nil && !errors.Is(err, sql.ErrNoRows):
-		return fmt.Errorf("read %s's parse by %s v%s: %w", o.ItemKey, o.Producer, o.ProducerVersion, err)
+		return fmt.Errorf("read %s's %s output by %s %s: %w", o.ItemKey, o.Stage, o.Producer, o.ProducerVersion, err)
+	case err == nil && state == OutputDone && (o.Stage == StageParse || o.State != OutputDone):
+		return nil
 	}
 	if err := t.PutOutput(ctx, o); err != nil {
 		return err
+	}
+	if o.Stage != StageParse {
+		return nil
 	}
 	return t.putUnits(ctx, o.ItemKey, o.Producer, o.ProducerVersion, units)
 }
@@ -88,11 +89,52 @@ type Parse struct {
 // Text is the parse's whole text: its units' text in order, joined by a blank
 // line.
 func (p Parse) Text() string {
-	texts := make([]string, len(p.Units))
-	for i, u := range p.Units {
-		texts[i] = u.Text
+	text, _ := JoinUnits(p.Units)
+	return text
+}
+
+// JoinUnits joins units' text in order by a blank line, and answers where each
+// unit's text starts in the joined text.
+func JoinUnits(units []Unit) (text string, starts []int) {
+	var b strings.Builder
+	starts = make([]int, len(units))
+	for i, u := range units {
+		if i > 0 {
+			b.WriteString("\n\n")
+		}
+		starts[i] = b.Len()
+		b.WriteString(u.Text)
 	}
-	return strings.Join(texts, "\n\n")
+	return b.String(), starts
+}
+
+// ScanVersion is the producer version of a scan by rules that read the parse
+// extractor wrote at extractorVersion. The parse is part of it, so a scan of
+// each parse keeps its own row beside the parse it read.
+func ScanVersion(rules, extractor, extractorVersion string) string {
+	return rules + "/" + extractor + "@" + extractorVersion
+}
+
+// NewestParseScanned says whether outputs, oldest first as Tx.Outputs reads
+// them, hold a done scan of the newest done parse among them. The side gate
+// places an item only then, so no item is placed before its scan.
+func NewestParseScanned(outputs []Output) bool {
+	var parse *Output
+	for i := range outputs {
+		if outputs[i].Stage == StageParse && outputs[i].State == OutputDone {
+			parse = &outputs[i]
+		}
+	}
+	return parse != nil && slices.ContainsFunc(outputs, func(o Output) bool {
+		return o.Stage == StageScan && o.State == OutputDone && o.InputProducer != nil && *o.InputProducer == parse.Producer &&
+			o.InputVersion != nil && *o.InputVersion == parse.ProducerVersion
+	})
+}
+
+// ScanRules is the rules version within a scan's producer version.
+func ScanRules(producerVersion string) string {
+	rules, _, _ := strings.Cut(producerVersion, "/")
+	return rules
 }
 
 // Parse reads the done parse of the item under key that pick names, with its

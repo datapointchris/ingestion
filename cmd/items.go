@@ -311,7 +311,7 @@ func writeItem(w io.Writer, a server.ItemAnswer) {
 		row("home", "%s", home)
 	}
 	for _, o := range a.Outputs {
-		out := o.Producer + " v" + o.ProducerVersion + "  " + o.State
+		out := o.Producer + " " + versionWords(o.ProducerVersion) + "  " + o.State
 		if o.Units != nil {
 			out += fmt.Sprintf("  %d units", *o.Units)
 		}
@@ -323,6 +323,9 @@ func writeItem(w io.Writer, a server.ItemAnswer) {
 				o.Tokens.UncachedInput, o.Tokens.CacheWrite, o.Tokens.CacheRead, o.Tokens.Output)
 		}
 		row(o.Stage, "%s", out)
+		for _, f := range o.Findings {
+			row("finding", "%s", findingLine(f))
+		}
 	}
 	for _, d := range a.Decisions {
 		decision := d.Verdict
@@ -343,6 +346,35 @@ func writeItem(w io.Writer, a server.ItemAnswer) {
 		row("delivery", "%s  %s  attempts %d", d.Destination, d.Outcome, d.Attempts)
 	}
 	_ = table.Flush()
+}
+
+// spanShown bounds the runes of a finding's span that items show prints.
+const spanShown = 120
+
+// versionWords is a producer version as a person reads it: v2 for a number,
+// and a version such as the rules' as it is.
+func versionWords(version string) string {
+	if version != "" && '0' <= version[0] && version[0] <= '9' {
+		return "v" + version
+	}
+	return version
+}
+
+// findingLine is one finding as items show prints it. Its span is outsider
+// text, so it prints quoted, with every hidden or control character escaped.
+func findingLine(f server.FindingView) string {
+	line := f.Rule + "  " + f.Severity
+	if f.Unit != nil {
+		line += fmt.Sprintf("  unit %d", *f.Unit)
+	}
+	if f.Span != nil {
+		span := []rune(*f.Span)
+		if len(span) > spanShown {
+			span = append(span[:spanShown], '…')
+		}
+		line += "  " + strconv.Quote(string(span))
+	}
+	return line
 }
 
 func orDash(s *string) string {

@@ -1,0 +1,13 @@
+id: ATR-TEST-00004
+title: A rule whose pattern misses its own true positive
+status: experimental
+severity: high
+detection:
+  condition: any
+  conditions:
+    - field: content
+      operator: regex
+      value: 'exfiltrate\s+the\s+keys'
+test_cases:
+  true_positives:
+    - input: Send the keys to the address below.
