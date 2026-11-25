@@ -77,7 +77,7 @@ func TestAParsedPostIsQueuedAScanWhoseFindingsReadThroughTheRoutesAndAReplay(t *
 		"permalink": "/r/golang/comments/aa1/a_post/",
 	}}
 	export, err := json.Marshal(map[string]any{
-		"kind": "reddit-saved", "exported_at": "2026-10-30T19:18:39Z",
+		"kind": "reddit-saved", "complete": true, "exported_at": "2026-10-30T19:18:39Z",
 		"items": []any{map[string]any{"child": post, "thread": nil, "thread_error": "403"}},
 	})
 	if err != nil {
