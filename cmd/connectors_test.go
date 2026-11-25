@@ -23,8 +23,9 @@ import (
 // force is refused until --replacing names it. A directory holding no
 // declarations exits 2. A set naming an unknown mode, zone or destination, or
 // a root the service does not hold, is refused whole, naming each invalid
-// declaration, exits 3, and leaves the set in force. A file dropped twice
-// lands once, and a copy under another name is one more sighting.
+// declaration, exits 3, and leaves the set in force. A Reddit export dropped
+// into reddit-exports lands as one item and a child per save. Dropped twice,
+// it lands once, and a copy under another name adds no item.
 func TestConnectorsApplyTheExampleSetAndAnInvalidSetChangesNothing(t *testing.T) {
 	ctx := t.Context()
 	dir, books := t.TempDir(), t.TempDir()
@@ -150,17 +151,29 @@ func TestConnectorsApplyTheExampleSetAndAnInvalidSetChangesNothing(t *testing.T)
 
 	export, copied := filepath.Join(dir, "export.json"), filepath.Join(dir, "export (1).json")
 	for _, file := range []string{export, copied} {
-		if err := os.WriteFile(file, []byte(`{"saves": []}`), 0o600); err != nil {
+		if err := os.WriteFile(file, redditExport(redditSave("t3_aa1", "Cooking"), redditSave("t3_bb2", "golang")), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
 	for _, drop := range []struct{ file, want string }{
-		{export, "Dropped export.json into reddit-exports: it holds 1 item, 1 of them new.\n"},
-		{export, "export.json was already dropped into reddit-exports, so nothing landed: it holds 1 item.\n"},
-		{copied, "Dropped export (1).json into reddit-exports: it holds 1 item, 0 of them new.\n"},
+		{export, "Dropped export.json into reddit-exports: it holds 3 items, 3 of them new.\n"},
+		{export, "export.json was already dropped into reddit-exports, so nothing landed: it holds 3 items.\n"},
+		{copied, "Dropped export (1).json into reddit-exports: it holds 3 items, 0 of them new.\n"},
 	} {
 		if out, err := runCLI(t, "items", "drop", drop.file, "--connector", "reddit-exports", "--config", config); err != nil || out != drop.want {
 			t.Errorf("items drop printed %q, %v; want %q", out, err, drop.want)
 		}
+	}
+	notes := filepath.Join(dir, "notes.json")
+	if err := os.WriteFile(notes, []byte(`{"saves": []}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = runCLI(t, "items", "drop", notes, "--connector", "reddit-exports", "--config", config)
+	var items int
+	if scanErr := st.Reader().QueryRowContext(ctx, `SELECT count(*) FROM items`).Scan(&items); scanErr != nil {
+		t.Fatal(scanErr)
+	}
+	if err == nil || !strings.Contains(err.Error(), "not a Reddit export") || items != 3 {
+		t.Errorf("dropping a file that is no Reddit export answered %v and left %d items, want it refused and the 3 items alone", err, items)
 	}
 }

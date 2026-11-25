@@ -305,6 +305,41 @@ newest task past its parse failed.
   connector that a later set dropped can still be released. An item that two connectors sighted
   waits while either holds it.
 
+### A Reddit export lands each save once, under its post's or comment's key
+
+Reddit answers its JSON only to a logged-in browser. So a bookmarklet in that browser exports the
+saves, and a person drops the file it downloads. To install it, write the page that holds it:
+
+```sh
+# from a checkout
+go run ./redditexport/bookmarklet reddit-export.html
+
+# anywhere Go is installed
+go run github.com/datapointchris/ingestion/redditexport/bookmarklet@latest reddit-export.html
+```
+
+Open the page, and drag its link onto the bookmarks bar. A bookmark editor can refuse a typed
+`javascript:` URL, and a dragged link is saved as written. The page also holds the script to paste
+into the browser's console. Clicked on a thread, the bookmarklet exports that thread. Clicked
+anywhere else on reddit.com, it asks whether to export the newest saves or this month's top posts
+of the subreddits it is given.
+
+A drop connector whose `format` is `reddit-export` lands each such file:
+
+```text
+$ ingestion items drop reddit-saved-2026-11-25.json --connector reddit-exports
+Dropped reddit-saved-2026-11-25.json into reddit-exports: it holds 51 items, 51 of them new.
+```
+
+- **The file lands as one item, and each save as its child**, under `reddit/<fullname>`, such as
+  `reddit/t3_aq7ggd`. The file's own item counts among those the command prints.
+- **Every item is `outside`**, because Reddit's users wrote it.
+- **A save's sighting records its subreddit** under the field `subreddit`, for a routing rule to
+  match.
+- **A save that an earlier export landed keeps its item, its parent and its bytes**, so it is
+  parsed, gated and delivered once. Its sighting names the newest export that carried it.
+- **A file that is not a Reddit export is refused**, and nothing of it lands.
+
 ### Parsing an item, and running a stage again
 
 Landing a new item queues its parse in the same write. A worker runs the extractor registered for

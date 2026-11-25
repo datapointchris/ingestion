@@ -9,7 +9,9 @@
 // every one of those alike.
 //
 // Land lands an export as an item of its own and each save as its child, so a
-// connector that receives exports calls it rather than composing the two.
+// connector that receives exports calls it rather than composing the two. The
+// package registers Land as the drop handler of Format. Where a drop connector
+// names Format, each file dropped into it lands through Land.
 package redditexport
 
 import (
@@ -19,10 +21,29 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/datapointchris/ingestion/connectors"
 	"github.com/datapointchris/ingestion/itemkey"
 	"github.com/datapointchris/ingestion/landing"
 	"github.com/datapointchris/ingestion/store"
 )
+
+// Format is the format a drop connector names to land each file it takes as
+// a Reddit export: the export as an item, and each save as its child.
+const Format = "reddit-export"
+
+func init() {
+	connectors.RegisterDropHandler(Format, landDrop)
+}
+
+// landDrop lands a dropped file through Land, under the connector's name and
+// tags, and answers the export's arrival, then each save's.
+func landDrop(ctx context.Context, l *landing.Lander, d connectors.Drop) ([]landing.Landed, error) {
+	landed, err := Land(ctx, l, Drop{Connector: d.Connector.Name, Name: d.Name, Tags: d.Connector.Tags, Raw: d.Body})
+	if err != nil {
+		return nil, err
+	}
+	return append([]landing.Landed{landed.Export}, landed.Saves...), nil
+}
 
 // threadNeverFetched is why a top post carries no thread where its export
 // holds no entry for it.

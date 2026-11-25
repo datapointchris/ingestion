@@ -13,6 +13,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/datapointchris/ingestion/connectors"
+	// Registers the reddit-export drop format, which apply checks and serve lands.
+	_ "github.com/datapointchris/ingestion/redditexport"
 )
 
 // A subcommand is one file in this package that builds its *cobra.Command and
