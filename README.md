@@ -295,9 +295,11 @@ supply: the ConfigMap `ingestion-config` holding `config.toml`, and the Secret
 **An upgrade that changes a table copies the store first.** Before `serve` changes the store's
 tables, it writes a copy beside the store, named `ingestion.db.before-<UTC time>`. A column that
 SQLite cannot change in place, such as one a release makes nullable, is rebuilt in one transaction
-that keeps every row. An older release refuses a store holding a table it does not know. So a
-rollback across such a change stops `serve`, puts the copy back as `ingestion.db`, and starts the
-older release. The copy holds nothing landed after the upgrade.
+that keeps every row. `serve` leaves alone a table that its own schema files do not create, so a
+table that a later release added does not stop an earlier one opening the store. v0.5.0 and
+earlier refuse such a table. A rollback to one of them stops `serve`, puts the copy back as
+`ingestion.db`, and starts the older release. The copy holds nothing landed after the upgrade, and
+stays until a person deletes it.
 
 ### Every change leaves through the outbox
 
