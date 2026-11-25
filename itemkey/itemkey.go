@@ -31,6 +31,11 @@ const (
 // ErrNotAKey is input that is neither a key nor a URL.
 var ErrNotAKey = errors.New("not an item key or a URL")
 
+// ErrShareLink is a link that the Reddit app shares, such as
+// reddit.com/r/golang/s/AbCdEf1234. It names its post only through the redirect
+// it answers with, so its key is the key of the URL it redirects to.
+var ErrShareLink = errors.New("a Reddit share link names its post only through its redirect")
+
 var (
 	fullnamePattern = regexp.MustCompile(`^t[1-6]_[a-z0-9]{1,13}$`)
 	videoPattern    = regexp.MustCompile(`^[A-Za-z0-9_-]{11}$`)
@@ -85,13 +90,18 @@ func Check(key string) error {
 }
 
 // FromURL is the key of the artifact at raw: a Reddit post's or comment's
-// fullname, a YouTube video's id, or else the hash of the canonical URL.
+// fullname, a YouTube video's id, or else the hash of the canonical URL. It
+// refuses a Reddit share link with ErrShareLink, because hashing it would
+// split its post into a second item.
 func FromURL(raw string) (string, error) {
 	canonical, err := CanonicalURL(raw)
 	if err != nil {
 		return "", err
 	}
 	u, _ := url.Parse(canonical)
+	if redditShare(u) {
+		return "", fmt.Errorf("%q: %w; follow it, and give the URL it reaches", raw, ErrShareLink)
+	}
 	if fullname, ok := redditFullname(u); ok {
 		return Reddit + "/" + fullname, nil
 	}
@@ -208,6 +218,17 @@ func CanonicalURL(raw string) (string, error) {
 func shortHash(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])[:16]
+}
+
+// redditShare says whether u is a share link of the Reddit app,
+// /r/<subreddit>/s/<token> or /u/<user>/s/<token>.
+func redditShare(u *url.URL) bool {
+	host := strings.TrimPrefix(u.Hostname(), "www.")
+	if host != "reddit.com" && !strings.HasSuffix(host, ".reddit.com") {
+		return false
+	}
+	segments := strings.FieldsFunc(u.Path, func(r rune) bool { return r == '/' })
+	return len(segments) == 4 && (segments[0] == "r" || segments[0] == "u" || segments[0] == "user") && segments[2] == "s"
 }
 
 // redditFullname is the fullname a Reddit URL names: a comment's where the

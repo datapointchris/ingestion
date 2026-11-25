@@ -130,13 +130,17 @@ reddit/t3_aq7ggd   outside   landed
 
 A title is outsider text where the zone is `outside`. `items list --keys` prints the keys alone,
 one per line, so a script or a session can work through items without reading one. `--limit`
-bounds the list at 100 by default, and `--json` prints the shapes in
-`schemas/items-list.schema.json` and `schemas/item.schema.json`.
+bounds the list, and `ingestion items list --help` prints its default. `--json` prints the shapes
+in `schemas/items-list.schema.json` and `schemas/item.schema.json`. `items show` sends a URL to
+the service, which resolves it to its key.
 
 The service keeps each item's bytes under their SHA-256 in `blobs/sha256/<first two>/<rest>` below
 `state_dir`, with their MD5 beside them. A file under a `[serve.homes]` root is read where it lies
-instead. `ingestion blobs unpaired` names each blob in the volume that no row names, and each row
-whose bytes are missing, and exits 1 where it names any. It deletes nothing.
+instead. Its size and modification time are recorded when it lands. A file whose size or time
+differs is hashed again before it is served, and is not served where its bytes changed.
+`ingestion blobs unpaired` names each blob in the volume that no row names, and each row whose
+bytes are missing. It exits 3 where it names any, and 1 where it could not compare. It deletes
+nothing.
 
 ### Running it in a container
 

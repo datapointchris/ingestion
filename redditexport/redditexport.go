@@ -4,18 +4,29 @@
 // person drops the file.
 //
 // The stored form is the bookmarklet's JSON with its keys sorted, its HTML
-// characters escaped, a machine field added, and any file over 8 MiB split
-// into parts that each carry part. A JSON decoder reads every one of those
-// alike.
+// characters escaped, a machine field added, and a large file split into parts.
+// A part is a whole export that its part field places, so a JSON decoder reads
+// every one of those alike.
+//
+// Land lands an export as an item of its own and each save as its child, so a
+// connector that receives exports calls it rather than composing the two.
 package redditexport
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"time"
 
 	"github.com/datapointchris/ingestion/itemkey"
+	"github.com/datapointchris/ingestion/landing"
+	"github.com/datapointchris/ingestion/store"
 )
+
+// threadNeverFetched is why a top post carries no thread where its export
+// holds no entry for it.
+const threadNeverFetched = "the export ended before this thread was fetched"
 
 // The kinds an export names, one per bookmarklet mode.
 const (
@@ -124,9 +135,6 @@ type Save struct {
 	Title string
 	// URL is the thing's permalink on reddit.com.
 	URL string
-	// Position is the save's place in the saved list, or its rank among its
-	// subreddit's top posts.
-	Position int
 	// Bytes is the save as a JSON object of child, the thing as Reddit gave
 	// it, and thread, its thread's listing. A save from a saved export is the
 	// export's entry unchanged.
@@ -150,7 +158,6 @@ func (e Export) Saves() ([]Save, error) {
 			if err != nil {
 				return nil, fmt.Errorf("saved entry %d: %w", i+1, err)
 			}
-			s.Position = max(e.FirstPosition, 1) + i
 			out = append(out, s)
 		}
 	case KindTop:
@@ -160,11 +167,15 @@ func (e Export) Saves() ([]Save, error) {
 				if err := json.Unmarshal(child, &t); err != nil {
 					return nil, fmt.Errorf("r/%s's post %d: %w", sub.Name, i+1, err)
 				}
-				entry := saved{Child: child, Thread: sub.Threads[t.Data.Name]}
+				thread, fetched := sub.Threads[t.Data.Name]
+				entry := saved{Child: child, Thread: thread}
 				var failed struct {
 					Error string `json:"error"`
 				}
-				if json.Unmarshal(entry.Thread, &failed) == nil && failed.Error != "" {
+				switch {
+				case !fetched:
+					entry.ThreadError = threadNeverFetched
+				case json.Unmarshal(thread, &failed) == nil && failed.Error != "":
 					entry.Thread, entry.ThreadError = nil, failed.Error
 				}
 				raw, err := json.Marshal(entry)
@@ -175,7 +186,6 @@ func (e Export) Saves() ([]Save, error) {
 				if err != nil {
 					return nil, fmt.Errorf("r/%s's post %d: %w", sub.Name, i+1, err)
 				}
-				s.Position = max(sub.FirstRank, 1) + i
 				out = append(out, s)
 			}
 		}
@@ -193,8 +203,65 @@ func (e Export) Saves() ([]Save, error) {
 		if err != nil {
 			return nil, err
 		}
-		s.Position = 1
 		out = append(out, s)
+	}
+	return out, nil
+}
+
+// Drop is one stored export, as a connector delivers it.
+type Drop struct {
+	// Connector names the connector that delivered the export.
+	Connector string
+	// Name is the connector's own name for the export, such as its file's.
+	Name string
+	// Tags are the connector's tags for the export and every save in it.
+	Tags []string
+	Raw  []byte
+}
+
+// Landed is what one export's landing wrote: the export's own item, then
+// each save's in the export's order.
+type Landed struct {
+	Export landing.Landed
+	Saves  []landing.Landed
+}
+
+// Land lands d as an item of its own, keyed by its bytes, then each save it
+// carries as that item's child under reddit/<fullname>. A save's sighting
+// records the export's key as its cursor, which names the drop it came in.
+// Every arrival is outside, because Reddit's users wrote it. A save that an
+// earlier export landed keeps that export as its parent, and its first bytes.
+func Land(ctx context.Context, l *landing.Lander, d Drop) (Landed, error) {
+	e, err := Parse(d.Raw)
+	if err != nil {
+		return Landed{}, err
+	}
+	saves, err := e.Saves()
+	if err != nil {
+		return Landed{}, err
+	}
+	var out Landed
+	out.Export, err = l.Land(ctx, landing.Arrival{
+		Connector: d.Connector, Zone: store.Outside, MediaType: MediaTypeExport,
+		ExternalKey: d.Name, Tags: d.Tags, Body: bytes.NewReader(d.Raw),
+	})
+	if err != nil {
+		return out, fmt.Errorf("land the export: %w", err)
+	}
+	for _, s := range saves {
+		key, err := s.Key()
+		if err != nil {
+			return out, err
+		}
+		landed, err := l.Land(ctx, landing.Arrival{
+			Connector: d.Connector, Zone: store.Outside, Key: key, MediaType: MediaTypeSave,
+			ExternalKey: s.Fullname, Tags: d.Tags, CursorPosition: out.Export.Key, Title: s.Title, URL: s.URL,
+			Parent: out.Export.Key, Body: bytes.NewReader(s.Bytes),
+		})
+		if err != nil {
+			return out, fmt.Errorf("land %s: %w", key, err)
+		}
+		out.Saves = append(out.Saves, landed)
 	}
 	return out, nil
 }

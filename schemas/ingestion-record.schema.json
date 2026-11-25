@@ -99,6 +99,7 @@
         "blob_sha256": {"$ref": "#/$defs/sha256"},
         "root": {"description": "The named root the path resolves under, such as books.", "type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
         "path_sha256": {"$ref": "#/$defs/sha256"},
+        "modified_ts": {"description": "The file's modification time, to the nanosecond, when its bytes were last hashed at this path. A file whose size or modification time differs is hashed again before it is read as the blob.", "anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
         "found_ts": {"$ref": "#/$defs/timestamp"},
         "gone_ts": {"description": "When the file left its root. The item stays.", "anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]}
       }

@@ -145,18 +145,29 @@ type stored struct {
 	info   os.FileInfo
 }
 
-// walk lists every file under the volume's sha256 directory.
+// walk lists every file under the volume's sha256 directory. A volume whose
+// directory is gone lists nothing. A file that a write renames or removes while
+// the walk runs is left out, and every other error ends the walk.
 func (b *Blobs) walk() ([]stored, error) {
 	root := filepath.Join(b.dir, "sha256")
+	if _, err := os.Stat(root); errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
 	var out []stored
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
+			if path != root && errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
 			return err
 		}
 		if d.IsDir() {
 			return nil
 		}
 		info, err := d.Info()
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
 		if err != nil {
 			return err
 		}
@@ -173,8 +184,5 @@ func (b *Blobs) walk() ([]stored, error) {
 		out = append(out, stored{sha256: sum, size: info.Size(), info: info})
 		return nil
 	})
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
 	return out, err
 }

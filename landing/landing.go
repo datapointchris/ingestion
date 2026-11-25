@@ -18,8 +18,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
+	"strings"
+	"time"
 
 	"github.com/datapointchris/ingestion/itemkey"
 	"github.com/datapointchris/ingestion/store"
@@ -28,6 +31,10 @@ import (
 // ErrBytesMissing is a blob row whose bytes neither the volume nor a live home
 // holds.
 var ErrBytesMissing = errors.New("the blob's bytes are missing")
+
+// ErrKeyMismatch is an arrival naming a key other than the one its link or its
+// bytes derive.
+var ErrKeyMismatch = errors.New("the key is not the one its link or bytes derive")
 
 var namePattern = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 
@@ -76,8 +83,10 @@ type Arrival struct {
 	// Zone says who wrote the content: the connector's declared default, or
 	// what the push route read from the request.
 	Zone store.Zone
-	// Key is the item's key, as itemkey derived it from the artifact. Empty
-	// lands the bytes as file/<first 16 hex of their SHA-256>.
+	// Key is the item's key, as itemkey makes it. Empty takes the key that URL
+	// derives, or else the bytes' key, file/<first 16 hex of their SHA-256>.
+	// Land refuses a reddit, youtube or url key that differs from URL's, and a
+	// file key that differs from the bytes'. A home's file is keyed by its bytes.
 	Key       string
 	MediaType string
 	// ExternalKey is the connector's own key for the artifact. Empty keeps
@@ -86,7 +95,8 @@ type Arrival struct {
 	Tags           []string
 	CursorPosition string
 	Title          string
-	URL            string
+	// URL is the item's own URL, such as a Reddit post's permalink.
+	URL string
 	// Parent is the key of the item this one was split from, such as the
 	// Reddit export that carried a save.
 	Parent string
@@ -130,15 +140,19 @@ func (l *Lander) Land(ctx context.Context, a Arrival) (Landed, error) {
 		}
 		a.URL = canonical
 	}
-	key := a.Key
+	key, err := linkKey(a)
+	if err != nil {
+		return Landed{}, err
+	}
 	var written *Written
+	var modified string
 	switch {
 	case a.Home != nil:
-		w, err := l.hashHome(*a.Home)
+		w, mod, err := l.hashHome(*a.Home)
 		if err != nil {
 			return Landed{}, err
 		}
-		written = &w
+		written, modified = &w, mod
 	case a.Body != nil:
 		holds := false
 		if key != "" {
@@ -156,19 +170,57 @@ func (l *Lander) Land(ctx context.Context, a Arrival) (Landed, error) {
 			written = &w
 		}
 	}
-	if key == "" {
-		var err error
-		if key, err = itemkey.FromFileSHA256(written.SHA256); err != nil {
-			return Landed{}, err
-		}
+	if key, err = bytesKey(key, a.Home != nil, written); err != nil {
+		return Landed{}, err
 	}
 	var landed Landed
-	err := l.store.Update(ctx, func(tx *store.Tx) error {
+	err = l.store.Update(ctx, func(tx *store.Tx) error {
 		var err error
-		landed, err = record(ctx, tx, a, key, written)
+		landed, err = record(ctx, tx, a, key, written, modified)
 		return err
 	})
 	return landed, err
+}
+
+// linkKey is the key a names, or where it names none, the key its URL
+// derives. A home's file is keyed by its bytes, so its URL derives nothing. It
+// refuses a key of a link's kind that the URL does not derive.
+func linkKey(a Arrival) (string, error) {
+	if a.URL == "" || a.Home != nil {
+		return a.Key, nil
+	}
+	derived, err := itemkey.FromURL(a.URL)
+	if err != nil {
+		return "", err
+	}
+	if a.Key == "" {
+		return derived, nil
+	}
+	kind, _, _ := strings.Cut(a.Key, "/")
+	if (kind == itemkey.Reddit || kind == itemkey.YouTube || kind == itemkey.URL) && !strings.Contains(a.Key, "#") && a.Key != derived {
+		return "", fmt.Errorf("%w: %s derives %s, not %s", ErrKeyMismatch, a.URL, derived, a.Key)
+	}
+	return a.Key, nil
+}
+
+// bytesKey is key, or the key of the bytes w names where key is empty. It
+// refuses a home's key, or a file key, that the bytes do not derive.
+func bytesKey(key string, home bool, w *Written) (string, error) {
+	if w == nil {
+		return key, nil
+	}
+	derived, err := itemkey.FromFileSHA256(w.SHA256)
+	if err != nil {
+		return "", err
+	}
+	kind, _, _ := strings.Cut(key, "/")
+	switch {
+	case key == "":
+		return derived, nil
+	case (home || kind == itemkey.File && !strings.Contains(key, "#")) && key != derived:
+		return "", fmt.Errorf("%w: the bytes derive %s, not %s", ErrKeyMismatch, derived, key)
+	}
+	return key, nil
 }
 
 func (l *Lander) check(a Arrival) error {
@@ -181,8 +233,8 @@ func (l *Lander) check(a Arrival) error {
 		return errors.New("an arrival names its media type")
 	case a.Body != nil && a.Home != nil:
 		return errors.New("an arrival carries its bytes or names their home, not both")
-	case a.Key == "" && a.Body == nil && a.Home == nil:
-		return errors.New("an arrival with no key carries the bytes its key is derived from")
+	case a.Key == "" && a.URL == "" && a.Body == nil && a.Home == nil:
+		return errors.New("an arrival with no key carries the link or the bytes its key is derived from")
 	}
 	if a.Key != "" {
 		if err := itemkey.Check(a.Key); err != nil {
@@ -209,40 +261,47 @@ func (l *Lander) check(a Arrival) error {
 }
 
 // hashHome reads the file at h, which os.Root keeps below its root through
-// every symlink, and answers what its bytes are.
-func (l *Lander) hashHome(h Home) (Written, error) {
-	f, err := l.openHome(h.Root, h.Path)
+// every symlink. It answers what its bytes are, and the file's modification
+// time from before the read, so a write during the read leaves a time that
+// differs and the next reader hashes the file again.
+func (l *Lander) hashHome(h Home) (Written, string, error) {
+	f, info, err := l.openHome(h.Root, h.Path)
 	if err != nil {
-		return Written{}, err
+		return Written{}, "", err
 	}
 	defer func() { _ = f.Close() }()
-	return Hash(f)
+	w, err := Hash(f)
+	return w, modifiedStamp(info.ModTime()), err
 }
 
-func (l *Lander) openHome(name, path string) (*os.File, error) {
+func (l *Lander) openHome(name, path string) (*os.File, os.FileInfo, error) {
 	dir, ok := l.homes[name]
 	if !ok {
-		return nil, fmt.Errorf("no home root is named %q", name)
+		return nil, nil, fmt.Errorf("no home root is named %q", name)
 	}
 	root, err := os.OpenRoot(dir)
 	if err != nil {
-		return nil, fmt.Errorf("open home root %s: %w", name, err)
+		return nil, nil, fmt.Errorf("open home root %s: %w", name, err)
 	}
 	defer func() { _ = root.Close() }()
 	f, err := root.Open(filepath.FromSlash(path))
 	if err != nil {
-		return nil, fmt.Errorf("open %s:%s: %w", name, path, err)
+		return nil, nil, fmt.Errorf("open %s:%s: %w", name, path, err)
 	}
 	info, err := f.Stat()
 	if err != nil || !info.Mode().IsRegular() {
 		_ = f.Close()
-		return nil, fmt.Errorf("%s:%s is not a regular file", name, path)
+		return nil, nil, fmt.Errorf("%s:%s is not a regular file", name, path)
 	}
-	return f, nil
+	return f, info, nil
 }
 
+// modifiedStamp is a file's modification time as a home records it, to the
+// nanosecond.
+func modifiedStamp(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
+
 // record writes what a adds to the store, and nothing where it adds nothing.
-func record(ctx context.Context, tx *store.Tx, a Arrival, key string, w *Written) (Landed, error) {
+func record(ctx context.Context, tx *store.Tx, a Arrival, key string, w *Written, modified string) (Landed, error) {
 	landed := Landed{Key: key}
 	existing, found, err := tx.Item(ctx, key)
 	if err != nil {
@@ -270,8 +329,9 @@ func record(ctx context.Context, tx *store.Tx, a Arrival, key string, w *Written
 			landed.BlobAdded = true
 		}
 	}
+	homeChanged := false
 	if a.Home != nil {
-		if landed.HomeAdded, err = recordHome(ctx, tx, *a.Home, w.SHA256); err != nil {
+		if landed.HomeAdded, homeChanged, err = recordHome(ctx, tx, *a.Home, w.SHA256, modified); err != nil {
 			return landed, err
 		}
 	}
@@ -296,12 +356,17 @@ func record(ctx context.Context, tx *store.Tx, a Arrival, key string, w *Written
 	}
 	merged.Title = fill(merged.Title, a.Title)
 	merged.URL = fill(merged.URL, a.URL)
-	if !found || !sameItem(merged, existing) {
+	if !found || !reflect.DeepEqual(merged, existing) {
 		if err := tx.PutItem(ctx, merged); err != nil {
 			return landed, err
 		}
 		landed.ItemAdded = !found
 		landed.Changed = true
+	}
+	if found && merged.Zone != existing.Zone {
+		if err := raiseChildren(ctx, tx, key, merged.Zone); err != nil {
+			return landed, err
+		}
 	}
 
 	sighting, had, err := tx.Sighting(ctx, key, a.Connector)
@@ -321,41 +386,73 @@ func record(ctx context.Context, tx *store.Tx, a Arrival, key string, w *Written
 		position := a.CursorPosition
 		next.CursorPosition = &position
 	}
-	if !had || !sameSighting(next, sighting) {
+	if !had || !reflect.DeepEqual(next, sighting) {
 		if err := tx.PutSighting(ctx, next); err != nil {
 			return landed, err
 		}
 		landed.SightingAdded = !had
 		landed.Changed = true
 	}
-	landed.Changed = landed.Changed || landed.BlobAdded || landed.HomeAdded
+	landed.Changed = landed.Changed || landed.BlobAdded || homeChanged
 	return landed, nil
 }
 
-// recordHome records that the bytes sum live at h, and marks gone any other
-// bytes recorded at the same path, because the file there changed. It says
-// whether the home is new.
-func recordHome(ctx context.Context, tx *store.Tx, h Home, sum string) (bool, error) {
+// raiseChildren makes every item below key at least as strict as zone. A
+// child's zone is derived from its parent's, so a parent that a later sighting
+// made outside leaves no child reading as the owner's words.
+func raiseChildren(ctx context.Context, tx *store.Tx, key string, zone store.Zone) error {
+	parents := []string{key}
+	for len(parents) > 0 {
+		children, err := tx.Children(ctx, parents[0])
+		parents = parents[1:]
+		if err != nil {
+			return err
+		}
+		for _, child := range children {
+			if store.Stricter(child.Zone, zone) == child.Zone {
+				continue
+			}
+			child.Zone = store.Stricter(child.Zone, zone)
+			if err := tx.PutItem(ctx, child); err != nil {
+				return err
+			}
+			parents = append(parents, child.Key)
+		}
+	}
+	return nil
+}
+
+// recordHome records that the bytes sum live at h with the modification time
+// modified, and marks gone any other bytes recorded at the same path, because
+// the file there changed. It says whether the home is new, and whether it
+// wrote anything.
+func recordHome(ctx context.Context, tx *store.Tx, h Home, sum, modified string) (added, changed bool, err error) {
 	pathSum := sha256.Sum256([]byte(h.Path))
 	pathSHA := hex.EncodeToString(pathSum[:])
 	live, err := tx.LiveHomesAt(ctx, h.Root, pathSHA)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
-	here := false
+	var here *store.Home
 	for _, home := range live {
 		if home.BlobSHA256 == sum {
-			here = true
+			here = &home
 			continue
 		}
 		if err := tx.PutHome(ctx, home, true); err != nil {
-			return false, err
+			return false, false, err
 		}
+		changed = true
 	}
-	if here {
-		return false, nil
+	if here == nil {
+		home := store.Home{BlobSHA256: sum, Root: h.Root, PathSHA256: pathSHA, Path: h.Path, ModifiedTS: &modified}
+		return true, true, tx.PutHome(ctx, home, false)
 	}
-	return true, tx.PutHome(ctx, store.Home{BlobSHA256: sum, Root: h.Root, PathSHA256: pathSHA, Path: h.Path}, false)
+	if here.ModifiedTS != nil && *here.ModifiedTS == modified {
+		return false, changed, nil
+	}
+	here.ModifiedTS = &modified
+	return false, true, tx.PutHome(ctx, *here, false)
 }
 
 // Keep writes bytes that a worker made, such as an extractor's output, under
@@ -389,32 +486,61 @@ func (l *Lander) Keep(ctx context.Context, r io.Reader, sum, mediaType string) (
 	return blob, added, err
 }
 
-// Open opens the bytes named sum, from the volume or else from a live home
-// whose file still holds the blob's size. It answers store.ErrNoBlob where
-// no row names sum, and ErrBytesMissing where no copy of the bytes is left.
-func (l *Lander) Open(ctx context.Context, sum string) (*os.File, store.Blob, error) {
+// Bytes is an open copy of a blob's bytes, which the caller closes.
+type Bytes struct {
+	*os.File
+	Blob store.Blob
+	// Home is where the bytes were read, and nil for the volume's copy. A
+	// home's file can change after it is read, and the volume's never does.
+	Home *store.Home
+}
+
+// Open opens the bytes named sum: the volume's copy, or else a live home whose
+// file still holds them. A home's file with the blob's size and the
+// modification time recorded for it is taken as the blob, as git takes a file
+// whose stat matches its index. Any other is hashed again first. It answers
+// store.ErrNoBlob where no row names sum, and ErrBytesMissing where no copy of
+// the bytes is left.
+func (l *Lander) Open(ctx context.Context, sum string) (Bytes, error) {
 	blob, err := l.store.Blob(ctx, sum)
 	if err != nil {
-		return nil, blob, err
+		return Bytes{Blob: blob}, err
 	}
 	if f, err := os.Open(l.blobs.Path(sum)); err == nil {
-		return f, blob, nil
+		return Bytes{File: f, Blob: blob}, nil
 	}
 	homes, err := l.store.LiveHomes(ctx, sum)
 	if err != nil {
-		return nil, blob, err
+		return Bytes{Blob: blob}, err
 	}
 	for _, h := range homes {
-		f, err := l.openHome(h.Root, h.Path)
+		f, info, err := l.openHome(h.Root, h.Path)
 		if err != nil {
 			continue
 		}
-		if info, err := f.Stat(); err == nil && info.Size() == blob.SizeBytes {
-			return f, blob, nil
+		if holds(f, info, h, blob) {
+			return Bytes{File: f, Blob: blob, Home: &h}, nil
 		}
 		_ = f.Close()
 	}
-	return nil, blob, fmt.Errorf("%s: %w", sum, ErrBytesMissing)
+	return Bytes{Blob: blob}, fmt.Errorf("%s: %w", sum, ErrBytesMissing)
+}
+
+// holds says whether f, the file at home h, still holds blob's bytes, and
+// leaves f at its start.
+func holds(f *os.File, info os.FileInfo, h store.Home, blob store.Blob) bool {
+	if info.Size() != blob.SizeBytes {
+		return false
+	}
+	if h.ModifiedTS != nil && *h.ModifiedTS == modifiedStamp(info.ModTime()) {
+		return true
+	}
+	w, err := Hash(f)
+	if err != nil || w.SHA256 != blob.SHA256 {
+		return false
+	}
+	_, err = f.Seek(0, io.SeekStart)
+	return err == nil
 }
 
 // fill is have, or want where have is unset and want is not empty.
@@ -437,16 +563,4 @@ func union(have, add []string) []string {
 		out = []string{}
 	}
 	return out
-}
-
-func same(a, b *string) bool { return (a == nil && b == nil) || (a != nil && b != nil && *a == *b) }
-
-func sameItem(a, b store.Item) bool {
-	return a.Zone == b.Zone && a.MediaType == b.MediaType && same(a.BlobSHA256, b.BlobSHA256) &&
-		same(a.ParentKey, b.ParentKey) && same(a.Title, b.Title) && same(a.URL, b.URL)
-}
-
-func sameSighting(a, b store.Sighting) bool {
-	return a.Zone == b.Zone && a.ExternalKey == b.ExternalKey && same(a.CursorPosition, b.CursorPosition) &&
-		slices.Equal(a.Tags, b.Tags)
 }

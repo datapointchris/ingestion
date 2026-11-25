@@ -32,6 +32,11 @@ func (t *Tx) Item(ctx context.Context, key string) (Item, bool, error) {
 	return first[Item](ctx, t.tx, table("items"), `key = ?`, key)
 }
 
+// Children reads every item whose parent is key.
+func (t *Tx) Children(ctx context.Context, key string) ([]Item, error) {
+	return readInto[Item](ctx, t.tx, table("items"), `parent_key = ?`, key)
+}
+
 // Sighting reads connector's sighting of the item under key, and false where
 // the store holds none.
 func (t *Tx) Sighting(ctx context.Context, key, connector string) (Sighting, bool, error) {

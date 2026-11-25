@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http/httptest"
@@ -15,16 +16,15 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
-	"github.com/datapointchris/ingestion/itemkey"
 	"github.com/datapointchris/ingestion/landing"
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
 )
 
-// items list --keys pages through the service to its limit and prints keys
-// alone, items show resolves a Reddit link to its post, and blobs unpaired
-// names a stray blob and exits non-zero.
-func TestItemsListKeysPagesToItsLimitShowResolvesALinkAndUnpairedFailsOnAStrayBlob(t *testing.T) {
+// items list --keys prints the newest keys alone up to its limit, items show
+// reaches a Reddit post from a link the service resolves, a key that is not
+// one exits 2, and blobs unpaired names a stray blob and exits 3.
+func TestItemsListAndShowReadTheServiceAndUnpairedExits3OnAStrayBlob(t *testing.T) {
 	ctx := t.Context()
 	dir := t.TempDir()
 	st, err := store.Open(ctx, filepath.Join(dir, "ingestion.db"))
@@ -42,11 +42,11 @@ func TestItemsListKeysPagesToItsLimitShowResolvesALinkAndUnpairedFailsOnAStrayBl
 	}
 	var landed []string
 	for _, link := range []string{"https://example.com/a", "https://www.reddit.com/r/golang/comments/aq7ggd/a_post/", "https://example.com/b"} {
-		key, _ := itemkey.FromURL(link)
-		if _, err := lander.Land(ctx, landing.Arrival{Connector: "phone", Zone: store.Outside, Key: key, MediaType: "text/uri-list", URL: link}); err != nil {
+		l, err := lander.Land(ctx, landing.Arrival{Connector: "phone", Zone: store.Outside, MediaType: "text/uri-list", URL: link})
+		if err != nil {
 			t.Fatal(err)
 		}
-		landed = append([]string{key}, landed...)
+		landed = append([]string{l.Key}, landed...)
 	}
 
 	provider := authtest.NewProvider(t)
@@ -67,24 +67,28 @@ func TestItemsListKeysPagesToItsLimitShowResolvesALinkAndUnpairedFailsOnAStrayBl
 			t.Fatal(err)
 		}
 	}
-	page := itemsPage
-	itemsPage = 2
-	t.Cleanup(func() { itemsPage = page })
-
-	out, err := runCLI(t, "items", "list", "--keys", "--limit", "3", "--config", config)
-	if err != nil || out != strings.Join(landed, "\n")+"\n" {
-		t.Errorf("items list --keys printed %q, %v; want %v one per line", out, err, landed)
+	out, err := runCLI(t, "items", "list", "--keys", "--limit", "2", "--config", config)
+	if err != nil || out != strings.Join(landed[:2], "\n")+"\n" {
+		t.Errorf("items list --keys printed %q, %v; want %v one per line", out, err, landed[:2])
 	}
 	out, err = runCLI(t, "items", "show", "https://old.reddit.com/r/golang/comments/aq7ggd/a_post/?utm_source=share", "--config", config)
 	if err != nil || !strings.HasPrefix(out, "reddit/t3_aq7ggd   outside   landed\n") {
 		t.Errorf("items show of a Reddit link printed %q, %v", out, err)
 	}
-	if _, err := blobs.Write(strings.NewReader("a stray"), ""); err != nil {
+	if _, err := runCLI(t, "items", "show", "reddit/aq7ggd", "--config", config); exitCode(io.Discard, err) != 2 {
+		t.Errorf("items show of a key that is not one answered %v, want exit 2", err)
+	}
+	stray, err := blobs.Write(strings.NewReader("a stray"), "")
+	if err != nil {
 		t.Fatal(err)
 	}
-	out, err = runCLI(t, "blobs", "unpaired", "--config", config)
-	if err == nil || !strings.Contains(out, "Blobs with no row (1):") {
-		t.Errorf("blobs unpaired over a stray blob printed %q and answered %v, want it named and an error", out, err)
+	out, err = runCLI(t, "blobs", "unpaired", "--json", "--config", config)
+	var answer server.UnpairedAnswer
+	if code := exitCode(io.Discard, err); code != 3 || json.Unmarshal([]byte(out), &answer) != nil {
+		t.Fatalf("blobs unpaired over a stray blob exited %d and printed %q, want 3 and its answer", code, out)
+	}
+	if len(answer.Unrowed) != 1 || *answer.Unrowed[0].SHA256 != stray.SHA256 || len(answer.Missing) != 0 {
+		t.Errorf("blobs unpaired named %+v with no row and %+v with no bytes, want the stray alone", answer.Unrowed, answer.Missing)
 	}
 }
 

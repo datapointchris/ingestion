@@ -22,10 +22,11 @@ var blobsUnpairedCmd = &cobra.Command{
 		"with refs, and deletes nothing. It lists each blob in the volume that no row\n" +
 		"names, such as the bytes of a landing whose write failed. It lists each row\n" +
 		"whose bytes neither the volume nor a live home holds. It lists each file in\n" +
-		"the volume that is not a blob and is older than an hour, such as a temporary\n" +
-		"file that no rename finished.\n" +
+		"the volume that is not a blob and is too old for a write to be running it,\n" +
+		"such as a temporary file that no rename finished.\n" +
 		"\n" +
-		"It exits 1 where it lists anything.",
+		"It exits 3 where it lists anything, because only a person can fix what it\n" +
+		"lists, and 1 where it could not compare.",
 	Example: "  ingestion blobs unpaired\n" +
 		"  ingestion blobs unpaired --json",
 	Args: cobra.NoArgs,
@@ -58,8 +59,8 @@ func runBlobsUnpaired(cmd *cobra.Command, _ []string) error {
 		writeUnpaired(w, answer)
 	}
 	if n := len(answer.Unrowed) + len(answer.Missing) + len(answer.Leftovers); n > 0 {
-		return fmt.Errorf("%d unpaired: %d blobs with no row, %d rows with no bytes, %d leftover files",
-			n, len(answer.Unrowed), len(answer.Missing), len(answer.Leftovers))
+		return fmt.Errorf("%d unpaired: %d blobs with no row, %d rows with no bytes, %d leftover files: %w",
+			n, len(answer.Unrowed), len(answer.Missing), len(answer.Leftovers), errIssue)
 	}
 	return nil
 }

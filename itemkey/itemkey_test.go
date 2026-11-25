@@ -32,7 +32,10 @@ func TestEveryFormOfAnArtifactResolvesToItsOneKey(t *testing.T) {
 			t.Errorf("Resolve(%q) = %q, %v; want %q", c.in, got, err, c.want)
 		}
 	}
-	for _, refused := range []string{"reddit/aq7ggd", "url/0123", "url/0123456789abcdef#0", "ftp://example.com/x", "t3_aq7ggd", "file/../etc"} {
+	for _, refused := range []string{
+		"reddit/aq7ggd", "url/0123", "url/0123456789abcdef#0", "ftp://example.com/x", "t3_aq7ggd", "file/../etc",
+		"https://www.reddit.com/r/golang/s/AbCdEf1234",
+	} {
 		if got, err := itemkey.Resolve(refused); err == nil {
 			t.Errorf("Resolve(%q) = %q, want it refused", refused, got)
 		}

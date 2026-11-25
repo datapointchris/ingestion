@@ -22,7 +22,7 @@ type Unpaired struct {
 	// bytes of a landing whose transaction failed.
 	Unrowed []StoredFile
 	// Missing is each blob row whose bytes neither the volume nor a live home
-	// holds.
+	// holds, as Open decides it.
 	Missing []store.Blob
 	// Leftovers is each file in the volume that is not a blob, such as a
 	// temporary file older than LeftoverAfter.
@@ -76,7 +76,7 @@ func (l *Lander) Unpaired(ctx context.Context) (Unpaired, error) {
 		if held[r.SHA256] {
 			continue
 		}
-		f, _, err := l.Open(ctx, r.SHA256)
+		b, err := l.Open(ctx, r.SHA256)
 		if errors.Is(err, ErrBytesMissing) {
 			u.Missing = append(u.Missing, r)
 			continue
@@ -84,7 +84,7 @@ func (l *Lander) Unpaired(ctx context.Context) (Unpaired, error) {
 		if err != nil {
 			return u, err
 		}
-		_ = f.Close()
+		_ = b.Close()
 	}
 	return u, nil
 }

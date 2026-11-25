@@ -218,9 +218,34 @@ func getJSON(ctx context.Context, path, api, route string, into any) ([]byte, er
 			lastErr = fmt.Errorf("it answered %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
 			continue
 		}
-		return nil, fmt.Errorf("%s refused GET %s with %d: %s", named, route, resp.StatusCode, strings.TrimSpace(string(raw)))
+		return nil, refusalOf(named, route, resp.StatusCode, raw)
 	}
 	return nil, fmt.Errorf("%w: %s, after %d tries: %v", errNoAnswer, named, answerAttempts, lastErr)
+}
+
+// refusal is the server refusing a read. Code and Message are what its body
+// names, where the body is the server's refusal.
+type refusal struct {
+	Server, Route string
+	Status        int
+	Code, Message string
+	Body          string
+}
+
+func (r *refusal) Error() string {
+	return fmt.Sprintf("%s refused GET %s with %d: %s", r.Server, r.Route, r.Status, r.Body)
+}
+
+func refusalOf(server, route string, status int, raw []byte) *refusal {
+	r := &refusal{Server: server, Route: route, Status: status, Body: strings.TrimSpace(string(raw))}
+	var body struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(raw, &body) == nil {
+		r.Code, r.Message = body.Code, body.Message
+	}
+	return r
 }
 
 // chosenBy says what named the server: the --api flag, or the config file at

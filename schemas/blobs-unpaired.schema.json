@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/datapointchris/ingestion/schemas/blobs-unpaired.schema.json",
   "title": "Where the blob volume and the blob rows disagree",
-  "description": "What GET /api/v1/blobs/unpaired answers and `ingestion blobs unpaired --json` prints. It names each blob in the volume that no row names, each row whose bytes neither the volume nor a live home holds, and each file in the volume that is not a blob and is older than an hour. It deletes nothing.",
+  "description": "What GET /api/v1/blobs/unpaired answers and `ingestion blobs unpaired --json` prints. It names each blob in the volume that no row names, each row whose bytes neither the volume nor a live home holds, and each file in the volume that is not a blob and is too old for a write to be running it. It deletes nothing.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "files", "rows", "unrowed", "missing", "leftovers"],

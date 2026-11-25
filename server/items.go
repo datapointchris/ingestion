@@ -15,7 +15,8 @@ import (
 const ScopeItemsRead = "ingestion.items.read"
 
 // DefaultItemsListed bounds a list whose caller names no limit, and
-// MaxItemsListed bounds every list.
+// MaxItemsListed bounds every page. A larger limit answers a page of
+// MaxItemsListed and its next cursor, so a caller pages on without knowing it.
 const (
 	DefaultItemsListed = 100
 	MaxItemsListed     = 1000
@@ -75,10 +76,11 @@ type ItemView struct {
 
 // HomeView names where the item's file lives under a named root.
 type HomeView struct {
-	Root    string  `json:"root"`
-	Path    string  `json:"path"`
-	FoundTS string  `json:"found_ts"`
-	GoneTS  *string `json:"gone_ts"`
+	Root       string  `json:"root"`
+	Path       string  `json:"path"`
+	ModifiedTS *string `json:"modified_ts"`
+	FoundTS    string  `json:"found_ts"`
+	GoneTS     *string `json:"gone_ts"`
 }
 
 // SightingView is one connector's arrival of the item.
@@ -160,11 +162,11 @@ func (h itemHandlers) list(w http.ResponseWriter, r *http.Request) {
 	page := store.ItemPage{Limit: DefaultItemsListed, After: r.URL.Query().Get("after")}
 	if raw := r.URL.Query().Get("limit"); raw != "" {
 		n, err := strconv.Atoi(raw)
-		if err != nil || n < 1 || n > MaxItemsListed {
-			Refuse(w, http.StatusBadRequest, CodeInvalidQuery, "limit is from 1 to %d, not %q", MaxItemsListed, raw)
+		if err != nil || n < 1 {
+			Refuse(w, http.StatusBadRequest, CodeInvalidQuery, "limit is a whole number from 1, not %q", raw)
 			return
 		}
-		page.Limit = n
+		page.Limit = min(n, MaxItemsListed)
 	}
 	records, next, err := h.store.Items(r.Context(), page)
 	if errors.Is(err, store.ErrBadCursor) {
@@ -232,7 +234,7 @@ func itemAnswer(rec store.ItemRecords) ItemAnswer {
 		a.Item.SizeBytes, a.Item.MD5 = &rec.Blob.SizeBytes, &rec.Blob.MD5
 	}
 	for _, h := range rec.Homes {
-		a.Homes = append(a.Homes, HomeView{Root: h.Root, Path: h.Path, FoundTS: h.FoundTS, GoneTS: h.GoneTS})
+		a.Homes = append(a.Homes, HomeView{Root: h.Root, Path: h.Path, ModifiedTS: h.ModifiedTS, FoundTS: h.FoundTS, GoneTS: h.GoneTS})
 	}
 	for _, s := range rec.Sightings {
 		a.Sightings = append(a.Sightings, SightingView{

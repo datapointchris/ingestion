@@ -38,6 +38,7 @@
         "properties": {
           "root": {"type": "string"},
           "path": {"description": "The file's place below its root, with forward slashes.", "type": "string"},
+          "modified_ts": {"description": "The file's modification time, to the nanosecond, when its bytes were last hashed at this path.", "type": ["string", "null"], "format": "date-time"},
           "found_ts": {"type": "string", "format": "date-time"},
           "gone_ts": {"type": ["string", "null"], "format": "date-time"}
         }

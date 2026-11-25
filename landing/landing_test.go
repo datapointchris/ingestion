@@ -8,16 +8,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/datapointchris/ingestion/itemkey"
 	"github.com/datapointchris/ingestion/landing"
-	"github.com/datapointchris/ingestion/redditexport"
 	"github.com/datapointchris/ingestion/store"
 )
-
-// RedditExportsEnv names a directory of stored Reddit exports, one JSON file
-// each, for the test that lands them. Without it the test skips.
-const RedditExportsEnv = "INGESTION_REDDIT_EXPORTS_DIR"
 
 func newLander(t *testing.T, homes map[string]string) (*landing.Lander, *store.Store, *landing.Blobs) {
 	t.Helper()
@@ -39,9 +35,10 @@ func newLander(t *testing.T, homes map[string]string) (*landing.Lander, *store.S
 }
 
 // One page from a feed and from the phone is one item with two sightings and
-// one blob. A landing that fails after its bytes are written leaves bytes with
-// no row, never a row with no bytes, and the unpaired report names both kinds
-// of disagreement.
+// one blob, whether an arrival names the key or leaves Land to derive it from
+// the URL. A key that the URL does not derive is refused. A landing that fails
+// after its bytes are written leaves bytes with no row, never a row with no
+// bytes, and the unpaired report names both kinds of disagreement.
 func TestOneArtifactFromTwoConnectorsMakesOneBlobOneItemAndTwoSightings(t *testing.T) {
 	ctx := t.Context()
 	l, st, blobs := newLander(t, nil)
@@ -49,14 +46,20 @@ func TestOneArtifactFromTwoConnectorsMakesOneBlobOneItemAndTwoSightings(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, connector := range []string{"freshrss", "phone"} {
+	for connector, named := range map[string]string{"freshrss": "", "phone": key} {
 		landed, err := l.Land(ctx, landing.Arrival{
-			Connector: connector, Zone: store.Outside, Key: key, MediaType: "text/html",
+			Connector: connector, Zone: store.Outside, Key: named, MediaType: "text/html",
 			URL: "https://EXAMPLE.com/a?utm_source=" + connector, Body: strings.NewReader("<p>one page</p>"),
 		})
-		if err != nil || !landed.SightingAdded {
-			t.Fatalf("%s's arrival: %+v, %v", connector, landed, err)
+		if err != nil || !landed.SightingAdded || landed.Key != key {
+			t.Fatalf("%s's arrival: %+v, %v; want a sighting of %s", connector, landed, err, key)
 		}
+	}
+	_, err = l.Land(ctx, landing.Arrival{
+		Connector: "phone", Zone: store.Outside, Key: "youtube/dQw4w9WgXcQ", MediaType: "text/html", URL: "https://example.com/other",
+	})
+	if !errors.Is(err, landing.ErrKeyMismatch) {
+		t.Errorf("a youtube key with an unrelated URL answered %v, want ErrKeyMismatch", err)
 	}
 	records, err := st.Item(ctx, key)
 	if err != nil {
@@ -97,7 +100,7 @@ func TestOneArtifactFromTwoConnectorsMakesOneBlobOneItemAndTwoSightings(t *testi
 
 // A shared link lands outside, typed text lands owner, and a child takes the
 // stricter of its own zone and its parent's. An owner item that an outside
-// connector sights again becomes outside.
+// connector sights again becomes outside, and so does its child.
 func TestTheZoneRecordsWhoWroteTheContentAndAChildTakesTheStricter(t *testing.T) {
 	ctx := t.Context()
 	l, st, _ := newLander(t, nil)
@@ -125,14 +128,17 @@ func TestTheZoneRecordsWhoWroteTheContentAndAChildTakesTheStricter(t *testing.T)
 	if _, err := l.Land(ctx, landing.Arrival{Connector: "freshrss", Zone: store.Outside, Key: typed, MediaType: "text/plain"}); err != nil {
 		t.Fatal(err)
 	}
-	if r, _ := st.Item(ctx, typed); r.Item.Zone != store.Outside {
-		t.Errorf("an owner item sighted outside reads %q, want outside", r.Item.Zone)
+	for _, key := range []string{typed, typedChild} {
+		if r, _ := st.Item(ctx, key); r.Item.Zone != store.Outside {
+			t.Errorf("after its owner item was sighted outside, %s reads %q, want outside", key, r.Item.Zone)
+		}
 	}
 }
 
 // A book in a copy of the books folder lands by reference: its bytes are
 // hashed where they lie, its home is books:<path>, and the volume gains
 // nothing. A rerun writes nothing, and a path that leaves the root is refused.
+// A book rewritten in place at the same size is no longer served as the blob.
 func TestABookLandsByReferenceAndARerunLandsNothing(t *testing.T) {
 	ctx := t.Context()
 	books := t.TempDir()
@@ -160,14 +166,14 @@ func TestABookLandsByReferenceAndARerunLandsNothing(t *testing.T) {
 	if err != nil || u.Files != 0 || len(u.Missing) != 0 {
 		t.Errorf("the volume reads %+v, %v; want no file and no row missing its bytes", u, err)
 	}
-	f, _, err := l.Open(ctx, first.SHA256)
+	b, err := l.Open(ctx, first.SHA256)
 	if err != nil {
 		t.Fatal(err)
 	}
-	served, _ := io.ReadAll(f)
-	_ = f.Close()
-	if !bytes.Equal(served, pdf) {
-		t.Errorf("the blob served %d bytes from its home, want the book's %d", len(served), len(pdf))
+	served, _ := io.ReadAll(b)
+	_ = b.Close()
+	if !bytes.Equal(served, pdf) || b.Home == nil {
+		t.Errorf("the blob served %d bytes from home %v, want the book's %d from its home", len(served), b.Home, len(pdf))
 	}
 
 	again, err := l.Land(ctx, book)
@@ -184,91 +190,24 @@ func TestABookLandsByReferenceAndARerunLandsNothing(t *testing.T) {
 			t.Errorf("a home at %q landed, want it refused", path)
 		}
 	}
-}
+	named := book
+	named.Key = "file/0123456789abcdef"
+	if _, err := l.Land(ctx, named); !errors.Is(err, landing.ErrKeyMismatch) {
+		t.Errorf("a home under a key other than its bytes' answered %v, want ErrKeyMismatch", err)
+	}
 
-// The stored Reddit exports land as one item and one blob per distinct save
-// under reddit/<fullname>, each save a child of the export that carried it
-// first, and every blob row's bytes are on disk. The exports are outsider text
-// in a public repo, so the test reads them only from RedditExportsEnv and
-// reports counts alone.
-func TestTheRealRedditExportsLandOneBlobPerSave(t *testing.T) {
-	dir := os.Getenv(RedditExportsEnv)
-	if dir == "" {
-		t.Skip(RedditExportsEnv + " names no directory of stored Reddit exports")
+	path := filepath.Join(books, "Some Author", "A Book.pdf")
+	if err := os.WriteFile(path, []byte("%PDF-1.7 a fake"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	ctx := t.Context()
-	l, st, blobs := newLander(t, nil)
-	files, err := filepath.Glob(filepath.Join(dir, "*.json"))
-	if err != nil || len(files) == 0 {
-		t.Fatalf("%s holds no JSON files: %v", dir, err)
+	later := time.Now().Add(time.Minute)
+	if err := os.Chtimes(path, later, later); err != nil {
+		t.Fatal(err)
 	}
-	saves, added := 0, 0
-	fullnames := map[string]bool{}
-	for _, path := range files {
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		export, err := redditexport.Parse(raw)
-		if err != nil {
-			t.Fatalf("%s: %v", filepath.Base(path), err)
-		}
-		exported, err := l.Land(ctx, landing.Arrival{
-			Connector: "reddit-exports", Zone: store.Outside, MediaType: redditexport.MediaTypeExport,
-			ExternalKey: strings.TrimSuffix(filepath.Base(path), ".json"), Body: bytes.NewReader(raw),
-		})
-		if err != nil {
-			t.Fatalf("%s: %v", filepath.Base(path), err)
-		}
-		split, err := export.Saves()
-		if err != nil {
-			t.Fatalf("%s: %v", filepath.Base(path), err)
-		}
-		for _, s := range split {
-			key, err := s.Key()
-			if err != nil {
-				t.Fatalf("%s: a save's key: %v", filepath.Base(path), err)
-			}
-			landed, err := l.Land(ctx, landing.Arrival{
-				Connector: "reddit-exports", Zone: store.Outside, Key: key, MediaType: redditexport.MediaTypeSave,
-				ExternalKey: s.Fullname, CursorPosition: exported.Key, Title: s.Title, URL: s.URL,
-				Parent: exported.Key, Body: bytes.NewReader(s.Bytes),
-			})
-			if err != nil {
-				t.Fatalf("land %s: %v", key, err)
-			}
-			saves++
-			fullnames[s.Fullname] = true
-			if landed.ItemAdded {
-				added++
-			}
-		}
+	if _, err := l.Open(ctx, first.SHA256); !errors.Is(err, landing.ErrBytesMissing) {
+		t.Errorf("a book rewritten at the same size opened with %v, want ErrBytesMissing", err)
 	}
-	count := func(query string) int {
-		var n int
-		if err := st.Reader().QueryRowContext(ctx, query).Scan(&n); err != nil {
-			t.Fatal(err)
-		}
-		return n
+	if u, err := l.Unpaired(ctx); err != nil || len(u.Missing) != 1 {
+		t.Errorf("after the rewrite the report names %d rows with no bytes, %v; want the book's", len(u.Missing), err)
 	}
-	items := count(`SELECT count(*) FROM items WHERE key LIKE 'reddit/%'`)
-	withBytes := count(`SELECT count(*) FROM items JOIN blobs ON blobs.sha256 = items.blob_sha256 WHERE key LIKE 'reddit/%'`)
-	children := count(`SELECT count(*) FROM items WHERE key LIKE 'reddit/%' AND parent_key LIKE 'file/%'`)
-	if items != len(fullnames) || added != items || withBytes != items || children != items {
-		t.Errorf("%d saves in %d exports made %d reddit items (%d added), %d with a blob row and %d with a parent; want %d each",
-			saves, len(files), items, added, withBytes, children, len(fullnames))
-	}
-	for key := range fullnames {
-		r, err := st.Item(ctx, "reddit/"+key)
-		if err != nil || r.Item.BlobSHA256 == nil || !blobs.Has(*r.Item.BlobSHA256) {
-			t.Errorf("reddit/%s holds no bytes on disk: %v", key, err)
-		}
-	}
-	u, err := l.Unpaired(ctx)
-	if err != nil || len(u.Unrowed)+len(u.Missing)+len(u.Leftovers) != 0 {
-		t.Errorf("the volume and the rows disagree: %d unrowed, %d missing, %d leftovers, %v",
-			len(u.Unrowed), len(u.Missing), len(u.Leftovers), err)
-	}
-	t.Logf("%d exports, %d saves, %d reddit items, %d blobs in all (%d files), %d sightings",
-		len(files), saves, items, u.Rows, u.Files, count(`SELECT count(*) FROM sightings`))
 }

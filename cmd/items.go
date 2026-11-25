@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -12,12 +13,8 @@ import (
 	"github.com/datapointchris/goclikit"
 	"github.com/spf13/cobra"
 
-	"github.com/datapointchris/ingestion/itemkey"
 	"github.com/datapointchris/ingestion/server"
 )
-
-// itemsPage is the most items one request asks for.
-var itemsPage = server.MaxItemsListed
 
 var itemsCmd = &cobra.Command{
 	Use:   "items",
@@ -82,9 +79,10 @@ func runItemsList(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("%w: --keys and --json each choose the output, so give one", goclikit.ErrUsage)
 	}
 	answer := server.ItemsAnswer{SchemaVersion: 1, Items: []server.ItemListed{}}
+	// The server answers at most its own page, with a cursor to the rest.
 	for len(answer.Items) < limit {
 		q := url.Values{}
-		q.Set("limit", strconv.Itoa(min(limit-len(answer.Items), itemsPage)))
+		q.Set("limit", strconv.Itoa(limit-len(answer.Items)))
 		if answer.Next != nil {
 			q.Set("after", *answer.Next)
 		}
@@ -142,12 +140,14 @@ func writeItems(w io.Writer, items []server.ItemListed) {
 func runItemsShow(cmd *cobra.Command, args []string) error {
 	asJSON, _ := cmd.Flags().GetBool("json")
 	api, _ := cmd.Flags().GetString("api")
-	key, err := itemkey.Resolve(args[0])
-	if err != nil {
-		return fmt.Errorf("%w: %w", goclikit.ErrUsage, err)
-	}
+	// The server resolves a URL to its key, so a CLI of another release reaches
+	// the item that the service's own itemkey names.
 	var answer server.ItemAnswer
-	raw, err := getJSON(cmd.Context(), configPath(cmd), api, "/api/v1/items/"+url.PathEscape(key), &answer)
+	raw, err := getJSON(cmd.Context(), configPath(cmd), api, "/api/v1/items/"+url.PathEscape(strings.TrimSpace(args[0])), &answer)
+	var refused *refusal
+	if errors.As(err, &refused) && refused.Code == server.CodeInvalidKey {
+		return fmt.Errorf("%w: %s", goclikit.ErrUsage, refused.Message)
+	}
 	if err != nil {
 		return err
 	}

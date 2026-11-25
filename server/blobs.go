@@ -65,14 +65,16 @@ type blobHandlers struct {
 }
 
 // read serves the bytes with their media type, and answers a range or a HEAD
-// as http.ServeContent does. The ETag and Repr-Digest carry the SHA-256.
+// as http.ServeContent does. The ETag and Repr-Digest carry the SHA-256. The
+// volume's copy never changes, so a cache keeps it. A home's file can change,
+// so a cache asks again before each use.
 func (h blobHandlers) read(w http.ResponseWriter, r *http.Request) {
 	sum := r.PathValue("sha256")
 	if err := landing.CheckSHA256(sum); err != nil {
 		Refuse(w, http.StatusBadRequest, CodeInvalidBlob, "%v", err)
 		return
 	}
-	f, blob, err := h.lander.Open(r.Context(), sum)
+	b, err := h.lander.Open(r.Context(), sum)
 	switch {
 	case errors.Is(err, store.ErrNoBlob):
 		Refuse(w, http.StatusNotFound, CodeBlobNotFound, "no blob %s", sum)
@@ -85,14 +87,18 @@ func (h blobHandlers) read(w http.ResponseWriter, r *http.Request) {
 		h.internal(w, r, "read a blob", err)
 		return
 	}
-	defer func() { _ = f.Close() }()
+	defer func() { _ = b.Close() }()
 	raw, _ := hex.DecodeString(sum)
-	w.Header().Set("Content-Type", blob.MediaType)
+	w.Header().Set("Content-Type", b.Blob.MediaType)
 	w.Header().Set("ETag", `"`+sum+`"`)
 	w.Header().Set("Repr-Digest", "sha-256=:"+base64.StdEncoding.EncodeToString(raw)+":")
-	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
-	created, _ := time.Parse(store.StampLayout, blob.CreatedTS)
-	http.ServeContent(w, r, "", created, f)
+	if b.Home == nil {
+		w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	} else {
+		w.Header().Set("Cache-Control", "private, no-cache")
+	}
+	created, _ := time.Parse(store.StampLayout, b.Blob.CreatedTS)
+	http.ServeContent(w, r, "", created, b)
 }
 
 // write keeps the body under the SHA-256 the path names, with the
