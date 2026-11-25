@@ -183,6 +183,7 @@
         "stage": {"$ref": "#/$defs/stage"},
         "connector": {"description": "The connector whose sightings selected the items, and null for every connector.", "type": ["string", "null"]},
         "item_key": {"description": "The one item the replay selected, and null for every item.", "anyOf": [{"$ref": "#/$defs/item_key"}, {"type": "null"}]},
+        "placed_by": {"description": "person where the replay ran only over the items whose side a person placed, as a measurement of the stage against each placement, and null where it ran over every item it selected.", "enum": ["person", null]},
         "items": {"description": "How many items the replay queued a task for.", "type": "integer", "minimum": 0},
         "requested_by": {"description": "Who asked: person:<login> or service:<client id>.", "type": "string"},
         "requested_ts": {"$ref": "#/$defs/timestamp"}

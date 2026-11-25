@@ -91,11 +91,37 @@ func (s *Store) ReviewQueue(ctx context.Context) ([]Waiting, error) {
 	return out, nil
 }
 
+// personPlaced selects every item whose newest side decision a person made.
+const personPlaced = `
+SELECT d.item_key FROM decisions d
+WHERE d.gate = 'side' AND d.decided_by LIKE 'person:%'
+	AND d.sequence = (SELECT max(x.sequence) FROM decisions x WHERE x.item_key = d.item_key AND x.gate = 'side')`
+
+// PersonPlacedItems reads every item whose newest side decision a person
+// made, with its records, oldest first.
+func (s *Store) PersonPlacedItems(ctx context.Context) ([]ItemRecords, error) {
+	keys, err := s.selectKeys(ctx, personPlaced, "select the items a person placed")
+	if err != nil || len(keys) == 0 {
+		return []ItemRecords{}, err
+	}
+	items, err := readInto[Item](ctx, s.read, table("items"), `key IN (?`+strings.Repeat(", ?", len(keys)-1)+`) ORDER BY created_ts, key`, keys...)
+	if err != nil {
+		return nil, err
+	}
+	return recordsOf(ctx, s.read, items)
+}
+
 // reviewCandidateKeys reads the key of each item that may wait in review.
 func (s *Store) reviewCandidateKeys(ctx context.Context) ([]any, error) {
-	rows, err := s.read.QueryContext(ctx, reviewCandidates)
+	return s.selectKeys(ctx, reviewCandidates, "select the items waiting in review")
+}
+
+// selectKeys reads the item key in each row that query answers, and wraps an
+// error in what.
+func (s *Store) selectKeys(ctx context.Context, query, what string) ([]any, error) {
+	rows, err := s.read.QueryContext(ctx, query)
 	if err != nil {
-		return nil, fmt.Errorf("select the items waiting in review: %w", err)
+		return nil, fmt.Errorf("%s: %w", what, err)
 	}
 	defer func() { _ = rows.Close() }()
 	var keys []any

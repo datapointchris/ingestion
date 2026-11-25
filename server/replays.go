@@ -29,6 +29,9 @@ const (
 	CodeIdempotencyKeyReused  = "idempotency_key_reused"
 	CodeStageNotReplayable    = "stage_not_replayable"
 	CodeNoItemFromConnector   = "no_item_from_connector"
+	// CodePlacedByNotReplayable is a replay over the items whose side a
+	// person placed, of a stage that holds no such replay.
+	CodePlacedByNotReplayable = "placed_by_not_replayable"
 )
 
 // ReplayStages are the stages that a replay request may name, as
@@ -37,12 +40,14 @@ const (
 var ReplayStages = []string{store.StageParse, store.StageScan, store.StageQuality, store.StageModelRead, store.StageDeliver}
 
 // ReplayRequest asks to run Stage again over the items that Connector and Key
-// select, each absent selecting every item. Confirm runs a model stage once a
-// person has read its estimate.
+// select, each absent selecting every item. PlacedBy store.PlacedByPerson
+// narrows them to the items whose side a person placed. Confirm runs a model
+// stage once a person has read its estimate.
 type ReplayRequest struct {
 	Stage     string  `json:"stage"`
 	Connector *string `json:"connector"`
 	Key       *string `json:"key"`
+	PlacedBy  *string `json:"placed_by,omitempty"`
 	Confirm   bool    `json:"confirm"`
 }
 
@@ -53,6 +58,7 @@ type ReplayAnswer struct {
 	Stage         string        `json:"stage"`
 	Connector     *string       `json:"connector"`
 	Key           *string       `json:"key"`
+	PlacedBy      *string       `json:"placed_by"`
 	Items         int           `json:"items"`
 	Queued        bool          `json:"queued"`
 	Estimate      *store.Tokens `json:"estimate"`
@@ -74,6 +80,10 @@ type Replayable struct {
 	// stage leaves it nil, and queues at once.
 	// Its tokens are nil where it holds no stored run to estimate from.
 	Estimate func(ctx context.Context, items []store.Item) (int, *store.Tokens, error)
+	// PlacedByPerson, where it is set, is the stage run only over the items
+	// whose side a person placed, as a measurement of the stage against each
+	// placement. A request asks for it with placed_by person.
+	PlacedByPerson *Replayable
 }
 
 // ReplayRoutes is the route for a person to run one of stages again over
@@ -110,6 +120,21 @@ func (h replayHandlers) replay(w http.ResponseWriter, r *http.Request) {
 		Refuse(w, http.StatusUnprocessableEntity, CodeStageNotReplayable, "the service holds no replay of the %s stage, so nothing was queued", body.Stage)
 		return
 	}
+	if body.PlacedBy != nil && *body.PlacedBy == "" {
+		body.PlacedBy = nil
+	}
+	if body.PlacedBy != nil {
+		if *body.PlacedBy != store.PlacedByPerson {
+			Refuse(w, http.StatusBadRequest, CodeInvalidBody, "placed_by is %s or absent, not %q", store.PlacedByPerson, *body.PlacedBy)
+			return
+		}
+		if stage.PlacedByPerson == nil {
+			Refuse(w, http.StatusUnprocessableEntity, CodePlacedByNotReplayable,
+				"the service holds no replay of the %s stage over the items a person placed, so nothing was queued", body.Stage)
+			return
+		}
+		stage = *stage.PlacedByPerson
+	}
 	if body.Connector != nil && *body.Connector == "" {
 		body.Connector = nil
 	}
@@ -121,14 +146,15 @@ func (h replayHandlers) replay(w http.ResponseWriter, r *http.Request) {
 		}
 		body.Key = &key
 	}
-	answer := ReplayAnswer{SchemaVersion: 1, Stage: body.Stage, Connector: body.Connector, Key: body.Key}
+	answer := ReplayAnswer{SchemaVersion: 1, Stage: body.Stage, Connector: body.Connector, Key: body.Key, PlacedBy: body.PlacedBy}
 	if stage.Estimate != nil && !body.Confirm {
 		h.estimate(w, r, stage, answer)
 		return
 	}
 	caller, _ := goapiauth.IdentityFrom(r.Context())
 	replay, queued, err := h.store.Replay(r.Context(), store.Replay{
-		ID: replayID(caller, idempotencyKey), Stage: body.Stage, Connector: body.Connector, ItemKey: body.Key, RequestedBy: requester(caller),
+		ID: replayID(caller, idempotencyKey), Stage: body.Stage, Connector: body.Connector, ItemKey: body.Key, PlacedBy: body.PlacedBy,
+		RequestedBy: requester(caller),
 	}, stage.queue(body.Stage))
 	if errors.Is(err, store.ErrReplayDiffers) {
 		Refuse(w, http.StatusConflict, CodeIdempotencyKeyReused,

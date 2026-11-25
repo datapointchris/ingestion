@@ -66,6 +66,7 @@ var (
 	RouteReview         = Route{"GET /api/v1/review", ScopeReviewRead, RepeatRead}
 	RouteReviewPlace    = Route{"POST /api/v1/review/{key}/place", ScopeReviewPlace, RepeatByContent}
 	RouteReviewDrop     = Route{"POST /api/v1/review/{key}/drop", ScopeReviewPlace, RepeatByContent}
+	RouteGateAgreement  = Route{"GET /api/v1/gates/agreement", ScopeItemsRead, RepeatRead}
 )
 
 // Handle serves route with h. A service reaches it only while its token

@@ -143,8 +143,9 @@ client_id = "life-svc-ingestion"
 - **The access token decides what a caller reaches.** A person's token reaches every route. A
   service token reaches only the routes its scopes grant. A worker needs `ingestion.tasks.claim`,
   which also reads and writes bytes through `/api/v1/blobs/{sha256}`. A scan task reads its item's
-  parse through `/api/v1/tasks/{id}/parse`, under the task's lease. A service that reads items
-  needs `ingestion.items.read`, and one that runs a stage again needs `ingestion.items.replay`. A
+  parse through `/api/v1/tasks/{id}/parse`, under the task's lease. A service that reads items,
+  or the gates' agreement with each placement, needs `ingestion.items.read`, and one that runs a
+  stage again needs `ingestion.items.replay`. A
   job that applies declarations needs `ingestion.declarations.apply`, one that reads connectors
   `ingestion.connectors.read`, one that runs them `ingestion.connectors.run`, and a source that
   drops files `ingestion.items.drop`. An app that shows the review queue needs
@@ -483,6 +484,13 @@ tag, a rule, a person or a confident guess placed is left as it is. The replay f
 many items it would run on, and the median tokens by kind of the stage's newest stored runs times
 that count. It queues only with `--yes`.
 
+`--placed-by person` runs the replay instead over each item whose side a person placed, which the
+gate otherwise never judges again. The answer measures the gate against the placement. Its output
+and the gate's decision are kept. The side gate leaves the placement, its delivery and its model
+read as they are, so even a confident drop moves nothing. While the run waits, and where it fails,
+the item's phase stays where the placement took it. `ingestion gates agreement` then counts how
+often the gate agreed.
+
 A scan that ended under a release without the quality gate queued no quality task, so its item
 waits in review as `no-guess`. The replay is what runs the gate over such items.
 
@@ -544,6 +552,44 @@ that decided it, such as subreddit or title, and a decision that names none is k
 `unstated`. `--note` carries the questions that a model read answers. Sending the same placement again changes nothing. A service placing for a person names
 the person's `login` in its body, because a service token carries no person. The decision keeps
 the service's client id beside the login.
+
+### `gates agreement` counts how often each gate's answer matched a person's placement
+
+A person's placement is the label: each item whose newest side decision is `person:<login>`.
+`ingestion gates agreement` reads `GET /api/v1/gates/agreement` and sets every done answer of the
+quality gate on such an item beside the placement.
+
+- **The quality gate's verdict** agrees where it passed an item that the person placed on a side,
+  or dropped one that the person dropped.
+- **The side guess** agrees where it names the person's side. A person's drop gives it nothing to
+  compare.
+- **An unsure answer** neither agrees nor disagrees. Agreement is agreed over agreed and
+  disagreed.
+- **Each answer counts as the model gave it**, before a floor turns a drop or a guess into review.
+  So the rows by confidence band show where a floor would sit, as a reject option does in
+  selective classification.
+
+Each gate breaks down by confidence band, connector, model and prompt version. An item that two
+prompt versions answered counts once under each. A person who placed an item before the gate
+answered it leaves it with no answer, which `items replay --stage quality --placed-by person`
+asks for. `--json` prints `schemas/gate-agreement.schema.json`.
+
+```text
+$ ingestion gates agreement
+2 items a person placed: 2 personal, 0 fleet, 0 dropped. 0 hold no quality answer.
+
+quality gate, drop floor 0.80
+BY                        COMPARED  AGREED  DISAGREED  UNSURE  AGREEMENT  ANSWER BY PLACEMENT
+all                       2         1       1          0       50%        drop/personal 1, pass/personal 1
+confidence 0.8-0.9        1         1       0          0       100%       pass/personal 1
+confidence 0.9-1.0        1         0       1          0       0%         drop/personal 1
+connector reddit-exports  2         1       1          0       50%        drop/personal 1, pass/personal 1
+model haiku               2         1       1          0       50%        drop/personal 1, pass/personal 1
+prompt v1-<digest>        2         1       1          0       50%        drop/personal 1, pass/personal 1
+
+side guess, floor 0.70
+...
+```
 
 ### A model read answers a fleet item's note with a summary and a suggestion
 

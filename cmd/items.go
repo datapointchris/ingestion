@@ -98,10 +98,19 @@ var itemsReplayCmd = &cobra.Command{
 		"no item, and a --connector that sighted no item. A stage that calls a model\n" +
 		"first prints how many items it would run on and an estimate of their tokens\n" +
 		"by kind, the median of its newest stored runs times that count, and queues\n" +
-		"only with --yes. A quality replay runs on each scanned item that no tag or\n" +
-		"rule placed and that holds no answer of the prompt in force. A model-free stage, such as parse, queues at once. A deliver\n" +
-		"replay queues the delivery that each item's placement sends it to, where it\n" +
-		"is not settled: one pending, or one never queued. A delivery that a\n" +
+		"only with --yes. A model-free stage, such as parse, queues at once.\n" +
+		"\n" +
+		"A quality replay runs on each scanned item that holds no answer of the prompt\n" +
+		"in force and whose side waits on a later input: no side decision, review for\n" +
+		"want of a rule or an answer, or a model's drop or review. It leaves out an\n" +
+		"item that a tag, a rule, a person or a confident guess placed.\n" +
+		"--placed-by person runs it only over each item whose side a person placed,\n" +
+		"as a measurement against the placement. Its answer and its decision are kept,\n" +
+		"and the placement, its delivery and its model read stay as they are.\n" +
+		"`ingestion gates agreement` then counts how often the gate agreed.\n" +
+		"\n" +
+		"A deliver replay queues the delivery that each item's placement sends it to,\n" +
+		"where it is not settled: one pending, or one never queued. A delivery that a\n" +
 		"destination holds or refused is never written again.\n" +
 		"\n" +
 		"Each run sends one Idempotency-Key, and its retries send the same, so the\n" +
@@ -113,7 +122,10 @@ var itemsReplayCmd = &cobra.Command{
 		"  ingestion items replay --stage parse --connector reddit-exports\n" +
 		"\n" +
 		"  # one item, by key or by URL\n" +
-		"  ingestion items replay --stage parse --key reddit/t3_aq7ggd",
+		"  ingestion items replay --stage parse --key reddit/t3_aq7ggd\n" +
+		"\n" +
+		"  # measure the quality gate against each placement a person made\n" +
+		"  ingestion items replay --stage quality --connector reddit-exports --placed-by person",
 	Args: cobra.NoArgs,
 	RunE: runItemsReplay,
 }
@@ -130,6 +142,7 @@ func init() {
 	itemsReplayCmd.Flags().String("stage", "", "Run this stage again: "+strings.Join(server.ReplayStages, ", "))
 	itemsReplayCmd.Flags().String("connector", "", "Run it over the items this connector sighted")
 	itemsReplayCmd.Flags().String("key", "", "Run it over the item under this key or URL")
+	itemsReplayCmd.Flags().String("placed-by", "", "Run it only over the items whose side this placed: "+store.PlacedByPerson)
 	itemsReplayCmd.Flags().Bool("yes", false, "Queue a model stage once its estimate is read")
 	itemsReplayCmd.Flags().Bool("json", false, "Print the service's answer as JSON")
 	for _, c := range []*cobra.Command{itemsListCmd, itemsShowCmd, itemsReplayCmd, itemsDropCmd} {
@@ -144,6 +157,7 @@ func runItemsReplay(cmd *cobra.Command, _ []string) error {
 	stage, _ := cmd.Flags().GetString("stage")
 	connector, _ := cmd.Flags().GetString("connector")
 	key, _ := cmd.Flags().GetString("key")
+	placedBy, _ := cmd.Flags().GetString("placed-by")
 	yes, _ := cmd.Flags().GetBool("yes")
 	asJSON, _ := cmd.Flags().GetBool("json")
 	api, _ := cmd.Flags().GetString("api")
@@ -151,6 +165,12 @@ func runItemsReplay(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("%w: --stage is one of %s, not %q", goclikit.ErrUsage, strings.Join(server.ReplayStages, ", "), stage)
 	}
 	req := server.ReplayRequest{Stage: stage, Confirm: yes}
+	if cmd.Flags().Changed("placed-by") {
+		if placedBy != store.PlacedByPerson {
+			return fmt.Errorf("%w: --placed-by is %s, not %q", goclikit.ErrUsage, store.PlacedByPerson, placedBy)
+		}
+		req.PlacedBy = &placedBy
+	}
 	if connector = strings.TrimSpace(connector); connector != "" {
 		req.Connector = &connector
 	}

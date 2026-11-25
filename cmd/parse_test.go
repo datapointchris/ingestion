@@ -25,6 +25,7 @@ import (
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/clientcredentials"
 
+	"github.com/datapointchris/ingestion/accuracy"
 	"github.com/datapointchris/ingestion/connectors"
 	"github.com/datapointchris/ingestion/extract"
 	"github.com/datapointchris/ingestion/landing"
@@ -91,7 +92,7 @@ func newPipeline(t *testing.T, extractors *extract.Registry, after server.AfterS
 			Store: st, Lander: lander, Scheduler: connectors.NewScheduler(st, lander, log),
 			AfterApply: route.AfterApply(log), Log: log,
 		}),
-		server.ReplayRoutes(st, replayableStages(st, extractors), log)))
+		server.ReplayRoutes(st, replayableStages(st, extractors), log), accuracy.Routes(st, log)))
 	t.Cleanup(api.Close)
 	person := provider.Person(t, "ingestion-cli-test", "person")
 	tokenFile, config := filepath.Join(dir, "token.json"), filepath.Join(dir, "config.toml")

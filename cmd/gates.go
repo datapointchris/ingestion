@@ -1,0 +1,111 @@
+package cmd
+
+import (
+	"fmt"
+	"io"
+	"strings"
+	"text/tabwriter"
+
+	"github.com/datapointchris/goclikit"
+	"github.com/spf13/cobra"
+
+	"github.com/datapointchris/ingestion/accuracy"
+	"github.com/datapointchris/ingestion/server"
+)
+
+var gatesCmd = &cobra.Command{
+	Use:   "gates",
+	Short: "Read how the quality gate and the side gate decide",
+}
+
+var gatesAgreementCmd = &cobra.Command{
+	Use:   "agreement",
+	Short: "Print how often each gate's answer agrees with a person's placement",
+	Long: "Compares the quality gate's answer on each item that a person placed with the\n" +
+		"placement, which is the label. A pass agrees with a placement on a side, and a\n" +
+		"drop with a person's drop. The side guess agrees where it names the person's\n" +
+		"side. An unsure answer neither agrees nor disagrees, and agreement is agreed\n" +
+		"over agreed and disagreed.\n" +
+		"\n" +
+		"Each answer counts as the model gave it, before a floor turns a drop or a\n" +
+		"guess into review, so the rows by confidence band show where a floor would\n" +
+		"sit. Each gate breaks down by band, connector, model and prompt version. An\n" +
+		"item that a person placed before the gate answered it holds no answer, and\n" +
+		"`ingestion items replay --stage quality --placed-by person` asks the gate for\n" +
+		"one.",
+	Example: "  ingestion gates agreement\n" +
+		"  ingestion gates agreement --json",
+	Args: cobra.NoArgs,
+	RunE: runGatesAgreement,
+}
+
+func init() {
+	goclikit.AsNamespace(gatesCmd)
+	gatesAgreementCmd.Flags().Bool("json", false, "Print the service's answer as JSON")
+	gatesAgreementCmd.Flags().String("api", "", "Call this server rather than the config file's api")
+	addConfigFlag(gatesAgreementCmd)
+	gatesCmd.AddCommand(gatesAgreementCmd)
+	rootCmd.AddCommand(gatesCmd)
+}
+
+func runGatesAgreement(cmd *cobra.Command, _ []string) error {
+	asJSON, _ := cmd.Flags().GetBool("json")
+	api, _ := cmd.Flags().GetString("api")
+	var report accuracy.Report
+	raw, err := getJSON(cmd.Context(), configPath(cmd), api, server.RouteGateAgreement, "/api/v1/gates/agreement", &report)
+	if err != nil {
+		return err
+	}
+	w := cmd.OutOrStdout()
+	if asJSON {
+		_, err := w.Write(raw)
+		return err
+	}
+	l := report.Labels
+	_, _ = fmt.Fprintf(w, "%d items a person placed: %d personal, %d fleet, %d dropped. %d hold no quality answer.\n",
+		l.Items, l.Personal, l.Fleet, l.Drop, report.Unanswered)
+	writeGate(w, "quality gate, drop floor", report.Quality)
+	writeGate(w, "side guess, floor", report.Side)
+	return nil
+}
+
+// writeGate prints one gate's agreement as a table, a row overall and one for
+// each band, connector, model and prompt version.
+func writeGate(w io.Writer, title string, g accuracy.Gate) {
+	_, _ = fmt.Fprintf(w, "\n%s %.2f\n", title, g.Floor)
+	table := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintln(table, "BY\tCOMPARED\tAGREED\tDISAGREED\tUNSURE\tAGREEMENT\tANSWER BY PLACEMENT")
+	row := func(by string, c accuracy.Counts) {
+		_, _ = fmt.Fprintf(table, "%s\t%d\t%d\t%d\t%d\t%s\t%s\n", by, c.Comparisons, c.Agreed, c.Disagreed, c.Unsure, percent(c.Agreement), pairs(c.Answers))
+	}
+	row("all", g.Overall)
+	for _, b := range g.ByConfidence {
+		row(fmt.Sprintf("confidence %.1f-%.1f", b.From, b.To), b.Counts)
+	}
+	for _, c := range g.ByConnector {
+		row("connector "+c.Connector, c.Counts)
+	}
+	for _, m := range g.ByModel {
+		row("model "+m.Model, m.Counts)
+	}
+	for _, v := range g.ByPromptVersion {
+		row("prompt "+versionWords(v.PromptVersion), v.Counts)
+	}
+	_ = table.Flush()
+}
+
+func percent(share *float64) string {
+	if share == nil {
+		return "—"
+	}
+	return fmt.Sprintf("%.0f%%", *share*100)
+}
+
+// pairs is each answer beside each placement, such as pass/personal 12.
+func pairs(answers []accuracy.Pair) string {
+	parts := make([]string, 0, len(answers))
+	for _, p := range answers {
+		parts = append(parts, fmt.Sprintf("%s/%s %d", p.Answer, p.Label, p.Count))
+	}
+	return strings.Join(parts, ", ")
+}

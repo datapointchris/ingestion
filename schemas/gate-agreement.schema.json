@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/datapointchris/ingestion/schemas/gate-agreement.schema.json",
+  "title": "How often each gate's answer agrees with a person's placement",
+  "description": "What GET /api/v1/gates/agreement answers and `ingestion gates agreement --json` prints. The label is each item whose newest side decision a person made. Each done answer of the quality gate on such an item is one comparison, read as the model gave it, before a floor turns a drop or a guess into review. A pass agrees with a placement on a side and a drop with a person's drop. The side guess agrees where it names the person's side, and a person's drop gives it nothing to compare. An unsure answer neither agrees nor disagrees.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "labels", "unanswered", "quality", "side"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "labels": {
+      "description": "The items a person placed, by where the person placed each.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["items", "personal", "fleet", "drop"],
+      "properties": {
+        "items": {"type": "integer", "minimum": 0},
+        "personal": {"type": "integer", "minimum": 0},
+        "fleet": {"type": "integer", "minimum": 0},
+        "drop": {"type": "integer", "minimum": 0}
+      }
+    },
+    "unanswered": {"description": "The items a person placed that hold no done answer of the quality gate.", "type": "integer", "minimum": 0},
+    "quality": {"description": "The quality gate's verdict, pass, drop or unsure, beside the placement.", "$ref": "#/$defs/gate"},
+    "side": {"description": "The quality gate's side guess, personal, fleet or unsure, beside the side a person placed an item on.", "$ref": "#/$defs/gate"}
+  },
+  "$defs": {
+    "gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["floor", "overall", "by_confidence", "by_connector", "by_model", "by_prompt_version"],
+      "properties": {
+        "floor": {"description": "The confidence at or above which the gate acts on the answer alone: the quality gate's drop, or the side guess.", "type": "number"},
+        "overall": {"$ref": "#/$defs/counts", "unevaluatedProperties": false},
+        "by_confidence": {
+          "description": "Each band of the answer's confidence that holds a comparison, lowest first. A band holds from up to to, and to itself only in the top band.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/counts",
+            "required": ["from", "to"],
+            "properties": {"from": {"type": "number", "minimum": 0, "maximum": 1}, "to": {"type": "number", "minimum": 0, "maximum": 1}},
+            "unevaluatedProperties": false
+          }
+        },
+        "by_connector": {
+          "description": "The comparisons on the items each connector sighted. An item that two connectors sighted counts under each.",
+          "type": "array",
+          "items": {"$ref": "#/$defs/counts", "required": ["connector"], "properties": {"connector": {"type": "string"}}, "unevaluatedProperties": false}
+        },
+        "by_model": {
+          "description": "The comparisons on each model's answers, by the model that answered, else the one asked for.",
+          "type": "array",
+          "items": {"$ref": "#/$defs/counts", "required": ["model"], "properties": {"model": {"type": "string"}}, "unevaluatedProperties": false}
+        },
+        "by_prompt_version": {
+          "description": "The comparisons on each prompt version's answers.",
+          "type": "array",
+          "items": {"$ref": "#/$defs/counts", "required": ["prompt_version"], "properties": {"prompt_version": {"type": "string"}}, "unevaluatedProperties": false}
+        }
+      }
+    },
+    "counts": {
+      "type": "object",
+      "required": ["comparisons", "agreed", "disagreed", "unsure", "agreement", "answers"],
+      "properties": {
+        "comparisons": {"type": "integer", "minimum": 0},
+        "agreed": {"type": "integer", "minimum": 0},
+        "disagreed": {"type": "integer", "minimum": 0},
+        "unsure": {"type": "integer", "minimum": 0},
+        "agreement": {"description": "agreed over agreed and disagreed, and null where both are 0.", "type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "answers": {
+          "description": "How many comparisons paired each answer with each placement.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["answer", "label", "count"],
+            "properties": {
+              "answer": {"type": "string"},
+              "label": {"description": "The person's placement: personal, fleet or drop.", "type": "string"},
+              "count": {"type": "integer", "minimum": 1}
+            }
+          }
+        }
+      }
+    }
+  }
+}

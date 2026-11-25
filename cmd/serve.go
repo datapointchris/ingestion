@@ -16,6 +16,7 @@ import (
 	"github.com/datapointchris/goapiauth"
 	"github.com/spf13/cobra"
 
+	"github.com/datapointchris/ingestion/accuracy"
 	"github.com/datapointchris/ingestion/connectors"
 	"github.com/datapointchris/ingestion/extract"
 	"github.com/datapointchris/ingestion/landing"
@@ -156,7 +157,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 			Store: st, Lander: lander, Scheduler: scheduler, Roots: roots, AfterApply: route.AfterApply(log), Log: log,
 		}),
 		server.ReplayRoutes(st, replayableStages(st, extractors), log),
-		server.ReviewRoutes(st, log))
+		server.ReviewRoutes(st, log), accuracy.Routes(st, log))
 	srv := &http.Server{Addr: listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 
 	var wg sync.WaitGroup

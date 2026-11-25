@@ -251,7 +251,7 @@ var reached = map[string]string{
 // where the quality gate drops it before any side decision, waiting where a
 // model stage holds it, and
 // otherwise the furthest stage whose condition is True. A person can place an
-// item whose parse failed, which moves it on from its parse.
+// item whose parse or quality gate failed, which moves it on from that stage.
 func (r ItemRecords) Phase() string {
 	side, sided := r.NewestDecision(GateSide)
 	if sided && side.Verdict == "drop" {
@@ -265,7 +265,7 @@ func (r ItemRecords) Phase() string {
 		newest[t.Stage] = t
 	}
 	for stage, t := range newest {
-		if t.State == TaskFailed && stage != StageParse {
+		if t.State == TaskFailed && stage != StageParse && (stage != StageQuality || !r.PersonPlaced()) {
 			return "failed"
 		}
 	}
@@ -289,6 +289,13 @@ func (r ItemRecords) Phase() string {
 		}
 	}
 	return phase
+}
+
+// PersonPlaced says whether a person made the item's newest side decision. A
+// person's placement is the label that each gate's answer is measured against.
+func (r ItemRecords) PersonPlaced() bool {
+	side, ok := r.NewestDecision(GateSide)
+	return ok && side.ByPerson()
 }
 
 // Side is the newest side decision's verdict where it placed the item on a
@@ -318,6 +325,11 @@ func (r ItemRecords) condition(step string) (Condition, bool) {
 	case StageQuality:
 		if d, ok := r.NewestDecision(GateQuality); ok {
 			return Condition{Type: step, Status: ConditionTrue, Reason: d.Verdict}, true
+		}
+		if r.PersonPlaced() {
+			// A run of the gate on an item that a person placed measures the
+			// gate against the placement, so it holds and fails nothing.
+			return Condition{}, false
 		}
 		return r.outputCondition(step)
 	case GateSide, GateRead:

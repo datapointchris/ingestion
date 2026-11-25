@@ -144,6 +144,10 @@ type ParseUnit struct {
 	CreatedTS        string  `json:"created_ts"`
 }
 
+// PlacedByPerson is the placed_by of a replay that runs a stage only over the
+// items whose side a person placed.
+const PlacedByPerson = "person"
+
 // Replay is one replay that queued a stage again over the items its connector
 // and key select.
 type Replay struct {
@@ -152,6 +156,10 @@ type Replay struct {
 	Stage     string  `json:"stage"`
 	Connector *string `json:"connector"`
 	ItemKey   *string `json:"item_key"`
+	// PlacedBy is PlacedByPerson where the replay ran only over the items
+	// whose side a person placed, and nil where it ran over every item it
+	// selected.
+	PlacedBy *string `json:"placed_by"`
 	// Items counts the tasks queued, one per item.
 	Items       int    `json:"items"`
 	RequestedBy string `json:"requested_by"`
@@ -265,6 +273,10 @@ type Decision struct {
 	ClientID  *string `json:"client_id"`
 	DecidedTS string  `json:"decided_ts"`
 }
+
+// ByPerson says whether a person made d, as its decided_by person:<login>
+// records.
+func (d Decision) ByPerson() bool { return strings.HasPrefix(d.DecidedBy, "person:") }
 
 // Delivery outcomes.
 const (

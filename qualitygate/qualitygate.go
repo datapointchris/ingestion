@@ -172,26 +172,49 @@ func DecideAfterAnswer(ctx context.Context, tx *store.Tx, task store.Task) error
 	return err
 }
 
-// due says whether a replay runs the gate on an item: its newest parse is
-// scanned, no quality task of it is open, it holds no done answer of the
-// prompt in force, and its side decision, where it has one, is provisional.
+// due says whether a replay runs the gate on an item: the gate is unanswered,
+// and the item's side decision, where it has one, is provisional.
 func due(outputs []store.Output, side store.Decision, sided, open bool) bool {
+	return unanswered(outputs, open) && (!sided || route.Provisional(side))
+}
+
+// measurementDue says whether a measurement replay runs the gate on an item:
+// the gate is unanswered, and a person made the item's newest side decision.
+// The answer measures the gate against that placement.
+func measurementDue(outputs []store.Output, side store.Decision, sided, open bool) bool {
+	return unanswered(outputs, open) && sided && side.ByPerson()
+}
+
+// unanswered says whether the gate may run on an item: its newest parse is
+// scanned, no quality task of it is open, and it holds no done answer of the
+// prompt in force.
+func unanswered(outputs []store.Output, open bool) bool {
 	if open || !store.NewestParseScanned(outputs) {
 		return false
 	}
-	if slices.ContainsFunc(outputs, func(o store.Output) bool {
+	return !slices.ContainsFunc(outputs, func(o store.Output) bool {
 		return o.Stage == store.StageQuality && o.Producer == Producer && o.ProducerVersion == prompts.Quality.Version && o.State == store.OutputDone
-	}) {
-		return false
-	}
-	return !sided || route.Provisional(side)
+	})
 }
 
 // Replayable is the gate as a replay runs it again, such as with a new
 // prompt, over the items it judges. The replay first answers how many items it
 // would run on and the median tokens by kind of the stage's newest stored
 // runs, times that count, and queues only once a person confirms.
+//
+// Its PlacedByPerson runs the gate over the items whose side a person placed,
+// which the gate otherwise never judges again. Its answer and its decision are
+// kept, and the side gate leaves the placement, its delivery and its model
+// read as they are, because a person's placement is final.
 func Replayable(st *store.Store) server.Replayable {
+	measured := replayable(st, measurementDue)
+	r := replayable(st, due)
+	r.PlacedByPerson = &measured
+	return r
+}
+
+// replayable is the gate's replay over each item that isDue says it runs on.
+func replayable(st *store.Store, isDue func(outputs []store.Output, side store.Decision, sided, open bool) bool) server.Replayable {
 	return server.Replayable{
 		Capability: func(store.Item) (string, bool) { return Capability, true },
 		Queue: func(ctx context.Context, tx *store.Tx, item store.Item) (bool, error) {
@@ -204,7 +227,7 @@ func Replayable(st *store.Store) server.Replayable {
 				return false, err
 			}
 			_, open, err := tx.OpenTask(ctx, item.Key, store.StageQuality)
-			if err != nil || !due(outputs, side, sided, open) {
+			if err != nil || !isDue(outputs, side, sided, open) {
 				return false, err
 			}
 			_, err = tx.Enqueue(ctx, store.Task{ItemKey: &item.Key, Stage: store.StageQuality, Capability: Capability})
@@ -213,7 +236,7 @@ func Replayable(st *store.Store) server.Replayable {
 		Estimate: func(ctx context.Context, items []store.Item) (int, *store.Tokens, error) {
 			return modelstage.Estimate(ctx, st, store.StageQuality, items, func(r store.ItemRecords, open bool) bool {
 				side, sided := r.NewestDecision(store.GateSide)
-				return due(r.Outputs, side, sided, open)
+				return isDue(r.Outputs, side, sided, open)
 			})
 		},
 	}

@@ -8,7 +8,7 @@ import (
 )
 
 // ErrReplayDiffers is a replay whose id names one already recorded with
-// another stage, connector or key.
+// another stage, connector, key or placed_by.
 var ErrReplayDiffers = errors.New("the replay's id names a replay of another stage or other items")
 
 // ErrNoSighting is a replay naming a connector that sighted no item.
@@ -67,7 +67,7 @@ func replayItems(ctx context.Context, db querier, r Replay, takes func(Item) boo
 // Replay runs queue over each item that r covers, then records r with the
 // count of items queue queued for, in one write. A replay already recorded
 // under r.ID answers as recorded and queues nothing, and one recorded with
-// another stage, connector or key answers ErrReplayDiffers. The bool says
+// another stage, connector, key or placed_by answers ErrReplayDiffers. The bool says
 // whether this call queued.
 func (s *Store) Replay(ctx context.Context, r Replay, queue ReplayQueue) (Replay, bool, error) {
 	queued := false
@@ -77,7 +77,8 @@ func (s *Store) Replay(ctx context.Context, r Replay, queue ReplayQueue) (Replay
 			return err
 		}
 		if found {
-			if held.Stage != r.Stage || deref(held.Connector) != deref(r.Connector) || deref(held.ItemKey) != deref(r.ItemKey) {
+			if held.Stage != r.Stage || deref(held.Connector) != deref(r.Connector) || deref(held.ItemKey) != deref(r.ItemKey) ||
+				deref(held.PlacedBy) != deref(r.PlacedBy) {
 				return fmt.Errorf("replay %s: %w", r.ID, ErrReplayDiffers)
 			}
 			r = held

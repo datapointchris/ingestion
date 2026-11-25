@@ -11,6 +11,7 @@
     "stage": {"enum": ["parse", "scan", "quality", "model-read", "deliver"]},
     "connector": {"type": ["string", "null"]},
     "key": {"type": ["string", "null"]},
+    "placed_by": {"description": "person where the replay runs only over the items whose side a person placed, as a measurement of the stage against each placement, and null or absent where it runs over every item it selects.", "enum": ["person", null]},
     "items": {"description": "The items the replay covers.", "type": "integer"},
     "queued": {"description": "False where a model stage waits for confirmation.", "type": "boolean"},
     "estimate": {

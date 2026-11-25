@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS replays (
     stage        TEXT NOT NULL,
     connector    TEXT,
     item_key     TEXT,
+    placed_by    TEXT,
     items        INTEGER NOT NULL,
     requested_by TEXT NOT NULL,
     requested_ts TEXT NOT NULL
