@@ -1,4 +1,4 @@
-# Each rule places an item on a destination before any model reads it. Every
+# Each rule names the destination for the items its match holds for. Every
 # condition a match names must hold.
 rules:
   - name: cooking-subreddits

@@ -23,26 +23,17 @@ func parseSchedule(expr string) (cron.Schedule, error) {
 	return scheduleParser.Parse(expr)
 }
 
-// ParseInterval reads an interval such as 90m, 12h, 30d or 2w. A day is 24
-// hours and a week 7 days.
+// ParseInterval reads an interval: a positive count of m, h, d or w, such as
+// 90m, 12h, 30d or 2w. A day is 24 hours and a week 7 days. The schema's
+// interval pattern accepts the same strings.
 func ParseInterval(s string) (time.Duration, error) {
-	var d time.Duration
-	var err error
-	switch unit := s[max(len(s)-1, 0):]; unit {
-	case "d", "w":
-		var n int
-		n, err = strconv.Atoi(s[:len(s)-1])
-		d = time.Duration(n) * 24 * time.Hour
-		if unit == "w" {
-			d *= 7
-		}
-	default:
-		d, err = time.ParseDuration(s)
-	}
-	if err != nil || d <= 0 {
+	units := map[string]time.Duration{"m": time.Minute, "h": time.Hour, "d": 24 * time.Hour, "w": 7 * 24 * time.Hour}
+	unit, ok := units[s[max(len(s)-1, 0):]]
+	n, err := strconv.Atoi(s[:max(len(s)-1, 0)])
+	if !ok || err != nil || n <= 0 || strings.HasPrefix(s, "0") || strings.HasPrefix(s, "+") {
 		return 0, fmt.Errorf("an interval is a positive count of m, h, d or w, such as 90m, 12h or 30d, not %q", s)
 	}
-	return d, nil
+	return time.Duration(n) * unit, nil
 }
 
 // NextDue is when c is next due, from its cursor. A poll or a folder is due at
@@ -64,20 +55,18 @@ func NextDue(c Connector, cur store.Cursor) (time.Time, error) {
 		}
 		return at
 	}
-	switch c.Mode {
-	case ModePoll, ModeFolder:
+	if c.Scheduled() {
 		schedule, err := parseSchedule(c.Schedule)
 		if err != nil {
 			return time.Time{}, err
 		}
 		return schedule.Next(since(cur.LastRunTS)).UTC(), nil
-	default:
-		interval, err := ParseInterval(c.DueInterval)
-		if err != nil {
-			return time.Time{}, err
-		}
-		return since(cur.LastDeliveryTS).Add(interval).UTC(), nil
 	}
+	interval, err := ParseInterval(c.DueInterval)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return since(cur.LastDeliveryTS).Add(interval).UTC(), nil
 }
 
 // Overdue says whether c is overdue at now. Any connector is, once its due

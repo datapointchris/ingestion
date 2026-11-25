@@ -7,12 +7,13 @@ import (
 	"mime"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/datapointchris/ingestion/landing"
 )
 
-// bookMediaTypes names the media type of each book format that the standard
-// library's table and a slim container's lack of /etc/mime.types leave out.
+// bookMediaTypes names the media type of each book format a folder lands, so
+// a folder's media types do not hang on the host's /etc/mime.types.
 var bookMediaTypes = map[string]string{
 	".epub": "application/epub+zip",
 	".mobi": "application/x-mobipocket-ebook",
@@ -27,14 +28,25 @@ type Scanned struct {
 	Files   int
 	Landed  int
 	Skipped int
+	// Failed counts the files that did not land, each named in the scan's
+	// error.
+	Failed int
+	// Settling counts the files written too recently to land, which a later
+	// scan lands once they settle.
+	Settling int
+	// Unfinished says the scan stopped at its deadline with files left, which
+	// the next scan picks up.
+	Unfinished bool
 }
 
 // ScanFolder lands by reference each file in c's folder that c has not
 // already landed as it is now. A file whose recorded size and modification
 // time still match is skipped unread, so a rerun over an unchanged folder
-// lands nothing and hashes nothing. A file that fails to land is named in the
-// error, and the scan goes on to the rest.
-func ScanFolder(ctx context.Context, l *landing.Lander, c Connector) (Scanned, error) {
+// lands nothing and hashes nothing. A file modified after settledBefore may
+// still be being written, so it waits for a later scan. The scan stops landing
+// once until passes. A file that fails to land is named in the error, and the
+// scan goes on to the rest.
+func ScanFolder(ctx context.Context, l *landing.Lander, c Connector, until, settledBefore time.Time) (Scanned, error) {
 	files, err := l.Folder(c.Root, c.Path)
 	if err != nil {
 		return Scanned{}, err
@@ -49,8 +61,15 @@ func ScanFolder(ctx context.Context, l *landing.Lander, c Connector) (Scanned, e
 		if err != nil {
 			return out, err
 		}
-		if seen {
+		switch {
+		case seen:
 			out.Skipped++
+			continue
+		case f.Modified.After(settledBefore):
+			out.Settling++
+			continue
+		case !time.Now().Before(until):
+			out.Unfinished = true
 			continue
 		}
 		landed, err := l.Land(ctx, landing.Arrival{
@@ -58,6 +77,7 @@ func ScanFolder(ctx context.Context, l *landing.Lander, c Connector) (Scanned, e
 			Home: &landing.Home{Root: c.Root, Path: f.Path},
 		})
 		if err != nil {
+			out.Failed++
 			failed = append(failed, fmt.Errorf("land %s:%s: %w", c.Root, f.Path, err))
 			continue
 		}
@@ -65,7 +85,10 @@ func ScanFolder(ctx context.Context, l *landing.Lander, c Connector) (Scanned, e
 			out.Landed++
 		}
 	}
-	return out, errors.Join(failed...)
+	if len(failed) > 0 {
+		return out, fmt.Errorf("%d of %d files did not land: %w", out.Failed, out.Files, errors.Join(failed...))
+	}
+	return out, nil
 }
 
 func mediaTypeOf(p string) string {

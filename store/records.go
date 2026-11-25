@@ -206,6 +206,9 @@ type Cursor struct {
 	DueAt            string  `json:"due_at"`
 	LastRunTS        *string `json:"last_run_ts"`
 	LastDeliveryTS   *string `json:"last_delivery_ts"`
+	LastError        *string `json:"last_error"`
+	LastErrorTS      *string `json:"last_error_ts"`
+	Failures         int     `json:"failures"`
 	FirstFill        string  `json:"first_fill"`
 	FirstFillItemKey *string `json:"first_fill_item_key"`
 	CreatedTS        string  `json:"created_ts"`

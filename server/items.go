@@ -148,8 +148,8 @@ func ItemRoutes(st *store.Store, log *slog.Logger) Routes {
 	}
 	h := itemHandlers{store: st, log: log}
 	return func(r *Router) {
-		r.Handle("GET /api/v1/items", ScopeItemsRead, h.list)
-		r.Handle("GET /api/v1/items/{key}", ScopeItemsRead, h.show)
+		r.Handle(RouteItems, h.list)
+		r.Handle(RouteItem, h.show)
 	}
 }
 

@@ -31,13 +31,14 @@ type ConnectorCounts struct {
 
 // connectorCounts reads each item a connector sighted against the records
 // that make its phase: a model stage's waiting output or held task, the newest
-// side or quality decision, and its newest task.
+// side or quality decision, and its newest task. Its one %s takes a
+// placeholder for each of modelStages.
 const connectorCounts = `
 SELECT s.connector,
 	count(*),
 	coalesce(sum(
 		EXISTS (SELECT 1 FROM tasks t WHERE t.item_key = s.item_key AND t.state = 'queued' AND t.held_by IS NOT NULL)
-		OR EXISTS (SELECT 1 FROM outputs o WHERE o.item_key = s.item_key AND o.stage IN (?, ?) AND o.state = 'waiting'
+		OR EXISTS (SELECT 1 FROM outputs o WHERE o.item_key = s.item_key AND o.stage IN (%s) AND o.state = 'waiting'
 			AND NOT EXISTS (SELECT 1 FROM outputs d WHERE d.item_key = o.item_key AND d.stage = o.stage AND d.state = 'done'))
 	), 0),
 	coalesce(sum(
@@ -57,7 +58,12 @@ GROUP BY s.connector`
 // ConnectorCounts reads every connector's counts, by its name. A connector
 // that sighted nothing is absent.
 func (s *Store) ConnectorCounts(ctx context.Context) (map[string]ConnectorCounts, error) {
-	rows, err := s.read.QueryContext(ctx, connectorCounts, StageQuality, StageModelRead)
+	stages := make([]any, len(modelStages))
+	for i, stage := range modelStages {
+		stages[i] = stage
+	}
+	query := fmt.Sprintf(connectorCounts, strings.TrimSuffix(strings.Repeat("?, ", len(stages)), ", "))
+	rows, err := s.read.QueryContext(ctx, query, stages...)
 	if err != nil {
 		return nil, fmt.Errorf("count each connector's items: %w", err)
 	}

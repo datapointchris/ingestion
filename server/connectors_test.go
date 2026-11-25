@@ -23,7 +23,9 @@ import (
 // another file under that key is refused. A poll connector's run makes one
 // task. A drop connector's first fill runs one item through the model stages
 // and holds the rest, across a service restart, until a person releases it.
-// Each answer holds to its schema.
+// An apply that replaces a commit not in force is refused, and a later set
+// that drops the connector leaves its fill releasable. Each answer holds to its
+// schema.
 func TestADropRetriedUnderItsKeyLandsOnceAndAFirstFillHoldsAcrossARestartUntilReleased(t *testing.T) {
 	ctx := t.Context()
 	dir := t.TempDir()
@@ -85,7 +87,7 @@ func TestADropRetriedUnderItsKeyLandsOnceAndAFirstFillHoldsAcrossARestartUntilRe
 	}
 
 	status, raw := send(http.MethodPut, "/api/v1/declarations", http.Header{"Content-Type": {"application/json"}}, `{
-		"commit": "0123456789abcdef0123456789abcdef01234567",
+		"commit": "0123456789abcdef0123456789abcdef01234567", "replaces": null,
 		"connectors": [
 			{"name": "exports", "mode": "drop", "source": "bookmarklet-exports", "due_interval": "30d", "zone": "outside"},
 			{"name": "feeds", "mode": "poll", "source": "rss-feeds", "schedule": "@hourly", "zone": "outside"}
@@ -168,11 +170,19 @@ func TestADropRetriedUnderItsKeyLandsOnceAndAFirstFillHoldsAcrossARestartUntilRe
 		t.Errorf("a claim after a restart leased %+v, want none while the fill holds", leased)
 	}
 
-	status, raw = send(http.MethodPost, "/api/v1/connectors/exports/release", nil, "")
-	if status != http.StatusOK {
-		t.Fatalf("release answered %d %s", status, raw)
+	feedsOnly := `"connectors": [{"name": "feeds", "mode": "poll", "source": "rss-feeds", "schedule": "@hourly", "zone": "outside"}]}`
+	jsonBody := http.Header{"Content-Type": {"application/json"}}
+	if status, raw := send(http.MethodPut, "/api/v1/declarations", jsonBody, `{"commit": "1111111", "replaces": null, `+feedsOnly); status != http.StatusConflict || !bytes.Contains(raw, []byte(server.CodeDeclarationsMoved)) {
+		t.Errorf("an apply that saw no set in force answered %d %s, want 409 %s", status, raw, server.CodeDeclarationsMoved)
 	}
-	validate(t, schemas, "connector-release", raw)
+	if status, raw := send(http.MethodPut, "/api/v1/declarations", jsonBody, `{"commit": "2222222", "replaces": "0123456789abcdef0123456789abcdef01234567", `+feedsOnly); status != http.StatusOK {
+		t.Fatalf("an apply dropping exports answered %d %s", status, raw)
+	}
+	status, raw = send(http.MethodPatch, "/api/v1/connectors/exports/first-fill", jsonBody, `{"state": "released"}`)
+	if status != http.StatusOK {
+		t.Fatalf("releasing a dropped connector's fill answered %d %s", status, raw)
+	}
+	validate(t, schemas, "first-fill", raw)
 	if leased := claim("worker-2"); len(leased) != 1 || *leased[0].ItemKey != items[1] {
 		t.Errorf("a claim after the release leased %+v, want the held item's task", leased)
 	}

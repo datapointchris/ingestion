@@ -79,7 +79,7 @@ func PollTask(connector, source string) Task {
 }
 
 // modelStages are the stages that read an item with a model, where a
-// connector's first fill holds every item after its first.
+// connector's first fill holds every item after the first to reach one.
 var modelStages = []string{StageQuality, StageModelRead}
 
 // Enqueue adds a queued task for task's item or connector, stage and
@@ -131,8 +131,10 @@ func (t *Tx) firstFillHold(ctx context.Context, item string) (*string, error) {
 	return nil, nil
 }
 
-// ReleaseFirstFill marks connector's first fill released, and returns every
-// task it held to the claims. It answers how many tasks it returned.
+// ReleaseFirstFill marks connector's first fill released, and returns to the
+// claims every task it held whose item no other connector's fill holds. A task
+// whose item another held fill sighted moves to that fill. It answers how many
+// tasks it returned.
 func (t *Tx) ReleaseFirstFill(ctx context.Context, connector string) (int, error) {
 	c, ok, err := t.Cursor(ctx, connector)
 	if err != nil {
@@ -147,12 +149,29 @@ func (t *Tx) ReleaseFirstFill(ctx context.Context, connector string) (int, error
 			return 0, err
 		}
 	}
-	result, err := t.tx.ExecContext(ctx, `UPDATE tasks SET held_by = NULL, updated_ts = ? WHERE held_by = ?`, t.stamp(), connector)
+	rows, err := t.tx.QueryContext(ctx, `
+UPDATE tasks SET updated_ts = ?, held_by = (
+	SELECT c.connector FROM cursors c JOIN sightings s ON s.connector = c.connector
+	WHERE s.item_key = tasks.item_key AND c.first_fill = 'held'
+		AND (c.first_fill_item_key IS NULL OR c.first_fill_item_key != tasks.item_key)
+	ORDER BY c.connector LIMIT 1)
+WHERE held_by = ?
+RETURNING held_by`, t.stamp(), connector)
 	if err != nil {
 		return 0, fmt.Errorf("release the tasks %s held: %w", connector, err)
 	}
-	n, err := result.RowsAffected()
-	return int(n), err
+	defer func() { _ = rows.Close() }()
+	released := 0
+	for rows.Next() {
+		var holder *string
+		if err := rows.Scan(&holder); err != nil {
+			return 0, fmt.Errorf("release the tasks %s held: %w", connector, err)
+		}
+		if holder == nil {
+			released++
+		}
+	}
+	return released, rows.Err()
 }
 
 // ErrNoCursor names a connector with no cursor, because no applied set

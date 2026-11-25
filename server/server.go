@@ -21,21 +21,11 @@ import (
 // person's device login, ingestion-svc- for a service.
 const Product = "ingestion"
 
-// Router is where a package registers its routes, each with the scope a
-// service's token needs to reach it.
+// Router is where a package registers a handler for each of its rows in the
+// route table.
 type Router struct {
 	mux    *http.ServeMux
 	scopes map[string][]string
-}
-
-// Handle serves pattern, written as ServeMux reads it ("POST /api/v1/x"), with
-// h. A service reaches it only while its token carries scope. An empty scope
-// admits a person's token alone.
-func (r *Router) Handle(pattern, scope string, h http.HandlerFunc) {
-	r.mux.HandleFunc(pattern, h)
-	if scope != "" {
-		r.scopes[scope] = append(r.scopes[scope], pattern)
-	}
 }
 
 // Routes registers one package's routes.
@@ -99,7 +89,7 @@ func Handler(cfg Config, routes ...Routes) http.Handler {
 	})
 	// The version a caller compares its own with, behind the same token as
 	// the routes it calls.
-	r.Handle("GET /api/v1/version", ScopeTasksClaim, func(w http.ResponseWriter, _ *http.Request) {
+	r.Handle(RouteVersion, func(w http.ResponseWriter, _ *http.Request) {
 		JSON(w, http.StatusOK, map[string]string{"version": cfg.Version})
 	})
 	for _, register := range routes {

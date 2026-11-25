@@ -70,7 +70,10 @@ var Tables = []Table{
 		Name: "workers", Key: []string{"id"}, Stamp: []string{"heartbeat_ts"}, JSON: []string{"capabilities"},
 		Kept: []string{"started_ts"}, Writes: Upserts,
 	},
-	{Name: "cursors", Key: []string{"connector"}, Stamp: []string{"updated_ts"}, Kept: []string{"created_ts"}, Writes: Upserts},
+	{
+		Name: "cursors", Key: []string{"connector"}, Stamp: []string{"updated_ts"}, Text: []string{"last_error"},
+		Kept: []string{"created_ts"}, Writes: Upserts,
+	},
 	{
 		Name: "declarations", Key: []string{"commit"}, Stamp: []string{"applied_ts"},
 		JSON: []string{"connectors", "routing_rules", "destinations"}, Writes: Upserts,

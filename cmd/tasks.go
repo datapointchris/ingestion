@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand/v2"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -93,7 +94,7 @@ func runTasksList(cmd *cobra.Command, _ []string) error {
 		q.Set("workers", "all")
 	}
 	var answer server.TasksAnswer
-	raw, err := getJSON(cmd.Context(), configPath(cmd), api, "/api/v1/tasks?"+q.Encode(), &answer)
+	raw, err := getJSON(cmd.Context(), configPath(cmd), api, call{Route: server.RouteTasks, Query: q}, &answer)
 	if err != nil {
 		return err
 	}
@@ -168,27 +169,38 @@ func localTime(stamp string) string {
 	return at.Local().Format("2006-01-02 15:04:05 MST")
 }
 
-// getJSON reads route from the server the config file at path names, or api
+// getJSON reads c from the server the config file at path names, or api
 // where it is set, into into, and answers the body as it came.
-func getJSON(ctx context.Context, path, api, route string, into any) ([]byte, error) {
-	_, raw, err := callJSON(ctx, path, api, call{Method: http.MethodGet, Route: route}, into)
+func getJSON(ctx context.Context, path, api string, c call, into any) ([]byte, error) {
+	_, raw, err := callJSON(ctx, path, api, c, into)
 	return raw, err
 }
 
-// call is one request to the server. Every route a call names answers a
-// retry as it answered the first try: a read, a byContent write, or a keyed
-// one whose Header carries its Idempotency-Key.
+// call is one request to the server: a row of its route table, the values
+// that fill the row's path, and any query, header and body.
 type call struct {
-	Method string
-	Route  string
+	Route  server.Route
+	Values []string
+	Query  url.Values
 	Header http.Header
 	Body   []byte
 }
 
+// path is the call's route with its values and query filled in.
+func (c call) path() string {
+	p := c.Route.URL(c.Values...)
+	if len(c.Query) > 0 {
+		p += "?" + c.Query.Encode()
+	}
+	return p
+}
+
 // callJSON sends c to the server the config file at path names, or api where
 // it is set, reads a 2xx answer into into, and answers its status and its body
-// as it came. It tries a bounded few times within one deadline, again on no
-// answer and on 429, 502, 503 or 504. A server that gives no answer is
+// as it came. A keyed route without an Idempotency-Key gets one, which every
+// attempt carries. It tries a bounded few times within one deadline, again on
+// no answer and on 429, 502, 503 or 504, except that a once route is sent again
+// only where the server never received it. A server that gives no answer is
 // errNoAnswer, naming the server and what chose it, and any other status is a
 // *refusal.
 func callJSON(ctx context.Context, path, api string, c call, into any) (int, []byte, error) {
@@ -215,6 +227,14 @@ func callJSON(ctx context.Context, path, api string, c call, into any) (int, []b
 	client := oauth2.NewClient(ctx, oauth2.ReuseTokenSource(token, source))
 	base := strings.TrimRight(d.API.Value, "/")
 	named := base + " " + chosenBy(d.API, d.Path)
+	route := c.path()
+	header := c.Header.Clone()
+	if header == nil {
+		header = http.Header{}
+	}
+	if c.Route.Repeat == server.RepeatKeyed && header.Get(server.IdempotencyKey) == "" {
+		header.Set(server.IdempotencyKey, randomKey())
+	}
 	var lastErr error
 	for attempt := range answerAttempts {
 		if attempt > 0 {
@@ -229,22 +249,28 @@ func callJSON(ctx context.Context, path, api string, c call, into any) (int, []b
 		if c.Body != nil {
 			body = bytes.NewReader(c.Body)
 		}
-		req, err := http.NewRequestWithContext(ctx, c.Method, base+c.Route, body)
+		req, err := http.NewRequestWithContext(ctx, c.Route.Method, base+route, body)
 		if err != nil {
 			return 0, nil, err
 		}
-		for name, values := range c.Header {
+		for name, values := range header {
 			req.Header[name] = values
 		}
 		resp, err := client.Do(req)
 		if err != nil {
 			lastErr = err
+			if c.Route.Repeat == server.RepeatOnce && !neverReached(err) {
+				return 0, nil, fmt.Errorf("%w: %s: %v", errNoAnswer, named, err)
+			}
 			continue
 		}
 		raw, err := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
 		if err != nil {
 			lastErr = err
+			if c.Route.Repeat == server.RepeatOnce {
+				return 0, nil, fmt.Errorf("%w: %s: %v", errNoAnswer, named, err)
+			}
 			continue
 		}
 		switch {
@@ -253,11 +279,22 @@ func callJSON(ctx context.Context, path, api string, c call, into any) (int, []b
 		case resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusBadGateway ||
 			resp.StatusCode == http.StatusServiceUnavailable || resp.StatusCode == http.StatusGatewayTimeout:
 			lastErr = fmt.Errorf("it answered %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+			if c.Route.Repeat == server.RepeatOnce {
+				return 0, nil, fmt.Errorf("%w: %s: %v", errNoAnswer, named, lastErr)
+			}
 			continue
 		}
-		return resp.StatusCode, raw, refusalOf(named, c.Method, c.Route, resp.StatusCode, raw)
+		return resp.StatusCode, raw, refusalOf(named, c.Route.Method, route, resp.StatusCode, raw)
 	}
 	return 0, nil, fmt.Errorf("%w: %s, after %d tries: %v", errNoAnswer, named, answerAttempts, lastErr)
+}
+
+// neverReached is a request that failed before a connection to the server
+// was made, so the server cannot have acted on it.
+func neverReached(err error) bool {
+	var op *net.OpError
+	var dns *net.DNSError
+	return errors.As(err, &dns) || (errors.As(err, &op) && op.Op == "dial")
 }
 
 // refusal is the server refusing a request. Code and Message are what its

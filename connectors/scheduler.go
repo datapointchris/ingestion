@@ -15,6 +15,24 @@ import (
 // that a write moved earlier without waking it is met within a minute.
 const maxWait = time.Minute
 
+// scanBudget bounds how long one pass spends landing a folder's files. A
+// large first scan stops there, so the pass goes on to every other connector,
+// and the next pass resumes it.
+const scanBudget = 30 * time.Second
+
+// settleWindow is how long a file goes unmodified before a scan lands it, so
+// a copy still in progress is not landed at a partial size.
+const settleWindow = 10 * time.Second
+
+// retryAfter is how long the scheduler waits before running a failed
+// connector again. The wait doubles after each failure in a row, and never
+// runs past the connector's next scheduled time.
+const retryAfter = 5 * time.Minute
+
+// maxErrorText bounds the error a cursor keeps, since a scan's error names
+// every file that did not land.
+const maxErrorText = 4096
+
 // Scheduler owns when each connector is due. It makes a poll connector's task
 // when its due time comes, and scans a folder connector's folder itself,
 // since only the service holds the named roots. Each run moves the
@@ -67,7 +85,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 
 // Pass runs each poll and folder connector in the set in force whose due time
 // has come, and answers the earliest due time left. One connector's failed run
-// is logged and leaves the rest to run.
+// is recorded on its cursor and logged, and leaves the rest to run.
 func (s *Scheduler) Pass(ctx context.Context) (time.Time, error) {
 	now := s.store.Now()
 	next := now.Add(maxWait)
@@ -81,7 +99,7 @@ func (s *Scheduler) Pass(ctx context.Context) (time.Time, error) {
 	}
 	var failed []error
 	for _, c := range set.Connectors {
-		if c.Mode != ModePoll && c.Mode != ModeFolder {
+		if !c.Scheduled() {
 			continue
 		}
 		cur, ok, err := s.store.Cursor(ctx, c.Name)
@@ -110,18 +128,24 @@ func (s *Scheduler) Pass(ctx context.Context) (time.Time, error) {
 	return next, errors.Join(failed...)
 }
 
-// run runs c once and answers when it is next due.
+// run runs c once and answers when it is next due. A run that completes moves
+// last_run_ts and makes c due at its schedule's next time. A scan stopped at
+// its budget makes c due at once, to resume. A run that fails leaves
+// last_run_ts, records its error on the cursor, and makes c due again after
+// retryAfter, doubled for each failure in a row.
 func (s *Scheduler) run(ctx context.Context, c Connector) (time.Time, error) {
 	started := s.store.Now()
 	var scanned Scanned
-	var scanErr error
+	var runErr error
 	if c.Mode == ModeFolder {
-		scanned, scanErr = ScanFolder(ctx, s.lander, c)
-		if scanErr != nil {
-			s.log.ErrorContext(ctx, "a folder scan failed", "connector", c.Name, "root", c.Root, "error", scanErr)
+		real := time.Now()
+		scanned, runErr = ScanFolder(ctx, s.lander, c, real.Add(scanBudget), real.Add(-settleWindow))
+		if runErr != nil {
+			s.log.ErrorContext(ctx, "a folder scan failed", "connector", c.Name, "root", c.Root, "error", runErr)
 		}
 		s.log.InfoContext(ctx, "scanned a folder", "connector", c.Name, "root", c.Root, "files", scanned.Files,
-			"landed", scanned.Landed, "skipped", scanned.Skipped)
+			"landed", scanned.Landed, "skipped", scanned.Skipped, "failed", scanned.Failed, "settling", scanned.Settling,
+			"unfinished", scanned.Unfinished)
 	}
 	var due time.Time
 	err := s.store.Update(ctx, func(tx *store.Tx) error {
@@ -138,19 +162,63 @@ func (s *Scheduler) run(ctx context.Context, c Connector) (time.Time, error) {
 		if err != nil || !ok {
 			return err
 		}
-		ran := store.Stamp(started)
-		cur.LastRunTS = &ran
 		if scanned.Landed > 0 {
 			delivered := store.Stamp(tx.Now())
 			cur.LastDeliveryTS = &delivered
 		}
-		if due, err = NextDue(c, cur); err != nil {
+		switch {
+		case runErr != nil:
+			due, err = failedRun(c, &cur, runErr, tx.Now())
+		case scanned.Unfinished:
+			due = tx.Now()
+		default:
+			ran := store.Stamp(started)
+			cur.LastRunTS = &ran
+			cur.LastError, cur.LastErrorTS, cur.Failures = nil, nil, 0
+			due, err = NextDue(c, cur)
+		}
+		if err != nil {
 			return err
 		}
 		cur.DueAt = store.Stamp(due)
 		return tx.PutCursor(ctx, cur)
 	})
-	return due, errors.Join(scanErr, err)
+	if err != nil {
+		s.log.ErrorContext(ctx, "a connector's run failed", "connector", c.Name, "error", err)
+		runFailed := err
+		recorded := s.store.Update(ctx, func(tx *store.Tx) error {
+			cur, ok, err := tx.Cursor(ctx, c.Name)
+			if err != nil || !ok {
+				return err
+			}
+			if due, err = failedRun(c, &cur, runFailed, tx.Now()); err != nil {
+				return err
+			}
+			cur.DueAt = store.Stamp(due)
+			return tx.PutCursor(ctx, cur)
+		})
+		err = errors.Join(err, recorded)
+	}
+	return due, errors.Join(runErr, err)
+}
+
+// failedRun records runErr on cur at now, and answers when c runs again:
+// retryAfter after its first failure in a row, doubled for each after, and at
+// its next scheduled time at the latest.
+func failedRun(c Connector, cur *store.Cursor, runErr error, now time.Time) (time.Time, error) {
+	text := runErr.Error()
+	if len(text) > maxErrorText {
+		text = text[:maxErrorText] + "…"
+	}
+	at := store.Stamp(now)
+	cur.LastError, cur.LastErrorTS = &text, &at
+	cur.Failures++
+	wait := retryAfter << min(cur.Failures-1, 16)
+	schedule, err := parseSchedule(c.Schedule)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return earliest(now.Add(wait), schedule.Next(now)).UTC(), nil
 }
 
 // Poll makes c's poll task, and answers it. Where one is already queued or

@@ -19,10 +19,12 @@ import (
 )
 
 // connectors apply sends the example set from a git checkout, and connectors
-// list prints its commit on every connector. A set naming an unknown mode,
-// zone or destination, or a root the service does not hold, is refused whole,
-// naming each invalid declaration, exits 3, and leaves the set in force. A
-// file dropped twice lands once.
+// list prints its commit on every connector. A checkout behind the set in
+// force is refused until --replacing names it. A directory holding no
+// declarations exits 2. A set naming an unknown mode, zone or destination, or
+// a root the service does not hold, is refused whole, naming each invalid
+// declaration, exits 3, and leaves the set in force. A file dropped twice
+// lands once, and a copy under another name is one more sighting.
 func TestConnectorsApplyTheExampleSetAndAnInvalidSetChangesNothing(t *testing.T) {
 	ctx := t.Context()
 	dir, books := t.TempDir(), t.TempDir()
@@ -95,6 +97,25 @@ func TestConnectorsApplyTheExampleSetAndAnInvalidSetChangesNothing(t *testing.T)
 	}
 	listed()
 
+	git("commit", "-q", "--allow-empty", "-m", "a later commit")
+	later := git("rev-parse", "--short=7", "HEAD")
+	if out, err := runCLI(t, "connectors", "apply", library, "--config", config); err != nil || !strings.HasPrefix(out, "Applied "+later) {
+		t.Fatalf("applying a later commit printed %q, %v", out, err)
+	}
+	git("checkout", "-q", "HEAD~1")
+	_, err = runCLI(t, "connectors", "apply", library, "--config", config)
+	if code := exitCode(io.Discard, err); code != 3 || !strings.Contains(err.Error(), "--replacing "+later) {
+		t.Errorf("an apply from a checkout behind the set in force exited %d: %v; want 3 naming --replacing %s", code, err, later)
+	}
+	if out, err := runCLI(t, "connectors", "apply", library, "--replacing", later, "--config", config); err != nil || !strings.HasPrefix(out, "Applied "+commit) {
+		t.Errorf("a rollback with --replacing printed %q, %v; want %s applied", out, err, commit)
+	}
+	listed()
+	_, err = runCLI(t, "connectors", "apply", filepath.Join(library, "connectors"), "--config", config)
+	if code := exitCode(io.Discard, err); code != 2 {
+		t.Errorf("a directory holding no declarations exited %d, want 2: %v", code, err)
+	}
+
 	invalid := map[string]string{
 		"connectors/stream.yml": "name: stream\nmode: stream\nsource: a-feed\nschedule: '@daily'\nzone: public\n",
 		"routing-rules.yml":     "rules:\n  - name: to-nowhere\n    match: {tag: book}\n    destination: nowhere\n",
@@ -115,7 +136,7 @@ func TestConnectorsApplyTheExampleSetAndAnInvalidSetChangesNothing(t *testing.T)
 				t.Fatal(err)
 			}
 		}
-		_, err := runCLI(t, "connectors", "apply", edited, "--config", config)
+		_, err := runCLI(t, "connectors", "apply", edited, "--replacing", commit, "--config", config)
 		if code := exitCode(io.Discard, err); code != 3 {
 			t.Errorf("an invalid set exited %d, want 3: %v", code, err)
 		}
@@ -127,16 +148,19 @@ func TestConnectorsApplyTheExampleSetAndAnInvalidSetChangesNothing(t *testing.T)
 	}
 	listed()
 
-	export := filepath.Join(dir, "export.json")
-	if err := os.WriteFile(export, []byte(`{"saves": []}`), 0o600); err != nil {
-		t.Fatal(err)
+	export, copied := filepath.Join(dir, "export.json"), filepath.Join(dir, "export (1).json")
+	for _, file := range []string{export, copied} {
+		if err := os.WriteFile(file, []byte(`{"saves": []}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
-	for _, want := range []string{
-		"Dropped export.json into reddit-exports: it holds 1 item, 1 of them new.\n",
-		"export.json was already dropped into reddit-exports, so nothing landed: it holds 1 item.\n",
+	for _, drop := range []struct{ file, want string }{
+		{export, "Dropped export.json into reddit-exports: it holds 1 item, 1 of them new.\n"},
+		{export, "export.json was already dropped into reddit-exports, so nothing landed: it holds 1 item.\n"},
+		{copied, "Dropped export (1).json into reddit-exports: it holds 1 item, 0 of them new.\n"},
 	} {
-		if out, err := runCLI(t, "items", "drop", export, "--connector", "reddit-exports", "--config", config); err != nil || out != want {
-			t.Errorf("items drop printed %q, %v; want %q", out, err, want)
+		if out, err := runCLI(t, "items", "drop", drop.file, "--connector", "reddit-exports", "--config", config); err != nil || out != drop.want {
+			t.Errorf("items drop printed %q, %v; want %q", out, err, drop.want)
 		}
 	}
 }

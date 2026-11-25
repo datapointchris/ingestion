@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"regexp"
@@ -48,10 +47,17 @@ var connectorsApplyCmd = &cobra.Command{
 		"The service keeps the set with the commit it came from: dir's HEAD, marked\n" +
 		"+dirty with the set's digest where dir holds uncommitted changes, or named\n" +
 		"uncommitted by its digest outside a git work tree. `connectors list` prints it.\n" +
-		"Applying the commit in force again changes nothing.",
-	Example: "  ingestion connectors apply ./declarations",
-	Args:    cobra.ExactArgs(1),
-	RunE:    runConnectorsApply,
+		"Applying the commit in force again changes nothing.\n" +
+		"\n" +
+		"An apply replaces the commit it read in force. Where that commit came from\n" +
+		"git, dir's HEAD has to contain it, so a checkout that was not pulled cannot\n" +
+		"replace a newer set. Pass --replacing with the commit in force to replace it\n" +
+		"anyway, such as to roll back to an older commit. The service refuses an apply\n" +
+		"whose set in force moved after it was read.",
+	Example: "  ingestion connectors apply ./declarations\n" +
+		"  ingestion connectors apply ./declarations --replacing 3f2a9c1",
+	Args: cobra.ExactArgs(1),
+	RunE: runConnectorsApply,
 }
 
 var connectorsListCmd = &cobra.Command{
@@ -71,10 +77,10 @@ var connectorsShowCmd = &cobra.Command{
 	Use:   "show <name>",
 	Short: "Show one connector, and the item its first fill ran end to end",
 	Long: "Shows one connector's declaration, counts and due time, and its first fill.\n" +
-		"A connector's first fill runs its first item through the model stages and\n" +
-		"holds every later one there until a person releases it, so the first item's\n" +
-		"tokens can be read before the rest are spent. Every held item still lands,\n" +
-		"parses and scans.",
+		"A connector's first fill runs the first of its items to reach a model stage\n" +
+		"through those stages. It holds every later one there until a person releases\n" +
+		"it, so that item's tokens can be read before the rest are spent. Every held\n" +
+		"item still lands, parses and scans.",
 	Example: "  ingestion connectors show reddit-exports",
 	Args:    cobra.ExactArgs(1),
 	RunE:    runConnectorsShow,
@@ -97,7 +103,8 @@ var connectorsReleaseCmd = &cobra.Command{
 	Short: "Release a connector's first fill, queuing every item it held",
 	Long: "Lets every item that the connector's first fill holds at a model stage go on,\n" +
 		"and stops holding any later one. Releasing a fill already released changes\n" +
-		"nothing.",
+		"nothing. A connector that a later set dropped can still be released, so its\n" +
+		"held items do not wait for ever.",
 	Example: "  ingestion connectors release reddit-exports",
 	Args:    cobra.ExactArgs(1),
 	RunE:    runConnectorsRelease,
@@ -107,6 +114,7 @@ func init() {
 	goclikit.AsNamespace(connectorsCmd)
 	connectorsListCmd.Flags().Bool("json", false, "Print the service's answer as JSON")
 	connectorsShowCmd.Flags().Bool("json", false, "Print the service's answer as JSON")
+	connectorsApplyCmd.Flags().String("replacing", "", "Replace this commit in force, which dir's HEAD need not contain")
 	for _, c := range []*cobra.Command{connectorsApplyCmd, connectorsListCmd, connectorsShowCmd, connectorsRunCmd, connectorsReleaseCmd} {
 		c.Flags().String("api", "", "Call this server rather than the config file's api")
 		addConfigFlag(c)
@@ -119,6 +127,9 @@ func runConnectorsApply(cmd *cobra.Command, args []string) error {
 	api, _ := cmd.Flags().GetString("api")
 	dir := args[0]
 	set, err := connectors.Read(dir, nil)
+	if errors.Is(err, connectors.ErrNoDeclarations) {
+		return fmt.Errorf("%w: %v", goclikit.ErrUsage, err)
+	}
 	if err != nil {
 		return err
 	}
@@ -126,15 +137,33 @@ func runConnectorsApply(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	body, err := json.Marshal(server.DeclarationsRequest{Commit: commit, Set: set})
+	var listed server.ConnectorsAnswer
+	if _, err := getJSON(cmd.Context(), configPath(cmd), api, call{Route: server.RouteConnectors}, &listed); err != nil {
+		return err
+	}
+	replaces := listed.AppliedCommit
+	if cmd.Flags().Changed("replacing") {
+		named, _ := cmd.Flags().GetString("replacing")
+		if replaces == nil || (named != *replaces && named != shortCommit(*replaces)) {
+			return fmt.Errorf("%w: --replacing names %s, and %s is in force", goclikit.ErrUsage, named, orNoSet(replaces))
+		}
+	} else if replaces != nil && *replaces != commit {
+		if err := contains(cmd.Context(), dir, *replaces); err != nil {
+			return err
+		}
+	}
+	body, err := json.Marshal(server.DeclarationsRequest{Commit: commit, Replaces: replaces, Set: set})
 	if err != nil {
 		return err
 	}
 	var answer server.DeclarationsAnswer
 	_, _, err = callJSON(cmd.Context(), configPath(cmd), api, call{
-		Method: http.MethodPut, Route: "/api/v1/declarations", Header: http.Header{"Content-Type": {"application/json"}}, Body: body,
+		Route: server.RouteDeclarations, Header: http.Header{"Content-Type": {"application/json"}}, Body: body,
 	}, &answer)
 	var refused *refusal
+	if errors.As(err, &refused) && refused.Code == server.CodeDeclarationsMoved {
+		return fmt.Errorf("%w: %s. Read it with `ingestion connectors list`, then apply again", errStaleCheckout, refused.Message)
+	}
 	if errors.As(err, &refused) && refused.Code == server.CodeInvalidDeclarations {
 		var named struct {
 			Invalid []connectors.Invalid `json:"invalid"`
@@ -157,6 +186,41 @@ func runConnectorsApply(cmd *cobra.Command, args []string) error {
 }
 
 var fullSHA = regexp.MustCompile(`^[0-9a-f]{40}`)
+
+// errStaleCheckout is an apply from a checkout whose HEAD does not contain the
+// commit in force.
+var errStaleCheckout = errors.New("this checkout does not hold the set in force")
+
+// contains refuses an apply from dir that would replace current where dir's
+// HEAD does not contain it. A commit in force that names no git commit, such
+// as one applied from outside a work tree, has no history to check.
+func contains(ctx context.Context, dir, current string) error {
+	if !fullSHA.MatchString(current) {
+		return nil
+	}
+	git, err := gitAt(ctx, dir)
+	if err != nil {
+		return err
+	}
+	err = git("merge-base", "--is-ancestor", current[:40], "HEAD").Run()
+	var exit *exec.ExitError
+	if err != nil && !errors.As(err, &exit) {
+		return fmt.Errorf("read whether %s holds the commit in force: %w", dir, err)
+	}
+	if err != nil {
+		return fmt.Errorf("%w: %s is in force, and %s's HEAD does not contain it. Pull, or pass --replacing %s to replace it",
+			errStaleCheckout, shortCommit(current), dir, shortCommit(current))
+	}
+	return nil
+}
+
+// orNoSet is commit, or "no set" for nil.
+func orNoSet(commit *string) string {
+	if commit == nil {
+		return "no set"
+	}
+	return shortCommit(*commit)
+}
 
 // appliedCommit names where set came from: dir's HEAD where dir holds no
 // uncommitted change, <HEAD>+dirty.<digest> where it holds one, and
@@ -193,8 +257,9 @@ func appliedCommit(ctx context.Context, dir string, set connectors.Set) (string,
 }
 
 // gitAt answers a builder of git commands that find their repository from dir.
-// Each runs without the variables that would point git at another one, such
-// as the GIT_DIR a hook exports, as git's own submodule script does.
+// Each runs without the variables `git rev-parse --local-env-vars` names, such
+// as the GIT_DIR a hook exports, so a run inside a hook reads dir's own
+// repository.
 func gitAt(ctx context.Context, dir string) (func(args ...string) *exec.Cmd, error) {
 	local, err := exec.CommandContext(ctx, "git", "rev-parse", "--local-env-vars").Output()
 	if err != nil {
@@ -234,7 +299,7 @@ func runConnectorsList(cmd *cobra.Command, _ []string) error {
 	asJSON, _ := cmd.Flags().GetBool("json")
 	api, _ := cmd.Flags().GetString("api")
 	var answer server.ConnectorsAnswer
-	raw, err := getJSON(cmd.Context(), configPath(cmd), api, "/api/v1/connectors", &answer)
+	raw, err := getJSON(cmd.Context(), configPath(cmd), api, call{Route: server.RouteConnectors}, &answer)
 	if err != nil {
 		return err
 	}
@@ -243,11 +308,11 @@ func runConnectorsList(cmd *cobra.Command, _ []string) error {
 		_, err := w.Write(raw)
 		return err
 	}
-	writeConnectors(w, answer.Connectors, time.Now())
+	writeConnectors(w, answer.AppliedCommit, answer.Connectors, time.Now())
 	return nil
 }
 
-func writeConnectors(w io.Writer, list []server.ConnectorView, now time.Time) {
+func writeConnectors(w io.Writer, applied *string, list []server.ConnectorView, now time.Time) {
 	table := tabwriter.NewWriter(w, 0, 0, 2, ' ', tabwriter.AlignRight)
 	_, _ = fmt.Fprintln(table, "CONNECTOR\tMODE\tAPPLIED\tLAST DELIVERY\tITEMS\tWAITING\tREVIEW\tFAILED\tDUE\t")
 	for _, c := range list {
@@ -258,14 +323,17 @@ func writeConnectors(w io.Writer, list []server.ConnectorView, now time.Time) {
 		_, _ = fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%d\t%d\t%d\t%d\t%s\t\n", c.Name, c.Mode, shortCommit(c.AppliedCommit), last,
 			c.Items, c.Waiting, c.Review, c.Failed, dueText(c, now))
 	}
-	if len(list) == 0 {
+	switch {
+	case applied == nil:
 		_, _ = fmt.Fprintln(table, "(no declarations applied)\t")
+	case len(list) == 0:
+		_, _ = fmt.Fprintf(table, "(the set in force, %s, declares no connector)\t\n", shortCommit(*applied))
 	}
 	_ = table.Flush()
 }
 
 // dueText is when c is due as a person reads it: its schedule or interval,
-// then the next due time, or how long it is overdue.
+// any runs failed in a row, then the next due time, or how long it is overdue.
 func dueText(c server.ConnectorView, now time.Time) string {
 	cadence := ""
 	switch {
@@ -273,6 +341,12 @@ func dueText(c server.ConnectorView, now time.Time) string {
 		cadence = *c.Schedule
 	case c.DueInterval != nil:
 		cadence = "every " + *c.DueInterval
+	}
+	switch {
+	case c.Failures == 1:
+		cadence += " · last run failed"
+	case c.Failures > 1:
+		cadence += fmt.Sprintf(" · %d runs failed", c.Failures)
 	}
 	if c.Overdue {
 		return cadence + " · overdue since " + shortTime(c.DueAt)
@@ -297,7 +371,7 @@ func runConnectorsShow(cmd *cobra.Command, args []string) error {
 	asJSON, _ := cmd.Flags().GetBool("json")
 	api, _ := cmd.Flags().GetString("api")
 	var c server.ConnectorView
-	raw, err := getJSON(cmd.Context(), configPath(cmd), api, "/api/v1/connectors/"+url.PathEscape(args[0]), &c)
+	raw, err := getJSON(cmd.Context(), configPath(cmd), api, call{Route: server.RouteConnector, Values: []string{args[0]}}, &c)
 	if err != nil {
 		return err
 	}
@@ -330,6 +404,9 @@ func writeConnector(w io.Writer, c server.ConnectorView, now time.Time) {
 		return localTime(*stamp)
 	}
 	row("last run", "%s", last(c.LastRunTS))
+	if c.LastError != nil {
+		row("last error", "%s, %d in a row: %s", last(c.LastErrorTS), c.Failures, *c.LastError)
+	}
 	row("last delivery", "%s", last(c.LastDeliveryTS))
 	if fill := c.FirstFill; fill != nil {
 		switch fill.State {
@@ -363,10 +440,7 @@ func writeConnector(w io.Writer, c server.ConnectorView, now time.Time) {
 func runConnectorsRun(cmd *cobra.Command, args []string) error {
 	api, _ := cmd.Flags().GetString("api")
 	var answer server.RunAnswer
-	status, _, err := callJSON(cmd.Context(), configPath(cmd), api, call{
-		Method: http.MethodPost, Route: "/api/v1/connectors/" + url.PathEscape(args[0]) + "/runs",
-		Header: http.Header{server.IdempotencyKey: {"run-" + randomKey()}},
-	}, &answer)
+	status, _, err := callJSON(cmd.Context(), configPath(cmd), api, call{Route: server.RouteConnectorRuns, Values: []string{args[0]}}, &answer)
 	if err != nil {
 		return refusedAsUsage(err)
 	}
@@ -384,9 +458,10 @@ func runConnectorsRun(cmd *cobra.Command, args []string) error {
 
 func runConnectorsRelease(cmd *cobra.Command, args []string) error {
 	api, _ := cmd.Flags().GetString("api")
-	var answer server.ReleaseAnswer
+	var answer server.FirstFillAnswer
 	_, _, err := callJSON(cmd.Context(), configPath(cmd), api, call{
-		Method: http.MethodPost, Route: "/api/v1/connectors/" + url.PathEscape(args[0]) + "/release",
+		Route: server.RouteFirstFill, Values: []string{args[0]},
+		Header: http.Header{"Content-Type": {"application/json"}}, Body: []byte(`{"state":"released"}`),
 	}, &answer)
 	if err != nil {
 		return refusedAsUsage(err)

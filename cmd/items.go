@@ -61,15 +61,16 @@ var itemsShowCmd = &cobra.Command{
 
 var itemsDropCmd = &cobra.Command{
 	Use:   "drop <file>",
-	Short: "Drop a file into a drop connector, which lands it and each item it holds",
-	Long: "Sends the file to the drop connector --connector names, which lands it under\n" +
-		"its bytes' key. A source whose file holds items of its own, such as a Reddit\n" +
-		"export, lands each one too, as a child of the file. Each item takes the\n" +
-		"connector's default tags and zone.\n" +
+	Short: "Drop a file into a drop connector, which lands it",
+	Long: "Sends the file to the drop connector --connector names. It lands as one item\n" +
+		"under its bytes' key, or goes through the handler registered for the\n" +
+		"connector's format, which can land each item the file holds as its child.\n" +
+		"Each item takes the connector's default tags and zone.\n" +
 		"\n" +
-		"The drop is keyed by the connector and the file's bytes, so dropping the same\n" +
-		"file again answers what the first drop landed, and lands nothing new. Its\n" +
-		"media type is read from the file's extension.",
+		"The drop is keyed by the connector, the file's name, its media type and its\n" +
+		"bytes, so dropping the same file again answers what the first drop landed,\n" +
+		"and lands nothing new. A copy under another name lands as one more sighting\n" +
+		"of the same item. The media type is read from the file's extension.",
 	Example: "  ingestion items drop ~/Downloads/reddit-saved.json --connector reddit-exports",
 	Args:    cobra.ExactArgs(1),
 	RunE:    runItemsDrop,
@@ -112,7 +113,7 @@ func runItemsList(cmd *cobra.Command, _ []string) error {
 			q.Set("after", *answer.Next)
 		}
 		var page server.ItemsAnswer
-		if _, err := getJSON(cmd.Context(), configPath(cmd), api, "/api/v1/items?"+q.Encode(), &page); err != nil {
+		if _, err := getJSON(cmd.Context(), configPath(cmd), api, call{Route: server.RouteItems, Query: q}, &page); err != nil {
 			return err
 		}
 		answer.Items = append(answer.Items, page.Items...)
@@ -168,7 +169,7 @@ func runItemsShow(cmd *cobra.Command, args []string) error {
 	// The server resolves a URL to its key, so a CLI of another release reaches
 	// the item that the service's own itemkey names.
 	var answer server.ItemAnswer
-	raw, err := getJSON(cmd.Context(), configPath(cmd), api, "/api/v1/items/"+url.PathEscape(strings.TrimSpace(args[0])), &answer)
+	raw, err := getJSON(cmd.Context(), configPath(cmd), api, call{Route: server.RouteItem, Values: []string{strings.TrimSpace(args[0])}}, &answer)
 	var refused *refusal
 	if errors.As(err, &refused) && refused.Code == server.CodeInvalidKey {
 		return fmt.Errorf("%w: %s", goclikit.ErrUsage, refused.Message)
@@ -287,10 +288,12 @@ func runItemsDrop(cmd *cobra.Command, args []string) error {
 	if mediaType == "" {
 		mediaType = "application/octet-stream"
 	}
-	sum := sha256.Sum256(append([]byte(connector+"\x00"), body...))
+	// The key covers all the server compares, so a copy under another name
+	// lands as one more sighting rather than reusing the first drop's key.
+	sum := sha256.Sum256(append([]byte(connector+"\x00"+name+"\x00"+mediaType+"\x00"), body...))
 	var answer server.PushAnswer
 	status, raw, err := callJSON(cmd.Context(), configPath(cmd), api, call{
-		Method: http.MethodPost, Route: "/api/v1/connectors/" + url.PathEscape(connector) + "/drops",
+		Route: server.RouteConnectorDrops, Values: []string{connector},
 		Header: http.Header{
 			"Content-Type":        {mediaType},
 			"Content-Disposition": {mime.FormatMediaType("attachment", map[string]string{"filename": name})},

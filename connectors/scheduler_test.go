@@ -16,7 +16,9 @@ import (
 // A folder connector over a temporary folder lands each new file once when it
 // comes due, and a rerun lands nothing. A poll connector's due time makes one
 // task, named for its source, and a pass while it is in flight makes no other.
-func TestTheSchedulerLandsEachNewFileOnceAndMakesOnePollTask(t *testing.T) {
+// A folder whose root is gone, as an unmounted share is, keeps the error on its
+// cursor and its last good run, and comes due again in 5 minutes.
+func TestTheSchedulerLandsEachNewFileOnceMakesOnePollTaskAndKeepsAFailedScan(t *testing.T) {
 	ctx := t.Context()
 	var mu sync.Mutex
 	now := time.Date(2026, 11, 24, 10, 7, 0, 0, time.UTC)
@@ -24,7 +26,12 @@ func TestTheSchedulerLandsEachNewFileOnceAndMakesOnePollTask(t *testing.T) {
 	advance := func(d time.Duration) { mu.Lock(); now = now.Add(d); mu.Unlock() }
 	dir, books := t.TempDir(), t.TempDir()
 	write := func(name, body string) {
-		if err := os.WriteFile(filepath.Join(books, name), []byte(body), 0o600); err != nil {
+		file := filepath.Join(books, name)
+		if err := os.WriteFile(file, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		settled := time.Now().Add(-time.Minute)
+		if err := os.Chtimes(file, settled, settled); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -47,7 +54,7 @@ func TestTheSchedulerLandsEachNewFileOnceAndMakesOnePollTask(t *testing.T) {
 		{Name: "books-folder", Mode: connectors.ModeFolder, Source: "local-books", Schedule: "*/15 * * * *", Zone: store.Outside, Root: "books"},
 		{Name: "feed-reader", Mode: connectors.ModePoll, Source: "rss-feeds", Schedule: "@hourly", Zone: store.Outside},
 	}}
-	if _, err := connectors.Apply(ctx, st, set, "0123456", "test", []string{"books"}); err != nil {
+	if _, err := connectors.Apply(ctx, st, set, "0123456", nil, "test", []string{"books"}); err != nil {
 		t.Fatal(err)
 	}
 	scheduler := connectors.NewScheduler(st, lander, slog.New(slog.DiscardHandler))
@@ -96,5 +103,21 @@ func TestTheSchedulerLandsEachNewFileOnceAndMakesOnePollTask(t *testing.T) {
 	advance(15 * time.Minute)
 	if items, _ := pass(); items != 3 {
 		t.Errorf("a pass after a new file landed to %d items, want 3", items)
+	}
+
+	good, _, err := st.Cursor(ctx, "books-folder")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(books); err != nil {
+		t.Fatal(err)
+	}
+	advance(15 * time.Minute)
+	if _, err := scheduler.Pass(ctx); err == nil {
+		t.Error("a pass over a missing folder answered no error")
+	}
+	cur, _, err = st.Cursor(ctx, "books-folder")
+	if err != nil || cur.LastError == nil || cur.Failures != 1 || *cur.LastRunTS != *good.LastRunTS || cur.DueAt != store.Stamp(clock().Add(5*time.Minute)) {
+		t.Errorf("after a failed scan books-folder's cursor is %+v, %v; want its error, 1 failure, the last run kept and due in 5 minutes", cur, err)
 	}
 }

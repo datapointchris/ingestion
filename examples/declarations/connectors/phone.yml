@@ -1,5 +1,4 @@
-# A push connector takes what a phone shares. A shared link is an outsider's
-# words, and a typed note the owner's, so the push route sets each item's zone.
+# A push connector takes what a phone shares.
 name: phone
 mode: push
 source: phone-shares

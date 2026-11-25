@@ -25,9 +25,11 @@ const (
 	ScopeDeclarationsApply = "ingestion.declarations.apply"
 	// ScopeConnectorsRead admits a caller to read each connector's state.
 	ScopeConnectorsRead = "ingestion.connectors.read"
-	// ScopeConnectorsRun admits a caller to run a connector now and to
-	// release its first fill.
+	// ScopeConnectorsRun admits a caller to run a connector now.
 	ScopeConnectorsRun = "ingestion.connectors.run"
+	// ScopeFirstFillsRelease admits a caller to release a connector's first
+	// fill, which sends every item it held on to the model stages.
+	ScopeFirstFillsRelease = "ingestion.first-fills.release"
 	// ScopeItemsDrop admits a caller to drop a file into a drop connector.
 	ScopeItemsDrop = "ingestion.items.drop"
 )
@@ -46,6 +48,7 @@ const (
 	CodeConnectorNotFound     = "connector_not_found"
 	CodeConnectorMode         = "connector_mode"
 	CodeInvalidDeclarations   = "invalid_declarations"
+	CodeDeclarationsMoved     = "declarations_moved"
 	CodeIdempotencyKeyMissing = "idempotency_key_missing"
 	CodeIdempotencyKeyReused  = "idempotency_key_reused"
 	CodeDropTooLarge          = "drop_too_large"
@@ -56,6 +59,9 @@ const (
 // schemas/declarations.schema.json.
 type DeclarationsRequest struct {
 	Commit string `json:"commit"`
+	// Replaces is the commit the caller saw in force, and null where it saw
+	// none. An apply that replaces another commit is refused.
+	Replaces *string `json:"replaces"`
 	connectors.Set
 }
 
@@ -79,10 +85,21 @@ type invalidDeclarations struct {
 	Invalid []connectors.Invalid `json:"invalid"`
 }
 
+// declarationsMoved is the refusal of an apply built against a set that is no
+// longer in force, naming the commit in force and the one it replaces.
+type declarationsMoved struct {
+	refusal
+	Current  *string `json:"applied_commit"`
+	Replaces *string `json:"replaces"`
+}
+
 // ConnectorsAnswer is what GET /api/v1/connectors answers:
 // schemas/connectors-list.schema.json.
 type ConnectorsAnswer struct {
-	SchemaVersion int             `json:"schema_version"`
+	SchemaVersion int `json:"schema_version"`
+	// AppliedCommit is the commit of the set in force, and null where no set
+	// has been applied.
+	AppliedCommit *string         `json:"applied_commit"`
 	Connectors    []ConnectorView `json:"connectors"`
 }
 
@@ -96,15 +113,20 @@ type ConnectorView struct {
 	AppliedCommit  string     `json:"applied_commit"`
 	LastRunTS      *string    `json:"last_run_ts"`
 	LastDeliveryTS *string    `json:"last_delivery_ts"`
-	Items          int        `json:"items"`
-	Waiting        int        `json:"waiting"`
-	Review         int        `json:"review"`
-	Failed         int        `json:"failed"`
-	Schedule       *string    `json:"schedule"`
-	DueInterval    *string    `json:"due_interval"`
-	Freshness      *string    `json:"freshness"`
-	DueAt          string     `json:"due_at"`
-	Overdue        bool       `json:"overdue"`
+	// LastError is why the last run failed, null since one succeeded, and
+	// Failures counts the failed runs since then.
+	LastError   *string `json:"last_error"`
+	LastErrorTS *string `json:"last_error_ts"`
+	Failures    int     `json:"failures"`
+	Items       int     `json:"items"`
+	Waiting     int     `json:"waiting"`
+	Review      int     `json:"review"`
+	Failed      int     `json:"failed"`
+	Schedule    *string `json:"schedule"`
+	DueInterval *string `json:"due_interval"`
+	Freshness   *string `json:"freshness"`
+	DueAt       string  `json:"due_at"`
+	Overdue     bool    `json:"overdue"`
 	// FirstFill is answered on one connector alone.
 	FirstFill *FirstFillView `json:"first_fill,omitempty"`
 }
@@ -129,13 +151,19 @@ type RunAnswer struct {
 	DueAt         string  `json:"due_at"`
 }
 
-// ReleaseAnswer is what POST /api/v1/connectors/{name}/release answers:
-// schemas/connector-release.schema.json.
-type ReleaseAnswer struct {
+// FirstFillRequest is what PATCH /api/v1/connectors/{name}/first-fill reads.
+// Released is the one state a person sets.
+type FirstFillRequest struct {
+	State string `json:"state"`
+}
+
+// FirstFillAnswer is what the PATCH answers: schemas/first-fill.schema.json.
+type FirstFillAnswer struct {
 	SchemaVersion int    `json:"schema_version"`
 	Connector     string `json:"connector"`
-	FirstFill     string `json:"first_fill"`
-	// Released counts the held tasks that the release returned to the claims.
+	State         string `json:"state"`
+	// Released counts the held tasks that this request returned to the
+	// claims, which is 0 for a fill already released.
 	Released int `json:"released"`
 }
 
@@ -175,12 +203,12 @@ func ConnectorRoutes(cfg ConnectorConfig) Routes {
 	}
 	h := connectorHandlers{cfg: cfg}
 	return func(r *Router) {
-		r.Handle("PUT /api/v1/declarations", ScopeDeclarationsApply, h.apply)
-		r.Handle("GET /api/v1/connectors", ScopeConnectorsRead, h.list)
-		r.Handle("GET /api/v1/connectors/{name}", ScopeConnectorsRead, h.show)
-		r.Handle("POST /api/v1/connectors/{name}/runs", ScopeConnectorsRun, h.run)
-		r.Handle("POST /api/v1/connectors/{name}/release", ScopeConnectorsRun, h.release)
-		r.Handle("POST /api/v1/connectors/{name}/drops", ScopeItemsDrop, h.drop)
+		r.Handle(RouteDeclarations, h.apply)
+		r.Handle(RouteConnectors, h.list)
+		r.Handle(RouteConnector, h.show)
+		r.Handle(RouteConnectorRuns, h.run)
+		r.Handle(RouteFirstFill, h.firstFill)
+		r.Handle(RouteConnectorDrops, h.drop)
 	}
 }
 
@@ -199,7 +227,20 @@ func (h connectorHandlers) apply(w http.ResponseWriter, r *http.Request) {
 	if set.Connectors == nil {
 		set.Connectors = []connectors.Connector{}
 	}
-	applied, err := connectors.Apply(r.Context(), h.cfg.Store, set, body.Commit, loginOf(r), h.cfg.Roots)
+	applied, err := connectors.Apply(r.Context(), h.cfg.Store, set, body.Commit, body.Replaces, loginOf(r), h.cfg.Roots)
+	var moved *connectors.MovedError
+	if errors.As(err, &moved) {
+		status := http.StatusConflict
+		JSON(w, status, declarationsMoved{
+			refusal: refusal{
+				Error: http.StatusText(status), Code: CodeDeclarationsMoved,
+				Message: "the apply replaces " + orNone(moved.Replaces) + ", and " + orNone(moved.Current) +
+					" is in force, so nothing is applied",
+			},
+			Current: moved.Current, Replaces: moved.Replaces,
+		})
+		return
+	}
 	var invalid *connectors.InvalidError
 	if errors.As(err, &invalid) {
 		status := http.StatusUnprocessableEntity
@@ -275,6 +316,9 @@ func (h connectorHandlers) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	answer := ConnectorsAnswer{SchemaVersion: 1, Connectors: make([]ConnectorView, 0, len(set.Connectors))}
+	if commit != "" {
+		answer.AppliedCommit = &commit
+	}
 	sorted := slices.Clone(set.Connectors)
 	slices.SortFunc(sorted, func(a, b connectors.Connector) int { return strings.Compare(a.Name, b.Name) })
 	for _, c := range sorted {
@@ -346,6 +390,7 @@ func (h connectorHandlers) view(w http.ResponseWriter, r *http.Request, c connec
 	return ConnectorView{
 		Name: c.Name, Mode: c.Mode, Zone: c.Zone, Source: c.Source, Tags: tags, AppliedCommit: commit,
 		LastRunTS: cur.LastRunTS, LastDeliveryTS: cur.LastDeliveryTS,
+		LastError: cur.LastError, LastErrorTS: cur.LastErrorTS, Failures: cur.Failures,
 		Items: n.Items, Waiting: n.Waiting, Review: n.Review, Failed: n.Failed,
 		Schedule: optional(c.Schedule), DueInterval: optional(c.DueInterval), Freshness: optional(c.Freshness),
 		DueAt: cur.DueAt, Overdue: connectors.Overdue(c, cur, h.cfg.Store.Now()),
@@ -355,15 +400,12 @@ func (h connectorHandlers) view(w http.ResponseWriter, r *http.Request, c connec
 // run makes a poll connector's task now, or makes a folder connector due now
 // for the scheduler to scan. It is keyed, so a retry makes no second run.
 func (h connectorHandlers) run(w http.ResponseWriter, r *http.Request) {
-	key, ok := idempotencyKey(w, r)
-	if !ok {
-		return
-	}
+	key := requestKey(r)
 	c, _, ok := h.connector(w, r)
 	if !ok {
 		return
 	}
-	if c.Mode != connectors.ModePoll && c.Mode != connectors.ModeFolder {
+	if !c.Scheduled() {
 		Refuse(w, http.StatusConflict, CodeConnectorMode,
 			"%s is a %s connector, which runs as its items arrive, so nothing runs it", c.Name, c.Mode)
 		return
@@ -417,25 +459,40 @@ func (h connectorHandlers) run(w http.ResponseWriter, r *http.Request) {
 	JSON(w, status, answer)
 }
 
-// release lets every item a connector's first fill holds through its model
-// stages. Releasing a fill already released returns no task.
-func (h connectorHandlers) release(w http.ResponseWriter, r *http.Request) {
-	c, _, ok := h.connector(w, r)
-	if !ok {
+// firstFill releases a connector's first fill, which lets every item it holds
+// through the model stages. It finds the fill by the connector's cursor, so a
+// connector that a later set dropped can still be released. Releasing a fill
+// already released returns no task.
+func (h connectorHandlers) firstFill(w http.ResponseWriter, r *http.Request) {
+	var body FirstFillRequest
+	if !decode(w, r, &body) {
 		return
 	}
+	if body.State != store.FirstFillReleased {
+		Refuse(w, http.StatusBadRequest, CodeInvalidBody, "a first fill's state is set to %s alone, not %q", store.FirstFillReleased, body.State)
+		return
+	}
+	name := r.PathValue("name")
+	var found bool
 	var released int
 	err := h.cfg.Store.Update(r.Context(), func(tx *store.Tx) error {
 		var err error
-		released, err = tx.ReleaseFirstFill(r.Context(), c.Name)
+		if _, found, err = tx.Cursor(r.Context(), name); err != nil || !found {
+			return err
+		}
+		released, err = tx.ReleaseFirstFill(r.Context(), name)
 		return err
 	})
 	if err != nil {
 		h.internal(w, r, "release the first fill", err)
 		return
 	}
-	h.cfg.Log.Info("released a first fill", "connector", c.Name, "tasks", released)
-	JSON(w, http.StatusOK, ReleaseAnswer{SchemaVersion: 1, Connector: c.Name, FirstFill: store.FirstFillReleased, Released: released})
+	if !found {
+		Refuse(w, http.StatusNotFound, CodeConnectorNotFound, "no set applied has declared a connector %s", name)
+		return
+	}
+	h.cfg.Log.Info("released a first fill", "connector", name, "tasks", released)
+	JSON(w, http.StatusOK, FirstFillAnswer{SchemaVersion: 1, Connector: name, State: store.FirstFillReleased, Released: released})
 }
 
 // drop lands the body as one file dropped into a drop connector, through its
@@ -444,10 +501,7 @@ func (h connectorHandlers) release(w http.ResponseWriter, r *http.Request) {
 // request: a retry under one Idempotency-Key answers what the first attempt
 // landed, and a different file under it answers 409.
 func (h connectorHandlers) drop(w http.ResponseWriter, r *http.Request) {
-	key, ok := idempotencyKey(w, r)
-	if !ok {
-		return
-	}
+	key := requestKey(r)
 	c, _, ok := h.connector(w, r)
 	if !ok {
 		return
@@ -555,18 +609,6 @@ func (h connectorHandlers) internal(w http.ResponseWriter, r *http.Request, what
 	Refuse(w, http.StatusInternalServerError, CodeInternal, "the server could not %s", what)
 }
 
-// idempotencyKey reads a keyed route's Idempotency-Key, and refuses a request
-// that carries none.
-func idempotencyKey(w http.ResponseWriter, r *http.Request) (string, bool) {
-	key := strings.TrimSpace(r.Header.Get(IdempotencyKey))
-	if key == "" || len(key) > 200 {
-		Refuse(w, http.StatusBadRequest, CodeIdempotencyKeyMissing,
-			"this route carries an %s header of at most 200 characters, which names the request across a retry, so nothing was done", IdempotencyKey)
-		return "", false
-	}
-	return key, true
-}
-
 // dropHeaders reads a drop's media type, octet-stream where none is named,
 // and its file's name, which is one filename where it is given.
 func dropHeaders(w http.ResponseWriter, r *http.Request) (string, string, bool) {
@@ -624,6 +666,14 @@ func loginOf(r *http.Request) string {
 func fingerprintOf(parts ...string) string {
 	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
 	return hex.EncodeToString(sum[:])
+}
+
+// orNone is commit, or "no set" for nil.
+func orNone(commit *string) string {
+	if commit == nil {
+		return "no set"
+	}
+	return *commit
 }
 
 // text is *s, and "" for nil.

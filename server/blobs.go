@@ -53,9 +53,9 @@ func BlobRoutes(l *landing.Lander, log *slog.Logger) Routes {
 	}
 	h := blobHandlers{lander: l, log: log}
 	return func(r *Router) {
-		r.Handle("GET /api/v1/blobs/{sha256}", ScopeTasksClaim, h.read)
-		r.Handle("PUT /api/v1/blobs/{sha256}", ScopeTasksClaim, h.write)
-		r.Handle("GET /api/v1/blobs/unpaired", "", h.unpaired)
+		r.Handle(RouteBlob, h.read)
+		r.Handle(RouteBlobWrite, h.write)
+		r.Handle(RouteBlobsUnpaired, h.unpaired)
 	}
 }
 

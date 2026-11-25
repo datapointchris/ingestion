@@ -8,7 +8,8 @@
     {"$ref": "#/$defs/sightings"},
     {"$ref": "#/$defs/homes"},
     {"$ref": "#/$defs/outputs"},
-    {"$ref": "#/$defs/tasks"}
+    {"$ref": "#/$defs/tasks"},
+    {"$ref": "#/$defs/cursors"}
   ],
   "$defs": {
     "items": {
@@ -86,6 +87,14 @@
       "additionalProperties": false,
       "properties": {
         "error": {"description": "Why the task last failed.", "type": ["string", "null"]}
+      }
+    },
+    "cursors": {
+      "title": "cursors",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "last_error": {"description": "Why the connector's newest run failed, such as a folder scan's error naming the files it could not land.", "type": ["string", "null"]}
       }
     }
   }

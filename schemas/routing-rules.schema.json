@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/datapointchris/ingestion/schemas/routing-rules.schema.json",
   "title": "The routing rules",
-  "description": "What routing-rules.yml holds in a directory that `ingestion connectors apply` sends. Each rule places an item on a destination before any model reads it, and the side gate records its decision as by rule:<name>.",
+  "description": "What routing-rules.yml holds in a directory that `ingestion connectors apply` sends. Each rule names the destination for the items its match holds for, and a placement made by a rule records rule:<name>.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -29,7 +29,7 @@
           "dependentRequired": {"field": ["values"], "values": ["field"]},
           "anyOf": [{"required": ["connector"]}, {"required": ["tag"]}, {"required": ["field"]}]
         },
-        "destination": {"description": "The destination the rule places an item on, which destinations.yml declares.", "type": "string", "pattern": "^[a-z][a-z0-9-]*$"}
+        "destination": {"description": "The destination for the items the rule's match holds for, which destinations.yml declares.", "type": "string", "pattern": "^[a-z][a-z0-9-]*$"}
       }
     }
   }

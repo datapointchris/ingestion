@@ -16,7 +16,6 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -53,11 +52,6 @@ const (
 	DestinationsFile = "destinations.yml"
 )
 
-var (
-	namePattern = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
-	tagPattern  = regexp.MustCompile(`^[a-z0-9][a-z0-9._:-]*$`)
-)
-
 // Connector is one connector's declaration, as connectors/<name>.yml holds
 // it: schemas/connector.schema.json.
 type Connector struct {
@@ -83,10 +77,19 @@ type Connector struct {
 	// the directory below it.
 	Root string `json:"root,omitempty" yaml:"root"`
 	Path string `json:"path,omitempty" yaml:"path"`
+	// Format names the drop handler that splits a drop connector's file into
+	// items, as RegisterDropHandler registered it. Left out, a dropped file
+	// lands as one item.
+	Format string `json:"format,omitempty" yaml:"format"`
 }
 
-// RoutingRule places each item its match holds for on a destination, before
-// any model reads it. A decision it makes is by rule:<name>.
+// Scheduled says whether c runs on its schedule, as a poll or a folder does.
+// A drop or a push runs as its items arrive, and is due its due_interval
+// after its last delivery.
+func (c Connector) Scheduled() bool { return c.Mode == ModePoll || c.Mode == ModeFolder }
+
+// RoutingRule names the destination for the items its match holds for. A
+// placement made by a rule records rule:<name>.
 type RoutingRule struct {
 	Name        string `json:"name" yaml:"name"`
 	Match       Match  `json:"match" yaml:"match"`
@@ -160,9 +163,15 @@ func (e *InvalidError) Error() string {
 
 func (e *InvalidError) Unwrap() error { return ErrInvalid }
 
+// ErrNoDeclarations is a directory holding none of a set's files, which
+// Read refuses rather than reading as a set that declares nothing.
+var ErrNoDeclarations = errors.New("the directory holds no connectors/ directory, " + RoutingRulesFile + " or " + DestinationsFile)
+
 // Read reads the set below dir: each connectors/*.yml, routing-rules.yml and
-// destinations.yml, where they exist. A file that does not parse, or that
-// names a field its schema does not, is an InvalidError, and so is any
+// destinations.yml, where they exist. A directory holding none of the three
+// is ErrNoDeclarations, so a set that retires every connector is written on
+// purpose, as an empty connectors/ directory. A file that does not parse, or
+// that names a field its schema does not, is an InvalidError, and so is any
 // declaration that Validate refuses. roots names the [serve.homes] roots a
 // folder may read, and nil skips that check.
 func Read(dir string, roots []string) (Set, error) {
@@ -170,6 +179,15 @@ func Read(dir string, roots []string) (Set, error) {
 		return Set{}, err
 	} else if !info.IsDir() {
 		return Set{}, fmt.Errorf("%s is not a directory", dir)
+	}
+	found := false
+	for _, name := range []string{ConnectorsDir, RoutingRulesFile, DestinationsFile} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			found = true
+		}
+	}
+	if !found {
+		return Set{}, fmt.Errorf("%s: %w", dir, ErrNoDeclarations)
 	}
 	set := Set{Connectors: []Connector{}, RoutingRules: []RoutingRule{}, Destinations: []Destination{}}
 	var invalid []Invalid
@@ -232,10 +250,17 @@ func decodeFile(file string, into any) error {
 }
 
 // Validate names each declaration in s that does not hold, with every reason.
-// It checks each connector's mode, zone and timing, each rule's match and
-// destination, and that no two declarations of a kind share a name. roots
-// names the [serve.homes] roots a folder may read, and nil skips that check.
+// Each declaration is checked against its schema in schemas/, the one copy of
+// the rules a single declaration holds to. Validate adds only what a schema
+// cannot say: that no two declarations of a kind share a name, that a rule's
+// connector and destination are declared, that a tag places an item on one
+// destination, that a schedule parses, that a drop's format is registered,
+// and that a folder's root is one of roots. nil roots skips that check.
 func Validate(s Set, roots []string) []Invalid {
+	compiled, err := compiledSchemas()
+	if err != nil {
+		return []Invalid{{Declaration: "the declaration schemas", Problems: []string{err.Error()}}}
+	}
 	var out []Invalid
 	add := func(declaration string, problems []string) {
 		if len(problems) > 0 {
@@ -244,7 +269,7 @@ func Validate(s Set, roots []string) []Invalid {
 	}
 	connectors := map[string]bool{}
 	for _, c := range s.Connectors {
-		problems := c.problems(roots)
+		problems := c.problems(compiled, roots)
 		if connectors[c.Name] {
 			problems = append(problems, "another connector has this name")
 		}
@@ -254,19 +279,12 @@ func Validate(s Set, roots []string) []Invalid {
 	destinations := map[string]bool{}
 	tagged := map[string]string{}
 	for _, d := range s.Destinations {
-		var problems []string
-		if !namePattern.MatchString(d.Name) {
-			problems = append(problems, fmt.Sprintf("a destination is named in lowercase letters, digits and hyphens, not %q", d.Name))
-		}
+		problems := schemaProblems(compiled.destination, d.normalized())
 		if destinations[d.Name] {
 			problems = append(problems, "another destination has this name")
 		}
 		destinations[d.Name] = true
-		if d.Side != "" && d.Side != SidePersonal && d.Side != SideFleet {
-			problems = append(problems, fmt.Sprintf("side is personal or fleet, or left out for neither, not %q", d.Side))
-		}
 		for _, tag := range d.Tags {
-			problems = append(problems, tagProblems(tag)...)
 			if other, taken := tagged[tag]; taken && other != d.Name {
 				problems = append(problems, fmt.Sprintf("tag %s already places an item on %s", tag, other))
 			}
@@ -276,35 +294,16 @@ func Validate(s Set, roots []string) []Invalid {
 	}
 	rules := map[string]bool{}
 	for _, r := range s.RoutingRules {
-		var problems []string
-		if !namePattern.MatchString(r.Name) {
-			problems = append(problems, fmt.Sprintf("a routing rule is named in lowercase letters, digits and hyphens, not %q", r.Name))
-		}
+		problems := schemaProblems(compiled.rule, r)
 		if rules[r.Name] {
 			problems = append(problems, "another routing rule has this name")
 		}
 		rules[r.Name] = true
-		m := r.Match
-		if m.Connector == "" && m.Tag == "" && m.Field == "" {
-			problems = append(problems, "match names a connector, a tag or a field, or it would hold for every item")
+		if r.Match.Connector != "" && !connectors[r.Match.Connector] {
+			problems = append(problems, fmt.Sprintf("match names connector %s, which the set does not declare", r.Match.Connector))
 		}
-		if m.Connector != "" && !connectors[m.Connector] {
-			problems = append(problems, fmt.Sprintf("match names connector %s, which the set does not declare", m.Connector))
-		}
-		if m.Tag != "" {
-			problems = append(problems, tagProblems(m.Tag)...)
-		}
-		if (m.Field == "") != (len(m.Values) == 0) {
-			problems = append(problems, "match names a field and the values it holds for, or neither")
-		}
-		if slices.Contains(m.Values, "") {
-			problems = append(problems, "match's values are not empty")
-		}
-		switch {
-		case r.Destination == "":
-			problems = append(problems, "a routing rule names the destination it places an item on")
-		case !destinations[r.Destination]:
-			problems = append(problems, fmt.Sprintf("destination %s is not one destinations.yml declares", r.Destination))
+		if r.Destination != "" && !destinations[r.Destination] {
+			problems = append(problems, fmt.Sprintf("destination %s is not one %s declares", r.Destination, DestinationsFile))
 		}
 		add("routing rule "+r.Name, problems)
 	}
@@ -312,79 +311,33 @@ func Validate(s Set, roots []string) []Invalid {
 }
 
 // problems is every reason c does not hold.
-func (c Connector) problems(roots []string) []string {
+func (c Connector) problems(compiled declarationSchemas, roots []string) []string {
 	var out []string
-	if !namePattern.MatchString(c.Name) {
-		out = append(out, fmt.Sprintf("a connector is named in lowercase letters, digits and hyphens, not %q", c.Name))
+	for _, problem := range schemaProblems(compiled.connector, c.normalized()) {
+		if field, ok := strings.CutSuffix(problem, ": false schema"); ok {
+			problem = fmt.Sprintf("%s: a %s connector does not take it", field, c.Mode)
+		}
+		out = append(out, problem)
 	}
-	if !namePattern.MatchString(c.Source) {
-		out = append(out, fmt.Sprintf("source names the catalog's external feed in lowercase letters, digits and hyphens, not %q", c.Source))
-	}
-	if c.Zone != store.Outside && c.Zone != store.Owner {
-		out = append(out, fmt.Sprintf("zone is outside or owner, not %q", c.Zone))
-	}
-	for _, tag := range c.Tags {
-		out = append(out, tagProblems(tag)...)
-	}
-	if c.ReadRule != "" && c.ReadRule != ReadAsIs && c.ReadRule != ReadModel {
-		out = append(out, fmt.Sprintf("read_rule is as-is or model, or left out for the side's default, not %q", c.ReadRule))
-	}
-	scheduled := c.Mode == ModePoll || c.Mode == ModeFolder
-	switch c.Mode {
-	case ModePoll, ModeFolder, ModePush, ModeDrop:
-	default:
-		return append(out, fmt.Sprintf("mode is poll, push, folder or drop, not %q", c.Mode))
-	}
-	switch {
-	case scheduled && c.Schedule == "":
-		out = append(out, fmt.Sprintf("a %s connector names the schedule it runs on, as a cron expression", c.Mode))
-	case scheduled:
+	if c.Scheduled() && c.Schedule != "" {
 		if _, err := parseSchedule(c.Schedule); err != nil {
 			out = append(out, fmt.Sprintf("schedule %q is not a cron expression: %v", c.Schedule, err))
 		}
-	case c.Schedule != "":
-		out = append(out, fmt.Sprintf("a %s connector runs when its items arrive, so it names a due_interval rather than a schedule", c.Mode))
 	}
-	switch {
-	case !scheduled && c.DueInterval == "":
-		out = append(out, fmt.Sprintf("a %s connector names its due_interval, how long after its last delivery it is due, such as 30d", c.Mode))
-	case !scheduled:
-		if _, err := ParseInterval(c.DueInterval); err != nil {
-			out = append(out, "due_interval: "+err.Error())
-		}
-	case c.DueInterval != "":
-		out = append(out, fmt.Sprintf("a %s connector is due on its schedule, so it names no due_interval", c.Mode))
-	}
-	if c.Freshness != "" {
-		if !scheduled {
-			out = append(out, fmt.Sprintf("a %s connector is overdue once its due_interval passes, so it names no freshness", c.Mode))
-		} else if _, err := ParseInterval(c.Freshness); err != nil {
-			out = append(out, "freshness: "+err.Error())
+	if c.Format != "" {
+		if _, ok := dropHandlers[c.Format]; !ok {
+			out = append(out, fmt.Sprintf("format %s names no drop handler this build registers", c.Format))
 		}
 	}
-	if c.Mode != ModeFolder {
-		if c.Root != "" || c.Path != "" {
-			out = append(out, fmt.Sprintf("a %s connector reads no folder, so it names no root or path", c.Mode))
+	if c.Mode == ModeFolder {
+		if c.Root != "" && roots != nil && !slices.Contains(roots, c.Root) {
+			out = append(out, fmt.Sprintf("root %s is not one this service's [serve.homes] names", c.Root))
 		}
-		return out
-	}
-	switch {
-	case c.Root == "":
-		out = append(out, "a folder connector names the [serve.homes] root it reads")
-	case roots != nil && !slices.Contains(roots, c.Root):
-		out = append(out, fmt.Sprintf("root %s is not one this service's [serve.homes] names", c.Root))
-	}
-	if c.Path != "" && (!filepath.IsLocal(filepath.FromSlash(c.Path)) || path.Clean(c.Path) != c.Path) {
-		out = append(out, fmt.Sprintf("path is a clean directory below the root, not %q", c.Path))
+		if c.Path != "" && (!filepath.IsLocal(filepath.FromSlash(c.Path)) || path.Clean(c.Path) != c.Path) {
+			out = append(out, fmt.Sprintf("path is a clean directory below the root, not %q", c.Path))
+		}
 	}
 	return out
-}
-
-func tagProblems(tag string) []string {
-	if tagPattern.MatchString(tag) {
-		return nil
-	}
-	return []string{fmt.Sprintf("a tag is lowercase letters, digits, dots, colons, underscores and hyphens, not %q", tag)}
 }
 
 // Decode reads the set back from an applied declarations row.

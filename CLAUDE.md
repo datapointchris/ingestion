@@ -30,16 +30,17 @@ package:
 | `qualitygate` | the model stage that reads an item's opening and answers its quality, genre, domains, themes, a one-line idea and a side guess |
 | `route` | the side gate and the read rule: a sighting's tags, then a rule, then the quality gate's guess above its confidence floor, else review |
 | `modelread` | the model stage that answers an item's note with a summary, a suggestion sentence, or both |
-| `connectors` | the declaration set and its apply, the scheduler that makes each connector due, the folder scan, and the drop handler each source registers by its name |
+| `connectors` | the declaration set, checked against its schemas, and its apply, the scheduler that makes each connector due, the folder scan, and the drop handler each source registers under its format |
 | `deliver` | the upsert into each destination through that destination's own write path, keyed by the item |
 | `modelport` | the one port that carries every model call, and its `queue` and `claude-cli` adapters |
 | `outbox` | the relay that ships each logged change past its mark, with outsider text on a channel of its own |
-| `server` | the HTTP API that `ingestion serve` answers, including the blob routes that carry a worker's bytes |
+| `server` | the HTTP API that `ingestion serve` answers, and its route table, whose rows name each route's scope and what a repeat does, read by the CLI's retry and the router's key check |
 | `worker` | `ingestion worker run`, which leases tasks by capability under a fencing token |
 | `push` | `ingestion push`, which hands a URL or a key straight to a named destination |
 
-`schemas/` is no package. It holds the JSON Schema of each record the outbox ships and of each
-API answer. Each store table's columns are its fields in `ingestion-record.schema.json` and
+`schemas/` holds the JSON Schema of each record the outbox ships, of each API answer and of each
+declaration file. Its one Go file embeds them, so `connectors` checks a declaration against the
+same file a catalog reads. Each store table's columns are its fields in `ingestion-record.schema.json` and
 `ingestion-text.schema.json` together. The second file holds each outsider-written field. A
 test in the package that writes a shape validates real output against its file. A data catalog
 builds its contracts from these files, so a reader points at them rather than copying the fields.

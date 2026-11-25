@@ -57,8 +57,9 @@ func exitCode(w io.Writer, err error) int {
 	}
 	// 3 says a check ran and found what only a person can fix, so a scheduled
 	// check tells it from a check that could not run. A declaration set that
-	// does not hold is one.
-	if errors.Is(err, errIssue) || errors.Is(err, connectors.ErrInvalid) {
+	// does not hold is one, and so is an apply from a checkout that lacks the
+	// set in force.
+	if errors.Is(err, errIssue) || errors.Is(err, connectors.ErrInvalid) || errors.Is(err, errStaleCheckout) {
 		return 3
 	}
 	// 4 says the server gave no answer, so the command did nothing.

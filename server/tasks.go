@@ -165,10 +165,10 @@ func TaskRoutes(st *store.Store, log *slog.Logger) Routes {
 	}
 	h := taskHandlers{store: st, log: log}
 	return func(r *Router) {
-		r.Handle("POST /api/v1/tasks/claims", ScopeTasksClaim, h.claim)
-		r.Handle("POST /api/v1/tasks/{id}/heartbeats", ScopeTasksClaim, h.heartbeat)
-		r.Handle("POST /api/v1/tasks/{id}/reports", ScopeTasksClaim, h.report)
-		r.Handle("GET /api/v1/tasks", "", h.list)
+		r.Handle(RouteTaskClaims, h.claim)
+		r.Handle(RouteTaskHeartbeats, h.heartbeat)
+		r.Handle(RouteTaskReports, h.report)
+		r.Handle(RouteTasks, h.list)
 	}
 }
 
