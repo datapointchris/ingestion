@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/datapointchris/ingestion/schemas/tasks-list.schema.json",
+  "title": "Tasks in flight, and every worker",
+  "description": "What GET /api/v1/tasks answers and `ingestion tasks list --json` prints: the tasks in the states asked for, the most recently changed first, and every worker with its last heartbeat. A task's error can quote outsider text, so the answer carries only whether one is kept.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["tasks", "workers"],
+  "properties": {
+    "tasks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "item_key", "stage", "capability", "state", "lapsed", "lease_holder", "lease_expires_ts", "attempts", "has_error", "not_before_ts", "created_ts", "updated_ts"],
+        "properties": {
+          "id": {"type": "string"},
+          "item_key": {"type": "string"},
+          "stage": {"enum": ["land", "parse", "scan", "quality", "model-read", "deliver"]},
+          "capability": {"description": "What a worker needs to claim the task.", "type": "string"},
+          "state": {"enum": ["queued", "leased", "done", "failed"]},
+          "lapsed": {"description": "The task is leased and its lease ran out, so the next claim takes it.", "type": "boolean"},
+          "lease_holder": {"description": "The worker that claimed the task last.", "type": ["string", "null"]},
+          "lease_expires_ts": {"type": ["string", "null"], "format": "date-time"},
+          "attempts": {"type": "integer", "minimum": 0},
+          "has_error": {"description": "The task keeps the error of its last failure.", "type": "boolean"},
+          "not_before_ts": {"description": "A retried task's backoff ends here.", "type": ["string", "null"], "format": "date-time"},
+          "created_ts": {"type": "string", "format": "date-time"},
+          "updated_ts": {"type": "string", "format": "date-time"}
+        }
+      }
+    },
+    "workers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "capabilities", "version", "started_ts", "heartbeat_ts"],
+        "properties": {
+          "id": {"type": "string"},
+          "capabilities": {"type": "array", "items": {"type": "string"}},
+          "version": {"type": "string"},
+          "started_ts": {"type": "string", "format": "date-time"},
+          "heartbeat_ts": {"type": "string", "format": "date-time"}
+        }
+      }
+    }
+  }
+}

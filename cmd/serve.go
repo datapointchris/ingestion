@@ -1,0 +1,120 @@
+package cmd
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"sync"
+	"syscall"
+	"time"
+
+	"github.com/datapointchris/goapiauth"
+	"github.com/spf13/cobra"
+
+	"github.com/datapointchris/ingestion/outbox"
+	"github.com/datapointchris/ingestion/server"
+	"github.com/datapointchris/ingestion/store"
+)
+
+const (
+	defaultListen = ":8080"
+	// shutdownGrace is how long a stopping service lets requests finish, inside
+	// the 30 seconds the pod's grace period gives.
+	shutdownGrace = 20 * time.Second
+)
+
+var serveCmd = &cobra.Command{
+	Use:   "serve",
+	Short: "Run the service: the store, its API, and the outbox that ships every change",
+	Long: "serve is the one writer of the store. It holds the SQLite file under\n" +
+		"state_dir, answers the API on listen, and ships every change in the store to\n" +
+		"records_otlp_url as OTLP log records. Workers lease tasks from it through the API.\n" +
+		"\n" +
+		"It reads the config file's issuer and its [serve] table:\n" +
+		"\n" +
+		"  issuer            the OIDC provider whose tokens the API accepts (required)\n" +
+		"  [serve]\n" +
+		"  listen            the address the API answers on (default :8080)\n" +
+		"  state_dir         where the store lives (default $XDG_STATE_HOME/ingestion)\n" +
+		"  public_url        where callers reach the API, served as RFC 9728 metadata\n" +
+		"  records_otlp_url  the OTLP/HTTP logs URL the outbox ships to (none ships nothing)",
+	Example: "  # the service, reading $XDG_CONFIG_HOME/ingestion/config.toml\n" +
+		"  ingestion serve\n" +
+		"\n" +
+		"  # the service in a container, reading a mounted file\n" +
+		"  ingestion serve --config /etc/ingestion/config.toml",
+	Args: cobra.NoArgs,
+	RunE: runServe,
+}
+
+func init() {
+	addConfigFlag(serveCmd)
+	rootCmd.AddCommand(serveCmd)
+}
+
+func runServe(cmd *cobra.Command, _ []string) error {
+	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGTERM, os.Interrupt)
+	defer stop()
+	path := configPath(cmd)
+	cfg, err := readConfig(path)
+	if err != nil {
+		return err
+	}
+	if cfg.Issuer == "" {
+		return fmt.Errorf("%s sets no issuer. The API accepts only tokens an OIDC provider signed, so name it: issuer = \"https://auth.example.com\"", path)
+	}
+	listen := cfg.Serve.Listen
+	if listen == "" {
+		listen = defaultListen
+	}
+	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	version := buildVersion()
+
+	st, err := store.Open(ctx, filepath.Join(stateDir(cfg), "ingestion.db"))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = st.Close() }()
+	gate, err := goapiauth.NewConnecting(server.GateConfig(cfg.Issuer))
+	if err != nil {
+		return err
+	}
+	relay, err := outbox.Open(ctx, st, cfg.Serve.RecordsOTLPURL, version, log)
+	if err != nil {
+		return err
+	}
+	handler := server.Handler(server.Config{
+		Store: st, Gate: gate, Issuer: cfg.Issuer, PublicURL: cfg.Serve.PublicURL, Version: version, Log: log,
+	}, server.TaskRoutes(st, log))
+	srv := &http.Server{Addr: listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
+
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	background, cancel := context.WithCancel(ctx)
+	defer cancel()
+	wg.Go(func() { gate.Run(background, log) })
+	wg.Go(func() { relay.Run(background) })
+
+	served := make(chan error, 1)
+	go func() { served <- srv.ListenAndServe() }()
+	log.Info("ingestion serves", "listen", listen, "store", stateDir(cfg), "issuer", cfg.Issuer, "version", version)
+	select {
+	case err := <-served:
+		return err
+	case <-ctx.Done():
+	}
+	shutdownCtx, release := context.WithTimeout(context.Background(), shutdownGrace)
+	defer release()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		return err
+	}
+	if err := <-served; !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
+}
