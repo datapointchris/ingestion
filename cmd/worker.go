@@ -130,12 +130,13 @@ var workerRunCmd = &cobra.Command{
 		"\n" +
 		"  api            the app's address\n" +
 		"  client_id      the service client it writes as, whose secret is in\n" +
-		"                 INGESTION_DELIVER_<NAME>_CLIENT_SECRET, such as " + deliverSecretEnv(deliver.LifeArticles) + "\n" +
+		"                 INGESTION_DELIVER_<NAME>_CLIENT_SECRET, such as\n" +
+		"                 " + deliverSecretEnv(deliver.LifeArticles) + "\n" +
 		"  token_command  in place of client_id, a command that prints the client's token\n" +
 		"  issuer         the OIDC provider that signs its tokens (default the file's issuer)\n" +
 		"\n" +
-		deliver.LifeArticles + "'s client needs the scope " + strings.Join(deliver.LifeArticlesScopes, " ") + ". A table that cannot open\n" +
-		"is logged and left out, and the worker's other stages run on.",
+		"The " + deliver.LifeArticles + " client needs the scope " + strings.Join(deliver.LifeArticlesScopes, " ") + ". A table that\n" +
+		"cannot open is logged and left out, and the worker's other stages run on.",
 	Example: "  # a worker, as a service client\n" +
 		"  INGESTION_CLIENT_SECRET=... ingestion worker run --config /etc/ingestion/config.toml",
 	Args: cobra.NoArgs,
