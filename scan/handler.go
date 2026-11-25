@@ -117,13 +117,9 @@ func (h handler) failed(task worker.Task, reason string, parse *server.TaskParse
 }
 
 // QueueAfterParse queues a scan of the item in the write that ends its parse
-// task done, and does nothing after any other stage. So every parsed item is
-// scanned. A parse that failed ends its task failed, so it waits in review
-// unscanned.
+// task done. So every parsed item is scanned. A parse that failed ends its
+// task failed, so it waits in review unscanned.
 func QueueAfterParse(ctx context.Context, tx *store.Tx, task store.Task) error {
-	if task.Stage != store.StageParse || task.ItemKey == nil {
-		return nil
-	}
 	_, err := tx.Enqueue(ctx, store.Task{ItemKey: task.ItemKey, Stage: store.StageScan, Capability: Capability})
 	return err
 }

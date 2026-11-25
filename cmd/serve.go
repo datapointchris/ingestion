@@ -68,12 +68,16 @@ func init() {
 }
 
 // afterStage runs in the write that ends an item's task done. It queues the
-// item's scan after its parse, then runs the gates.
+// stage that follows the one that ended, keyed by the stage that ended, then
+// runs the gates.
 func afterStage(log *slog.Logger) server.AfterStage {
+	queueNext := map[string]server.AfterStage{store.StageParse: scan.QueueAfterParse}
 	gates := route.AfterStage(log)
 	return func(ctx context.Context, tx *store.Tx, task store.Task) error {
-		if err := scan.QueueAfterParse(ctx, tx, task); err != nil {
-			return err
+		if queue, ok := queueNext[task.Stage]; ok {
+			if err := queue(ctx, tx, task); err != nil {
+				return err
+			}
 		}
 		return gates(ctx, tx, task)
 	}
