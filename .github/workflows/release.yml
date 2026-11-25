@@ -1,0 +1,38 @@
+name: Release
+
+# Scoped per job rather than here: validate only reads, and it is the job that
+# runs the most third-party code.
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main]
+
+# Two pushes to main inside one run's window would otherwise race to cut the
+# same version. Never cancel-in-progress: a canceled release can leave a tag
+# with no release.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Nothing is tagged that did not pass the repo's own CI.
+  validate:
+    uses: ./.github/workflows/validate.yml
+
+  release:
+    needs: [validate]
+    uses: datapointchris/reusable-workflows/.github/workflows/go-semantic-release.yml@v1
+    permissions:
+      contents: write
+    with:
+      # Holds the major at 0, so a breaking change cuts a minor until the API
+      # is settled. Without it, the first fix: or feat: cuts 1.0.0.
+      allow-initial-development-versions: true
+      goreleaser: true
+      # A tag exists before the module proxy has fetched it, and `go install
+      # <module>@latest` resolves through that proxy. Inside the gap it returns
+      # the previous version and exits 0, so an installer reports the machine
+      # converged while leaving the old binary in place.
+      prime-module-proxy: true
