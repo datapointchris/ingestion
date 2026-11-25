@@ -21,20 +21,11 @@ import (
 // person's device login, ingestion-svc- for a service.
 const Product = "ingestion"
 
-// Router is where a package registers its routes, each with the scope a
-// service's token needs to reach it.
+// Router is where a package registers a handler for each of its rows in the
+// route table.
 type Router struct {
 	mux    *http.ServeMux
 	scopes map[string][]string
-}
-
-// Handle serves route with h. A service reaches it only while its token
-// carries the route's scope.
-func (r *Router) Handle(route Route, h http.HandlerFunc) {
-	r.mux.HandleFunc(route.Pattern, h)
-	if route.Scope != "" {
-		r.scopes[route.Scope] = append(r.scopes[route.Scope], route.Pattern)
-	}
 }
 
 // Routes registers one package's routes.

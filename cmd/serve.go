@@ -16,6 +16,7 @@ import (
 	"github.com/datapointchris/goapiauth"
 	"github.com/spf13/cobra"
 
+	"github.com/datapointchris/ingestion/connectors"
 	"github.com/datapointchris/ingestion/extract"
 	"github.com/datapointchris/ingestion/landing"
 	"github.com/datapointchris/ingestion/outbox"
@@ -33,11 +34,12 @@ const (
 
 var serveCmd = &cobra.Command{
 	Use:   "serve",
-	Short: "Run the service: the store, its API, and the outbox that ships every change",
+	Short: "Run the service: the store, its API, the connectors' scheduler, and the outbox",
 	Long: "serve is the one writer of the store. It holds the SQLite file and the blob\n" +
 		"volume under state_dir, answers the API on listen, and ships every change in\n" +
 		"the store to records_otlp_url as OTLP log records. Workers lease tasks and move\n" +
-		"bytes through the API.\n" +
+		"bytes through the API. Its scheduler makes each applied poll connector's task\n" +
+		"when it falls due, and scans each folder connector's folder itself.\n" +
 		"\n" +
 		"It reads the config file's issuer and its [serve] table:\n" +
 		"\n" +
@@ -103,9 +105,15 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	scheduler := connectors.NewScheduler(st, lander, log)
+	roots := make([]string, 0, len(cfg.Serve.Homes))
+	for root := range cfg.Serve.Homes {
+		roots = append(roots, root)
+	}
 	handler := server.Handler(server.Config{
 		Store: st, Gate: gate, Issuer: cfg.Issuer, PublicURL: cfg.Serve.PublicURL, Version: version, Log: log,
 	}, server.TaskRoutes(st, log), server.BlobRoutes(lander, log), server.ItemRoutes(st, log),
+		server.ConnectorRoutes(server.ConnectorConfig{Store: st, Lander: lander, Scheduler: scheduler, Roots: roots, Log: log}),
 		server.ReplayRoutes(st, map[string]server.Replayable{store.StageParse: extractors.Replayable()}, log))
 	srv := &http.Server{Addr: listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 
@@ -115,6 +123,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	defer cancel()
 	wg.Go(func() { gate.Run(background, log) })
 	wg.Go(func() { relay.Run(background) })
+	wg.Go(func() { scheduler.Run(background) })
 
 	served := make(chan error, 1)
 	go func() { served <- srv.ListenAndServe() }()

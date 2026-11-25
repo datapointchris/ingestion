@@ -2,12 +2,13 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/datapointchris/ingestion/schemas/connectors-list.schema.json",
   "title": "Each connector's freshness",
-  "description": "What GET /api/v1/connectors answers and `ingestion connectors list --json` prints: each applied connector, its last delivery, its items by stage and when the scheduler next makes it due. GET /api/v1/connectors/{name} answers one of these with its first fill.",
+  "description": "What GET /api/v1/connectors answers and `ingestion connectors list --json` prints: each connector in the set in force, by name, with its last delivery, its items by stage and when the scheduler next makes it due. GET /api/v1/connectors/{name} answers one connector with its first fill, which `ingestion connectors show --json` prints.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "connectors"],
+  "required": ["schema_version", "applied_commit", "connectors"],
   "properties": {
     "schema_version": {"const": 1},
+    "applied_commit": {"description": "The commit of the set in force, and null where no set has been applied.", "type": ["string", "null"]},
     "connectors": {"type": "array", "items": {"$ref": "#/$defs/connector"}}
   },
   "$defs": {
@@ -25,21 +26,28 @@
     "connector": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "mode", "zone", "applied_commit", "items", "waiting", "review", "failed", "due_at", "overdue"],
+      "required": ["name", "mode", "zone", "applied_commit", "items", "waiting", "review", "failed", "failures", "due_at", "overdue"],
       "properties": {
         "name": {"type": "string"},
         "mode": {"enum": ["poll", "push", "folder", "drop"]},
         "zone": {"description": "The connector's default zone for what it carries.", "enum": ["outside", "owner"]},
-        "applied_commit": {"type": "string"},
+        "source": {"description": "The external feed the connector reads, by its name in the data catalog.", "type": "string"},
+        "tags": {"description": "The tags every item the connector lands carries.", "type": "array", "items": {"type": "string"}},
+        "applied_commit": {"description": "The commit of the set in force.", "type": "string"},
+        "last_run_ts": {"description": "When the scheduler last ran a poll or scanned a folder.", "type": ["string", "null"], "format": "date-time"},
         "last_delivery_ts": {"type": ["string", "null"], "format": "date-time"},
+        "last_error": {"description": "Why the scheduler's last run of a poll or a folder failed, and null once a run succeeds. It can quote outsider text, such as a file's name.", "type": ["string", "null"]},
+        "last_error_ts": {"description": "When that run failed.", "type": ["string", "null"], "format": "date-time"},
+        "failures": {"description": "The runs that failed in a row since the last that succeeded. Each moves the retry further off, up to the connector's next scheduled time.", "type": "integer", "minimum": 0},
         "items": {"description": "Every item the connector sighted.", "type": "integer"},
         "waiting": {"description": "Items held at a model stage.", "type": "integer"},
         "review": {"description": "Items waiting on a person's placement.", "type": "integer"},
         "failed": {"description": "Items whose latest task failed.", "type": "integer"},
-        "schedule": {"description": "A poll's schedule.", "type": ["string", "null"]},
+        "schedule": {"description": "A poll's or a folder's schedule.", "type": ["string", "null"]},
         "due_interval": {"description": "How often a drop or push is expected.", "type": ["string", "null"]},
+        "freshness": {"description": "How long a poll or a folder may go without a delivery before it reads overdue.", "type": ["string", "null"]},
         "due_at": {"description": "When the scheduler next makes the connector due.", "type": "string", "format": "date-time"},
-        "overdue": {"description": "True once due_at has passed with no delivery since.", "type": "boolean"},
+        "overdue": {"description": "True once due_at has passed with no delivery since, or for a poll or a folder declaring a freshness, once its last delivery is older than that.", "type": "boolean"},
         "first_fill": {
           "description": "Answered on one connector alone.",
           "type": "object",
@@ -48,7 +56,7 @@
           "properties": {
             "state": {"enum": ["held", "released", "none"]},
             "item_key": {"description": "The one item the held fill ran end to end.", "type": ["string", "null"]},
-            "held": {"description": "Items held behind it.", "type": "integer"},
+            "held": {"description": "Items whose model stage the fill holds behind it.", "type": "integer"},
             "tokens": {
               "description": "That item's tokens, by model stage.",
               "type": "object",

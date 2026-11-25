@@ -83,7 +83,7 @@ func (s *Store) Replay(ctx context.Context, r Replay, capability func(Item) (str
 		}
 		for _, item := range items {
 			c, _ := capability(item)
-			if _, err := tx.Enqueue(ctx, Task{ItemKey: item.Key, Stage: r.Stage, Capability: c}); err != nil {
+			if _, err := tx.Enqueue(ctx, Task{ItemKey: &item.Key, Stage: r.Stage, Capability: c}); err != nil {
 				return err
 			}
 		}

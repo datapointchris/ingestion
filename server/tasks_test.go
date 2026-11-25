@@ -55,7 +55,7 @@ func TestTwoWorkersRaceOneTaskALapsedLeaseReturnsItAndTheStaleReportIsRefused(t 
 		if err := tx.PutItem(ctx, store.Item{Key: key, MediaType: "text/html", Zone: store.Outside}); err != nil {
 			return err
 		}
-		task, err = tx.Enqueue(ctx, store.Task{ItemKey: key, Stage: store.StageParse, Capability: "html"})
+		task, err = tx.Enqueue(ctx, store.Task{ItemKey: &key, Stage: store.StageParse, Capability: "html"})
 		return err
 	}); err != nil {
 		t.Fatal(err)

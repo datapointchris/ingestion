@@ -1,11 +1,17 @@
 package cmd
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"mime"
+	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -55,6 +61,23 @@ var itemsShowCmd = &cobra.Command{
 	RunE: runItemsShow,
 }
 
+var itemsDropCmd = &cobra.Command{
+	Use:   "drop <file>",
+	Short: "Drop a file into a drop connector, which lands it",
+	Long: "Sends the file to the drop connector --connector names. It lands as one item\n" +
+		"under its bytes' key, or goes through the handler registered for the\n" +
+		"connector's format, which can land each item the file holds as its child.\n" +
+		"Each item takes the connector's default tags and zone.\n" +
+		"\n" +
+		"The drop is keyed by the connector, the file's name, its media type and its\n" +
+		"bytes, so dropping the same file again answers what the first drop landed,\n" +
+		"and lands nothing new. A copy under another name lands as one more sighting\n" +
+		"of the same item. The media type is read from the file's extension.",
+	Example: "  ingestion items drop ~/Downloads/reddit-saved.json --connector reddit-exports",
+	Args:    cobra.ExactArgs(1),
+	RunE:    runItemsDrop,
+}
+
 var itemsReplayCmd = &cobra.Command{
 	Use:   "replay --stage <stage>",
 	Short: "Run a stage again over landed items, and print how many it queued",
@@ -85,6 +108,9 @@ var itemsReplayCmd = &cobra.Command{
 
 func init() {
 	goclikit.AsNamespace(itemsCmd)
+	itemsDropCmd.Flags().String("connector", "", "Drop the file into this drop connector (required)")
+	itemsDropCmd.Flags().Bool("json", false, "Print the service's answer as JSON")
+	_ = itemsDropCmd.MarkFlagRequired("connector")
 	itemsListCmd.Flags().Int("limit", server.DefaultItemsListed, "List at most this many items")
 	itemsListCmd.Flags().Bool("keys", false, "Print each item's key alone, one per line")
 	itemsListCmd.Flags().Bool("json", false, "Print the service's answer as JSON")
@@ -94,11 +120,11 @@ func init() {
 	itemsReplayCmd.Flags().String("key", "", "Run it over the item under this key or URL")
 	itemsReplayCmd.Flags().Bool("yes", false, "Queue a model stage once its estimate is read")
 	itemsReplayCmd.Flags().Bool("json", false, "Print the service's answer as JSON")
-	for _, c := range []*cobra.Command{itemsListCmd, itemsShowCmd, itemsReplayCmd} {
+	for _, c := range []*cobra.Command{itemsListCmd, itemsShowCmd, itemsReplayCmd, itemsDropCmd} {
 		c.Flags().String("api", "", "Call this server rather than the config file's api")
 		addConfigFlag(c)
 	}
-	itemsCmd.AddCommand(itemsListCmd, itemsShowCmd, itemsReplayCmd)
+	itemsCmd.AddCommand(itemsListCmd, itemsShowCmd, itemsReplayCmd, itemsDropCmd)
 	rootCmd.AddCommand(itemsCmd)
 }
 
@@ -335,4 +361,59 @@ func byteSize(n int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
+}
+
+func runItemsDrop(cmd *cobra.Command, args []string) error {
+	connector, _ := cmd.Flags().GetString("connector")
+	asJSON, _ := cmd.Flags().GetBool("json")
+	api, _ := cmd.Flags().GetString("api")
+	body, err := os.ReadFile(args[0])
+	if err != nil {
+		return err
+	}
+	name := filepath.Base(args[0])
+	mediaType := mime.TypeByExtension(filepath.Ext(name))
+	if mediaType == "" {
+		mediaType = "application/octet-stream"
+	}
+	// The key covers all the server compares, so a copy under another name
+	// lands as one more sighting rather than reusing the first drop's key.
+	sum := sha256.Sum256(append([]byte(connector+"\x00"+name+"\x00"+mediaType+"\x00"), body...))
+	var answer server.PushAnswer
+	status, raw, err := callJSON(cmd.Context(), configPath(cmd), api, call{
+		Route: server.RouteConnectorDrops, Target: "/api/v1/connectors/" + url.PathEscape(connector) + "/drops",
+		Header: http.Header{
+			"Content-Type":        {mediaType},
+			"Content-Disposition": {mime.FormatMediaType("attachment", map[string]string{"filename": name})},
+			server.IdempotencyKey: {"drop-" + hex.EncodeToString(sum[:16])},
+		},
+		Body: body,
+	}, &answer)
+	if err != nil {
+		return refusedAsUsage(err)
+	}
+	w := cmd.OutOrStdout()
+	if asJSON {
+		_, err := w.Write(raw)
+		return err
+	}
+	created := 0
+	for _, it := range answer.Items {
+		if it.Created {
+			created++
+		}
+	}
+	if status == http.StatusOK {
+		_, err = fmt.Fprintf(w, "%s was already dropped into %s, so nothing landed: it holds %s.\n", name, connector, itemCount(len(answer.Items)))
+		return err
+	}
+	_, err = fmt.Fprintf(w, "Dropped %s into %s: it holds %s, %d of them new.\n", name, connector, itemCount(len(answer.Items)), created)
+	return err
+}
+
+func itemCount(n int) string {
+	if n == 1 {
+		return "1 item"
+	}
+	return fmt.Sprintf("%d items", n)
 }

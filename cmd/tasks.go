@@ -131,8 +131,18 @@ func writeTasks(w io.Writer, answer server.TasksAnswer) {
 		if t.State == store.TaskQueued && t.NotBeforeTS != nil {
 			lease = "retries at " + localTime(*t.NotBeforeTS)
 		}
+		if t.HeldBy != nil {
+			state += " (held by " + *t.HeldBy + "'s first fill)"
+		}
+		subject := "—"
+		switch {
+		case t.ItemKey != nil:
+			subject = *t.ItemKey
+		case t.Connector != nil:
+			subject = "connector " + *t.Connector
+		}
 		_, _ = fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n",
-			t.ID, t.ItemKey, t.Stage, t.Capability, state, t.Attempts, lease, localTime(t.UpdatedTS))
+			t.ID, subject, t.Stage, t.Capability, state, t.Attempts, lease, localTime(t.UpdatedTS))
 	}
 	if len(answer.Tasks) == 0 {
 		_, _ = fmt.Fprintln(table, "(none)")
@@ -168,47 +178,66 @@ func getJSON(ctx context.Context, path, api string, route server.Route, target s
 	return sendJSON(ctx, path, api, route, target, nil, into)
 }
 
-// sendJSON sends route's method to target, a path that route's pattern
-// matches, on the server the config file at path names, or api where it is
-// set, and reads a 200 or 201 answer into into. It answers the body as it
-// came. Within one deadline it sends again on no answer and on 429, 502, 503
-// or 504, as route's repeat kind allows. A keyed route carries one
-// Idempotency-Key across every try. A once route goes again only where its
-// first copy never reached the server. A server that gives no answer is
-// errNoAnswer, naming the server and what chose it.
+// sendJSON sends body as JSON, or nothing where it is nil, to target by
+// route, as callJSON does, and answers the body as it came.
 func sendJSON(ctx context.Context, path, api string, route server.Route, target string, body []byte, into any) ([]byte, error) {
+	c := call{Route: route, Target: target, Body: body}
+	if body != nil {
+		c.Header = http.Header{"Content-Type": {"application/json"}}
+	}
+	_, raw, err := callJSON(ctx, path, api, c, into)
+	return raw, err
+}
+
+// call is one request to the server: a row of its route table, target, a
+// path that the row's pattern matches, and any header and body.
+type call struct {
+	Route  server.Route
+	Target string
+	Header http.Header
+	Body   []byte
+}
+
+// callJSON sends c on the server the config file at path names, or api where
+// it is set, and reads a 2xx answer into into. It answers the status and the
+// body as they came. Within one deadline it sends again on no answer and on
+// 429, 502, 503 or 504, as the route's repeat kind allows. A keyed route
+// carries one Idempotency-Key across every try, a fresh one where c's header
+// names none. A once route goes again only where its first copy never reached
+// the server. A server that gives no answer is errNoAnswer, naming the server
+// and what chose it.
+func callJSON(ctx context.Context, path, api string, c call, into any) (int, []byte, error) {
+	route, target, body := c.Route, c.Target, c.Body
 	ctx, cancel := context.WithTimeout(ctx, answerDeadline)
 	defer cancel()
 	d, err := loadDeployment(ctx, path, api)
 	var unreachable *url.Error
 	if errors.As(err, &unreachable) {
-		return nil, fmt.Errorf("%w: %s (--api): %v", errNoAnswer, api, err)
+		return 0, nil, fmt.Errorf("%w: %s (--api): %v", errNoAnswer, api, err)
 	}
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 	source, err := tokenSource(ctx, d)
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 	// Taken before the first request, so a token that cannot be had fails as
 	// itself rather than as a server that gave no answer.
 	token, err := source.Token()
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 	client := oauth2.NewClient(ctx, oauth2.ReuseTokenSource(token, source))
 	base := strings.TrimRight(d.API.Value, "/")
 	named := base + " " + chosenBy(d.API, d.Path)
 	method := route.Method()
-	header := http.Header{}
-	if body != nil {
-		header.Set("Content-Type", "application/json")
+	header := c.Header.Clone()
+	if header == nil {
+		header = http.Header{}
 	}
-	if route.Repeat == server.RepeatKeyed {
-		key := make([]byte, 16)
-		_, _ = crand.Read(key)
-		header.Set(server.IdempotencyKey, hex.EncodeToString(key))
+	if route.Repeat == server.RepeatKeyed && header.Get(server.IdempotencyKey) == "" {
+		header.Set(server.IdempotencyKey, randomKey())
 	}
 	var lastErr error
 	tries := 0
@@ -217,7 +246,7 @@ func sendJSON(ctx context.Context, path, api string, route server.Route, target 
 			wait := time.Duration(tries)*time.Second + rand.N(500*time.Millisecond)
 			select {
 			case <-ctx.Done():
-				return nil, fmt.Errorf("%w: %s, within %s: %v", errNoAnswer, named, answerDeadline, lastErr)
+				return 0, nil, fmt.Errorf("%w: %s, within %s: %v", errNoAnswer, named, answerDeadline, lastErr)
 			case <-time.After(wait):
 			}
 		}
@@ -228,7 +257,7 @@ func sendJSON(ctx context.Context, path, api string, route server.Route, target 
 		}
 		req, err := http.NewRequestWithContext(ctx, method, base+target, sent)
 		if err != nil {
-			return nil, err
+			return 0, nil, err
 		}
 		req.Header = header.Clone()
 		resp, err := client.Do(req)
@@ -249,17 +278,24 @@ func sendJSON(ctx context.Context, path, api string, route server.Route, target 
 			continue
 		}
 		switch resp.StatusCode {
-		case http.StatusOK, http.StatusCreated:
-			return raw, json.Unmarshal(raw, into)
+		case http.StatusOK, http.StatusCreated, http.StatusAccepted:
+			return resp.StatusCode, raw, json.Unmarshal(raw, into)
 		case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
 			if route.Repeat != server.RepeatOnce {
 				lastErr = fmt.Errorf("it answered %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
 				continue
 			}
 		}
-		return nil, refusalOf(named, method, target, resp.StatusCode, raw)
+		return resp.StatusCode, raw, refusalOf(named, method, target, resp.StatusCode, raw)
 	}
-	return nil, fmt.Errorf("%w: %s, after %d tries: %v", errNoAnswer, named, tries, lastErr)
+	return 0, nil, fmt.Errorf("%w: %s, after %d tries: %v", errNoAnswer, named, tries, lastErr)
+}
+
+// randomKey is a fresh Idempotency-Key, carried by every try of one call.
+func randomKey() string {
+	b := make([]byte, 16)
+	_, _ = crand.Read(b)
+	return hex.EncodeToString(b)
 }
 
 // neverReached says whether err is a request that failed while dialing, so

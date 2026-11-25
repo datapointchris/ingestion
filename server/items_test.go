@@ -191,6 +191,9 @@ func compileAnswerSchemas(t *testing.T) map[string]*jsonschema.Schema {
 			t.Fatalf("compile %s: %v", name, err)
 		}
 	}
+	if out["connectors-list#connector"], err = c.Compile(ids["connectors-list"] + "#/$defs/connector"); err != nil {
+		t.Fatal(err)
+	}
 	return out
 }
 

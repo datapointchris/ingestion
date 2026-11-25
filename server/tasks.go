@@ -24,6 +24,10 @@ const (
 	maxClaim     = 50
 )
 
+// errOutputsWithoutItem is a poll's report carrying outputs, which name no
+// item to write them for.
+var errOutputsWithoutItem = errors.New("a poll's task reports no outputs")
+
 // MaxListed is the most tasks one list answers.
 const MaxListed = 1000
 
@@ -39,18 +43,21 @@ type ClaimRequest struct {
 }
 
 // LeasedTask is one leased task, with the token for every heartbeat and
-// report on it.
+// report on it. A stage's task names its item. A poll names its connector,
+// and its capability is poll:<source>, so each source's handler claims its
+// own.
 type LeasedTask struct {
-	ID             string `json:"id"`
-	ItemKey        string `json:"item_key"`
-	Stage          string `json:"stage"`
-	Capability     string `json:"capability"`
-	Attempts       int    `json:"attempts"`
-	LeaseToken     int64  `json:"lease_token"`
-	LeaseExpiresTS string `json:"lease_expires_ts"`
+	ID             string  `json:"id"`
+	ItemKey        *string `json:"item_key"`
+	Connector      *string `json:"connector"`
+	Stage          string  `json:"stage"`
+	Capability     string  `json:"capability"`
+	Attempts       int     `json:"attempts"`
+	LeaseToken     int64   `json:"lease_token"`
+	LeaseExpiresTS string  `json:"lease_expires_ts"`
 	// MediaType and BlobSHA256 are the item's, so a worker reads its bytes
-	// holding no scope to read items. BlobSHA256 is null where the item holds
-	// no bytes.
+	// holding no scope to read items. A poll carries neither, and BlobSHA256
+	// is null where the item holds no bytes.
 	MediaType  string  `json:"media_type"`
 	BlobSHA256 *string `json:"blob_sha256"`
 }
@@ -109,10 +116,10 @@ type ReportOutput struct {
 	Error  *string         `json:"error,omitempty"`
 }
 
-// output is o as the row it writes for task.
+// output is o as the row it writes for task, which names its item.
 func (o ReportOutput) output(task store.Task) store.Output {
 	return store.Output{
-		ItemKey: task.ItemKey, Stage: task.Stage, Producer: o.Producer, ProducerVersion: o.ProducerVersion,
+		ItemKey: *task.ItemKey, Stage: task.Stage, Producer: o.Producer, ProducerVersion: o.ProducerVersion,
 		Lens: o.Lens, LensVersion: o.LensVersion, State: o.State, BlobSHA256: o.BlobSHA256,
 		DispatchID: o.DispatchID, RunID: o.RunID, Tokens: o.Tokens, Findings: o.Findings, Quality: o.Quality,
 		SideGuess: o.SideGuess, SideConfidence: o.SideConfidence, Spans: o.Spans, Answer: o.Answer, Error: o.Error,
@@ -124,10 +131,12 @@ func (o ReportOutput) output(task store.Task) store.Output {
 // whether one is kept.
 type TaskView struct {
 	ID             string  `json:"id"`
-	ItemKey        string  `json:"item_key"`
+	ItemKey        *string `json:"item_key"`
+	Connector      *string `json:"connector"`
 	Stage          string  `json:"stage"`
 	Capability     string  `json:"capability"`
 	State          string  `json:"state"`
+	HeldBy         *string `json:"held_by"`
 	Lapsed         bool    `json:"lapsed"`
 	LeaseHolder    *string `json:"lease_holder"`
 	LeaseExpiresTS *string `json:"lease_expires_ts"`
@@ -201,12 +210,13 @@ func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
 	answer := ClaimAnswer{Tasks: []LeasedTask{}}
 	for _, t := range tasks {
 		answer.Tasks = append(answer.Tasks, LeasedTask{
-			ID: t.ID, ItemKey: t.ItemKey, Stage: t.Stage, Capability: t.Capability, Attempts: t.Attempts,
+			ID: t.ID, ItemKey: t.ItemKey, Connector: t.Connector, Stage: t.Stage, Capability: t.Capability, Attempts: t.Attempts,
 			LeaseToken: *t.LeaseToken, LeaseExpiresTS: *t.LeaseExpiresTS, MediaType: t.MediaType, BlobSHA256: t.BlobSHA256,
 		})
 	}
 	for _, t := range answer.Tasks {
-		h.log.Info("leased a task", "task", t.ID, "item", t.ItemKey, "stage", t.Stage, "worker", body.WorkerID, "token", t.LeaseToken)
+		h.log.Info("leased a task", "task", t.ID, "item", text(t.ItemKey), "connector", text(t.Connector), "stage", t.Stage,
+			"worker", body.WorkerID, "token", t.LeaseToken)
 	}
 	JSON(w, http.StatusOK, answer)
 }
@@ -246,6 +256,9 @@ func (h taskHandlers) report(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	task, err := h.store.Report(r.Context(), r.PathValue("id"), body.Token, outcome, func(tx *store.Tx, task store.Task) error {
+		if task.ItemKey == nil && len(body.Outputs) > 0 {
+			return errOutputsWithoutItem
+		}
 		for _, o := range body.Outputs {
 			if err := tx.PutOutputWithUnits(r.Context(), o.output(task), o.Units); err != nil {
 				return err
@@ -256,7 +269,8 @@ func (h taskHandlers) report(w http.ResponseWriter, r *http.Request) {
 	if h.leaseRefused(w, r, err) {
 		return
 	}
-	h.log.Info("a task ended", "task", task.ID, "item", task.ItemKey, "stage", task.Stage, "state", task.State, "outputs", len(body.Outputs))
+	h.log.Info("a task ended", "task", task.ID, "item", text(task.ItemKey), "connector", text(task.Connector), "stage", task.Stage,
+		"state", task.State, "outputs", len(body.Outputs))
 	JSON(w, http.StatusOK, viewOf(task, h.store.Now()))
 }
 
@@ -310,7 +324,8 @@ func (h taskHandlers) list(w http.ResponseWriter, r *http.Request) {
 
 func viewOf(t store.Task, now time.Time) TaskView {
 	return TaskView{
-		ID: t.ID, ItemKey: t.ItemKey, Stage: t.Stage, Capability: t.Capability, State: t.State, Lapsed: t.Lapsed(now),
+		ID: t.ID, ItemKey: t.ItemKey, Connector: t.Connector, Stage: t.Stage, Capability: t.Capability, State: t.State,
+		HeldBy: t.HeldBy, Lapsed: t.Lapsed(now),
 		LeaseHolder: t.LeaseHolder, LeaseExpiresTS: t.LeaseExpiresTS, Attempts: t.Attempts, HasError: t.Error != nil,
 		NotBeforeTS: t.NotBeforeTS, CreatedTS: t.CreatedTS, UpdatedTS: t.UpdatedTS,
 	}
@@ -329,6 +344,8 @@ func (h taskHandlers) leaseRefused(w http.ResponseWriter, r *http.Request, err e
 		Refuse(w, http.StatusConflict, CodeStaleLease, "%v", err)
 	case errors.Is(err, store.ErrNoItem):
 		Refuse(w, http.StatusUnprocessableEntity, CodeItemNotFound, "%v", err)
+	case errors.Is(err, errOutputsWithoutItem):
+		Refuse(w, http.StatusUnprocessableEntity, CodeInvalidBody, "task %s polls a connector, which carries no item, so it reports no outputs", r.PathValue("id"))
 	case errors.Is(err, store.ErrUnitsOutsideParse), errors.Is(err, store.ErrUnitsOutOfOrder):
 		Refuse(w, http.StatusUnprocessableEntity, CodeInvalidBody, "%v", err)
 	default:

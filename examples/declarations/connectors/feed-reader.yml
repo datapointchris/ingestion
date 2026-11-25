@@ -1,0 +1,9 @@
+# A poll connector's run is a task that a worker holding poll:rss-feeds claims.
+name: feed-reader
+mode: poll
+source: rss-feeds
+contract: external-feed-rss-feeds
+schedule: "@hourly"
+freshness: 2d
+zone: outside
+tags: [feed]

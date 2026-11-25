@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/datapointchris/ingestion/schemas/declarations.schema.json",
+  "title": "A set of declarations to apply",
+  "description": "What PUT /api/v1/declarations reads, and what `ingestion connectors apply` sends from a directory: every connector, routing rule and destination, applied whole under the commit they came from.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["commit", "replaces", "connectors"],
+  "properties": {
+    "commit": {"description": "The commit the set came from, as the declarations row records it.", "type": "string", "minLength": 1, "maxLength": 200},
+    "replaces": {"description": "The commit the caller saw in force, and null where it saw no set. Where another commit is in force, the service refuses the apply with 409 declarations_moved, unless this commit is the one in force already.", "type": ["string", "null"], "maxLength": 200},
+    "connectors": {"type": "array", "items": {"$ref": "connector.schema.json"}},
+    "routing_rules": {"type": ["array", "null"], "items": {"$ref": "routing-rules.schema.json#/$defs/rule"}},
+    "destinations": {"type": ["array", "null"], "items": {"$ref": "destinations.schema.json#/$defs/destination"}}
+  }
+}

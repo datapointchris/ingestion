@@ -1,6 +1,10 @@
 package server
 
-import "strings"
+import (
+	"context"
+	"net/http"
+	"strings"
+)
 
 // Repeat says what a second copy of a route's request does, so a client's
 // retry and a handler's dedupe read one answer.
@@ -10,7 +14,8 @@ const (
 	// RepeatRead reads, so a second copy changes nothing.
 	RepeatRead Repeat = "read"
 	// RepeatKeyed writes once per Idempotency-Key. The client sets one key
-	// per call and sends it on every retry of that call.
+	// per call and sends it on every retry of that call, and the router
+	// refuses a request that carries none.
 	RepeatKeyed Repeat = "keyed"
 	// RepeatByContent writes what its body names, so a second copy of one
 	// body leaves the state as the first copy left it.
@@ -50,4 +55,45 @@ var (
 	RouteItem           = Route{"GET /api/v1/items/{key}", ScopeItemsRead, RepeatRead}
 	RouteItemParse      = Route{"GET /api/v1/items/{key}/parse", ScopeItemsRead, RepeatRead}
 	RouteReplays        = Route{"POST /api/v1/replays", ScopeItemsReplay, RepeatKeyed}
+	RouteDeclarations   = Route{"PUT /api/v1/declarations", ScopeDeclarationsApply, RepeatByContent}
+	RouteConnectors     = Route{"GET /api/v1/connectors", ScopeConnectorsRead, RepeatRead}
+	RouteConnector      = Route{"GET /api/v1/connectors/{name}", ScopeConnectorsRead, RepeatRead}
+	RouteConnectorRuns  = Route{"POST /api/v1/connectors/{name}/runs", ScopeConnectorsRun, RepeatKeyed}
+	RouteFirstFill      = Route{"PATCH /api/v1/connectors/{name}/first-fill", ScopeFirstFillsRelease, RepeatByContent}
+	RouteConnectorDrops = Route{"POST /api/v1/connectors/{name}/drops", ScopeItemsDrop, RepeatKeyed}
 )
+
+// Handle serves route with h. A service reaches it only while its token
+// carries the route's scope. A keyed route refuses a request with no
+// Idempotency-Key before h runs, and h reads the key with requestKey.
+func (r *Router) Handle(route Route, h http.HandlerFunc) {
+	if route.Repeat == RepeatKeyed {
+		h = keyed(h)
+	}
+	r.mux.HandleFunc(route.Pattern, h)
+	if route.Scope != "" {
+		r.scopes[route.Scope] = append(r.scopes[route.Scope], route.Pattern)
+	}
+}
+
+type requestKeyContext struct{}
+
+// keyed reads a keyed route's Idempotency-Key into the request, and refuses
+// a request that carries none.
+func keyed(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		key := strings.TrimSpace(r.Header.Get(IdempotencyKey))
+		if key == "" || len(key) > 200 {
+			Refuse(w, http.StatusBadRequest, CodeIdempotencyKeyMissing,
+				"this route carries an %s header of at most 200 characters, which names the request across a retry, so nothing was done", IdempotencyKey)
+			return
+		}
+		h(w, r.WithContext(context.WithValue(r.Context(), requestKeyContext{}, key)))
+	}
+}
+
+// requestKey is the Idempotency-Key that a keyed route's request carries.
+func requestKey(r *http.Request) string {
+	key, _ := r.Context().Value(requestKeyContext{}).(string)
+	return key
+}

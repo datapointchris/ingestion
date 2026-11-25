@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/datapointchris/ingestion/schemas/connector-run.schema.json",
+  "title": "A connector's run",
+  "description": "What POST /api/v1/connectors/{name}/runs answers. A poll answers its task: 201 for one made now, and 200 for one already in flight. A folder answers 202 with the due time that the scheduler scans it at. A retry under the same Idempotency-Key answers 200 with the first answer.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "connector", "mode", "task_id", "due_at"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "connector": {"type": "string"},
+    "mode": {"enum": ["poll", "folder"]},
+    "task_id": {"description": "The poll's task, which a worker holding poll:<source> claims.", "type": ["string", "null"]},
+    "due_at": {"type": "string", "format": "date-time"}
+  }
+}
