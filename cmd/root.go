@@ -17,7 +17,7 @@ import (
 // adds it to rootCmd from its own init.
 var rootCmd = &cobra.Command{
 	Use:   "ingestion",
-	Short: "Land each item from an outside source once, and deliver it to the one place it belongs",
+	Short: "Land each outside item once and deliver it where it belongs",
 	Long: "ingestion takes in items from outside sources: exports, feeds, playlists,\n" +
 		"folders and links pushed from a phone. It lands each item once under one key,\n" +
 		"parses and scans it, gates it by quality and by side, and delivers it to the\n" +
