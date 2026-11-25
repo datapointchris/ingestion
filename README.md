@@ -99,6 +99,8 @@ poll = "10s"  # how often an idle worker asks for work
   runs a stage again needs `ingestion.items.replay`. A job that applies declarations needs
   `ingestion.declarations.apply`, one that reads connectors `ingestion.connectors.read`, one that
   runs them `ingestion.connectors.run`, and a source that drops files `ingestion.items.drop`.
+  An app that shows the review queue needs `ingestion.review.read`, and one that places items
+  from it for a person needs `ingestion.review.place`.
   Releasing a connector's first fill spends the model stages on every item it held, so it takes
   `ingestion.first-fills.release`, which no other scope grants.
 
@@ -180,9 +182,10 @@ for an editor to check against. A connector names these:
 `90m`, `12h`, `30d` or `2w`. A day is 24 hours.
 
 A routing rule is named, and its match holds a `connector`, a `tag`, or a source `field` with the
-`values` it takes, such as a subreddit. Every condition it names must hold. A destination names
-its `side`, `personal` or `fleet`, and the `tags` that place an item there. `apply` checks and
-keeps the rules and destinations. No stage reads them, so no item is placed by a rule.
+`values` it takes, such as a subreddit. Every condition it names must hold on one sighting. A
+destination names its `side`, `personal` or `fleet`, and the `tags` that place an item there. A
+destination with no side drops what it takes. The side gate reads the rules and destinations of
+the set in force.
 
 `ingestion connectors apply <dir>` reads the whole set, checks each file against its schema, and
 sends it to the service, which keeps it beside its commit. The commit is the directory's `HEAD`,
@@ -277,6 +280,50 @@ holds no replay for with `stage_not_replayable`. It refuses a `--key` that names
 `item_not_found`, and a `--connector` that sighted no item with `no_item_from_connector`. A
 replay at an unchanged extractor version retries the items whose parse failed. An item whose
 parse is done keeps it, even where the rerun fails.
+
+### The side gate places each item, and a person places what it leaves
+
+When an item's parse is done, the service runs the side gate in the same write. The gate places
+the item by the first rung that decides it:
+
+1. **Every sighting's tags.** A tag that a destination names places the item on that
+   destination's side. Tags naming two sides send it to review as `tags-disagree`.
+2. **A routing rule**: the first in the file whose match holds on one sighting. A Reddit save's
+   sighting carries its `subreddit` field for a rule to match.
+3. **The quality gate's side guess**, where its confidence is 0.7 or more. A guess below that, or
+   `unsure`, sends the item to review as `below-floor`.
+4. **Review.** An item that no tag or rule placed, and that the quality gate gave no guess for,
+   waits as `no-guess`.
+
+An item whose parse failed waits in review as `no-parse`. A placed item stays where it is: a
+later sighting or parse moves nothing, and only a person's placement moves it.
+
+Where the item lands on a side, the read gate chooses how it is read: as is, or by a model under
+the side's lens. The first connector that sighted it and declares a `read_rule` decides.
+Otherwise a personal item is read as is, and a fleet item by a model.
+
+Each decision is appended to the item's records with who decided it: `tag`, `rule:<name>`,
+`model:<run>`, `person:<login>`, or `gate` where the rungs ran out. `items show` prints them.
+
+```text
+$ ingestion review list
+ITEM                   ZONE     REASON    GUESS  WAITING SINCE            TITLE
+reddit/t3_bb2          outside  no-guess  —      2026-11-25 01:07:26 EST  A post
+file/5d41402abc4b2a76  outside  no-parse  —      2026-11-25 01:07:26 EST  —
+$ ingestion review place reddit/t3_bb2 work-inbox --cause subreddit --note "what would this change?"
+Placed reddit/t3_bb2 on work-inbox: side fleet, read by a model under the fleet lens.
+$ ingestion review drop file/5d41402abc4b2a76 --cause title
+Dropped file/5d41402abc4b2a76, cause title.
+```
+
+`review list` reads `GET /api/v1/review`, the longest waiting first, in
+`schemas/review-list.schema.json`. `place` and `drop` post to `/api/v1/review/{key}/place` and
+`…/drop`, and print `schemas/review-placement.schema.json` with `--json`. A placement names a
+destination that the set in force declares, and any other is refused. `--cause` names the aspect
+that decided it, such as subreddit or title, and `--note` carries the questions that a model read
+answers. Sending the same placement again changes nothing. A service placing for a person names
+the person's `login` in its body, because a service token carries no person. The decision keeps
+the service's client id beside the login.
 
 ### Running it in a container
 

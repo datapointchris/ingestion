@@ -237,12 +237,18 @@ var reached = map[string]string{
 }
 
 // Phase is the item's phase in the words of schemas/items-list.schema.json:
-// review where no parse is usable, failed where another stage's task failed,
-// dropped or review where the newest gate decision says so, waiting where a
-// model stage holds it, and otherwise the furthest stage whose condition is
-// True.
+// dropped or review where the newest side decision says so, review where no
+// parse is usable and no side decision placed it, failed where another
+// stage's task failed, dropped or review where the quality gate says so,
+// waiting where a model stage holds it, and otherwise the furthest stage whose
+// condition is True. A person can place an item whose parse failed, which
+// moves it on from its parse.
 func (r ItemRecords) Phase() string {
-	if r.NoUsableParse() {
+	side, sided := r.newestDecision(GateSide)
+	switch {
+	case sided && side.Verdict == "drop":
+		return "dropped"
+	case sided && side.Verdict == "review", !sided && r.NoUsableParse():
 		return "review"
 	}
 	for _, t := range r.Tasks {
@@ -254,8 +260,7 @@ func (r ItemRecords) Phase() string {
 	if decided && quality.Verdict == "drop" {
 		return "dropped"
 	}
-	side, placed := r.newestDecision(GateSide)
-	if (decided && quality.Verdict == "review" && !placed) || (placed && side.Verdict == "review") {
+	if decided && quality.Verdict == "review" && !sided {
 		return "review"
 	}
 	phase := ""
@@ -266,6 +271,9 @@ func (r ItemRecords) Phase() string {
 				return "waiting"
 			}
 		case ConditionFalse:
+			if c.Type == StageParse && sided {
+				continue
+			}
 			return "failed"
 		case ConditionTrue:
 			phase = reached[c.Type]

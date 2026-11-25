@@ -8,6 +8,7 @@ package connectors
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -132,6 +133,41 @@ func (s Set) Connector(name string) (Connector, bool) {
 		}
 	}
 	return Connector{}, false
+}
+
+// Destination is the destination named name in s, and false where s holds
+// none.
+func (s Set) Destination(name string) (Destination, bool) {
+	for _, d := range s.Destinations {
+		if d.Name == name {
+			return d, true
+		}
+	}
+	return Destination{}, false
+}
+
+// Tagged is the destination that tag places an item on, and false where no
+// destination names it. Validate refuses a tag on two destinations.
+func (s Set) Tagged(tag string) (Destination, bool) {
+	for _, d := range s.Destinations {
+		if slices.Contains(d.Tags, tag) {
+			return d, true
+		}
+	}
+	return Destination{}, false
+}
+
+// AppliedSet reads the set in force as tx sees it, and an empty set where none
+// has been applied.
+func AppliedSet(ctx context.Context, tx *store.Tx) (Set, error) {
+	applied, ok, err := tx.AppliedDeclarations(ctx)
+	if err != nil {
+		return Set{}, err
+	}
+	if !ok {
+		return Set{Connectors: []Connector{}, RoutingRules: []RoutingRule{}, Destinations: []Destination{}}, nil
+	}
+	return Decode(applied)
 }
 
 // Invalid is one declaration that does not hold, and each reason it does not.

@@ -334,7 +334,19 @@ func writeItem(w io.Writer, a server.ItemAnswer) {
 		row(o.Stage, "%s", out)
 	}
 	for _, d := range a.Decisions {
-		row(d.Gate, "%s  by %s  cause %s", d.Verdict, d.DecidedBy, d.Cause)
+		decision := d.Verdict
+		if d.Destination != nil {
+			decision += " on " + *d.Destination
+		}
+		decision += "  by " + d.DecidedBy
+		if d.Confidence != nil {
+			decision += fmt.Sprintf(" at %.2f", *d.Confidence)
+		}
+		decision += "  cause " + d.Cause
+		if d.Lens != nil {
+			decision += "  lens " + *d.Lens
+		}
+		row(d.Gate, "%s", decision)
 	}
 	for _, d := range a.Deliveries {
 		row("delivery", "%s  %s  attempts %d", d.Destination, d.Outcome, d.Attempts)

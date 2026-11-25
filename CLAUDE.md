@@ -28,7 +28,7 @@ package:
 | `extract` | one extractor per media type, each writing versioned text and units |
 | `scan` | the scanner, run over parsed text and again over each suggestion, and its stored findings |
 | `qualitygate` | the model stage that reads an item's opening and answers its quality, genre, domains, themes, a one-line idea and a side guess |
-| `route` | the side gate and the read rule: a sighting's tags, then a rule, then the quality gate's guess above its confidence floor, else review |
+| `route` | the side gate and the read gate, which serve runs in the write that ends an item's parse: a sighting's tags, then a rule, then the quality gate's guess at or above its confidence floor, else review; and a person's placement from review |
 | `modelread` | the model stage that answers an item's note with a summary, a suggestion sentence, or both |
 | `connectors` | the declaration set, checked against its schemas, and its apply, the scheduler that makes each connector due, the folder scan, and the drop handler each source registers under its format |
 | `deliver` | the upsert into each destination through that destination's own write path, keyed by the item |

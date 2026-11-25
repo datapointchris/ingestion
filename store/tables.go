@@ -47,8 +47,8 @@ var Tables = []Table{
 		Kept: []string{"created_ts", "flow_id", "parent_flow_id"}, Writes: Upserts,
 	},
 	{
-		Name: "sightings", Key: []string{"item_key", "connector"}, Stamp: []string{"last_seen_ts"}, JSON: []string{"tags"},
-		Text: []string{"external_key"}, Kept: []string{"first_seen_ts"}, Writes: Upserts,
+		Name: "sightings", Key: []string{"item_key", "connector"}, Stamp: []string{"last_seen_ts"}, JSON: []string{"tags", "fields"},
+		Text: []string{"external_key", "fields"}, Kept: []string{"first_seen_ts"}, Writes: Upserts,
 	},
 	{Name: "blobs", Key: []string{"sha256"}, Stamp: []string{"created_ts"}, Writes: Appends},
 	{

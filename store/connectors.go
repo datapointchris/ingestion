@@ -31,8 +31,9 @@ type ConnectorCounts struct {
 
 // connectorCounts reads each item a connector sighted against the records
 // that make its phase: a model stage's waiting output or held task, the newest
-// side or quality decision, and its newest task. Its one %s takes a
-// placeholder for each of modelStages.
+// side or quality decision, a failed parse with no done parse and no side
+// decision, and its newest task past its parse. Its one %s takes a placeholder
+// for each of modelStages.
 const connectorCounts = `
 SELECT s.connector,
 	count(*),
@@ -45,9 +46,12 @@ SELECT s.connector,
 		coalesce((SELECT verdict FROM decisions d WHERE d.item_key = s.item_key AND d.gate = 'side' ORDER BY sequence DESC LIMIT 1), '') = 'review'
 		OR (coalesce((SELECT verdict FROM decisions d WHERE d.item_key = s.item_key AND d.gate = 'quality' ORDER BY sequence DESC LIMIT 1), '') = 'review'
 			AND NOT EXISTS (SELECT 1 FROM decisions d WHERE d.item_key = s.item_key AND d.gate = 'side'))
+		OR (EXISTS (SELECT 1 FROM tasks t WHERE t.item_key = s.item_key AND t.stage = 'parse' AND t.state = 'failed')
+			AND NOT EXISTS (SELECT 1 FROM outputs o WHERE o.item_key = s.item_key AND o.stage = 'parse' AND o.state = 'done')
+			AND NOT EXISTS (SELECT 1 FROM decisions d WHERE d.item_key = s.item_key AND d.gate = 'side'))
 	), 0),
 	coalesce(sum(
-		coalesce((SELECT state FROM tasks t WHERE t.item_key = s.item_key ORDER BY updated_ts DESC, rowid DESC LIMIT 1), '') = 'failed'
+		coalesce((SELECT state FROM tasks t WHERE t.item_key = s.item_key AND t.stage != 'parse' ORDER BY updated_ts DESC, rowid DESC LIMIT 1), '') = 'failed'
 	), 0),
 	coalesce(sum(
 		EXISTS (SELECT 1 FROM tasks t WHERE t.item_key = s.item_key AND t.state = 'queued' AND t.held_by = s.connector)

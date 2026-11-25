@@ -43,6 +43,24 @@ func (t *Tx) Sighting(ctx context.Context, key, connector string) (Sighting, boo
 	return first[Sighting](ctx, t.tx, table("sightings"), `item_key = ? AND connector = ?`, key, connector)
 }
 
+// Sightings reads every sighting of the item under key, the first seen first.
+func (t *Tx) Sightings(ctx context.Context, key string) ([]Sighting, error) {
+	return readInto[Sighting](ctx, t.tx, table("sightings"), `item_key = ? ORDER BY first_seen_ts, rowid`, key)
+}
+
+// NewestDecision reads the newest decision at gate on the item under key,
+// and false where none is.
+func (t *Tx) NewestDecision(ctx context.Context, key, gate string) (Decision, bool, error) {
+	return first[Decision](ctx, t.tx, table("decisions"), `item_key = ? AND gate = ? ORDER BY sequence DESC`, key, gate)
+}
+
+// NewestOutput reads the newest output of stage for the item under key in
+// state, and false where none is.
+func (t *Tx) NewestOutput(ctx context.Context, key, stage, state string) (Output, bool, error) {
+	return first[Output](ctx, t.tx, table("outputs"), `item_key = ? AND stage = ? AND state = ? ORDER BY updated_ts DESC, rowid DESC`,
+		key, stage, state)
+}
+
 // Blob reads the blob row for sum, and false where the store holds none.
 func (t *Tx) Blob(ctx context.Context, sum string) (Blob, bool, error) {
 	return first[Blob](ctx, t.tx, table("blobs"), `sha256 = ?`, sum)
@@ -69,6 +87,9 @@ func (t *Tx) PutItem(ctx context.Context, item Item) error {
 func (t *Tx) PutSighting(ctx context.Context, s Sighting) error {
 	if s.Tags == nil {
 		s.Tags = []string{}
+	}
+	if s.Fields == nil {
+		s.Fields = map[string]string{}
 	}
 	s.FirstSeenTS, s.LastSeenTS = t.stamp(), t.stamp()
 	return t.put(ctx, table("sightings"), s)
