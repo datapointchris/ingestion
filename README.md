@@ -72,8 +72,8 @@ public_url = "https://ingestion.example.com"
 # The OTLP/HTTP logs endpoint the outbox ships every change to. With none,
 # serve keeps every record and ships nothing. Set it only once the collector
 # routes ingestion.record and ingestion.text each to a table of its own that
-# folds on kind, id and version: the outbox moves past each record the
-# collector accepts, so a record filed elsewhere first never ships again.
+# folds on kind, id and version. Once the collector accepts a record, the
+# outbox moves past it, so a record filed elsewhere first never ships again.
 records_otlp_url = "http://collector.example.com:4318/v1/logs"
 
 [worker]
