@@ -74,6 +74,7 @@
           "producer_version": {"type": "string"},
           "lens": {"type": ["string", "null"]},
           "lens_version": {"type": ["string", "null"]},
+          "note_digest": {"description": "The hex SHA-256 of the note a model read answered, and null where it answered none.", "type": ["string", "null"]},
           "state": {"enum": ["waiting", "done", "failed"]},
           "units": {"description": "A parse's unit count.", "type": ["integer", "null"]},
           "findings": {

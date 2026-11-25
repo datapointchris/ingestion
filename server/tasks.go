@@ -94,6 +94,7 @@ type LeasedTask struct {
 type StageOutput struct {
 	Producer        string  `json:"producer"`
 	ProducerVersion string  `json:"producer_version"`
+	NoteDigest      *string `json:"note_digest"`
 	State           string  `json:"state"`
 	DispatchID      *string `json:"dispatch_id"`
 	Model           *string `json:"model"`
@@ -145,18 +146,20 @@ type ReportDelivery struct {
 // item and stage from the task and stamps the row, so a column the store adds
 // for itself never changes what a worker sends.
 type ReportOutput struct {
-	Producer        string        `json:"producer"`
-	ProducerVersion string        `json:"producer_version"`
-	Lens            *string       `json:"lens,omitempty"`
-	LensVersion     *string       `json:"lens_version,omitempty"`
-	State           string        `json:"state"`
-	BlobSHA256      *string       `json:"blob_sha256,omitempty"`
-	DispatchID      *string       `json:"dispatch_id,omitempty"`
-	RunID           *string       `json:"run_id,omitempty"`
-	Model           *string       `json:"model,omitempty"`
-	Effort          *string       `json:"effort,omitempty"`
-	AnsweredModel   *string       `json:"answered_model,omitempty"`
-	Tokens          *store.Tokens `json:"tokens,omitempty"`
+	Producer        string  `json:"producer"`
+	ProducerVersion string  `json:"producer_version"`
+	Lens            *string `json:"lens,omitempty"`
+	LensVersion     *string `json:"lens_version,omitempty"`
+	// NoteDigest is store.NoteDigest of the note that a model read answered.
+	NoteDigest    *string       `json:"note_digest,omitempty"`
+	State         string        `json:"state"`
+	BlobSHA256    *string       `json:"blob_sha256,omitempty"`
+	DispatchID    *string       `json:"dispatch_id,omitempty"`
+	RunID         *string       `json:"run_id,omitempty"`
+	Model         *string       `json:"model,omitempty"`
+	Effort        *string       `json:"effort,omitempty"`
+	AnsweredModel *string       `json:"answered_model,omitempty"`
+	Tokens        *store.Tokens `json:"tokens,omitempty"`
 	// InputProducer and InputVersion name the parse that a later stage read.
 	InputProducer *string `json:"input_producer,omitempty"`
 	InputVersion  *string `json:"input_version,omitempty"`
@@ -181,7 +184,7 @@ type ReportOutput struct {
 func (o ReportOutput) output(task store.Task) store.Output {
 	return store.Output{
 		ItemKey: *task.ItemKey, Stage: task.Stage, Producer: o.Producer, ProducerVersion: o.ProducerVersion,
-		Lens: o.Lens, LensVersion: o.LensVersion, InputProducer: o.InputProducer, InputVersion: o.InputVersion,
+		Lens: o.Lens, LensVersion: o.LensVersion, NoteDigest: o.NoteDigest, InputProducer: o.InputProducer, InputVersion: o.InputVersion,
 		State: o.State, BlobSHA256: o.BlobSHA256,
 		DispatchID: o.DispatchID, RunID: o.RunID, Model: o.Model, Effort: o.Effort, AnsweredModel: o.AnsweredModel, Tokens: o.Tokens,
 		Findings: o.Findings, RulesVersion: o.RulesVersion, Quality: o.Quality,
@@ -295,7 +298,7 @@ func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, o := range t.Outputs {
 			leased.StageOutputs = append(leased.StageOutputs, StageOutput{
-				Producer: o.Producer, ProducerVersion: o.ProducerVersion, State: o.State, DispatchID: o.DispatchID,
+				Producer: o.Producer, ProducerVersion: o.ProducerVersion, NoteDigest: o.NoteDigest, State: o.State, DispatchID: o.DispatchID,
 				Model: o.Model, Effort: o.Effort, Error: o.Error,
 			})
 		}

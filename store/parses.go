@@ -19,21 +19,24 @@ var ErrUnitsOutOfOrder = errors.New("a parse's units are numbered from 1 in thei
 var ErrUnitsOutsideParse = errors.New("only a parse holds units")
 
 // PutOutputWithUnits writes o, a stage's output, and the units that only a parse
-// holds. A done output is kept against a later one that is not done, so a
-// rerun that fails leaves the done output readable and fails only its task. A
-// done parse is kept against any later one, output and units alike. A changed
-// extractor takes a new version, which writes beside the old.
+// holds. A done output is kept against a later one that is not done and
+// answers the same note, so a rerun that fails leaves the done output readable
+// and fails only its task. A model read of a new note replaces it, so its
+// dispatch is stored. A done parse is kept against any later one, output and
+// units alike. A changed extractor takes a new version, which writes beside
+// the old.
 func (t *Tx) PutOutputWithUnits(ctx context.Context, o Output, units []Unit) error {
 	if o.Stage != StageParse && len(units) > 0 {
 		return fmt.Errorf("%w: a %s output carries %d units", ErrUnitsOutsideParse, o.Stage, len(units))
 	}
 	var state string
-	err := t.tx.QueryRowContext(ctx, `SELECT state FROM outputs WHERE item_key = ? AND stage = ? AND producer = ? AND producer_version = ?`,
-		o.ItemKey, o.Stage, o.Producer, o.ProducerVersion).Scan(&state)
+	var note sql.NullString
+	err := t.tx.QueryRowContext(ctx, `SELECT state, note_digest FROM outputs WHERE item_key = ? AND stage = ? AND producer = ? AND producer_version = ?`,
+		o.ItemKey, o.Stage, o.Producer, o.ProducerVersion).Scan(&state, &note)
 	switch {
 	case err != nil && !errors.Is(err, sql.ErrNoRows):
 		return fmt.Errorf("read %s's %s output by %s %s: %w", o.ItemKey, o.Stage, o.Producer, o.ProducerVersion, err)
-	case err == nil && state == OutputDone && (o.Stage == StageParse || o.State != OutputDone):
+	case err == nil && state == OutputDone && (o.Stage == StageParse || (o.State != OutputDone && note.String == deref(o.NoteDigest))):
 		return nil
 	}
 	if err := t.PutOutput(ctx, o); err != nil {

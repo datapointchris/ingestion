@@ -4,8 +4,9 @@
 // prompts.ModelRead, one prompt for each lens.
 //
 // The read gate queues an item's model read in the write that appends a read
-// decision whose verdict is model, and withdraws a queued one where a later
-// decision reads the item otherwise. The task carries that
+// decision whose verdict is model, unless the item holds a read that answers
+// the decision's note. It withdraws a queued one where a later decision reads
+// the item otherwise. The task carries that
 // decision's lens and note. A worker holding a model port and the scanner
 // runs it through modelstage's dispatch-once protocol. Before the answer is
 // kept, the scanner reads its suggestion sentence. The output holds the
@@ -21,7 +22,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -29,6 +29,7 @@ import (
 	"github.com/datapointchris/ingestion/modelstage"
 	"github.com/datapointchris/ingestion/prompts"
 	"github.com/datapointchris/ingestion/route"
+	"github.com/datapointchris/ingestion/scan"
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
 	"github.com/datapointchris/ingestion/worker"
@@ -140,9 +141,10 @@ func read(ctx context.Context, client *worker.Client, task worker.Task) (promptD
 }
 
 // keep scans the answer's suggestion and keeps its findings and their spans
-// on the output, under the rules' version. A scan that fails fails the
-// output, so no sentence is kept unscanned. It logs each field's length
-// alone, because a model wrote both from outsider text.
+// on the output, under the rules' version. A scan runs under the scan stage's
+// bound, and one that fails keeps nothing yet, so no sentence is kept
+// unscanned and the task reads the same run again. It logs each field's
+// length alone, because a model wrote both from outsider text.
 func keep(ctx context.Context, scanner Scanner, p prompts.Prompt, raw json.RawMessage, out *server.ReportOutput) ([]any, error) {
 	a, err := ReadAnswer(p, raw)
 	if err != nil {
@@ -152,9 +154,11 @@ func keep(ctx context.Context, scanner Scanner, p prompts.Prompt, raw json.RawMe
 	if a.Suggestion == nil {
 		return logged, nil
 	}
-	findings, spans, err := scanner.Scan(ctx, *a.Suggestion)
+	scanCtx, cancel := context.WithTimeout(ctx, scan.Timeout)
+	defer cancel()
+	findings, spans, err := scanner.Scan(scanCtx, *a.Suggestion)
 	if err != nil {
-		return nil, fmt.Errorf("scan the suggestion: %w", err)
+		return nil, fmt.Errorf("%w: scan the suggestion: %w", modelstage.ErrKeepAgain, err)
 	}
 	rules := scanner.Version()
 	out.Findings, out.Spans, out.RulesVersion = findings, spans, &rules
@@ -169,21 +173,8 @@ func runeCount(s *string) int {
 	return utf8.RuneCountInString(*s)
 }
 
-// due says whether a replay runs the read on an item: its newest decisions
-// read it by a model, under a lens that this build holds, no model read's
-// task of it is open, and it holds no done read of that lens's prompt.
-func due(side, read store.Decision, outputs []store.Output, open bool) bool {
-	if open || !route.ReadByModel(side, read) {
-		return false
-	}
-	p, ok := prompts.ModelRead[deref(read.Lens)]
-	return ok && !slices.ContainsFunc(outputs, func(o store.Output) bool {
-		return o.Stage == store.StageModelRead && o.Producer == Producer && o.ProducerVersion == p.Version && o.State == store.OutputDone
-	})
-}
-
 // Replayable is the read as a replay runs it again, such as with a new prompt
-// or lens, over each item that due names. The replay first answers how many
+// or lens, over each item that route.ModelReadDue names. The replay first answers how many
 // items it would run on and the median tokens by kind of the stage's newest
 // stored runs, times that count, and queues only once a person confirms.
 func Replayable(st *store.Store) server.Replayable {
@@ -203,7 +194,7 @@ func Replayable(st *store.Store) server.Replayable {
 				return false, err
 			}
 			_, open, err := tx.OpenTask(ctx, item.Key, store.StageModelRead)
-			if err != nil || !due(side, read, outputs, open) {
+			if err != nil || !route.ModelReadDue(side, read, outputs, open) {
 				return false, err
 			}
 			_, err = tx.Enqueue(ctx, store.Task{ItemKey: &item.Key, Stage: store.StageModelRead, Capability: Capability})
@@ -213,7 +204,7 @@ func Replayable(st *store.Store) server.Replayable {
 			return modelstage.Estimate(ctx, st, store.StageModelRead, items, func(r store.ItemRecords, open bool) bool {
 				side, _ := r.NewestDecision(store.GateSide)
 				read, _ := r.NewestDecision(store.GateRead)
-				return due(side, read, r.Outputs, open)
+				return route.ModelReadDue(side, read, r.Outputs, open)
 			})
 		},
 	}

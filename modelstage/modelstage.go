@@ -40,6 +40,12 @@ const (
 	estimateFrom = 50
 )
 
+// ErrKeepAgain marks a Keep error where the answer holds to its schema and a
+// step after it failed, such as the scan of a suggestion. Where the run keeps
+// a dispatch, the task follows that run again after its backoff, so the paid
+// answer is kept without a second call. Where it keeps none, the output fails.
+var ErrKeepAgain = errors.New("the answer waits to be kept")
+
 // Settings are what a stage asks its run for.
 type Settings struct {
 	Model  string
@@ -63,7 +69,8 @@ type Stage struct {
 	// Keep fills out from the answer that a run gave to prompt, and returns
 	// the answer's fields that the answered line logs, never outsider text.
 	// An error fails the output, as an answer that breaks prompt's schema
-	// does, and `tasks retry` starts a new run.
+	// does, and `tasks retry` starts a new run. An error that wraps
+	// ErrKeepAgain leaves the output waiting on its dispatch instead.
 	Keep func(ctx context.Context, prompt prompts.Prompt, answer json.RawMessage, out *server.ReportOutput) (logged []any, err error)
 }
 
@@ -119,7 +126,7 @@ func (h handler) Run(ctx context.Context, task worker.Task) worker.Result {
 	if err != nil {
 		return h.refusal(task, prompt, own, err, log)
 	}
-	out := h.output(prompt, model, effort, progress.Dispatch)
+	out := h.output(task, prompt, model, effort, progress.Dispatch)
 	a := progress.Answer
 	if a == nil {
 		out.State, out.Error = store.OutputWaiting, optional(progress.Waiting)
@@ -142,6 +149,12 @@ func (h handler) Run(ctx context.Context, task worker.Task) worker.Result {
 	}
 	kept := out
 	logged, err := h.stage.Keep(ctx, prompt, a.Output, &kept)
+	if errors.Is(err, ErrKeepAgain) && progress.Dispatch != "" {
+		reason := err.Error()
+		out.State, out.Error = store.OutputWaiting, &reason
+		log.Warn("the run's answer was not kept yet, so the task reads the same run again", "dispatch", progress.Dispatch, "run", a.Run, "error", err)
+		return worker.Result{Outcome: server.OutcomeRetry, Error: &reason, RetryAfter: followAfter(task.Attempts), Outputs: []server.ReportOutput{out}}
+	}
 	if err != nil {
 		reason := err.Error()
 		out.State, out.Error = store.OutputFailed, &reason
@@ -153,10 +166,11 @@ func (h handler) Run(ctx context.Context, task worker.Task) worker.Result {
 	return worker.Result{Outcome: server.OutcomeDone, Outputs: []server.ReportOutput{kept}}
 }
 
-// own is the task's output from prompt, and nil where it holds none.
+// own is the task's output from prompt that answers the task's note, and nil
+// where it holds none.
 func (h handler) own(task worker.Task, prompt prompts.Prompt) *server.StageOutput {
 	i := slices.IndexFunc(task.StageOutputs, func(o server.StageOutput) bool {
-		return o.Producer == h.stage.Producer && o.ProducerVersion == prompt.Version
+		return o.Producer == h.stage.Producer && o.ProducerVersion == prompt.Version && store.NoteAnswered(o.NoteDigest, task.Note)
 	})
 	if i < 0 {
 		return nil
@@ -175,16 +189,17 @@ func (h handler) request(ctx context.Context, task worker.Task, prompt prompts.P
 		return modelport.Request{}, fmt.Errorf("%w: %w", modelport.ErrRefused, err)
 	}
 	return modelport.Request{
-		ItemKey: deref(task.ItemKey), Stage: h.stage.Name, PromptVersion: prompt.Version,
+		ItemKey: deref(task.ItemKey), Stage: h.stage.Name, PromptVersion: prompt.Version, NoteDigest: deref(store.NoteDigest(task.Note)),
 		Prompt: text, Schema: prompt.Schema, Model: h.settings.Model, Effort: h.settings.Effort,
 	}, nil
 }
 
-// output is the output that prompt names, asked of model at effort, waiting
-// on dispatch.
-func (h handler) output(prompt prompts.Prompt, model, effort, dispatch string) server.ReportOutput {
+// output is the output that prompt names for the task's note, asked of model
+// at effort, waiting on dispatch.
+func (h handler) output(task worker.Task, prompt prompts.Prompt, model, effort, dispatch string) server.ReportOutput {
 	out := server.ReportOutput{
-		Producer: h.stage.Producer, ProducerVersion: prompt.Version, Model: &model, Effort: &effort, DispatchID: optional(dispatch),
+		Producer: h.stage.Producer, ProducerVersion: prompt.Version, NoteDigest: store.NoteDigest(task.Note),
+		Model: &model, Effort: &effort, DispatchID: optional(dispatch),
 	}
 	if prompt.Lens != nil {
 		name, version := prompt.Lens.Name, prompt.Lens.Version
@@ -212,7 +227,7 @@ func (h handler) refusal(task worker.Task, prompt prompts.Prompt, own *server.St
 		log.Warn("the stage's call did not go through, and tries again", "error", err)
 		return worker.Result{Outcome: server.OutcomeRetry, Error: &reason, RetryAfter: followAfter(task.Attempts)}
 	}
-	out := h.output(prompt, "", "", "")
+	out := h.output(task, prompt, "", "", "")
 	out.Model, out.Effort, out.State, out.Error = nil, nil, store.OutputFailed, &reason
 	if own != nil {
 		out.DispatchID, out.Model, out.Effort = own.DispatchID, own.Model, own.Effort

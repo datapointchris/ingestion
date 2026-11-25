@@ -416,8 +416,9 @@ func writeQualityAnswer(row func(label, format string, args ...any), raw json.Ra
 }
 
 // writeModelReadAnswer prints a model read's lens, its summary and its
-// suggestion. A model wrote both from outsider text, so they print quoted and
-// whole. The findings that follow it are the scanner's over the suggestion.
+// suggestion. A model wrote both from outsider text, so they print quoted, up
+// to answerShown. The findings that follow it are the scanner's over the
+// suggestion.
 func writeModelReadAnswer(row func(label, format string, args ...any), o server.OutputView) {
 	if o.Lens != nil {
 		lens := *o.Lens
@@ -442,7 +443,8 @@ const (
 	// spanShown bounds the runes of a finding's span that items show prints.
 	spanShown = 120
 	// answerShown bounds the runes of a model read's summary or suggestion
-	// that items show prints, at the most that its answer's schema allows.
+	// that items show prints. Keep it at or above summary's maxLength in
+	// prompts/model-read/answer.schema.json, so an answer prints whole.
 	answerShown = 3000
 )
 

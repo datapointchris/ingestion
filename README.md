@@ -51,7 +51,7 @@ model = "haiku"
 effort = "medium"
 
 # What the model read asks each run for.
-[model.read]
+[model.model-read]
 model = "haiku"
 effort = "medium"
 ```
@@ -507,13 +507,14 @@ the service's client id beside the login.
 
 ### A model read answers a fleet item's note with a summary and a suggestion
 
-Where the read gate reads an item by a model, the same write queues one task of capability
-`model-read`. A person's drop or move withdraws it where it has not run. The task carries the read
-decision's lens, and the note that a person wrote with `review place --note`. A worker whose
-config names a `[model]` adapter, and that runs the scan, claims it. It reads the item's media
-type, title, URL and its parse's text, up to the bound that `modelread`'s `textRunes` sets. It puts
-them to the model through `prompts/model-read/prompt.tmpl` and the lens's file in
-`prompts/model-read/lenses/`.
+Where the read gate reads an item by a model, under a lens whose prompt this build holds, the same
+write queues one task of capability `model-read`. It queues none where the item already holds a
+read that answers the decision's note. A person's drop or move withdraws it where it has not run.
+The task carries the read decision's lens, and the note that a person wrote with
+`review place --note`. A worker whose config names a `[model]` adapter, and that runs the scan,
+claims it. It reads the item's media type, title, URL and its parse's text, cut at a fixed length,
+and the prompt tells the model where the text stops. It puts them to the model through
+`prompts/model-read/prompt.tmpl` and the lens's file in `prompts/model-read/lenses/`.
 
 - **The lens says what the item is read for.** The `fleet` lens reads it for the software it may
   bear on: how that software is built, run and kept safe. Where the item carries a note, the read
@@ -524,13 +525,22 @@ them to the model through `prompts/model-read/prompt.tmpl` and the lens's file i
   code, paths and links in it.
 - **The scanner reads the suggestion before the answer is kept.** Its findings and their spans
   are the output's own, under the rules' version in `rules_version`. A finding never drops the
-  answer. A scan that fails fails the task, so no suggestion is kept unscanned.
+  answer. A scan runs under the scan stage's time bound. One that fails keeps nothing, and the
+  task reads the same run again after its backoff, so no suggestion is kept unscanned and its
+  answer is paid for once. Under the `claude-cli` adapter, which keeps no run to read again, the
+  task fails instead, and `tasks retry` runs a new call.
 - **The summary is kept on the item alone.** It is delivered nowhere, and `items show` prints it.
 - **The output's version is the prompt's, under its lens.** It digests `prompt.tmpl`,
   `answer.schema.json` and the lens's file. The output records the lens and the lens's own
   version beside it. A change to any of the three writes beside the old read.
-- **Each call is dispatched once**, as the quality gate's is. Both stages run the same protocol,
-  which `modelstage` holds.
+- **A new note reads the item again.** The output records the SHA-256 of the note it answered in
+  `note_digest`. Placing a read item again with another note queues a read under the same prompt,
+  and its answer replaces the old one on the item. Placing it again with no note queues none.
+- **`items show --json` carries the item's latest suggestion** under `suggestion`, as
+  `schemas/suggestion.schema.json` publishes it. The scanner's findings come first, each found in
+  the source or in the sentence, then the sentence and its source.
+- **Each call is dispatched once**, through the protocol that `modelstage` holds for every model
+  stage.
 
 ```text
 $ ingestion items show reddit/t3_bb2

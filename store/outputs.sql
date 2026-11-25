@@ -6,6 +6,8 @@
 -- asked its run for, and answered_model is the model its run reports.
 -- rules_version is the scanner rules' version that made findings: a scan's
 -- over its parse, and a model read's over its suggestion sentence.
+-- note_digest is the hex SHA-256 of the note that a model read answered, and
+-- null where it answered none.
 
 CREATE TABLE IF NOT EXISTS outputs (
     item_key         TEXT NOT NULL REFERENCES items (key),
@@ -14,6 +16,7 @@ CREATE TABLE IF NOT EXISTS outputs (
     producer_version TEXT NOT NULL,
     lens             TEXT,
     lens_version     TEXT,
+    note_digest      TEXT,
     input_producer   TEXT,
     input_version    TEXT,
     state            TEXT NOT NULL CHECK (state IN ('waiting', 'done', 'failed')),

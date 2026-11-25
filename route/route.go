@@ -33,6 +33,7 @@ import (
 	"strings"
 
 	"github.com/datapointchris/ingestion/connectors"
+	"github.com/datapointchris/ingestion/prompts"
 	"github.com/datapointchris/ingestion/store"
 )
 
@@ -434,11 +435,31 @@ func ReadByModel(side, read store.Decision) bool {
 	return onASide(side.Verdict) && read.Verdict == connectors.ReadModel
 }
 
-// reconcileModelRead queues the model read of the item under key where its
-// newest decisions read it by a model, and it holds neither an open model
-// read's task nor a done read. It withdraws a queued one where they read it
-// otherwise. A read that the item already holds runs again only through a
-// replay.
+// ModelReadDue says whether a replay runs the model read on an item: its
+// newest decisions read it by a model, under a lens whose prompt this build
+// holds, no model read's task of it is open, and no done read of that lens's
+// prompt in force answers the read decision's note.
+func ModelReadDue(side, read store.Decision, outputs []store.Output, open bool) bool {
+	return modelReadDue(side, read, outputs, open, true)
+}
+
+// modelReadDue is ModelReadDue, where currentPrompt false counts a done read
+// of any prompt version, as the read gate does. A new prompt then reads an
+// item again only through a replay, which estimates its tokens first.
+func modelReadDue(side, read store.Decision, outputs []store.Output, open, currentPrompt bool) bool {
+	if open || !ReadByModel(side, read) {
+		return false
+	}
+	p, ok := prompts.ModelRead[text(read.Lens)]
+	return ok && !slices.ContainsFunc(outputs, func(o store.Output) bool {
+		return o.Stage == store.StageModelRead && o.State == store.OutputDone && (!currentPrompt || o.ProducerVersion == p.Version) &&
+			store.NoteAnswered(o.NoteDigest, read.Note)
+	})
+}
+
+// reconcileModelRead queues the model read of the item under key where the
+// read gate finds it due, so a new note reads an item again. It withdraws a
+// queued one where the item's newest decisions read it otherwise.
 func reconcileModelRead(ctx context.Context, tx *store.Tx, key string, side, read store.Decision) error {
 	if !ReadByModel(side, read) {
 		by := side.DecidedBy
@@ -447,11 +468,12 @@ func reconcileModelRead(ctx context.Context, tx *store.Tx, key string, side, rea
 		}
 		return tx.WithdrawQueued(ctx, key, store.StageModelRead, "withdrawn: "+by+" decided the item is not read by a model")
 	}
-	if _, open, err := tx.OpenTask(ctx, key, store.StageModelRead); err != nil || open {
+	_, open, err := tx.OpenTask(ctx, key, store.StageModelRead)
+	if err != nil {
 		return err
 	}
 	outputs, err := tx.Outputs(ctx, key)
-	if err != nil || store.NewestDone(outputs, store.StageModelRead) != nil {
+	if err != nil || !modelReadDue(side, read, outputs, open, false) {
 		return err
 	}
 	_, err = tx.Enqueue(ctx, store.Task{ItemKey: &key, Stage: store.StageModelRead, Capability: store.StageModelRead})

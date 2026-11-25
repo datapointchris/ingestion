@@ -57,7 +57,7 @@ func workerHandlers(client *worker.Client, deliverers map[string]deliver.Deliver
 	}
 	if port != nil && scanner != nil {
 		handlers = append(handlers, modelread.NewHandler(port, client, scanner,
-			modelstage.Settings{Model: models.Read.Model, Effort: models.Read.Effort}, log))
+			modelstage.Settings{Model: models.ModelRead.Model, Effort: models.ModelRead.Effort}, log))
 	}
 	for _, name := range slices.Sorted(maps.Keys(deliverers)) {
 		handlers = append(handlers, deliver.Handler(name, deliverers[name]))
@@ -206,7 +206,7 @@ var workerRunCmd = &cobra.Command{
 		"  [model.quality]    what the quality gate asks its run for\n" +
 		"  model              the model (default " + qualitygate.DefaultModel + ")\n" +
 		"  effort             the effort (default " + qualitygate.DefaultEffort + ")\n" +
-		"  [model.read]       what the model read asks its run for\n" +
+		"  [model.model-read] what the model read asks its run for\n" +
 		"  model              the model (default " + modelread.DefaultModel + ")\n" +
 		"  effort             the effort (default " + modelread.DefaultEffort + ")\n" +
 		"\n" +

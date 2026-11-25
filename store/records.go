@@ -2,8 +2,10 @@ package store
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"strings"
 )
 
 // Each record's JSON names are its table's column names, which
@@ -178,6 +180,8 @@ type Output struct {
 	ProducerVersion string  `json:"producer_version"`
 	Lens            *string `json:"lens"`
 	LensVersion     *string `json:"lens_version"`
+	// NoteDigest is NoteDigest of the note that a model read answered.
+	NoteDigest *string `json:"note_digest"`
 	// InputProducer and InputVersion name the parse a later stage read, such
 	// as the parse a scan's findings index the units of.
 	InputProducer *string `json:"input_producer"`
@@ -203,6 +207,25 @@ type Output struct {
 	Error          *string         `json:"error"`
 	CreatedTS      string          `json:"created_ts"`
 	UpdatedTS      string          `json:"updated_ts"`
+}
+
+// NoteDigest is the hex SHA-256 of a read decision's note, trimmed, and nil
+// where the note is empty.
+func NoteDigest(note *string) *string {
+	if note == nil || strings.TrimSpace(*note) == "" {
+		return nil
+	}
+	sum := sha256.Sum256([]byte(strings.TrimSpace(*note)))
+	digest := hex.EncodeToString(sum[:])
+	return &digest
+}
+
+// NoteAnswered says whether an output that answered the note under answered,
+// a NoteDigest, answers note. An output answers a decision that carries no
+// note whatever note it answered, so only a new note reads an item again.
+func NoteAnswered(answered, note *string) bool {
+	digest := NoteDigest(note)
+	return digest == nil || (answered != nil && *answered == *digest)
 }
 
 // NewestDone is the newest done output of stage among outputs, and nil where

@@ -136,6 +136,7 @@
         "input_producer": {"description": "The producer of the parse this output read, such as the parse a scan's findings index the units of.", "type": ["string", "null"]},
         "input_version": {"description": "The producer version of the parse this output read.", "type": ["string", "null"]},
         "lens_version": {"description": "The version of the lens a model read answered under.", "type": ["string", "null"]},
+        "note_digest": {"description": "The hex SHA-256 of the note a model read answered, trimmed, and null where it answered none. A read of a new note replaces the item's read under the same prompt.", "anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
         "state": {"description": "waiting holds a model stage's dispatch that has not answered, done holds its output, failed holds why in the text.", "enum": ["waiting", "done", "failed"]},
         "blob_sha256": {"description": "The output's bytes.", "anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
         "dispatch_id": {"description": "A model stage's dispatch, stored in the write that ends the worker's lease.", "type": ["string", "null"]},
