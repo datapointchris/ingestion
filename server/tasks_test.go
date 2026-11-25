@@ -97,10 +97,10 @@ func TestTwoWorkersRaceOneTaskALapsedLeaseReturnsItAndTheStaleReportIsRefused(t 
 	if err := winner.Heartbeat(ctx, stale.ID, server.HeartbeatRequest{Token: stale.LeaseToken}); !errors.Is(err, worker.ErrStaleLease) {
 		t.Errorf("a heartbeat under the stale token answered %v, want the stale lease refused", err)
 	}
-	text := "page text"
+	units := []store.Unit{{N: 1, Text: "page text"}}
 	err = winner.Report(ctx, stale.ID, server.ReportRequest{
 		Token: stale.LeaseToken, Outcome: server.OutcomeDone,
-		Outputs: []server.ReportOutput{{Producer: "html", ProducerVersion: "1", State: store.OutputDone, Text: &text}},
+		Outputs: []server.ReportOutput{{Producer: "html", ProducerVersion: "1", State: store.OutputDone, Units: units}},
 	})
 	if !errors.Is(err, worker.ErrStaleLease) {
 		t.Errorf("a report under the stale token answered %v, want the stale lease refused", err)
@@ -110,7 +110,7 @@ func TestTwoWorkersRaceOneTaskALapsedLeaseReturnsItAndTheStaleReportIsRefused(t 
 	}
 	current := server.ReportRequest{
 		Token: 2, Outcome: server.OutcomeDone,
-		Outputs: []server.ReportOutput{{Producer: "html", ProducerVersion: "1", State: store.OutputDone, Text: &text}},
+		Outputs: []server.ReportOutput{{Producer: "html", ProducerVersion: "1", State: store.OutputDone, Units: units}},
 	}
 	if err := loser.Report(ctx, stale.ID, current); err != nil {
 		t.Fatalf("the current token's report: %v", err)

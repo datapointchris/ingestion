@@ -202,12 +202,21 @@ type Claim struct {
 	Lease time.Duration
 }
 
+// Leased is a leased task with the media type and bytes of its item, so a
+// worker runs the task holding no scope to read items. A poll task has no
+// item, so it carries neither.
+type Leased struct {
+	Task
+	MediaType  string
+	BlobSHA256 *string
+}
+
 // Claim records the worker's heartbeat and leases it up to c.Max tasks whose
 // capability it holds: each queued task past its backoff that no first fill
 // holds, and each leased task whose lease lapsed. Every claim runs through the
 // one writer, so two workers asking at once never lease one task twice.
-func (s *Store) Claim(ctx context.Context, c Claim) ([]Task, error) {
-	var claimed []Task
+func (s *Store) Claim(ctx context.Context, c Claim) ([]Leased, error) {
+	var claimed []Leased
 	err := s.Update(ctx, func(tx *Tx) error {
 		now := tx.stamp()
 		worker := c.Worker
@@ -260,7 +269,15 @@ func (s *Store) Claim(ctx context.Context, c Claim) ([]Task, error) {
 			if err != nil {
 				return err
 			}
-			claimed = append(claimed, task)
+			leased := Leased{Task: task}
+			if task.ItemKey != nil {
+				item, _, err := tx.Item(ctx, *task.ItemKey)
+				if err != nil {
+					return err
+				}
+				leased.MediaType, leased.BlobSHA256 = item.MediaType, item.BlobSHA256
+			}
+			claimed = append(claimed, leased)
 		}
 		return nil
 	})

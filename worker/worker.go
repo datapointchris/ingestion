@@ -64,6 +64,9 @@ func Run(ctx context.Context, client *Client, cfg Config, handlers ...Handler) e
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
+	if err := MarkUndumpable(); err != nil {
+		return err
+	}
 	byCapability := map[string]Handler{}
 	capabilities := []string{}
 	for _, h := range handlers {

@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS tasks (
 );
 CREATE INDEX IF NOT EXISTS tasks_by_stamp ON tasks (updated_ts);
 CREATE INDEX IF NOT EXISTS tasks_claimable ON tasks (capability, state, created_ts);
-CREATE INDEX IF NOT EXISTS tasks_by_item ON tasks (item_key);
+CREATE INDEX IF NOT EXISTS tasks_by_item ON tasks (item_key, stage);
 CREATE INDEX IF NOT EXISTS tasks_by_connector ON tasks (connector, state);
 CREATE INDEX IF NOT EXISTS tasks_held ON tasks (held_by) WHERE held_by IS NOT NULL;
 

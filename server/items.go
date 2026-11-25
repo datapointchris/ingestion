@@ -139,9 +139,38 @@ type DeliveryView struct {
 	LastError     *string `json:"last_error"`
 }
 
+// ParseAnswer is what GET /api/v1/items/{key}/parse answers:
+// schemas/item-parse.schema.json. Text is the units' text in order, joined by
+// a blank line.
+type ParseAnswer struct {
+	SchemaVersion    int            `json:"schema_version"`
+	Key              string         `json:"key"`
+	Zone             store.Zone     `json:"zone"`
+	Title            *string        `json:"title"`
+	URL              *string        `json:"url"`
+	MediaType        string         `json:"media_type"`
+	Extractor        string         `json:"extractor"`
+	ExtractorVersion string         `json:"extractor_version"`
+	Text             string         `json:"text"`
+	Units            []store.Unit   `json:"units"`
+	RulesVersion     *string        `json:"rules_version"`
+	Findings         []ParseFinding `json:"findings"`
+}
+
+// ParseFinding is one finding of the newest scan of the parse, with the text
+// it matched.
+type ParseFinding struct {
+	Rule     string `json:"rule"`
+	Severity string `json:"severity"`
+	Unit     *int   `json:"unit"`
+	Span     string `json:"span"`
+}
+
 // ItemRoutes are the routes for a person or a service holding
 // ingestion.items.read to read items. A key in the path is one escaped
 // segment, such as reddit%2Ft3_aq7ggd, and a URL there resolves to its key.
+// The parse route answers the item's newest done parse, or the newest of the
+// extractor and at the version that its query names.
 func ItemRoutes(st *store.Store, log *slog.Logger) Routes {
 	if log == nil {
 		log = slog.Default()
@@ -150,6 +179,7 @@ func ItemRoutes(st *store.Store, log *slog.Logger) Routes {
 	return func(r *Router) {
 		r.Handle(RouteItems, h.list)
 		r.Handle(RouteItem, h.show)
+		r.Handle(RouteItemParse, h.parse)
 	}
 }
 
@@ -215,6 +245,58 @@ func (h itemHandlers) show(w http.ResponseWriter, r *http.Request) {
 	JSON(w, http.StatusOK, itemAnswer(rec))
 }
 
+func (h itemHandlers) parse(w http.ResponseWriter, r *http.Request) {
+	key, err := itemkey.Resolve(r.PathValue("key"))
+	if err != nil {
+		Refuse(w, http.StatusBadRequest, CodeInvalidKey, "%v", err)
+		return
+	}
+	pick := store.ParsePick{Extractor: r.URL.Query().Get("extractor"), Version: r.URL.Query().Get("version")}
+	p, err := h.store.Parse(r.Context(), key, pick)
+	switch {
+	case errors.Is(err, store.ErrNoItem):
+		Refuse(w, http.StatusNotFound, CodeItemNotFound, "no item %s", key)
+		return
+	case errors.Is(err, store.ErrNoParse):
+		Refuse(w, http.StatusNotFound, CodeParseNotFound, "%s holds no done parse%s", key, pickWords(pick))
+		return
+	case err != nil:
+		h.internal(w, r, "read a parse", err)
+		return
+	}
+	answer := ParseAnswer{
+		SchemaVersion: 1, Key: p.Item.Key, Zone: p.Item.Zone, Title: p.Item.Title, URL: p.Item.URL, MediaType: p.Item.MediaType,
+		Extractor: p.Output.Producer, ExtractorVersion: p.Output.ProducerVersion, Text: p.Text(), Units: p.Units,
+		Findings: []ParseFinding{},
+	}
+	if answer.Units == nil {
+		answer.Units = []store.Unit{}
+	}
+	if p.Scan != nil {
+		answer.RulesVersion = &p.Scan.ProducerVersion
+		for i, f := range p.Scan.Findings {
+			finding := ParseFinding{Rule: f.Rule, Severity: f.Severity}
+			if i < len(p.Scan.Spans) {
+				finding.Unit, finding.Span = p.Scan.Spans[i].Unit, p.Scan.Spans[i].Span
+			}
+			answer.Findings = append(answer.Findings, finding)
+		}
+	}
+	JSON(w, http.StatusOK, answer)
+}
+
+// pickWords is the extractor and version that pick narrows to, as a phrase.
+func pickWords(pick store.ParsePick) string {
+	out := ""
+	if pick.Extractor != "" {
+		out += " from " + pick.Extractor
+	}
+	if pick.Version != "" {
+		out += " at version " + pick.Version
+	}
+	return out
+}
+
 func (h itemHandlers) internal(w http.ResponseWriter, r *http.Request, what string, err error) {
 	h.log.ErrorContext(r.Context(), what, "error", err, "path", r.URL.Path)
 	Refuse(w, http.StatusInternalServerError, CodeInternal, "the server could not %s", what)
@@ -247,8 +329,7 @@ func itemAnswer(rec store.ItemRecords) ItemAnswer {
 			Stage: o.Stage, Producer: o.Producer, ProducerVersion: o.ProducerVersion, Lens: o.Lens, LensVersion: o.LensVersion,
 			State: o.State, Answer: o.Answer, RunID: o.RunID, Tokens: o.Tokens, Error: o.Error,
 		}
-		if o.Units != nil {
-			n := len(o.Units)
+		if n, ok := rec.UnitCount(o); ok {
 			view.Units = &n
 		}
 		for i, f := range o.Findings {

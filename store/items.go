@@ -19,6 +19,8 @@ type ItemRecords struct {
 	Decisions  []Decision
 	Deliveries []Delivery
 	Tasks      []Task
+
+	unitCounts map[parseVersion]int
 }
 
 // Item reads the item under key with its records, or ErrNoItem.
@@ -135,6 +137,13 @@ func (s *Store) recordsOf(ctx context.Context, items []Item) ([]ItemRecords, err
 	for _, r := range tasks {
 		out[at[*r.ItemKey]].Tasks = append(out[at[*r.ItemKey]].Tasks, r)
 	}
+	counts, err := s.unitCounts(ctx, keys)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		out[i].unitCounts = counts
+	}
 	if len(sums) == 0 {
 		return out, nil
 	}
@@ -228,12 +237,16 @@ var reached = map[string]string{
 }
 
 // Phase is the item's phase in the words of schemas/items-list.schema.json:
-// failed where a task failed, dropped or review where the newest gate decision
-// says so, waiting where a model stage holds it, and otherwise the furthest
-// stage whose condition is True.
+// review where no parse is usable, failed where another stage's task failed,
+// dropped or review where the newest gate decision says so, waiting where a
+// model stage holds it, and otherwise the furthest stage whose condition is
+// True.
 func (r ItemRecords) Phase() string {
+	if r.NoUsableParse() {
+		return "review"
+	}
 	for _, t := range r.Tasks {
-		if t.State == TaskFailed {
+		if t.State == TaskFailed && t.Stage != StageParse {
 			return "failed"
 		}
 	}

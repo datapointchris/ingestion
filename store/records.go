@@ -111,11 +111,36 @@ type Finding struct {
 	Severity string `json:"severity"`
 }
 
-// Unit is one part of a parse, such as a post or a page.
+// Unit is one part of a parse, such as a post or a page, numbered from 1.
 type Unit struct {
 	N     int     `json:"n"`
 	Label *string `json:"label"`
 	Text  string  `json:"text"`
+}
+
+// ParseUnit is one unit as parse_units holds it.
+type ParseUnit struct {
+	ItemKey          string  `json:"item_key"`
+	Extractor        string  `json:"extractor"`
+	ExtractorVersion string  `json:"extractor_version"`
+	N                int     `json:"n"`
+	Label            *string `json:"label"`
+	Text             string  `json:"text"`
+	CreatedTS        string  `json:"created_ts"`
+}
+
+// Replay is one replay that queued a stage again over the items its connector
+// and key select.
+type Replay struct {
+	// ID derives from the caller and its Idempotency-Key.
+	ID        string  `json:"id"`
+	Stage     string  `json:"stage"`
+	Connector *string `json:"connector"`
+	ItemKey   *string `json:"item_key"`
+	// Items counts the tasks queued, one per item.
+	Items       int    `json:"items"`
+	RequestedBy string `json:"requested_by"`
+	RequestedTS string `json:"requested_ts"`
 }
 
 // Span is the text one finding matched.
@@ -134,28 +159,30 @@ const (
 
 // Output is one stage's output for one item from one producer at one version.
 type Output struct {
-	ItemKey         string          `json:"item_key"`
-	Stage           string          `json:"stage"`
-	Producer        string          `json:"producer"`
-	ProducerVersion string          `json:"producer_version"`
-	Lens            *string         `json:"lens"`
-	LensVersion     *string         `json:"lens_version"`
-	State           string          `json:"state"`
-	BlobSHA256      *string         `json:"blob_sha256"`
-	DispatchID      *string         `json:"dispatch_id"`
-	RunID           *string         `json:"run_id"`
-	Tokens          *Tokens         `json:"tokens"`
-	Findings        []Finding       `json:"findings"`
-	Quality         *int            `json:"quality"`
-	SideGuess       *string         `json:"side_guess"`
-	SideConfidence  *float64        `json:"side_confidence"`
-	Text            *string         `json:"text"`
-	Units           []Unit          `json:"units"`
-	Spans           []Span          `json:"spans"`
-	Answer          json.RawMessage `json:"answer"`
-	Error           *string         `json:"error"`
-	CreatedTS       string          `json:"created_ts"`
-	UpdatedTS       string          `json:"updated_ts"`
+	ItemKey         string  `json:"item_key"`
+	Stage           string  `json:"stage"`
+	Producer        string  `json:"producer"`
+	ProducerVersion string  `json:"producer_version"`
+	Lens            *string `json:"lens"`
+	LensVersion     *string `json:"lens_version"`
+	// InputProducer and InputVersion name the parse a later stage read, such
+	// as the parse a scan's findings index the units of.
+	InputProducer  *string         `json:"input_producer"`
+	InputVersion   *string         `json:"input_version"`
+	State          string          `json:"state"`
+	BlobSHA256     *string         `json:"blob_sha256"`
+	DispatchID     *string         `json:"dispatch_id"`
+	RunID          *string         `json:"run_id"`
+	Tokens         *Tokens         `json:"tokens"`
+	Findings       []Finding       `json:"findings"`
+	Quality        *int            `json:"quality"`
+	SideGuess      *string         `json:"side_guess"`
+	SideConfidence *float64        `json:"side_confidence"`
+	Spans          []Span          `json:"spans"`
+	Answer         json.RawMessage `json:"answer"`
+	Error          *string         `json:"error"`
+	CreatedTS      string          `json:"created_ts"`
+	UpdatedTS      string          `json:"updated_ts"`
 }
 
 // Decision is one gate's decision on one item. The newest at a gate decides.

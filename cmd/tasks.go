@@ -3,6 +3,8 @@ package cmd
 import (
 	"bytes"
 	"context"
+	crand "crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -94,7 +96,7 @@ func runTasksList(cmd *cobra.Command, _ []string) error {
 		q.Set("workers", "all")
 	}
 	var answer server.TasksAnswer
-	raw, err := getJSON(cmd.Context(), configPath(cmd), api, call{Route: server.RouteTasks, Query: q}, &answer)
+	raw, err := getJSON(cmd.Context(), configPath(cmd), api, server.RouteTasks, "/api/v1/tasks?"+q.Encode(), &answer)
 	if err != nil {
 		return err
 	}
@@ -169,41 +171,43 @@ func localTime(stamp string) string {
 	return at.Local().Format("2006-01-02 15:04:05 MST")
 }
 
-// getJSON reads c from the server the config file at path names, or api
-// where it is set, into into, and answers the body as it came.
-func getJSON(ctx context.Context, path, api string, c call, into any) ([]byte, error) {
+// getJSON reads target, a path that route's pattern matches, from the server
+// the config file at path names, or api where it is set, into into, and
+// answers the body as it came.
+func getJSON(ctx context.Context, path, api string, route server.Route, target string, into any) ([]byte, error) {
+	return sendJSON(ctx, path, api, route, target, nil, into)
+}
+
+// sendJSON sends body as JSON, or nothing where it is nil, to target by
+// route, as callJSON does, and answers the body as it came.
+func sendJSON(ctx context.Context, path, api string, route server.Route, target string, body []byte, into any) ([]byte, error) {
+	c := call{Route: route, Target: target, Body: body}
+	if body != nil {
+		c.Header = http.Header{"Content-Type": {"application/json"}}
+	}
 	_, raw, err := callJSON(ctx, path, api, c, into)
 	return raw, err
 }
 
-// call is one request to the server: a row of its route table, the values
-// that fill the row's path, and any query, header and body.
+// call is one request to the server: a row of its route table, target, a
+// path that the row's pattern matches, and any header and body.
 type call struct {
 	Route  server.Route
-	Values []string
-	Query  url.Values
+	Target string
 	Header http.Header
 	Body   []byte
 }
 
-// path is the call's route with its values and query filled in.
-func (c call) path() string {
-	p := c.Route.URL(c.Values...)
-	if len(c.Query) > 0 {
-		p += "?" + c.Query.Encode()
-	}
-	return p
-}
-
-// callJSON sends c to the server the config file at path names, or api where
-// it is set, reads a 2xx answer into into, and answers its status and its body
-// as it came. A keyed route without an Idempotency-Key gets one, which every
-// attempt carries. It tries a bounded few times within one deadline, again on
-// no answer and on 429, 502, 503 or 504, except that a once route is sent again
-// only where the server never received it. A server that gives no answer is
-// errNoAnswer, naming the server and what chose it, and any other status is a
-// *refusal.
+// callJSON sends c on the server the config file at path names, or api where
+// it is set, and reads a 2xx answer into into. It answers the status and the
+// body as they came. Within one deadline it sends again on no answer and on
+// 429, 502, 503 or 504, as the route's repeat kind allows. A keyed route
+// carries one Idempotency-Key across every try, a fresh one where c's header
+// names none. A once route goes again only where its first copy never reached
+// the server. A server that gives no answer is errNoAnswer, naming the server
+// and what chose it.
 func callJSON(ctx context.Context, path, api string, c call, into any) (int, []byte, error) {
+	route, target, body := c.Route, c.Target, c.Body
 	ctx, cancel := context.WithTimeout(ctx, answerDeadline)
 	defer cancel()
 	d, err := loadDeployment(ctx, path, api)
@@ -227,40 +231,40 @@ func callJSON(ctx context.Context, path, api string, c call, into any) (int, []b
 	client := oauth2.NewClient(ctx, oauth2.ReuseTokenSource(token, source))
 	base := strings.TrimRight(d.API.Value, "/")
 	named := base + " " + chosenBy(d.API, d.Path)
-	route := c.path()
+	method := route.Method()
 	header := c.Header.Clone()
 	if header == nil {
 		header = http.Header{}
 	}
-	if c.Route.Repeat == server.RepeatKeyed && header.Get(server.IdempotencyKey) == "" {
+	if route.Repeat == server.RepeatKeyed && header.Get(server.IdempotencyKey) == "" {
 		header.Set(server.IdempotencyKey, randomKey())
 	}
 	var lastErr error
-	for attempt := range answerAttempts {
-		if attempt > 0 {
-			wait := time.Duration(attempt)*time.Second + rand.N(500*time.Millisecond)
+	tries := 0
+	for tries < answerAttempts {
+		if tries > 0 {
+			wait := time.Duration(tries)*time.Second + rand.N(500*time.Millisecond)
 			select {
 			case <-ctx.Done():
 				return 0, nil, fmt.Errorf("%w: %s, within %s: %v", errNoAnswer, named, answerDeadline, lastErr)
 			case <-time.After(wait):
 			}
 		}
-		var body io.Reader = http.NoBody
-		if c.Body != nil {
-			body = bytes.NewReader(c.Body)
+		tries++
+		var sent io.Reader
+		if body != nil {
+			sent = bytes.NewReader(body)
 		}
-		req, err := http.NewRequestWithContext(ctx, c.Route.Method, base+route, body)
+		req, err := http.NewRequestWithContext(ctx, method, base+target, sent)
 		if err != nil {
 			return 0, nil, err
 		}
-		for name, values := range header {
-			req.Header[name] = values
-		}
+		req.Header = header.Clone()
 		resp, err := client.Do(req)
 		if err != nil {
 			lastErr = err
-			if c.Route.Repeat == server.RepeatOnce && !neverReached(err) {
-				return 0, nil, fmt.Errorf("%w: %s: %v", errNoAnswer, named, err)
+			if route.Repeat == server.RepeatOnce && !neverReached(err) {
+				break
 			}
 			continue
 		}
@@ -268,37 +272,41 @@ func callJSON(ctx context.Context, path, api string, c call, into any) (int, []b
 		_ = resp.Body.Close()
 		if err != nil {
 			lastErr = err
-			if c.Route.Repeat == server.RepeatOnce {
-				return 0, nil, fmt.Errorf("%w: %s: %v", errNoAnswer, named, err)
+			if route.Repeat == server.RepeatOnce {
+				break
 			}
 			continue
 		}
-		switch {
-		case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		switch resp.StatusCode {
+		case http.StatusOK, http.StatusCreated, http.StatusAccepted:
 			return resp.StatusCode, raw, json.Unmarshal(raw, into)
-		case resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusBadGateway ||
-			resp.StatusCode == http.StatusServiceUnavailable || resp.StatusCode == http.StatusGatewayTimeout:
-			lastErr = fmt.Errorf("it answered %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
-			if c.Route.Repeat == server.RepeatOnce {
-				return 0, nil, fmt.Errorf("%w: %s: %v", errNoAnswer, named, lastErr)
+		case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+			if route.Repeat != server.RepeatOnce {
+				lastErr = fmt.Errorf("it answered %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+				continue
 			}
-			continue
 		}
-		return resp.StatusCode, raw, refusalOf(named, c.Route.Method, route, resp.StatusCode, raw)
+		return resp.StatusCode, raw, refusalOf(named, method, target, resp.StatusCode, raw)
 	}
-	return 0, nil, fmt.Errorf("%w: %s, after %d tries: %v", errNoAnswer, named, answerAttempts, lastErr)
+	return 0, nil, fmt.Errorf("%w: %s, after %d tries: %v", errNoAnswer, named, tries, lastErr)
 }
 
-// neverReached is a request that failed before a connection to the server
-// was made, so the server cannot have acted on it.
+// randomKey is a fresh Idempotency-Key, carried by every try of one call.
+func randomKey() string {
+	b := make([]byte, 16)
+	_, _ = crand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// neverReached says whether err is a request that failed while dialing, so
+// no byte of it reached the server.
 func neverReached(err error) bool {
 	var op *net.OpError
-	var dns *net.DNSError
-	return errors.As(err, &dns) || (errors.As(err, &op) && op.Op == "dial")
+	return errors.As(err, &op) && op.Op == "dial"
 }
 
-// refusal is the server refusing a request. Code and Message are what its
-// body names, where the body is the server's refusal.
+// refusal is the server refusing a call. Code and Message are what its body
+// names, where the body is the server's refusal.
 type refusal struct {
 	Server, Method, Route string
 	Status                int

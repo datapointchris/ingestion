@@ -34,25 +34,18 @@ const (
 	ScopeItemsDrop = "ingestion.items.drop"
 )
 
-// IdempotencyKey is the header that names a keyed request across its
-// retries. A retry under one key answers what the first attempt answered, and
-// a different request under it is refused.
-const IdempotencyKey = "Idempotency-Key"
-
 // MaxDropBytes bounds one dropped file. A folder connector takes larger
 // files, such as books, by reference.
 const MaxDropBytes = 256 << 20
 
 // Refusal codes of the connector routes.
 const (
-	CodeConnectorNotFound     = "connector_not_found"
-	CodeConnectorMode         = "connector_mode"
-	CodeInvalidDeclarations   = "invalid_declarations"
-	CodeDeclarationsMoved     = "declarations_moved"
-	CodeIdempotencyKeyMissing = "idempotency_key_missing"
-	CodeIdempotencyKeyReused  = "idempotency_key_reused"
-	CodeDropTooLarge          = "drop_too_large"
-	CodeInvalidDrop           = "invalid_drop"
+	CodeConnectorNotFound   = "connector_not_found"
+	CodeConnectorMode       = "connector_mode"
+	CodeInvalidDeclarations = "invalid_declarations"
+	CodeDeclarationsMoved   = "declarations_moved"
+	CodeDropTooLarge        = "drop_too_large"
+	CodeInvalidDrop         = "invalid_drop"
 )
 
 // DeclarationsRequest is what PUT /api/v1/declarations reads:

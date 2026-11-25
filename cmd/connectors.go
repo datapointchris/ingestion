@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -10,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"regexp"
@@ -138,7 +138,7 @@ func runConnectorsApply(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	var listed server.ConnectorsAnswer
-	if _, err := getJSON(cmd.Context(), configPath(cmd), api, call{Route: server.RouteConnectors}, &listed); err != nil {
+	if _, err := getJSON(cmd.Context(), configPath(cmd), api, server.RouteConnectors, "/api/v1/connectors", &listed); err != nil {
 		return err
 	}
 	replaces := listed.AppliedCommit
@@ -158,7 +158,7 @@ func runConnectorsApply(cmd *cobra.Command, args []string) error {
 	}
 	var answer server.DeclarationsAnswer
 	_, _, err = callJSON(cmd.Context(), configPath(cmd), api, call{
-		Route: server.RouteDeclarations, Header: http.Header{"Content-Type": {"application/json"}}, Body: body,
+		Route: server.RouteDeclarations, Target: "/api/v1/declarations", Header: http.Header{"Content-Type": {"application/json"}}, Body: body,
 	}, &answer)
 	var refused *refusal
 	if errors.As(err, &refused) && refused.Code == server.CodeDeclarationsMoved {
@@ -299,7 +299,7 @@ func runConnectorsList(cmd *cobra.Command, _ []string) error {
 	asJSON, _ := cmd.Flags().GetBool("json")
 	api, _ := cmd.Flags().GetString("api")
 	var answer server.ConnectorsAnswer
-	raw, err := getJSON(cmd.Context(), configPath(cmd), api, call{Route: server.RouteConnectors}, &answer)
+	raw, err := getJSON(cmd.Context(), configPath(cmd), api, server.RouteConnectors, "/api/v1/connectors", &answer)
 	if err != nil {
 		return err
 	}
@@ -371,7 +371,7 @@ func runConnectorsShow(cmd *cobra.Command, args []string) error {
 	asJSON, _ := cmd.Flags().GetBool("json")
 	api, _ := cmd.Flags().GetString("api")
 	var c server.ConnectorView
-	raw, err := getJSON(cmd.Context(), configPath(cmd), api, call{Route: server.RouteConnector, Values: []string{args[0]}}, &c)
+	raw, err := getJSON(cmd.Context(), configPath(cmd), api, server.RouteConnector, "/api/v1/connectors/"+url.PathEscape(args[0]), &c)
 	if err != nil {
 		return err
 	}
@@ -440,7 +440,7 @@ func writeConnector(w io.Writer, c server.ConnectorView, now time.Time) {
 func runConnectorsRun(cmd *cobra.Command, args []string) error {
 	api, _ := cmd.Flags().GetString("api")
 	var answer server.RunAnswer
-	status, _, err := callJSON(cmd.Context(), configPath(cmd), api, call{Route: server.RouteConnectorRuns, Values: []string{args[0]}}, &answer)
+	status, _, err := callJSON(cmd.Context(), configPath(cmd), api, call{Route: server.RouteConnectorRuns, Target: "/api/v1/connectors/" + url.PathEscape(args[0]) + "/runs"}, &answer)
 	if err != nil {
 		return refusedAsUsage(err)
 	}
@@ -460,7 +460,7 @@ func runConnectorsRelease(cmd *cobra.Command, args []string) error {
 	api, _ := cmd.Flags().GetString("api")
 	var answer server.FirstFillAnswer
 	_, _, err := callJSON(cmd.Context(), configPath(cmd), api, call{
-		Route: server.RouteFirstFill, Values: []string{args[0]},
+		Route: server.RouteFirstFill, Target: "/api/v1/connectors/" + url.PathEscape(args[0]) + "/first-fill",
 		Header: http.Header{"Content-Type": {"application/json"}}, Body: []byte(`{"state":"released"}`),
 	}, &answer)
 	if err != nil {
@@ -478,11 +478,4 @@ func refusedAsUsage(err error) error {
 		return fmt.Errorf("%w: %s", goclikit.ErrUsage, refused.Message)
 	}
 	return err
-}
-
-// randomKey is a fresh Idempotency-Key, carried by every try of one command.
-func randomKey() string {
-	b := make([]byte, 16)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
 }

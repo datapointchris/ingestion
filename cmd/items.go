@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -20,6 +21,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/datapointchris/ingestion/server"
+	"github.com/datapointchris/ingestion/store"
 )
 
 var itemsCmd = &cobra.Command{
@@ -76,6 +78,34 @@ var itemsDropCmd = &cobra.Command{
 	RunE:    runItemsDrop,
 }
 
+var itemsReplayCmd = &cobra.Command{
+	Use:   "replay --stage <stage>",
+	Short: "Run a stage again over landed items, and print how many it queued",
+	Long: "Runs one stage again over the items that --connector and --key select, or\n" +
+		"over every item where neither is given, and prints how many it queued. A new\n" +
+		"extractor version, rule set or prompt is replayed this way, and its output is\n" +
+		"written beside the old one's.\n" +
+		"\n" +
+		"--stage is one of " + strings.Join(server.ReplayStages, ", ") + ".\n" +
+		"The service refuses a stage that it holds no replay for, a --key that names\n" +
+		"no item, and a --connector that sighted no item. A stage that calls a model\n" +
+		"first prints its count and an estimate of its tokens by kind, and queues only\n" +
+		"with --yes. A model-free stage, such as parse, queues at once.\n" +
+		"\n" +
+		"Each run sends one Idempotency-Key, and its retries send the same, so the\n" +
+		"service queues each replay once.",
+	Example: "  # parse every item again with the extractors the service holds\n" +
+		"  ingestion items replay --stage parse\n" +
+		"\n" +
+		"  # one connector's items\n" +
+		"  ingestion items replay --stage parse --connector reddit-exports\n" +
+		"\n" +
+		"  # one item, by key or by URL\n" +
+		"  ingestion items replay --stage parse --key reddit/t3_aq7ggd",
+	Args: cobra.NoArgs,
+	RunE: runItemsReplay,
+}
+
 func init() {
 	goclikit.AsNamespace(itemsCmd)
 	itemsDropCmd.Flags().String("connector", "", "Drop the file into this drop connector (required)")
@@ -85,12 +115,70 @@ func init() {
 	itemsListCmd.Flags().Bool("keys", false, "Print each item's key alone, one per line")
 	itemsListCmd.Flags().Bool("json", false, "Print the service's answer as JSON")
 	itemsShowCmd.Flags().Bool("json", false, "Print the service's answer as JSON")
-	for _, c := range []*cobra.Command{itemsListCmd, itemsShowCmd, itemsDropCmd} {
+	itemsReplayCmd.Flags().String("stage", "", "Run this stage again: "+strings.Join(server.ReplayStages, ", "))
+	itemsReplayCmd.Flags().String("connector", "", "Run it over the items this connector sighted")
+	itemsReplayCmd.Flags().String("key", "", "Run it over the item under this key or URL")
+	itemsReplayCmd.Flags().Bool("yes", false, "Queue a model stage once its estimate is read")
+	itemsReplayCmd.Flags().Bool("json", false, "Print the service's answer as JSON")
+	for _, c := range []*cobra.Command{itemsListCmd, itemsShowCmd, itemsReplayCmd, itemsDropCmd} {
 		c.Flags().String("api", "", "Call this server rather than the config file's api")
 		addConfigFlag(c)
 	}
-	itemsCmd.AddCommand(itemsListCmd, itemsShowCmd, itemsDropCmd)
+	itemsCmd.AddCommand(itemsListCmd, itemsShowCmd, itemsReplayCmd, itemsDropCmd)
 	rootCmd.AddCommand(itemsCmd)
+}
+
+func runItemsReplay(cmd *cobra.Command, _ []string) error {
+	stage, _ := cmd.Flags().GetString("stage")
+	connector, _ := cmd.Flags().GetString("connector")
+	key, _ := cmd.Flags().GetString("key")
+	yes, _ := cmd.Flags().GetBool("yes")
+	asJSON, _ := cmd.Flags().GetBool("json")
+	api, _ := cmd.Flags().GetString("api")
+	if !slices.Contains(server.ReplayStages, stage) {
+		return fmt.Errorf("%w: --stage is one of %s, not %q", goclikit.ErrUsage, strings.Join(server.ReplayStages, ", "), stage)
+	}
+	req := server.ReplayRequest{Stage: stage, Confirm: yes}
+	if connector = strings.TrimSpace(connector); connector != "" {
+		req.Connector = &connector
+	}
+	if key = strings.TrimSpace(key); key != "" {
+		req.Key = &key
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		return err
+	}
+	var answer server.ReplayAnswer
+	raw, err := sendJSON(cmd.Context(), configPath(cmd), api, server.RouteReplays, "/api/v1/replays", body, &answer)
+	var refused *refusal
+	if errors.As(err, &refused) && refused.Code == server.CodeInvalidKey {
+		return fmt.Errorf("%w: %s", goclikit.ErrUsage, refused.Message)
+	}
+	if err != nil {
+		return err
+	}
+	w := cmd.OutOrStdout()
+	if asJSON {
+		_, err := w.Write(raw)
+		return err
+	}
+	if answer.Queued && answer.Items == 0 {
+		_, err = fmt.Fprintf(w, "Queued nothing: %s runs on none of the selected items.\n", answer.Stage)
+		return err
+	}
+	if answer.Queued {
+		_, err = fmt.Fprintf(w, "Queued %s on %d items.\n", answer.Stage, answer.Items)
+		return err
+	}
+	estimate := store.Tokens{}
+	if answer.Estimate != nil {
+		estimate = *answer.Estimate
+	}
+	_, err = fmt.Fprintf(w, "%s would run on %d items, estimated at uncached input %d, cache write %d, cache read %d and output %d tokens.\n"+
+		"Nothing is queued. --yes queues them.\n", answer.Stage, answer.Items,
+		estimate.UncachedInput, estimate.CacheWrite, estimate.CacheRead, estimate.Output)
+	return err
 }
 
 func runItemsList(cmd *cobra.Command, _ []string) error {
@@ -113,7 +201,7 @@ func runItemsList(cmd *cobra.Command, _ []string) error {
 			q.Set("after", *answer.Next)
 		}
 		var page server.ItemsAnswer
-		if _, err := getJSON(cmd.Context(), configPath(cmd), api, call{Route: server.RouteItems, Query: q}, &page); err != nil {
+		if _, err := getJSON(cmd.Context(), configPath(cmd), api, server.RouteItems, "/api/v1/items?"+q.Encode(), &page); err != nil {
 			return err
 		}
 		answer.Items = append(answer.Items, page.Items...)
@@ -169,7 +257,7 @@ func runItemsShow(cmd *cobra.Command, args []string) error {
 	// The server resolves a URL to its key, so a CLI of another release reaches
 	// the item that the service's own itemkey names.
 	var answer server.ItemAnswer
-	raw, err := getJSON(cmd.Context(), configPath(cmd), api, call{Route: server.RouteItem, Values: []string{strings.TrimSpace(args[0])}}, &answer)
+	raw, err := getJSON(cmd.Context(), configPath(cmd), api, server.RouteItem, "/api/v1/items/"+url.PathEscape(strings.TrimSpace(args[0])), &answer)
 	var refused *refusal
 	if errors.As(err, &refused) && refused.Code == server.CodeInvalidKey {
 		return fmt.Errorf("%w: %s", goclikit.ErrUsage, refused.Message)
@@ -293,7 +381,7 @@ func runItemsDrop(cmd *cobra.Command, args []string) error {
 	sum := sha256.Sum256(append([]byte(connector+"\x00"+name+"\x00"+mediaType+"\x00"), body...))
 	var answer server.PushAnswer
 	status, raw, err := callJSON(cmd.Context(), configPath(cmd), api, call{
-		Route: server.RouteConnectorDrops, Values: []string{connector},
+		Route: server.RouteConnectorDrops, Target: "/api/v1/connectors/" + url.PathEscape(connector) + "/drops",
 		Header: http.Header{
 			"Content-Type":        {mediaType},
 			"Content-Disposition": {mime.FormatMediaType("attachment", map[string]string{"filename": name})},

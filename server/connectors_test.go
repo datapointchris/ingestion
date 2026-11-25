@@ -143,7 +143,7 @@ func TestADropRetriedUnderItsKeyLandsOnceAndAFirstFillHoldsAcrossARestartUntilRe
 	}); err != nil {
 		t.Fatal(err)
 	}
-	claim := func(worker string) []store.Task {
+	claim := func(worker string) []store.Leased {
 		t.Helper()
 		leased, err := st.Claim(ctx, store.Claim{Worker: store.Worker{ID: worker, Capabilities: []string{"model"}}, Max: 10, Lease: time.Minute})
 		if err != nil {
