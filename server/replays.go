@@ -89,12 +89,7 @@ type replayHandlers struct {
 }
 
 func (h replayHandlers) replay(w http.ResponseWriter, r *http.Request) {
-	idempotencyKey := r.Header.Get(IdempotencyKey)
-	if idempotencyKey == "" {
-		Refuse(w, http.StatusBadRequest, CodeIdempotencyKeyMissing,
-			"a replay carries an %s header, which names it across a retry, so nothing was queued", IdempotencyKey)
-		return
-	}
+	idempotencyKey := requestKey(r)
 	var body ReplayRequest
 	if !decode(w, r, &body) {
 		return

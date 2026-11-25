@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -35,14 +36,19 @@ var (
 	ErrStaleLease = errors.New("the task's lease is not held under this token")
 )
 
-// Task is one stage's work on one item, which a worker holding its capability
-// leases.
+// Task is one stage's work on one item, or one poll of a connector, which a
+// worker holding its capability leases. A task names its item or its
+// connector, never both.
 type Task struct {
-	ID         string `json:"id"`
-	ItemKey    string `json:"item_key"`
-	Stage      string `json:"stage"`
-	Capability string `json:"capability"`
-	State      string `json:"state"`
+	ID         string  `json:"id"`
+	ItemKey    *string `json:"item_key"`
+	Connector  *string `json:"connector"`
+	Stage      string  `json:"stage"`
+	Capability string  `json:"capability"`
+	State      string  `json:"state"`
+	// HeldBy names the connector whose first fill holds this model stage's
+	// task. No claim takes it until a person releases the fill.
+	HeldBy *string `json:"held_by"`
 	// LeaseHolder is the worker that claimed the task last.
 	LeaseHolder *string `json:"lease_holder"`
 	// LeaseToken is the fencing token of the last claim. Each claim takes one
@@ -66,14 +72,117 @@ func (t Task) Lapsed(now time.Time) bool {
 	return err == nil && !expires.After(now)
 }
 
-// Enqueue adds a queued task for task's item, stage and capability, and
-// answers it as written.
+// PollTask is the task that polls connector once, which a worker holding the
+// capability poll:<source> claims.
+func PollTask(connector, source string) Task {
+	return Task{Connector: &connector, Stage: StagePoll, Capability: "poll:" + source}
+}
+
+// modelStages are the stages that read an item with a model, where a
+// connector's first fill holds every item after the first to reach one.
+var modelStages = []string{StageQuality, StageModelRead}
+
+// Enqueue adds a queued task for task's item or connector, stage and
+// capability, and answers it as written. A model stage's task for an item that
+// a connector's first fill holds is held by that connector.
 func (t *Tx) Enqueue(ctx context.Context, task Task) (Task, error) {
+	if (task.ItemKey == nil) == (task.Connector == nil) {
+		return task, fmt.Errorf("a %s task names its item or its connector, and not both", task.Stage)
+	}
 	task.ID = randomHex(16)
 	task.State, task.Attempts = TaskQueued, 0
-	task.LeaseHolder, task.LeaseToken, task.LeaseExpiresTS, task.Error = nil, nil, nil, nil
+	task.HeldBy, task.LeaseHolder, task.LeaseToken, task.LeaseExpiresTS, task.Error = nil, nil, nil, nil, nil
+	if task.ItemKey != nil && slices.Contains(modelStages, task.Stage) {
+		holder, err := t.firstFillHold(ctx, *task.ItemKey)
+		if err != nil {
+			return task, err
+		}
+		task.HeldBy = holder
+	}
 	task.CreatedTS, task.UpdatedTS = t.stamp(), t.stamp()
 	return task, t.put(ctx, table("tasks"), task)
+}
+
+// firstFillHold is the connector whose first fill holds item at the model
+// stages, and nil where none does. The first item of a connector's fill to
+// reach a model stage runs, and becomes the item its fill ran end to end.
+// Every later one waits until a person releases the fill. An item sighted by
+// several connectors waits where any of them holds it.
+func (t *Tx) firstFillHold(ctx context.Context, item string) (*string, error) {
+	cursors, err := readInto[Cursor](ctx, t.tx, table("cursors"),
+		`connector IN (SELECT connector FROM sightings WHERE item_key = ?) ORDER BY connector`, item)
+	if err != nil {
+		return nil, err
+	}
+	for _, c := range cursors {
+		if c.FirstFill == FirstFillHeld && (c.FirstFillItemKey == nil || *c.FirstFillItemKey != item) {
+			return &c.Connector, nil
+		}
+	}
+	for _, c := range cursors {
+		if c.FirstFill != FirstFillNone {
+			continue
+		}
+		c.FirstFill, c.FirstFillItemKey = FirstFillHeld, &item
+		if err := t.PutCursor(ctx, c); err != nil {
+			return nil, err
+		}
+	}
+	return nil, nil
+}
+
+// ReleaseFirstFill marks connector's first fill released, and returns to the
+// claims every task it held whose item no other connector's fill holds. A task
+// whose item another held fill sighted moves to that fill. It answers how many
+// tasks it returned.
+func (t *Tx) ReleaseFirstFill(ctx context.Context, connector string) (int, error) {
+	c, ok, err := t.Cursor(ctx, connector)
+	if err != nil {
+		return 0, err
+	}
+	if !ok {
+		return 0, fmt.Errorf("connector %s: %w", connector, ErrNoCursor)
+	}
+	if c.FirstFill != FirstFillReleased {
+		c.FirstFill = FirstFillReleased
+		if err := t.PutCursor(ctx, c); err != nil {
+			return 0, err
+		}
+	}
+	rows, err := t.tx.QueryContext(ctx, `
+UPDATE tasks SET updated_ts = ?, held_by = (
+	SELECT c.connector FROM cursors c JOIN sightings s ON s.connector = c.connector
+	WHERE s.item_key = tasks.item_key AND c.first_fill = 'held'
+		AND (c.first_fill_item_key IS NULL OR c.first_fill_item_key != tasks.item_key)
+	ORDER BY c.connector LIMIT 1)
+WHERE held_by = ?
+RETURNING held_by`, t.stamp(), connector)
+	if err != nil {
+		return 0, fmt.Errorf("release the tasks %s held: %w", connector, err)
+	}
+	defer func() { _ = rows.Close() }()
+	released := 0
+	for rows.Next() {
+		var holder *string
+		if err := rows.Scan(&holder); err != nil {
+			return 0, fmt.Errorf("release the tasks %s held: %w", connector, err)
+		}
+		if holder == nil {
+			released++
+		}
+	}
+	return released, rows.Err()
+}
+
+// ErrNoCursor names a connector with no cursor, because no applied set
+// declared it.
+var ErrNoCursor = errors.New("no cursor for the connector")
+
+// PollInFlight is connector's poll task that is queued or leased, and false
+// where none is.
+func (t *Tx) PollInFlight(ctx context.Context, connector string) (Task, bool, error) {
+	return first[Task](ctx, t.tx, table("tasks"), `connector = ? AND stage = ? AND state IN ('queued', 'leased') ORDER BY created_ts`,
+		connector, StagePoll)
 }
 
 // Worker is one worker process, as its claims and heartbeats record it.
@@ -94,7 +203,8 @@ type Claim struct {
 }
 
 // Leased is a leased task with the media type and bytes of its item, so a
-// worker runs the task holding no scope to read items.
+// worker runs the task holding no scope to read items. A poll task has no
+// item, so it carries neither.
 type Leased struct {
 	Task
 	MediaType  string
@@ -102,9 +212,9 @@ type Leased struct {
 }
 
 // Claim records the worker's heartbeat and leases it up to c.Max tasks whose
-// capability it holds: each queued task past its backoff, and each leased
-// task whose lease lapsed. Every claim runs through the one writer, so two
-// workers asking at once never lease one task twice.
+// capability it holds: each queued task past its backoff that no first fill
+// holds, and each leased task whose lease lapsed. Every claim runs through the
+// one writer, so two workers asking at once never lease one task twice.
 func (s *Store) Claim(ctx context.Context, c Claim) ([]Leased, error) {
 	var claimed []Leased
 	err := s.Update(ctx, func(tx *Tx) error {
@@ -130,7 +240,7 @@ func (s *Store) Claim(ctx context.Context, c Claim) ([]Leased, error) {
 		args = append(args, now, now, c.Max)
 		ids, err := tx.ids(ctx, `SELECT id FROM tasks
 			WHERE capability IN (?`+strings.Repeat(", ?", len(c.Worker.Capabilities)-1)+`)
-			AND ((state = 'queued' AND (not_before_ts IS NULL OR not_before_ts <= ?))
+			AND ((state = 'queued' AND held_by IS NULL AND (not_before_ts IS NULL OR not_before_ts <= ?))
 				OR (state = 'leased' AND lease_expires_ts <= ?))
 			ORDER BY created_ts, rowid LIMIT ?`, args...)
 		if err != nil {
@@ -159,11 +269,15 @@ func (s *Store) Claim(ctx context.Context, c Claim) ([]Leased, error) {
 			if err != nil {
 				return err
 			}
-			item, _, err := tx.Item(ctx, task.ItemKey)
-			if err != nil {
-				return err
+			leased := Leased{Task: task}
+			if task.ItemKey != nil {
+				item, _, err := tx.Item(ctx, *task.ItemKey)
+				if err != nil {
+					return err
+				}
+				leased.MediaType, leased.BlobSHA256 = item.MediaType, item.BlobSHA256
 			}
-			claimed = append(claimed, Leased{Task: task, MediaType: item.MediaType, BlobSHA256: item.BlobSHA256})
+			claimed = append(claimed, leased)
 		}
 		return nil
 	})

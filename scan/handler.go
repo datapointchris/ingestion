@@ -67,7 +67,7 @@ func (h handler) Run(ctx context.Context, task worker.Task) worker.Result {
 	var refused *worker.StatusError
 	switch {
 	case errors.As(err, &refused) && refused.Code == server.CodeParseNotFound:
-		h.log.Info("the item holds no done parse, so nothing was scanned", "task", task.ID, "item", task.ItemKey)
+		h.log.Info("the task's item holds no done parse, so nothing was scanned", "task", task.ID)
 		return worker.Result{Outcome: server.OutcomeDone}
 	case errors.As(err, &refused) && refused.Status != http.StatusTooManyRequests && refused.Status < 500:
 		return h.failed(fmt.Sprintf("read the item's parse: %v", err), nil)

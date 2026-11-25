@@ -28,8 +28,10 @@ func Stricter(a, b Zone) Zone {
 	return Owner
 }
 
-// Stages, in the order that an item passes them. A task or an output names one.
+// Stages, in the order that an item passes them, after the poll that fetches
+// it. A task or an output names one.
 const (
+	StagePoll      = "poll"
 	StageLand      = "land"
 	StageParse     = "parse"
 	StageScan      = "scan"
@@ -221,6 +223,14 @@ type Delivery struct {
 	UpdatedTS     string  `json:"updated_ts"`
 }
 
+// A connector's first fill: none until an item reaches a model stage, held
+// once one has, and released once a person lets the rest through.
+const (
+	FirstFillNone     = "none"
+	FirstFillHeld     = "held"
+	FirstFillReleased = "released"
+)
+
 // Cursor is one connector's position and when it is next due.
 type Cursor struct {
 	Connector        string  `json:"connector"`
@@ -228,17 +238,37 @@ type Cursor struct {
 	DueAt            string  `json:"due_at"`
 	LastRunTS        *string `json:"last_run_ts"`
 	LastDeliveryTS   *string `json:"last_delivery_ts"`
+	LastError        *string `json:"last_error"`
+	LastErrorTS      *string `json:"last_error_ts"`
+	Failures         int     `json:"failures"`
 	FirstFill        string  `json:"first_fill"`
 	FirstFillItemKey *string `json:"first_fill_item_key"`
+	CreatedTS        string  `json:"created_ts"`
 	UpdatedTS        string  `json:"updated_ts"`
 }
 
-// Declarations is one applied set of connector declarations.
+// Declarations is one applied set of connectors, routing rules and
+// destinations, each declaration as its JSON.
 type Declarations struct {
-	Commit     string            `json:"commit"`
-	AppliedTS  string            `json:"applied_ts"`
-	AppliedBy  string            `json:"applied_by"`
-	Connectors []json.RawMessage `json:"connectors"`
+	Commit       string            `json:"commit"`
+	AppliedTS    string            `json:"applied_ts"`
+	AppliedBy    string            `json:"applied_by"`
+	Connectors   []json.RawMessage `json:"connectors"`
+	RoutingRules []json.RawMessage `json:"routing_rules"`
+	Destinations []json.RawMessage `json:"destinations"`
+}
+
+// KeyedRequest is one request a caller sent under an Idempotency-Key, and
+// what it answered.
+type KeyedRequest struct {
+	Caller         string          `json:"caller"`
+	IdempotencyKey string          `json:"idempotency_key"`
+	Route          string          `json:"route"`
+	Connector      *string         `json:"connector"`
+	Fingerprint    string          `json:"fingerprint"`
+	Status         int             `json:"status"`
+	Answer         json.RawMessage `json:"answer"`
+	CreatedTS      string          `json:"created_ts"`
 }
 
 // NewFlowID is a fresh flow id, as 32 hex characters.

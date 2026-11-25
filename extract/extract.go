@@ -108,7 +108,7 @@ func (r *Registry) QueueParse(ctx context.Context, tx *store.Tx, item store.Item
 	if !ok {
 		return nil
 	}
-	_, err := tx.Enqueue(ctx, store.Task{ItemKey: item.Key, Stage: store.StageParse, Capability: Capability(e)})
+	_, err := tx.Enqueue(ctx, store.Task{ItemKey: &item.Key, Stage: store.StageParse, Capability: Capability(e)})
 	return err
 }
 

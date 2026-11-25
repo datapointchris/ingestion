@@ -127,7 +127,8 @@ func Run(ctx context.Context, client *Client, cfg Config, handlers ...Handler) e
 // runTask runs one task, extending its lease while it runs, and reports how it
 // ended. A lost lease ends the handler's context, and its result is dropped.
 func runTask(ctx context.Context, client *Client, cfg Config, h Handler, task Task) {
-	log := cfg.Log.With("task", task.ID, "item", task.ItemKey, "stage", task.Stage, "token", task.LeaseToken)
+	log := cfg.Log.With("task", task.ID, "item", deref(task.ItemKey), "connector", deref(task.Connector), "stage", task.Stage,
+		"token", task.LeaseToken)
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go func() {
@@ -219,4 +220,12 @@ func run(ctx context.Context, h Handler, task Task) (result Result) {
 		}
 	}()
 	return h.Run(ctx, task)
+}
+
+// deref is *s, and "" for nil.
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }

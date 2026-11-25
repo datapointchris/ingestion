@@ -93,11 +93,14 @@ poll = "10s"  # how often an idle worker asks for work
   with the client-credentials grant. The worker requires it, or a `token_command`.
 - **`NODE_NAME`**, where set, names the node in each shipped record's resource.
 - **The access token decides what a caller reaches.** A person's token reaches every route. A
-  service token reaches only the routes its scopes grant. A worker needs
-  `ingestion.tasks.claim`, which also reads and writes bytes through
-  `/api/v1/blobs/{sha256}`. A scan task reads its item's parse through
-  `/api/v1/tasks/{id}/parse`, under the task's lease. A service that reads items needs `ingestion.items.read`, and one that
-  runs a stage again needs `ingestion.items.replay`.
+  service token reaches only the routes its scopes grant. A worker needs `ingestion.tasks.claim`,
+  which also reads and writes bytes through `/api/v1/blobs/{sha256}`. A scan task reads its item's
+  parse through `/api/v1/tasks/{id}/parse`, under the task's lease. A service that reads items
+  needs `ingestion.items.read`, and one that runs a stage again needs `ingestion.items.replay`. A
+  job that applies declarations needs `ingestion.declarations.apply`, one that reads connectors
+  `ingestion.connectors.read`, one that runs them `ingestion.connectors.run`, and a source that
+  drops files `ingestion.items.drop`. Releasing a connector's first fill spends the model stages on
+  every item it held, so it takes `ingestion.first-fills.release`, which no other scope grants.
 
 `ingestion auth login`, `auth status` and `auth logout` hold a person's login. `ingestion tasks
 list` reads the service's open tasks and the workers it has heard from:
@@ -143,6 +146,110 @@ differs is hashed again before it is served, and is not served where its bytes c
 `ingestion blobs unpaired` names each blob in the volume that no row names, and each row whose
 bytes are missing. It exits 3 where it names any, and 1 where it could not compare. It deletes
 nothing.
+
+### A person applies each connector as a declaration kept in git
+
+Each source enters through a connector declared in a directory kept in git:
+
+```text
+connectors/<name>.yml   one connector each, in a file named for it
+routing-rules.yml       rules: the rules that name a destination for what they match
+destinations.yml        destinations: each place an item is delivered
+```
+
+`examples/declarations/` holds a set to start from. `schemas/connector.schema.json`,
+`schemas/routing-rules.schema.json` and `schemas/destinations.schema.json` hold each file's shape,
+for an editor to check against. A connector names these:
+
+| Field | Holds |
+| --- | --- |
+| `name` | the connector's name, which each item it lands is sighted under |
+| `mode` | `poll`, `push`, `folder` or `drop` |
+| `source` | the external feed it reads, by its name in the data catalog |
+| `contract` | optional: the data contract its records hold to |
+| `zone` | who wrote what it carries: `outside` for an outsider, `owner` for the owner's own words |
+| `tags` | the tags every item it lands carries |
+| `read_rule` | optional: `as-is` or `model`, in place of the side's default |
+| `schedule` | a poll's or a folder's cron expression, a descriptor such as `@hourly`, or `@every 6h`, read in UTC unless it opens `CRON_TZ=<zone>` |
+| `freshness` | optional, for a poll or a folder: how long it may go without a delivery before it reads overdue |
+| `due_interval` | a drop's or a push's expected cadence |
+| `root`, `path` | a folder's `[serve.homes]` root, and the directory below it to scan |
+| `format` | optional, for a drop: the registered handler that reads its file, which otherwise lands as one item |
+
+`freshness` and `due_interval` are a positive count of minutes, hours, days or weeks, such as
+`90m`, `12h`, `30d` or `2w`. A day is 24 hours.
+
+A routing rule is named, and its match holds a `connector`, a `tag`, or a source `field` with the
+`values` it takes, such as a subreddit. Every condition it names must hold. A destination names
+its `side`, `personal` or `fleet`, and the `tags` that place an item there. `apply` checks and
+keeps the rules and destinations. No stage reads them, so no item is placed by a rule.
+
+`ingestion connectors apply <dir>` reads the whole set, checks each file against its schema, and
+sends it to the service, which keeps it beside its commit. The commit is the directory's `HEAD`,
+marked `+dirty.<digest>` where the directory holds an uncommitted change. A directory holding none
+of the three files is refused, and the command exits 2, so a wrong path never empties the set in
+force. A set holding any invalid declaration is refused whole. The refusal names each one with
+every reason, and the set in force stays as it was:
+
+```text
+$ ingestion connectors apply ./declarations
+the set holds invalid declarations, so none of it is applied
+  connector stream
+    mode: value must be one of 'poll', 'push', 'folder', 'drop'
+    zone: value must be one of 'outside', 'owner'
+  routing rule to-nowhere
+    destination nowhere is not one destinations.yml declares
+```
+
+It exits 3 on a refusal.
+
+An apply names the commit it replaces, which it reads from the service first. Where that commit
+came from git, the directory's `HEAD` has to contain it, so a checkout that was not pulled cannot
+replace a newer set. The service refuses an apply whose set in force moved after it was read, with
+409 `declarations_moved`. Both exit 3. `--replacing <commit>` replaces the commit in force
+whatever `HEAD` holds, such as for a rollback to an older commit.
+
+`ingestion connectors list` prints each connector in force:
+
+```text
+     CONNECTOR    MODE  APPLIED         LAST DELIVERY  ITEMS  WAITING  REVIEW  FAILED                                       DUE
+  books-folder  folder  5519f33                     —      0        0       0       0  */15 * * * * · next 2026-11-25 00:00 EST
+   feed-reader    poll  5519f33                     —      0        0       0       0       @hourly · next 2026-11-25 00:00 EST
+reddit-exports    drop  5519f33  2026-11-24 23:50 EST      1        0       0       0     every 30d · next 2026-12-24 23:50 EST
+```
+
+`ingestion connectors show <name>` adds its source, its tags, its last run and its first fill.
+`--json` on either prints the shape in `schemas/connectors-list.schema.json`.
+
+- **The service schedules each connector.** A poll or a folder is due at its schedule's next time.
+  A drop or a push is due its `due_interval` after its last delivery, and reads overdue once that
+  passes with nothing delivered. `ingestion connectors run <name>` makes a poll or a folder due
+  now.
+- **A failed run is kept and tried again sooner.** The cursor keeps the error, its time, and the
+  runs that failed in a row. The next try waits 5 minutes, doubling after each failure, and comes
+  no later than the schedule's next time. `list` marks the failures in DUE, and `show` prints the
+  last error. A run that succeeds clears all three.
+- **A poll's run is a task with no item.** Its stage is `poll` and its capability is
+  `poll:<source>`, so only a worker that handles that source leases it. The task names its
+  connector, and a connector never has two polls in flight.
+- **The service scans a folder itself**, since only it holds the `[serve.homes]` roots. Each new
+  file lands once by reference. A file whose size and time match its landing is skipped, so a
+  rerun lands nothing. A file modified in the last 10 seconds is left for the next scan, so a copy
+  in progress does not land half written. A scan stops after 30 seconds and the folder stays due,
+  so a large first scan resumes on the next pass rather than holding up every other connector.
+- **A drop connector takes a file a person or a job sends.** `ingestion items drop <file>
+  --connector <name>` posts it to `/api/v1/connectors/<name>/drops` under an `Idempotency-Key`. A
+  retry under that key answers the first landing, and another file under it is refused with 409.
+  The CLI derives the key from the connector, the file's name, its media type and its bytes, so
+  dropping a file twice lands it once, and a copy under another name is one more sighting of the
+  same item. A connector whose `format` names a registered handler gives the file to it, and any
+  other lands the file as one item.
+- **A connector's first fill runs the first of its items to reach a model stage, and holds the
+  rest there.** `show` prints that item and its tokens by stage. `ingestion connectors release
+  <name>` sends `PATCH /api/v1/connectors/<name>/first-fill` with `{"state": "released"}`, which
+  queues every model task the fill held. The hold lives in the store, so it survives a restart. A
+  connector that a later set dropped can still be released. An item that two connectors sighted
+  waits while either holds it.
 
 ### Parsing an item, and running a stage again
 
@@ -214,6 +321,15 @@ uid and gid 10600.
 signed with cosign by the release workflow. The manifests leave two things for the cluster to
 supply: the ConfigMap `ingestion-config` holding `config.toml`, and the Secret
 `ingestion-worker-client` holding the worker's client secret under `secret`.
+
+**An upgrade that changes a table copies the store first.** Before `serve` changes the store's
+tables, it writes a copy beside the store, named `ingestion.db.before-<UTC time>`. A column that
+SQLite cannot change in place, such as one a release makes nullable, is rebuilt in one transaction
+that keeps every row. `serve` leaves alone a table that its own schema files do not create, so a
+table that a later release added does not stop an earlier one opening the store. v0.5.0 and
+earlier refuse such a table. A rollback to one of them stops `serve`, puts the copy back as
+`ingestion.db`, and starts the older release. The copy holds nothing landed after the upgrade, and
+stays until a person deletes it.
 
 ### Every change leaves through the outbox
 

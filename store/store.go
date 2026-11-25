@@ -40,6 +40,7 @@ const readConnections = 4
 
 // Store is the open database.
 type Store struct {
+	path  string
 	write *sql.DB
 	read  *sql.DB
 	clock func() time.Time
@@ -64,7 +65,7 @@ func Open(ctx context.Context, path string, options ...Option) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return nil, fmt.Errorf("create the store's directory: %w", err)
 	}
-	s := &Store{clock: time.Now}
+	s := &Store{path: path, clock: time.Now}
 	for _, o := range options {
 		o(s)
 	}
@@ -103,10 +104,14 @@ func dsn(path string, readOnly bool) string {
 	return "file:" + path + "?" + q.Encode()
 }
 
-// converge adds each column a schema file declares and its table lacks,
-// applies each schema file in name order, checks that Tables declares every
-// table the files create, guards each logged table, and starts the stamp clock
-// past the newest stamp in any table.
+// converge brings the store to what the schema files declare, reading that
+// from a scratch database the files are applied to. Where the store already
+// holds tables and the files change one, it first copies the store beside
+// itself, so an earlier release has a store to return to. It rebuilds each
+// table whose column the files make nullable, adds each column a table lacks,
+// applies each file in name order, checks that Tables declares every table the
+// files create, guards each logged table, and starts the stamp clock past the
+// newest stamp in any table.
 func (s *Store) converge(ctx context.Context) error {
 	names, err := fs.Glob(schemaFiles, "*.sql")
 	if err != nil {
@@ -121,16 +126,51 @@ func (s *Store) converge(ctx context.Context) error {
 		}
 		files[i] = string(statements)
 	}
-	if err := s.addColumns(ctx, files); err != nil {
+	declared, err := sql.Open("sqlite", "file::memory:")
+	if err != nil {
 		return err
+	}
+	defer func() { _ = declared.Close() }()
+	// One connection, because each connection to :memory: is its own database.
+	declared.SetMaxOpenConns(1)
+	for _, statements := range files {
+		if _, err := declared.ExecContext(ctx, statements); err != nil {
+			return fmt.Errorf("read the schema files: %w", err)
+		}
+	}
+	if err := checkDeclared(ctx, declared); err != nil {
+		return err
+	}
+	changes, err := planChanges(ctx, declared, s.write)
+	if err != nil {
+		return err
+	}
+	if changes.held && changes.any() {
+		if err := s.copyBeside(ctx); err != nil {
+			return err
+		}
+	}
+	for _, table := range changes.rebuild {
+		if err := s.rebuild(ctx, declared, table); err != nil {
+			return err
+		}
+	}
+	for _, add := range changes.add {
+		definition := quote(add.column.name) + " " + add.column.kind
+		if add.column.notNull {
+			definition += " NOT NULL"
+		}
+		if add.column.dflt.Valid {
+			definition += " DEFAULT " + add.column.dflt.String
+		}
+		if _, err := s.write.ExecContext(ctx, `ALTER TABLE `+add.table+` ADD COLUMN `+definition); err != nil {
+			return fmt.Errorf("add column %s to %s: %w", add.column.name, add.table, err)
+		}
 	}
 	for i, statements := range files {
 		if _, err := s.write.ExecContext(ctx, statements); err != nil {
 			return fmt.Errorf("apply %s: %w", names[i], err)
 		}
-	}
-	if err := checkDeclared(ctx, s.write); err != nil {
-		return err
 	}
 	for _, t := range Tables {
 		if err := guard(ctx, s.write, t); err != nil {
@@ -149,67 +189,164 @@ func (s *Store) converge(ctx context.Context) error {
 	return nil
 }
 
-// addColumns adds to each table the store already holds each column its schema
-// file declares and the table lacks, because CREATE TABLE IF NOT EXISTS leaves
-// a table that exists as it is. It reads what the files declare from a scratch
-// database they are applied to. A column added this way carries its type, NOT
-// NULL and default, and no other constraint.
-func (s *Store) addColumns(ctx context.Context, files []string) error {
-	declared, err := sql.Open("sqlite", "file::memory:")
+// schemaChanges is what converging the files changes in a store. A CREATE
+// TABLE in a file never changes a table that exists, so a column the table
+// lacks is added with its type, NOT NULL and default and no other constraint,
+// and a table whose column the files make nullable is rebuilt whole.
+type schemaChanges struct {
+	// held says the store held tables before this open.
+	held    bool
+	create  []string
+	rebuild []string
+	add     []columnAdd
+}
+
+type columnAdd struct {
+	table  string
+	column column
+}
+
+func (c schemaChanges) any() bool { return len(c.create)+len(c.rebuild)+len(c.add) > 0 }
+
+// planChanges compares each table the files declare with the one live holds.
+func planChanges(ctx context.Context, declared, live *sql.DB) (schemaChanges, error) {
+	var changes schemaChanges
+	held, err := tableNames(ctx, live)
 	if err != nil {
-		return err
+		return changes, err
 	}
-	defer func() { _ = declared.Close() }()
-	// One connection, because each connection to :memory: is its own database.
-	declared.SetMaxOpenConns(1)
-	for _, statements := range files {
-		if _, err := declared.ExecContext(ctx, statements); err != nil {
-			return fmt.Errorf("read the schema files: %w", err)
-		}
-	}
+	changes.held = len(held) > 0
 	tables, err := tableNames(ctx, declared)
 	if err != nil {
-		return err
+		return changes, err
 	}
 	for _, name := range tables {
 		want, err := tableColumns(ctx, declared, name)
 		if err != nil {
-			return err
+			return changes, err
 		}
-		have, err := tableColumns(ctx, s.write, name)
+		have, err := tableColumns(ctx, live, name)
 		if err != nil {
-			return err
+			return changes, err
 		}
 		if len(have) == 0 {
+			changes.create = append(changes.create, name)
 			continue
 		}
-		held := map[string]bool{}
+		notNull := map[string]bool{}
 		for _, c := range have {
-			held[c.name] = true
+			notNull[c.name] = c.notNull
 		}
+		loosened := false
+		var missing []columnAdd
 		for _, c := range want {
-			if held[c.name] {
-				continue
-			}
-			definition := quote(c.name) + " " + c.kind
-			if c.notNull {
-				definition += " NOT NULL"
-			}
-			if c.dflt.Valid {
-				definition += " DEFAULT " + c.dflt.String
-			}
-			if _, err := s.write.ExecContext(ctx, `ALTER TABLE `+name+` ADD COLUMN `+definition); err != nil {
-				return fmt.Errorf("add column %s to %s: %w", c.name, name, err)
+			was, ok := notNull[c.name]
+			switch {
+			case !ok:
+				missing = append(missing, columnAdd{table: name, column: c})
+			case was && !c.notNull:
+				loosened = true
 			}
 		}
+		if loosened {
+			changes.rebuild = append(changes.rebuild, name)
+		} else {
+			changes.add = append(changes.add, missing...)
+		}
+	}
+	return changes, nil
+}
+
+// copyBeside writes a copy of the store beside it, named for the instant it
+// was taken, before converge changes the store's schema. An earlier release
+// refuses or misreads a store a later one converged, so returning to one
+// starts from this copy.
+func (s *Store) copyBeside(ctx context.Context) error {
+	target := s.path + ".before-" + time.Now().UTC().Format("20060102T150405.000Z")
+	if _, err := s.write.ExecContext(ctx, `VACUUM INTO ?`, target); err != nil {
+		return fmt.Errorf("copy the store to %s before changing its schema: %w", target, err)
 	}
 	return nil
 }
 
-// checkDeclared refuses a table the schema files create that Tables does not
-// declare and unlogged does not name, a declared table no file creates, and a
-// declared key other than the table's primary key. Leaving a table out of
-// Tables would leave it unguarded and never shipped, with nothing to say so.
+// rebuild remakes table as the files declare it and keeps every row, because
+// SQLite cannot make a column nullable in place. It follows SQLite's
+// documented procedure: foreign keys off, a new table, the rows copied, the
+// old table dropped and the new one renamed, then a foreign key check, in one
+// transaction. Applying the files and guarding the tables afterwards puts the
+// table's indexes and triggers back.
+func (s *Store) rebuild(ctx context.Context, declared *sql.DB, table string) error {
+	var create string
+	if err := declared.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&create); err != nil {
+		return fmt.Errorf("read how the files create %s: %w", table, err)
+	}
+	body, ok := strings.CutPrefix(create, "CREATE TABLE "+table+" ")
+	if !ok {
+		return fmt.Errorf("the files create %s as %.40q, which rebuild cannot rename", table, create)
+	}
+	want, err := tableColumns(ctx, declared, table)
+	if err != nil {
+		return err
+	}
+	have, err := tableColumns(ctx, s.write, table)
+	if err != nil {
+		return err
+	}
+	held := map[string]bool{}
+	for _, c := range have {
+		held[c.name] = true
+	}
+	var kept []string
+	for _, c := range want {
+		if held[c.name] {
+			kept = append(kept, quote(c.name))
+		}
+	}
+	columns := strings.Join(kept, ", ")
+	rebuilt := table + "_rebuilt"
+
+	conn, err := s.write.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_, _ = conn.ExecContext(ctx, `PRAGMA foreign_keys = ON`)
+		_ = conn.Close()
+	}()
+	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
+		return fmt.Errorf("turn foreign keys off to rebuild %s: %w", table, err)
+	}
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, statement := range []string{
+		`CREATE TABLE ` + rebuilt + ` ` + body,
+		`INSERT INTO ` + rebuilt + ` (` + columns + `) SELECT ` + columns + ` FROM ` + table,
+		`DROP TABLE ` + table,
+		`ALTER TABLE ` + rebuilt + ` RENAME TO ` + table,
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("rebuild %s: %w", table, err)
+		}
+	}
+	var dangling int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM pragma_foreign_key_check`).Scan(&dangling); err != nil {
+		return fmt.Errorf("check foreign keys after rebuilding %s: %w", table, err)
+	}
+	if dangling > 0 {
+		return fmt.Errorf("rebuilding %s left %d rows whose foreign key names no row", table, dangling)
+	}
+	return tx.Commit()
+}
+
+// checkDeclared reads the tables the schema files create, in db, and refuses
+// one that Tables does not declare and unlogged does not name, a declared
+// table no file creates, and a declared key other than the table's primary
+// key. Leaving a table out of Tables would leave it unguarded and never
+// shipped, with nothing to say so. It reads the files rather than the store,
+// so a table that a later release added is left as it is.
 func checkDeclared(ctx context.Context, db *sql.DB) error {
 	names, err := tableNames(ctx, db)
 	if err != nil {
@@ -219,7 +356,7 @@ func checkDeclared(ctx context.Context, db *sql.DB) error {
 	for _, name := range names {
 		created[name] = true
 		if _, ok := TableNamed(name); !ok && !contains(unlogged, name) {
-			return fmt.Errorf("the store holds table %s, which store.Tables does not declare and unlogged does not name", name)
+			return fmt.Errorf("the schema files create table %s, which store.Tables does not declare and unlogged does not name", name)
 		}
 	}
 	for _, t := range Tables {

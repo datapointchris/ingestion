@@ -16,7 +16,8 @@
     {"$ref": "#/$defs/tasks"},
     {"$ref": "#/$defs/workers"},
     {"$ref": "#/$defs/cursors"},
-    {"$ref": "#/$defs/declarations"}
+    {"$ref": "#/$defs/declarations"},
+    {"$ref": "#/$defs/keyed_requests"}
   ],
   "$defs": {
     "item_key": {
@@ -29,7 +30,7 @@
       "enum": ["outside", "owner"]
     },
     "sha256": {"description": "A SHA-256, in lowercase hex.", "type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "stage": {"description": "A stage that writes an output or holds a task.", "enum": ["land", "parse", "scan", "quality", "model-read", "deliver"]},
+    "stage": {"description": "A stage that writes an output or holds a task. A poll's task fetches a connector's source before any item lands.", "enum": ["poll", "land", "parse", "scan", "quality", "model-read", "deliver"]},
     "timestamp": {"type": "string", "format": "date-time"},
     "tokens": {
       "description": "A model run's tokens by kind.",
@@ -226,16 +227,18 @@
     },
     "tasks": {
       "title": "tasks, one row per task",
-      "description": "ingestion.record.id is the task's id. A failed task's error ships as ingestion.text, because an extractor's stderr can quote the item.",
+      "description": "ingestion.record.id is the task's id. A stage's task names its item, and a poll's task names its connector. A failed task's error ships as ingestion.text, because an extractor's stderr can quote the item.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "item_key", "stage", "capability", "state", "attempts", "created_ts", "updated_ts"],
+      "required": ["id", "item_key", "connector", "stage", "capability", "state", "attempts", "created_ts", "updated_ts"],
       "properties": {
         "id": {"type": "string"},
-        "item_key": {"$ref": "#/$defs/item_key"},
+        "item_key": {"anyOf": [{"$ref": "#/$defs/item_key"}, {"type": "null"}]},
+        "connector": {"description": "The connector a poll's task fetches for.", "type": ["string", "null"]},
         "stage": {"$ref": "#/$defs/stage"},
-        "capability": {"description": "What a worker needs to claim the task, such as pdf or whisper.", "type": "string"},
+        "capability": {"description": "What a worker needs to claim the task, such as pdf or whisper, and poll:<source> for a poll.", "type": "string"},
         "state": {"enum": ["queued", "leased", "done", "failed"]},
+        "held_by": {"description": "The connector whose first fill holds this model stage's task. No claim takes it until a person releases the fill.", "type": ["string", "null"]},
         "lease_holder": {"description": "The worker holding the lease.", "type": ["string", "null"]},
         "lease_token": {"description": "The fencing token. A report under an older token is refused.", "type": ["integer", "null"]},
         "lease_expires_ts": {"anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
@@ -264,48 +267,51 @@
       "description": "ingestion.record.id is the connector's name. due_at is the scheduler's, which every view of freshness copies.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["connector", "due_at", "first_fill", "updated_ts"],
+      "required": ["connector", "due_at", "first_fill", "failures", "created_ts", "updated_ts"],
       "properties": {
         "connector": {"type": "string"},
         "position": {"description": "Where the next poll reads from. It moves only past what landed.", "type": ["string", "null"]},
         "due_at": {"$ref": "#/$defs/timestamp"},
         "last_run_ts": {"anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
         "last_delivery_ts": {"description": "The newest arrival the connector landed.", "anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
-        "first_fill": {"description": "held keeps every item after the first at the model stages until a person releases it.", "enum": ["held", "released", "none"]},
+        "last_error_ts": {"description": "When the connector's newest run failed. Null once a run completes.", "anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
+        "failures": {"description": "How many runs in a row failed. The scheduler retries a failed run sooner than its schedule, waiting longer after each.", "type": "integer", "minimum": 0},
+        "first_fill": {"description": "none until an item reaches a model stage. held once one has, which keeps every later item at the model stages until a person releases it.", "enum": ["held", "released", "none"]},
         "first_fill_item_key": {"description": "The one item a held first fill ran end to end.", "anyOf": [{"$ref": "#/$defs/item_key"}, {"type": "null"}]},
+        "created_ts": {"description": "When an apply first declared the connector. A due time with no run or delivery before it counts from here.", "$ref": "#/$defs/timestamp"},
         "updated_ts": {"$ref": "#/$defs/timestamp"}
       }
     },
     "declarations": {
       "title": "declarations, one row per applied set",
-      "description": "ingestion.record.id is the applied commit.",
+      "description": "ingestion.record.id is the applied commit. Applying a commit again stamps its row again, and the newest applied_ts is the set in force.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["commit", "applied_ts", "applied_by", "connectors"],
+      "required": ["commit", "applied_ts", "applied_by", "connectors", "routing_rules", "destinations"],
       "properties": {
-        "commit": {"description": "The commit of the declarations the set was applied from.", "type": "string"},
+        "commit": {"description": "The commit the set was applied from: a full SHA, the SHA marked +dirty.<digest of the set> where the directory held uncommitted changes, or uncommitted.<digest> outside git.", "type": "string"},
         "applied_ts": {"$ref": "#/$defs/timestamp"},
         "applied_by": {"description": "The login that applied the set.", "type": "string"},
-        "connectors": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["name", "mode", "source", "zone"],
-            "properties": {
-              "name": {"type": "string"},
-              "mode": {"enum": ["poll", "push", "folder", "drop"]},
-              "source": {"description": "The external feed the connector reads, by its name in the data catalog.", "type": "string"},
-              "contract": {"description": "The contract the source's payloads hold to.", "type": ["string", "null"]},
-              "schedule": {"description": "A poll's schedule, as a cron expression.", "type": ["string", "null"]},
-              "due_interval": {"description": "How often a drop or push is expected, such as 720h.", "type": ["string", "null"]},
-              "freshness": {"description": "How stale the connector may get before it reads overdue.", "type": ["string", "null"]},
-              "tags": {"type": "array", "items": {"type": "string"}},
-              "zone": {"$ref": "#/$defs/zone"},
-              "read_rule": {"description": "as-is, model, or the side's default.", "type": ["string", "null"]}
-            }
-          }
-        }
+        "connectors": {"type": "array", "items": {"$ref": "connector.schema.json"}},
+        "routing_rules": {"type": "array", "items": {"$ref": "routing-rules.schema.json#/$defs/rule"}},
+        "destinations": {"type": "array", "items": {"$ref": "destinations.schema.json#/$defs/destination"}}
+      }
+    },
+    "keyed_requests": {
+      "title": "keyed_requests, one row per request a caller keyed",
+      "description": "ingestion.record.id is the caller and the key. A retry under the key answers status and answer again, and a request with another fingerprint is refused.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["caller", "idempotency_key", "route", "connector", "fingerprint", "status", "answer", "created_ts"],
+      "properties": {
+        "caller": {"description": "The client, and the person where the token named one.", "type": "string"},
+        "idempotency_key": {"description": "The request's Idempotency-Key header.", "type": "string"},
+        "route": {"description": "Which keyed route took it.", "enum": ["drops", "runs"]},
+        "connector": {"type": ["string", "null"]},
+        "fingerprint": {"description": "The SHA-256 of what the request asked, which a retry repeats.", "type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "status": {"description": "The HTTP status the request answered.", "type": "integer"},
+        "answer": {"description": "The body the request answered, such as schemas/push.schema.json for a drop."},
+        "created_ts": {"$ref": "#/$defs/timestamp"}
       }
     }
   }
