@@ -2,9 +2,8 @@
 -- due. first_fill is none until an item reaches a model stage, held once one
 -- has and every later item waits there, and released once a person lets the
 -- rest through. last_error and last_error_ts hold the newest failed run, and
--- failures counts the runs that failed in a row. stale_at is when a connector
--- declaring a freshness goes stale, its last delivery plus that freshness, and
--- null for one with no freshness or no delivery. A cursor with no recorded
+-- failures counts the runs that failed in a row. stale_at is the stale time
+-- that connectors.StaleAt writes on each cursor put. A cursor with no recorded
 -- creation reads as made at the Unix epoch, so it comes due at once.
 -- A declarations row is one applied set of connectors, routing rules and
 -- destinations, under the commit it was applied from. Applying a commit again

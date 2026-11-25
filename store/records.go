@@ -58,7 +58,9 @@ type Item struct {
 	ParentFlowID *string `json:"parent_flow_id"`
 	Title        *string `json:"title"`
 	URL          *string `json:"url"`
-	// Phase is left out of a put, so only the write's settling writes it.
+	// Phase is what the write's settle decides before it commits, replacing
+	// any value that a put carried. A put of an item with no phase leaves the
+	// column as it was.
 	Phase     *string `json:"phase,omitempty"`
 	CreatedTS string  `json:"created_ts"`
 	UpdatedTS string  `json:"updated_ts"`

@@ -281,7 +281,7 @@
         "connector": {"type": "string"},
         "position": {"description": "Where the next poll reads from. It moves only past what landed.", "type": ["string", "null"]},
         "due_at": {"$ref": "#/$defs/timestamp"},
-        "stale_at": {"description": "When a poll or a folder declaring a freshness goes stale: its last delivery plus that freshness. The connector reads overdue once this passes, as well as once due_at passes with no delivery since. Null where the connector declares no freshness or has delivered nothing, and absent from a record shipped before the store kept it.", "anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
+        "stale_at": {"description": "When a poll or a folder declaring a freshness goes stale: its last delivery plus that freshness. Null where the connector declares no freshness or has delivered nothing, and absent from a record shipped before the store kept it.", "anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
         "last_run_ts": {"anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
         "last_delivery_ts": {"description": "The newest arrival the connector landed.", "anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
         "last_error_ts": {"description": "When the connector's newest run failed. Null once a run completes.", "anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
