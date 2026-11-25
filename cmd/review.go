@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -164,13 +165,7 @@ func argumentRefusal(err error, codes ...string) error {
 func sendReview(cmd *cobra.Command, route server.Route, key, verb string, body any) error {
 	asJSON, _ := cmd.Flags().GetBool("json")
 	api, _ := cmd.Flags().GetString("api")
-	encoded, err := json.Marshal(body)
-	if err != nil {
-		return err
-	}
-	var answer server.PlacementAnswer
-	raw, err := sendJSON(cmd.Context(), configPath(cmd), api, route,
-		"/api/v1/review/"+url.PathEscape(strings.TrimSpace(key))+"/"+verb, encoded, &answer)
+	answer, raw, err := decideReview(cmd.Context(), configPath(cmd), api, route, key, verb, body)
 	if err := argumentRefusal(err, server.CodeDestinationNotDeclared, server.CodeInvalidBody); err != nil {
 		return err
 	}
@@ -181,6 +176,19 @@ func sendReview(cmd *cobra.Command, route server.Route, key, verb string, body a
 	}
 	_, err = fmt.Fprintln(w, placedSentence(answer))
 	return err
+}
+
+// decideReview posts body to the item's verb under route, on the server the
+// config file at path names, or api where it is set. It answers the
+// decisions the server made and the body as it came.
+func decideReview(ctx context.Context, path, api string, route server.Route, key, verb string, body any) (server.PlacementAnswer, []byte, error) {
+	var answer server.PlacementAnswer
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return answer, nil, err
+	}
+	raw, err := sendJSON(ctx, path, api, route, "/api/v1/review/"+url.PathEscape(strings.TrimSpace(key))+"/"+verb, encoded, &answer)
+	return answer, raw, err
 }
 
 // placedSentence says where the answer's decisions put the item, and how it

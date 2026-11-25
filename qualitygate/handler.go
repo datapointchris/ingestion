@@ -66,7 +66,7 @@ func opening(ctx context.Context, client *worker.Client, task worker.Task) (prom
 // keep keeps the answer's quality and side guess in the output's own
 // columns, and logs them with the verdict.
 func keep(_ context.Context, _ prompts.Prompt, raw json.RawMessage, out *server.ReportOutput) ([]any, error) {
-	answer, err := readAnswer(raw)
+	answer, err := ReadAnswer(raw)
 	if err != nil {
 		return nil, err
 	}

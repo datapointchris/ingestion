@@ -545,13 +545,41 @@ Dropped file/5d41402abc4b2a76, cause title.
 ```
 
 `review list` reads `GET /api/v1/review`, the longest waiting first, in
-`schemas/review-list.schema.json`. `place` and `drop` post to `/api/v1/review/{key}/place` and
+`schemas/review-list.schema.json`. Each item carries the quality gate's whole answer and each
+sighting's tags and fields. The answer also lists each declared destination with its side, so a
+reader needs no call per item. `place` and `drop` post to `/api/v1/review/{key}/place` and
 `…/drop`, and print `schemas/review-placement.schema.json` with `--json`. A placement names a
 destination that the set in force declares, and any other is refused. `--cause` names the aspect
 that decided it, such as subreddit or title, and a decision that names none is kept as
 `unstated`. `--note` carries the questions that a model read answers. Sending the same placement again changes nothing. A service placing for a person names
 the person's `login` in its body, because a service token carries no person. The decision keeps
 the service's client id beside the login.
+
+### `ingestion tui` reads each waiting item whole, and one key decides it
+
+`ingestion tui` opens a terminal board with a tab per view. Its `review` tab lists the review
+queue, grouped by why each item waits. Each row shows the item's source, such as `r/golang`, the
+quality gate's verdict and confidence, its quality estimate, its side guess and confidence, how
+long the item has waited, and its title. The side panel reads the item under the cursor: its URL,
+the gate's whole answer, the scan's findings, and its text, the post first and then each comment.
+`enter` reads it full screen.
+
+| Key | Does |
+| --- | --- |
+| `1`–`9` | places the item on the destination the strip numbers with that digit |
+| `x` | drops it, after asking what decided it: a field of its source such as its subreddit, its title, its theme, or none |
+| `n` | places it with a note, which a model read answers, then asks the destination |
+| `o` | opens its URL in the browser, where it is an http or https address |
+
+Each key posts to the routes that `review place` and `review drop` post to, under the same login,
+so the decision is the person's. A decided item leaves the table at once, and the cursor moves on
+through its group. A decision that fails puts the item back with the server's answer on it.
+Quitting waits for every decision sent.
+
+A title, a body or a comment that a stranger wrote is drawn with every terminal control taken out,
+so an escape sequence in it cannot set the clipboard or clear the screen. Its markdown is drawn as
+typed. `--once` prints one frame at `COLUMNS` by `LINES`, and `--json` the snapshot it is drawn
+from, in `schemas/tui-review.schema.json`.
 
 ### `gates agreement` counts how often each gate's answer matched a person's placement
 

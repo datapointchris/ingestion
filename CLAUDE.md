@@ -15,9 +15,9 @@ deployment's connector declarations live outside this repo.
 command, and each other file there is one command that adds itself to `rootCmd` from its own
 `init`.
 
-Every other package sits flat beside `main.go`, one per stage, with no `internal/` or `pkg/`. A
-package is created with its stage's first code, never ahead of it. A stage's code goes in its own
-package:
+Every other package sits flat beside `main.go`, one per stage, with no `internal/` or `pkg/`. The
+TUI's tabs are the one nesting, under `views/`. A package is created with its stage's first code,
+never ahead of it. A stage's code goes in its own package:
 
 | Package | Holds |
 | --- | --- |
@@ -41,6 +41,13 @@ package:
 | `server` | the HTTP API that `ingestion serve` answers, and its route table, whose rows name each route's scope and what a repeat does, read by the CLI's retry and the router's key check |
 | `worker` | `ingestion worker run`, which leases tasks by capability under a fencing token |
 | `push` | `ingestion push`, which hands a URL or a key straight to a named destination |
+| `views/review` | the review tab of `ingestion tui`: a reader of the review queue and the parse under the cursor, a renderer of each into a gotermboard frame, and the keys that place or drop an item through a `Service` port, which `cmd/tui.go` fills with the CLI's own calls |
+| `views/keywrites` | the queue that runs a tab's key writes off the screen's loop, one at a time, and keeps each item pending until a read begun after its write shows it |
+
+`views/` holds the TUI's tabs, one package each, so a later tab joins as its own package beside
+`review`. A tab is a read model, as in CQRS: its reader builds a snapshot from the service's
+routes, its renderer turns it into a frame, and `--json` prints the snapshot so a script reads
+what a person reads.
 
 `schemas/` holds the JSON Schema of each record the outbox ships, of each API answer and of each
 declaration file. Its one Go file embeds them, so `connectors` checks a declaration against the

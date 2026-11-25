@@ -33,8 +33,39 @@
               "confidence": {"type": "number"}
             }
           },
+          "quality_answer": {
+            "description": "The quality gate's newest done answer, as prompts/quality/answer.schema.json holds it: its verdict and confidence, quality, idea, genre, domains, themes, and side and confidence. Null where the gate gave none. Its idea and themes are a model's reading of the item, so they take the item's zone.",
+            "type": ["object", "null"]
+          },
           "connectors": {"type": "array", "items": {"type": "string"}},
+          "sightings": {
+            "description": "Each connector's arrival of the item: the tags the side gate read, and the source's fields, such as a Reddit save's subreddit, which a routing rule matches.",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["connector", "tags", "fields"],
+              "properties": {
+                "connector": {"type": "string"},
+                "tags": {"type": "array", "items": {"type": "string"}},
+                "fields": {"type": "object", "additionalProperties": {"type": "string"}}
+              }
+            }
+          },
           "waiting_since_ts": {"type": "string", "format": "date-time"}
+        }
+      }
+    },
+    "destinations": {
+      "description": "Each destination the set in force declares, in its order, which a placement takes. side is the side an item placed there takes, and null where the destination drops what it takes. Empty where the set in force cannot be read.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "side"],
+        "properties": {
+          "name": {"type": "string"},
+          "side": {"enum": ["personal", "fleet", null]}
         }
       }
     }

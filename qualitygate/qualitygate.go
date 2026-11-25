@@ -59,7 +59,7 @@ const (
 )
 
 // Answer is the model's answer, as prompts/quality/answer.schema.json holds
-// it. readAnswer decodes it.
+// it. ReadAnswer decodes it.
 type Answer struct {
 	Genre             string   `json:"genre"`
 	Domains           []string `json:"domains"`
@@ -72,10 +72,10 @@ type Answer struct {
 	SideConfidence    float64  `json:"side_confidence"`
 }
 
-// readAnswer checks raw against the answer's schema and decodes it. The
+// ReadAnswer checks raw against the answer's schema and decodes it. The
 // schema counts 7.0 as an integer, so quality decodes as a number and is kept
 // whole.
-func readAnswer(raw json.RawMessage) (Answer, error) {
+func ReadAnswer(raw json.RawMessage) (Answer, error) {
 	if err := prompts.Quality.Check(raw); err != nil {
 		return Answer{}, err
 	}
@@ -157,7 +157,7 @@ func DecideAfterAnswer(ctx context.Context, tx *store.Tx, task store.Task) error
 	if newest == nil {
 		return nil
 	}
-	a, err := readAnswer(newest.Answer)
+	a, err := ReadAnswer(newest.Answer)
 	if err != nil {
 		return fmt.Errorf("read the quality answer on %s: %w", key, err)
 	}
