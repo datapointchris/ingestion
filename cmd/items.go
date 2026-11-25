@@ -19,6 +19,7 @@ import (
 	"github.com/datapointchris/goclikit"
 	"github.com/spf13/cobra"
 
+	"github.com/datapointchris/ingestion/qualitygate"
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
 )
@@ -93,8 +94,10 @@ var itemsReplayCmd = &cobra.Command{
 		"--stage is one of " + strings.Join(server.ReplayStages, ", ") + ".\n" +
 		"The service refuses a stage that it holds no replay for, a --key that names\n" +
 		"no item, and a --connector that sighted no item. A stage that calls a model\n" +
-		"first prints its count and an estimate of its tokens by kind, and queues only\n" +
-		"with --yes. A model-free stage, such as parse, queues at once. A deliver\n" +
+		"first prints how many items it would run on and an estimate of their tokens\n" +
+		"by kind, the median of its newest stored runs times that count, and queues\n" +
+		"only with --yes. A quality replay runs on each scanned item that no tag or\n" +
+		"rule placed and that holds no answer of the prompt in force. A model-free stage, such as parse, queues at once. A deliver\n" +
 		"replay queues the delivery that each item's placement sends it to, where it\n" +
 		"is not settled: one pending, or one never queued. A delivery that a\n" +
 		"destination holds or refused is never written again.\n" +
@@ -166,7 +169,7 @@ func runItemsReplay(cmd *cobra.Command, _ []string) error {
 		_, err := w.Write(raw)
 		return err
 	}
-	if answer.Queued && answer.Items == 0 {
+	if answer.Items == 0 {
 		_, err = fmt.Fprintf(w, "Queued nothing: %s runs on none of the selected items.\n", answer.Stage)
 		return err
 	}
@@ -174,13 +177,16 @@ func runItemsReplay(cmd *cobra.Command, _ []string) error {
 		_, err = fmt.Fprintf(w, "Queued %s on %d items.\n", answer.Stage, answer.Items)
 		return err
 	}
-	estimate := store.Tokens{}
-	if answer.Estimate != nil {
-		estimate = *answer.Estimate
+	if e := answer.Estimate; e != nil {
+		_, err = fmt.Fprintf(w, "%s would run on %d items, estimated at uncached input %d, cache write %d, cache read %d and output %d tokens.\n",
+			answer.Stage, answer.Items, e.UncachedInput, e.CacheWrite, e.CacheRead, e.Output)
+	} else {
+		_, err = fmt.Fprintf(w, "%s would run on %d items. No stored run of it gives an estimate of its tokens.\n", answer.Stage, answer.Items)
 	}
-	_, err = fmt.Fprintf(w, "%s would run on %d items, estimated at uncached input %d, cache write %d, cache read %d and output %d tokens.\n"+
-		"Nothing is queued. --yes queues them.\n", answer.Stage, answer.Items,
-		estimate.UncachedInput, estimate.CacheWrite, estimate.CacheRead, estimate.Output)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(w, "Nothing is queued. --yes queues them.")
 	return err
 }
 
@@ -326,11 +332,29 @@ func writeItem(w io.Writer, a server.ItemAnswer) {
 		if len(o.Findings) > 0 {
 			out += fmt.Sprintf("  %d findings", len(o.Findings))
 		}
+		if o.Model != nil {
+			out += "  " + *o.Model
+			if o.Effort != nil {
+				out += " at " + *o.Effort
+			}
+			if o.AnsweredModel != nil && *o.AnsweredModel != *o.Model {
+				out += ", answered on " + *o.AnsweredModel
+			}
+		}
+		if o.DispatchID != nil {
+			out += "  dispatch " + *o.DispatchID
+		}
 		if o.Tokens != nil {
 			out += fmt.Sprintf("  uncached input %d, cache write %d, cache read %d, output %d",
 				o.Tokens.UncachedInput, o.Tokens.CacheWrite, o.Tokens.CacheRead, o.Tokens.Output)
 		}
 		row(o.Stage, "%s", out)
+		if o.Error != nil && o.State == store.OutputFailed {
+			row("", "%s", quoted(*o.Error))
+		}
+		if o.Stage == store.StageQuality && o.State == store.OutputDone {
+			writeQualityAnswer(row, o.Answer)
+		}
 		for _, f := range o.Findings {
 			row("finding", "%s", findingLine(f))
 		}
@@ -367,7 +391,24 @@ func writeItem(w io.Writer, a server.ItemAnswer) {
 	if u := a.Undelivered; u != nil {
 		row("delivery", "none: %s", u.Message)
 	}
+	if wt := a.Waiting; wt != nil {
+		row("waiting", "%s: %s", wt.Reason, wt.Message)
+	}
 	_ = table.Flush()
+}
+
+// writeQualityAnswer prints the quality gate's answer. Its idea and themes are
+// a model's words about outsider text, so they print quoted.
+func writeQualityAnswer(row func(label, format string, args ...any), raw json.RawMessage) {
+	var a qualitygate.Answer
+	if json.Unmarshal(raw, &a) != nil {
+		return
+	}
+	row("", "quality %d  %s at %.2f  %s  side %s at %.2f", a.Quality, a.Verdict, a.VerdictConfidence, a.Genre, a.Side, a.SideConfidence)
+	row("", "idea %s", quoted(a.Idea))
+	if len(a.Domains) > 0 {
+		row("", "domains %s", quoted(strings.Join(a.Domains, ", ")))
+	}
 }
 
 // spanShown bounds the runes of a finding's span that items show prints.
@@ -390,13 +431,19 @@ func findingLine(f server.FindingView) string {
 		line += fmt.Sprintf("  unit %d", *f.Unit)
 	}
 	if f.Span != nil {
-		span := []rune(*f.Span)
-		if len(span) > spanShown {
-			span = append(span[:spanShown], '…')
-		}
-		line += "  " + strconv.Quote(string(span))
+		line += "  " + quoted(*f.Span)
 	}
 	return line
+}
+
+// quoted is text that may carry outsider words, cut to spanShown runes and
+// quoted with every hidden or control character escaped.
+func quoted(text string) string {
+	runes := []rune(text)
+	if len(runes) > spanShown {
+		runes = append(runes[:spanShown], '…')
+	}
+	return strconv.Quote(string(runes))
 }
 
 func orDash(s *string) string {

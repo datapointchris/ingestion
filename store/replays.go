@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 )
 
 // ErrReplayDiffers is a replay whose id names one already recorded with
@@ -108,4 +109,42 @@ func deref(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+// StageTokens reads the tokens by kind of up to limit of stage's outputs that
+// hold any, the newest first, which a model stage's replay estimates from.
+func (s *Store) StageTokens(ctx context.Context, stage string, limit int) ([]Tokens, error) {
+	outputs, err := readInto[Output](ctx, s.read, table("outputs"), `stage = ? AND tokens IS NOT NULL ORDER BY updated_ts DESC LIMIT ?`,
+		stage, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Tokens, 0, len(outputs))
+	for _, o := range outputs {
+		if o.Tokens != nil {
+			out = append(out, *o.Tokens)
+		}
+	}
+	return out, nil
+}
+
+// MedianTokens is each kind's median over runs, each kind taken apart.
+func MedianTokens(runs []Tokens) Tokens {
+	kind := func(of func(Tokens) int64) int64 {
+		values := make([]int64, len(runs))
+		for i, t := range runs {
+			values[i] = of(t)
+		}
+		slices.Sort(values)
+		if len(values) == 0 {
+			return 0
+		}
+		return values[len(values)/2]
+	}
+	return Tokens{
+		UncachedInput: kind(func(t Tokens) int64 { return t.UncachedInput }),
+		CacheWrite:    kind(func(t Tokens) int64 { return t.CacheWrite }),
+		CacheRead:     kind(func(t Tokens) int64 { return t.CacheRead }),
+		Output:        kind(func(t Tokens) int64 { return t.Output }),
+	}
 }

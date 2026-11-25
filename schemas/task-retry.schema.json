@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/datapointchris/ingestion/schemas/task-retry.schema.json",
+  "title": "A task queued again",
+  "description": "What POST /api/v1/tasks/{id}/retries answers and `ingestion tasks retry --json` prints: the task, queued again with its attempts and backoff cleared where it had failed, and as it stands where it was queued or leased already, so a retry sent twice queues it once.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "task"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "task": {"$ref": "tasks-list.schema.json#/properties/tasks/items"}
+  }
+}

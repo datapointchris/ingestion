@@ -117,6 +117,7 @@ const (
 	CodeItemNotFound  = "item_not_found"
 	CodeParseNotFound = "parse_not_found"
 	CodeStaleLease    = "stale_lease"
+	CodeTaskDone      = "task_done"
 	CodeInternal      = "internal"
 	CodeUnknownField  = "unknown_field"
 	CodeInvalidKey    = "invalid_key"

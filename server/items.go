@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -61,6 +62,37 @@ type ItemAnswer struct {
 	// Undelivered says why an item placed on a side and read as is reaches
 	// no deliverer, and is null where it does.
 	Undelivered *UndeliveredView `json:"undelivered"`
+	// Waiting says why the item waits at a model stage, and is null where it
+	// waits at none.
+	Waiting *WaitingView `json:"waiting"`
+}
+
+// Why an item waits at a model stage.
+const (
+	// WaitingFirstFill is a task that a connector's first fill holds.
+	WaitingFirstFill = "first-fill"
+	// WaitingUnclaimed is a task that no worker heard from lately claims.
+	WaitingUnclaimed = "unclaimed"
+	// WaitingQueued is a task that a worker claims next.
+	WaitingQueued = "queued"
+	// WaitingDispatched is a run that the model port started and that has
+	// not answered.
+	WaitingDispatched = "dispatched"
+)
+
+// WaitingView is why an item waits at a model stage.
+type WaitingView struct {
+	Stage      string `json:"stage"`
+	Reason     string `json:"reason"`
+	Capability string `json:"capability"`
+	// HeldBy is the connector whose first fill holds the task.
+	HeldBy *string `json:"held_by"`
+	// DispatchID is the run's dispatch, where the port started one.
+	DispatchID *string `json:"dispatch_id"`
+	// LastError is why the task's last try did not go through, such as a
+	// dispatch service that did not answer, where it ended so.
+	LastError *string `json:"last_error"`
+	Message   string  `json:"message"`
 }
 
 // UndeliveredView is why an item reaches no deliverer, in the words of
@@ -123,6 +155,10 @@ type OutputView struct {
 	Findings        []FindingView   `json:"findings"`
 	Answer          json.RawMessage `json:"answer"`
 	RunID           *string         `json:"run_id"`
+	DispatchID      *string         `json:"dispatch_id"`
+	Model           *string         `json:"model"`
+	Effort          *string         `json:"effort"`
+	AnsweredModel   *string         `json:"answered_model"`
 	Tokens          *store.Tokens   `json:"tokens"`
 	Error           *string         `json:"error"`
 }
@@ -265,11 +301,72 @@ func (h itemHandlers) show(w http.ResponseWriter, r *http.Request) {
 		h.internal(w, r, "read the set in force", err)
 		return
 	}
-	if err := h.markUnclaimed(r.Context(), rec, answer.Deliveries); err != nil {
+	claimed, err := h.claimed(r.Context())
+	if err != nil {
 		h.internal(w, r, "read the workers", err)
 		return
 	}
+	markUnclaimed(rec, answer.Deliveries, claimed)
+	answer.Waiting = waitingView(rec, claimed)
 	JSON(w, http.StatusOK, answer)
+}
+
+// claimed is each capability that a worker heard from within
+// WorkersHeardWithin holds.
+func (h itemHandlers) claimed(ctx context.Context) (map[string]bool, error) {
+	workers, _, err := h.store.Workers(ctx, store.Stamp(h.store.Now().Add(-WorkersHeardWithin)))
+	if err != nil {
+		return nil, err
+	}
+	held := map[string]bool{}
+	for _, w := range workers {
+		for _, c := range w.Capabilities {
+			held[c] = true
+		}
+	}
+	return held, nil
+}
+
+// waitingView is why rec's item waits at the model stage that holds it, and
+// nil where none does.
+func waitingView(rec store.ItemRecords, claimed map[string]bool) *WaitingView {
+	stage := rec.WaitingAt()
+	if stage == "" {
+		return nil
+	}
+	v := &WaitingView{Stage: stage}
+	for _, t := range rec.Tasks {
+		if t.Stage == stage && (t.State == store.TaskQueued || t.State == store.TaskLeased) {
+			v.Capability, v.HeldBy, v.LastError = t.Capability, t.HeldBy, t.Error
+		}
+	}
+	var dispatched *store.Output
+	for i, o := range rec.Outputs {
+		if o.Stage == stage && o.State == store.OutputWaiting && o.DispatchID != nil {
+			dispatched = &rec.Outputs[i]
+		}
+	}
+	switch {
+	case v.HeldBy != nil:
+		v.Reason = WaitingFirstFill
+		v.Message = fmt.Sprintf("the first fill of connector %s holds it until `ingestion connectors release %s`", *v.HeldBy, *v.HeldBy)
+	case dispatched != nil:
+		v.Reason, v.DispatchID = WaitingDispatched, dispatched.DispatchID
+		v.Message = fmt.Sprintf("dispatch %s has not answered", *dispatched.DispatchID)
+		if dispatched.Error != nil {
+			v.Message += ": " + *dispatched.Error
+		}
+	case v.Capability != "" && !claimed[v.Capability]:
+		v.Reason = WaitingUnclaimed
+		v.Message = fmt.Sprintf("no worker heard from lately claims %s tasks. A worker claims them once its config names a [model] adapter", v.Capability)
+	default:
+		v.Reason = WaitingQueued
+		v.Message = "a worker claims its task next"
+	}
+	if v.LastError != nil {
+		v.Message += ". Its last try did not go through: " + *v.LastError
+	}
+	return v
 }
 
 // undelivered is why rec's item reaches no deliverer where route.Due sends it
@@ -289,35 +386,20 @@ func (h itemHandlers) undelivered(ctx context.Context, rec store.ItemRecords) (*
 }
 
 // markUnclaimed names, on each of views whose delivery waits on a queued task,
-// the task's capability where no worker heard from within WorkersHeardWithin
-// holds it. So a delivery that nothing here can write reads apart from one
-// that its destination failed.
-func (h itemHandlers) markUnclaimed(ctx context.Context, rec store.ItemRecords, views []DeliveryView) error {
+// the task's capability where it is not claimed. So a delivery that nothing
+// here can write reads apart from one that its destination failed.
+func markUnclaimed(rec store.ItemRecords, views []DeliveryView, claimed map[string]bool) {
 	waiting := map[string]string{}
 	for _, t := range rec.Tasks {
 		if t.Stage == store.StageDeliver && t.State == store.TaskQueued && t.Destination != nil {
 			waiting[*t.Destination] = t.Capability
 		}
 	}
-	if len(waiting) == 0 {
-		return nil
-	}
-	workers, _, err := h.store.Workers(ctx, store.Stamp(h.store.Now().Add(-WorkersHeardWithin)))
-	if err != nil {
-		return err
-	}
-	held := map[string]bool{}
-	for _, w := range workers {
-		for _, c := range w.Capabilities {
-			held[c] = true
-		}
-	}
 	for i, v := range views {
-		if capability, ok := waiting[v.Destination]; ok && !held[capability] {
+		if capability, ok := waiting[v.Destination]; ok && !claimed[capability] {
 			views[i].UnclaimedCapability = &capability
 		}
 	}
-	return nil
 }
 
 func (h itemHandlers) parse(w http.ResponseWriter, r *http.Request) {
@@ -409,7 +491,8 @@ func itemAnswer(rec store.ItemRecords) ItemAnswer {
 	for _, o := range rec.Outputs {
 		view := OutputView{
 			Stage: o.Stage, Producer: o.Producer, ProducerVersion: o.ProducerVersion, Lens: o.Lens, LensVersion: o.LensVersion,
-			State: o.State, Answer: o.Answer, RunID: o.RunID, Tokens: o.Tokens, Error: o.Error,
+			State: o.State, Answer: o.Answer, RunID: o.RunID, DispatchID: o.DispatchID, Model: o.Model, Effort: o.Effort,
+			AnsweredModel: o.AnsweredModel, Tokens: o.Tokens, Error: o.Error,
 		}
 		if n, ok := rec.UnitCount(o); ok {
 			view.Units = &n

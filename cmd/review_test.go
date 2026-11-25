@@ -23,6 +23,7 @@ import (
 	"github.com/datapointchris/ingestion/connectors"
 	"github.com/datapointchris/ingestion/extract"
 	"github.com/datapointchris/ingestion/landing"
+	"github.com/datapointchris/ingestion/qualitygate"
 	"github.com/datapointchris/ingestion/redditexport"
 	"github.com/datapointchris/ingestion/route"
 	"github.com/datapointchris/ingestion/scan"
@@ -113,24 +114,26 @@ func (p *pipeline) landExports(t *testing.T, exports map[string][]byte) {
 }
 
 // gateCounts is what the side gate did with the saves: how many there are,
-// how many a rule placed, and how many wait in review for each reason.
+// how many a rule placed, how many wait at a model stage, and how many wait
+// in review for each reason.
 type gateCounts struct {
-	saves, byRule int
-	review        map[string]int
+	saves, byRule, waiting int
+	review                 map[string]int
 }
 
-// gated checks that every save with a done scan holds a side decision, reads
-// the review queue through `review list --json` held to its schema, and
-// counts. It names no save and quotes no text, because a real export is
-// outsider text.
+// gated checks that every save with a done scan holds a side decision or
+// waits at a model stage, reads the review queue through `review list --json`
+// held to its schema, and counts. It names no save and quotes no text,
+// because a real export is outsider text.
 func (p *pipeline) gated(t *testing.T) gateCounts {
 	t.Helper()
 	c := gateCounts{review: map[string]int{}}
 	c.saves = p.count(t, `SELECT count(*) FROM items WHERE media_type = ?`, redditexport.MediaTypeSave)
-	if n := p.count(t, `SELECT count(*) FROM items i WHERE media_type = ?
+	c.waiting = p.count(t, `SELECT count(*) FROM items WHERE media_type = ? AND phase = 'waiting'`, redditexport.MediaTypeSave)
+	if n := p.count(t, `SELECT count(*) FROM items i WHERE media_type = ? AND phase != 'waiting'
 		AND EXISTS (SELECT 1 FROM outputs o WHERE o.item_key = i.key AND o.stage = 'scan' AND o.state = 'done')
 		AND NOT EXISTS (SELECT 1 FROM decisions d WHERE d.item_key = i.key AND d.gate = 'side')`, redditexport.MediaTypeSave); n != 0 {
-		t.Errorf("%d scanned saves hold no side decision", n)
+		t.Errorf("%d scanned saves hold no side decision and wait at no model stage", n)
 	}
 	c.byRule = p.count(t, `SELECT count(*) FROM decisions WHERE gate = 'side' AND decided_by LIKE 'rule:%'`)
 	out, err := runCLI(t, "review", "list", "--json", "--config", p.config)
@@ -170,12 +173,13 @@ func (p *pipeline) decisions(t *testing.T, key string) (all []server.DecisionVie
 }
 
 // A save from a subreddit that a rule names is placed by the rule and read as
-// is. A save that no rule names waits in review with no guess, beside an item
-// whose parse failed. A person places the waiting save with a cause and a
-// note, and a service places the other for the person its body names. Each
-// decision records who decided, the client, the cause and the note. A second
-// copy of a placement appends nothing, a destination the set does not declare
-// is refused, and a drop leaves the item dropped.
+// is. A save that no rule names waits at the quality gate, and an item whose
+// parse failed waits in review. A person places the waiting save with a cause
+// and a note, which withdraws its quality task, and a service places the other
+// for the person its body names. Each decision records who decided, the
+// client, the cause and the note. A second copy of a placement appends
+// nothing, a destination the set does not declare is refused, and a drop
+// leaves the item dropped.
 func TestASaveIsPlacedByItsRuleOrWaitsInReviewForAPersonToPlace(t *testing.T) {
 	ctx := t.Context()
 	p := newGatedPipeline(t, mustAbs(t, "../examples/declarations"))
@@ -189,9 +193,9 @@ func TestASaveIsPlacedByItsRuleOrWaitsInReviewForAPersonToPlace(t *testing.T) {
 	p.parse(t, extract.Builtin())
 	p.scanFindingNothing(t)
 
-	if c := p.gated(t); c.saves != 3 || c.byRule != 1 || !maps.Equal(c.review, map[string]int{"no-guess": 1, "no-parse": 1}) {
-		t.Fatalf("the gate placed %d of %d saves by rule and sent %v to review, want 1 of 3 and one each of no-guess and no-parse",
-			c.byRule, c.saves, c.review)
+	if c := p.gated(t); c.saves != 3 || c.byRule != 1 || c.waiting != 1 || !maps.Equal(c.review, map[string]int{"no-parse": 1}) {
+		t.Fatalf("the gate placed %d of %d saves by rule, left %d waiting and sent %v to review, want 1 of 3, 1 waiting and the no-parse one",
+			c.byRule, c.saves, c.waiting, c.review)
 	}
 	if d, side, read := p.decisions(t, "reddit/t3_aa1"); len(d) != 2 || side.Verdict != "personal" || *side.Destination != "reading-list" ||
 		side.DecidedBy != "rule:cooking-subreddits" || read.Verdict != connectors.ReadAsIs {
@@ -206,8 +210,11 @@ func TestASaveIsPlacedByItsRuleOrWaitsInReviewForAPersonToPlace(t *testing.T) {
 	if _, err := runCLI(t, place...); err != nil {
 		t.Fatalf("the same placement again failed: %v", err)
 	}
+	if slices.ContainsFunc(p.tasks(t), func(v server.TaskView) bool { return v.Stage == store.StageQuality }) {
+		t.Errorf("after a person placed the save its quality task is still open: %s", jsonOf(p.tasks(t)))
+	}
 	d, side, read := p.decisions(t, "reddit/t3_bb2")
-	if len(d) != 3 || side.DecidedBy != "person:person" || side.Cause != "subreddit" || side.Note == nil || *side.Note != "what would this change?" ||
+	if len(d) != 2 || side.DecidedBy != "person:person" || side.Cause != "subreddit" || side.Note == nil || *side.Note != "what would this change?" ||
 		side.ClientID == nil || *side.ClientID != "ingestion-cli-test" || read.Lens == nil || *read.Lens != "fleet" || read.Note == nil {
 		t.Errorf("after placing twice the save holds %+v, want one person's placement with its cause and note, and a model read carrying the note", d)
 	}
@@ -260,46 +267,40 @@ func TestASaveIsPlacedByItsRuleOrWaitsInReviewForAPersonToPlace(t *testing.T) {
 	}
 }
 
-// A save that the gate sent to review for want of a rule or a guess is placed
-// once either arrives after its parse: by the rule of a set applied later, as
-// on a first deploy that applies its set after the first parses, or by the
-// quality gate's confident guess. An apply that changes nothing for a save
-// appends nothing to it.
+// A save that waits on the gate for want of a rule is placed once a rule or
+// the quality gate's answer arrives after its parse: by the rule of a set
+// applied later, as on a first deploy that applies its set after the first
+// parses, which withdraws its quality task, or by the gate's confident guess.
+// An apply that changes nothing for a save appends nothing to it.
 func TestASaveWaitingOnTheGateIsPlacedByARuleOrGuessThatArrivesLater(t *testing.T) {
-	ctx := t.Context()
 	p := newGatedPipeline(t, "")
+	stand := newStandInDispatch(t, p.provider)
+	stand.answer = answerBy(map[string]map[string]any{"bb2": judged(qualitygate.AnswerPass, 0.9, connectors.SideFleet, 0.95)})
 	p.landExports(t, map[string][]byte{"first": redditExport(redditSave("t3_aa1", "Cooking"), redditSave("t3_bb2", "golang"))})
 	p.parse(t, extract.Builtin())
 	p.scanFindingNothing(t)
-	if c := p.gated(t); !maps.Equal(c.review, map[string]int{"no-guess": 2}) {
-		t.Fatalf("with no set applied the gate sent %v to review, want both saves as no-guess", c.review)
+	if c := p.gated(t); c.waiting != 2 || len(c.review) != 0 {
+		t.Fatalf("with no set applied %d saves wait and %v are in review, want both waiting at the quality gate", c.waiting, c.review)
 	}
 
 	p.apply(t, mustAbs(t, "../examples/declarations"))
 	if _, side, read := p.decisions(t, "reddit/t3_aa1"); side.DecidedBy != "rule:cooking-subreddits" || read.Verdict != connectors.ReadAsIs {
 		t.Errorf("after the apply the Cooking save is %s by %s and read %s, want placed by its rule and read as-is", side.Verdict, side.DecidedBy, read.Verdict)
 	}
-	if d, _, _ := p.decisions(t, "reddit/t3_bb2"); len(d) != 1 {
+	if d, _, _ := p.decisions(t, "reddit/t3_bb2"); len(d) != 0 {
 		t.Errorf("the apply appended to the save that no rule names, which holds %+v", d)
 	}
 
-	key, guess, sure, run := "reddit/t3_bb2", connectors.SideFleet, 0.95, "run-1"
-	if err := p.st.Update(ctx, func(tx *store.Tx) error {
-		if err := tx.PutOutput(ctx, store.Output{
-			ItemKey: key, Stage: store.StageQuality, Producer: "quality-gate", ProducerVersion: "1", State: store.OutputDone,
-			RunID: &run, SideGuess: &guess, SideConfidence: &sure,
-		}); err != nil {
-			return err
-		}
-		return route.AfterStage(quiet)(ctx, tx, store.Task{Stage: store.StageQuality, ItemKey: &key})
-	}); err != nil {
-		t.Fatal(err)
+	p.run(t, p.qualityGate(t, stand.models(t, "", "")))
+	if n := len(stand.starts()); n != 1 {
+		t.Errorf("the gate sent %d dispatches, want one for the save no rule names and none for the save the apply placed", n)
 	}
-	if _, side, read := p.decisions(t, key); side.Verdict != connectors.SideFleet || side.DecidedBy != "model:run-1" || read.Verdict != connectors.ReadModel {
-		t.Errorf("after a confident guess the save is %s by %s and read %s, want fleet by model:run-1 and read by a model", side.Verdict, side.DecidedBy, read.Verdict)
+	if _, side, read := p.decisions(t, "reddit/t3_bb2"); side.Verdict != connectors.SideFleet || !strings.HasPrefix(side.DecidedBy, "model:") ||
+		read.Verdict != connectors.ReadModel {
+		t.Errorf("after a confident guess the save is %s by %s and read %s, want fleet by the model's run and read by a model", side.Verdict, side.DecidedBy, read.Verdict)
 	}
-	if c := p.gated(t); len(c.review) != 0 {
-		t.Errorf("the review queue still holds %v", c.review)
+	if c := p.gated(t); len(c.review) != 0 || c.waiting != 0 {
+		t.Errorf("%d saves still wait and the review queue holds %v", c.waiting, c.review)
 	}
 }
 

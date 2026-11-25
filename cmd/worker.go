@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -24,6 +25,8 @@ import (
 
 	"github.com/datapointchris/ingestion/deliver"
 	"github.com/datapointchris/ingestion/extract"
+	"github.com/datapointchris/ingestion/modelport"
+	"github.com/datapointchris/ingestion/qualitygate"
 	"github.com/datapointchris/ingestion/scan"
 	"github.com/datapointchris/ingestion/store"
 	"github.com/datapointchris/ingestion/worker"
@@ -36,14 +39,47 @@ const (
 )
 
 // workerHandlers lists the stage handlers for a worker to run: each
-// extractor's, the scan's, and each of deliverers by its name. A stage whose
-// work runs in a worker adds its handler here.
-func workerHandlers(client *worker.Client, deliverers map[string]deliver.Deliverer, log *slog.Logger) []worker.Handler {
+// extractor's, the scan's, the quality gate's where port is open, and each of
+// deliverers by its name. A stage whose work runs in a worker adds its handler
+// here.
+func workerHandlers(client *worker.Client, deliverers map[string]deliver.Deliverer, port modelport.Port, models modelConfig, log *slog.Logger) []worker.Handler {
 	handlers := append(extract.Builtin().Handlers(client, log), scan.Handlers(client, log)...)
+	if port != nil {
+		handlers = append(handlers, qualitygate.NewHandler(port, client,
+			qualitygate.Settings{Model: models.Quality.Model, Effort: models.Quality.Effort}, log))
+	}
 	for _, name := range slices.Sorted(maps.Keys(deliverers)) {
 		handlers = append(handlers, deliver.Handler(name, deliverers[name]))
 	}
 	return handlers
+}
+
+// openModelPort opens the adapter that cfg's [model] table names. With none
+// named, or one that cannot open, it logs why and answers nil, so the worker
+// claims no model stage's task and its other stages run on. items show then
+// names the setting that a waiting item lacks.
+func openModelPort(ctx context.Context, cfg modelConfig, issuer string, log *slog.Logger) modelport.Port {
+	var port modelport.Port
+	var err error
+	switch cfg.Adapter {
+	case "":
+		log.Warn("the config names no [model] adapter, so the worker claims no " + qualitygate.Capability + " task")
+		return nil
+	case modelport.AdapterQueue:
+		var client *http.Client
+		if client, err = serviceHTTPClient(ctx, cfg.Queue.serviceClient, modelSecretEnv, issuer, modelport.QueueScopes); err == nil {
+			port = modelport.NewQueue(cfg.Queue.API, cmp.Or(cfg.Queue.Agent, modelport.DefaultAgent), client)
+		}
+	case modelport.AdapterClaudeCLI:
+		port, err = modelport.NewClaudeCLI(cfg.ClaudeCLI.Command)
+	default:
+		err = fmt.Errorf("adapter %q is none of %s", cfg.Adapter, strings.Join(modelport.Adapters, ", "))
+	}
+	if err != nil {
+		log.Error("[model] cannot open, so the worker claims no "+qualitygate.Capability+" task", "adapter", cfg.Adapter, "error", err)
+		return nil
+	}
+	return port
 }
 
 // openDeliverers opens the deliverer that each [deliver.<name>] table in cfg
@@ -62,7 +98,7 @@ func openDeliverers(ctx context.Context, cfg fileConfig, issuer string, log *slo
 				"registered", strings.Join(deliver.Names(), ", "))
 			continue
 		}
-		client, err := deliverClient(ctx, name, table, issuer, r.Scopes)
+		client, err := serviceHTTPClient(ctx, table, deliverSecretEnv(name), issuer, r.Scopes)
 		if err != nil {
 			log.Error("[deliver."+name+"] cannot open, so the worker claims no "+store.DeliverCapability(name)+" task", "error", err)
 			continue
@@ -72,11 +108,11 @@ func openDeliverers(ctx context.Context, cfg fileConfig, issuer string, log *slo
 	return out
 }
 
-// deliverClient is the HTTP client that carries the token of the service
+// serviceHTTPClient is the HTTP client that carries the token of the service
 // client that table names: the token its token_command prints, or a
-// client-credentials token for its client_id, whose secret is in
-// deliverSecretEnv(name).
-func deliverClient(ctx context.Context, name string, table serviceClient, issuer string, scopes []string) (*http.Client, error) {
+// client-credentials token for its client_id, whose secret is in the
+// variable secretEnv.
+func serviceHTTPClient(ctx context.Context, table serviceClient, secretEnv, issuer string, scopes []string) (*http.Client, error) {
 	if table.API == "" {
 		return nil, errors.New("it names no api")
 	}
@@ -88,9 +124,9 @@ func deliverClient(ctx context.Context, name string, table serviceClient, issuer
 	case len(table.TokenCommand) > 0:
 		source, err = goclilogin.CommandTokenSource(ctx, table.TokenCommand)
 	case table.ClientID != "":
-		secret := os.Getenv(deliverSecretEnv(name))
+		secret := os.Getenv(secretEnv)
 		if secret == "" {
-			return nil, fmt.Errorf("it names client %s, so set %s to its secret", table.ClientID, deliverSecretEnv(name))
+			return nil, fmt.Errorf("it names client %s, so set %s to its secret", table.ClientID, secretEnv)
 		}
 		if table.Issuer != "" {
 			issuer = table.Issuer
@@ -137,7 +173,27 @@ var workerRunCmd = &cobra.Command{
 		"  issuer         the OIDC provider that signs its tokens (default the file's issuer)\n" +
 		"\n" +
 		"The " + deliver.LifeArticles + " client needs the scope " + strings.Join(deliver.LifeArticlesScopes, " ") + ". A table that\n" +
-		"cannot open is logged and left out, and the worker's other stages run on.",
+		"cannot open is logged and left out, and the worker's other stages run on.\n" +
+		"\n" +
+		"It runs the quality gate through the adapter that the [model] table names:\n" +
+		"\n" +
+		"  [model]\n" +
+		"  adapter            queue or claude-cli. With none, the worker claims no\n" +
+		"                     quality task, and the item waits at that stage\n" +
+		"  [model.queue]      an HTTP dispatch service\n" +
+		"  api                its address\n" +
+		"  agent              the kind of run it starts (default " + modelport.DefaultAgent + ")\n" +
+		"  client_id          the service client it dispatches as, whose secret is in\n" +
+		"                     " + modelSecretEnv + "\n" +
+		"  token_command      in place of client_id, a command that prints its token\n" +
+		"  issuer             the OIDC provider that signs its tokens (default the file's)\n" +
+		"  [model.claude-cli] claude -p on this machine, with no tools and no settings\n" +
+		"  command            the claude binary (default claude, found on PATH)\n" +
+		"  [model.quality]    what the quality gate asks its run for\n" +
+		"  model              the model (default " + qualitygate.DefaultModel + ")\n" +
+		"  effort             the effort (default " + qualitygate.DefaultEffort + ")\n" +
+		"\n" +
+		"The [model.queue] client needs the scopes " + strings.Join(modelport.QueueScopes, " ") + ".",
 	Example: "  # a worker, as a service client\n" +
 		"  INGESTION_CLIENT_SECRET=... ingestion worker run --config /etc/ingestion/config.toml",
 	Args: cobra.NoArgs,
@@ -188,6 +244,7 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 		run.Poll = defaultPoll
 	}
 	deliverers := openDeliverers(ctx, cfg, d.Issuer.Value, run.Log)
+	port := openModelPort(ctx, cfg.Model, d.Issuer.Value, run.Log)
 	client := worker.NewClient(d.API.Value, oauth2.NewClient(ctx, source))
-	return worker.Run(ctx, client, run, workerHandlers(client, deliverers, run.Log)...)
+	return worker.Run(ctx, client, run, workerHandlers(client, deliverers, port, cfg.Model, run.Log)...)
 }

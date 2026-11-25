@@ -20,6 +20,7 @@ import (
 	"github.com/datapointchris/ingestion/extract"
 	"github.com/datapointchris/ingestion/landing"
 	"github.com/datapointchris/ingestion/outbox"
+	"github.com/datapointchris/ingestion/qualitygate"
 	"github.com/datapointchris/ingestion/route"
 	"github.com/datapointchris/ingestion/scan"
 	"github.com/datapointchris/ingestion/server"
@@ -71,7 +72,11 @@ func init() {
 // stage that follows the one that ended, keyed by the stage that ended, then
 // runs the gates.
 func afterStage(log *slog.Logger) server.AfterStage {
-	queueNext := map[string]server.AfterStage{store.StageParse: scan.QueueAfterParse}
+	queueNext := map[string]server.AfterStage{
+		store.StageParse:   scan.QueueAfterParse,
+		store.StageScan:    qualitygate.QueueAfterScan,
+		store.StageQuality: qualitygate.DecideAfterAnswer,
+	}
 	gates := route.AfterStage(log)
 	return func(ctx context.Context, tx *store.Tx, task store.Task) error {
 		if queue, ok := queueNext[task.Stage]; ok {
@@ -86,10 +91,11 @@ func afterStage(log *slog.Logger) server.AfterStage {
 // replayableStages is how a replay queues each stage again, keyed by the
 // stage. A deliver replay queues the delivery of each item read as is whose
 // delivery is not settled.
-func replayableStages(extractors *extract.Registry) map[string]server.Replayable {
+func replayableStages(st *store.Store, extractors *extract.Registry) map[string]server.Replayable {
 	return map[string]server.Replayable{
-		store.StageParse: extractors.Replayable(),
-		store.StageScan:  scan.Replayable(extractors),
+		store.StageParse:   extractors.Replayable(),
+		store.StageScan:    scan.Replayable(extractors),
+		store.StageQuality: qualitygate.Replayable(st),
 		store.StageDeliver: {Queue: func(ctx context.Context, tx *store.Tx, item store.Item) (bool, error) {
 			return route.QueueDelivery(ctx, tx, item.Key)
 		}},
@@ -147,7 +153,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		server.ConnectorRoutes(server.ConnectorConfig{
 			Store: st, Lander: lander, Scheduler: scheduler, Roots: roots, AfterApply: route.AfterApply(log), Log: log,
 		}),
-		server.ReplayRoutes(st, replayableStages(extractors), log),
+		server.ReplayRoutes(st, replayableStages(st, extractors), log),
 		server.ReviewRoutes(st, log))
 	srv := &http.Server{Addr: listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 

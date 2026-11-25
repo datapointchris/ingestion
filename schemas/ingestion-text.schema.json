@@ -64,10 +64,10 @@
           }
         },
         "answer": {
-          "description": "A model stage's structured answer, whole, as the stage's schema holds it. The quality gate answers genre, domains, themes and a one-line idea beside the record's fields. A model read answers a summary, a suggestion sentence, or both.",
+          "description": "A model stage's structured answer, whole, as the stage's schema holds it. The quality gate answers prompts/quality/answer.schema.json: genre, domains, themes, quality, a one-line idea, a verdict and a side, each with its confidence. A model read answers a summary, a suggestion sentence, or both.",
           "type": ["object", "null"]
         },
-        "error": {"description": "Why the output failed, such as an extractor's stderr or the run's error.", "type": ["string", "null"]}
+        "error": {"description": "Why the output failed, such as an extractor's stderr or the run's failure, or why a waiting model stage's dispatch has not started, in the dispatch service's words.", "type": ["string", "null"]}
       }
     },
     "parse_units": {

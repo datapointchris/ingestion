@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/datapointchris/ingestion/prompts/quality/answer.schema.json",
+  "title": "The quality gate's answer",
+  "description": "What the quality gate answers from an item's title and opening. The store keeps it whole as the output's answer, and keeps quality, side and side_confidence in the output's own columns. verdict and side are enums that ingestion matches on, never values taken from the text.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["genre", "domains", "themes", "quality", "idea", "verdict", "verdict_confidence", "side", "side_confidence"],
+  "properties": {
+    "genre": {
+      "enum": ["argumentative", "academic", "tutorial", "opinion", "review", "interview", "news", "exploratory", "question"]
+    },
+    "domains": {
+      "description": "One or two free-form labels for what the item is about.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 2,
+      "items": {"type": "string", "minLength": 1, "maxLength": 60}
+    },
+    "themes": {
+      "description": "Short phrases naming what the item argues or explores.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4,
+      "items": {"type": "string", "minLength": 1, "maxLength": 120}
+    },
+    "quality": {"description": "A rough estimate from 1 to 10 before any full read.", "type": "integer", "minimum": 1, "maximum": 10},
+    "idea": {"description": "One sentence stating the item's idea, kept where the item is dropped.", "type": "string", "minLength": 1, "maxLength": 400},
+    "verdict": {"description": "pass to a full read, drop, or unsure, which sends the item to a person.", "enum": ["pass", "drop", "unsure"]},
+    "verdict_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    "side": {"description": "personal, fleet, or unsure.", "enum": ["personal", "fleet", "unsure"]},
+    "side_confidence": {"type": "number", "minimum": 0, "maximum": 1}
+  }
+}

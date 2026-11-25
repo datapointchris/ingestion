@@ -48,6 +48,7 @@ var (
 	RouteTaskHeartbeats = Route{"POST /api/v1/tasks/{id}/heartbeats", ScopeTasksClaim, RepeatByContent}
 	RouteTaskReports    = Route{"POST /api/v1/tasks/{id}/reports", ScopeTasksClaim, RepeatByContent}
 	RouteTaskParse      = Route{"GET /api/v1/tasks/{id}/parse", ScopeTasksClaim, RepeatRead}
+	RouteTaskRetries    = Route{"POST /api/v1/tasks/{id}/retries", "", RepeatByContent}
 	RouteTasks          = Route{"GET /api/v1/tasks", "", RepeatRead}
 	RouteBlob           = Route{"GET /api/v1/blobs/{sha256}", ScopeTasksClaim, RepeatRead}
 	RouteBlobWrite      = Route{"PUT /api/v1/blobs/{sha256}", ScopeTasksClaim, RepeatByContent}

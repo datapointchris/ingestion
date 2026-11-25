@@ -61,13 +61,15 @@ func (t *Tx) Outputs(ctx context.Context, key string) ([]Output, error) {
 }
 
 // UnplacedScannedKeys reads the key of each item with a done scan whose
-// newest side decision is a review, or that holds none. The side gate narrows
-// it to the items whose newest parse is the one scanned.
+// newest side decision is a review or a drop, or that holds none. The side
+// gate decides again only a review or a model's drop, so it narrows these to
+// those, and to the items whose newest parse is the one scanned.
 func (t *Tx) UnplacedScannedKeys(ctx context.Context) ([]string, error) {
 	rows, err := t.tx.QueryContext(ctx, `
 SELECT i.key FROM items i
 WHERE EXISTS (SELECT 1 FROM outputs o WHERE o.item_key = i.key AND o.stage = 'scan' AND o.state = 'done')
-	AND coalesce((SELECT d.verdict FROM decisions d WHERE d.item_key = i.key AND d.gate = 'side' ORDER BY d.sequence DESC LIMIT 1), 'review') = 'review'
+	AND coalesce((SELECT d.verdict FROM decisions d WHERE d.item_key = i.key AND d.gate = 'side'
+		ORDER BY d.sequence DESC LIMIT 1), 'review') IN ('review', 'drop')
 ORDER BY i.key`)
 	if err != nil {
 		return nil, fmt.Errorf("select the scanned items that no side decision placed: %w", err)

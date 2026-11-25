@@ -77,6 +77,23 @@ type LeasedTask struct {
 	// Destination names where a deliver task writes its item, and is null
 	// for every other task.
 	Destination *string `json:"destination"`
+	// StageOutputs are the item's outputs at a model stage's task's stage,
+	// so a task whose run is already dispatched follows that run rather than
+	// starting another. Every other task carries none.
+	StageOutputs []StageOutput `json:"stage_outputs,omitempty"`
+}
+
+// StageOutput is one output that a model stage's task carries: which prompt
+// wrote it, how far it got, and the dispatch it waits on. Error is why a
+// waiting one has not started, or why a failed one failed.
+type StageOutput struct {
+	Producer        string  `json:"producer"`
+	ProducerVersion string  `json:"producer_version"`
+	State           string  `json:"state"`
+	DispatchID      *string `json:"dispatch_id"`
+	Model           *string `json:"model"`
+	Effort          *string `json:"effort"`
+	Error           *string `json:"error"`
 }
 
 // ClaimAnswer is every task that the claim leased, and none where nothing waits.
@@ -131,6 +148,9 @@ type ReportOutput struct {
 	BlobSHA256      *string       `json:"blob_sha256,omitempty"`
 	DispatchID      *string       `json:"dispatch_id,omitempty"`
 	RunID           *string       `json:"run_id,omitempty"`
+	Model           *string       `json:"model,omitempty"`
+	Effort          *string       `json:"effort,omitempty"`
+	AnsweredModel   *string       `json:"answered_model,omitempty"`
 	Tokens          *store.Tokens `json:"tokens,omitempty"`
 	// InputProducer and InputVersion name the parse that a later stage read.
 	InputProducer *string `json:"input_producer,omitempty"`
@@ -155,7 +175,8 @@ func (o ReportOutput) output(task store.Task) store.Output {
 		ItemKey: *task.ItemKey, Stage: task.Stage, Producer: o.Producer, ProducerVersion: o.ProducerVersion,
 		Lens: o.Lens, LensVersion: o.LensVersion, InputProducer: o.InputProducer, InputVersion: o.InputVersion,
 		State: o.State, BlobSHA256: o.BlobSHA256,
-		DispatchID: o.DispatchID, RunID: o.RunID, Tokens: o.Tokens, Findings: o.Findings, Quality: o.Quality,
+		DispatchID: o.DispatchID, RunID: o.RunID, Model: o.Model, Effort: o.Effort, AnsweredModel: o.AnsweredModel, Tokens: o.Tokens,
+		Findings: o.Findings, Quality: o.Quality,
 		SideGuess: o.SideGuess, SideConfidence: o.SideConfidence, Spans: o.Spans, Answer: o.Answer, Error: o.Error,
 	}
 }
@@ -215,6 +236,7 @@ func TaskRoutes(st *store.Store, log *slog.Logger, after AfterStage) Routes {
 		r.Handle(RouteTaskHeartbeats, h.heartbeat)
 		r.Handle(RouteTaskReports, h.report)
 		r.Handle(RouteTaskParse, h.parse)
+		r.Handle(RouteTaskRetries, h.retry)
 		r.Handle(RouteTasks, h.list)
 	}
 }
@@ -259,6 +281,12 @@ func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
 		}
 		if t.Delivery != nil {
 			leased.Title, leased.URL = t.Delivery.Title, t.Delivery.URL
+		}
+		for _, o := range t.Outputs {
+			leased.StageOutputs = append(leased.StageOutputs, StageOutput{
+				Producer: o.Producer, ProducerVersion: o.ProducerVersion, State: o.State, DispatchID: o.DispatchID,
+				Model: o.Model, Effort: o.Effort, Error: o.Error,
+			})
 		}
 		answer.Tasks = append(answer.Tasks, leased)
 	}
@@ -333,6 +361,32 @@ func (h taskHandlers) report(w http.ResponseWriter, r *http.Request) {
 	h.log.Info("a task ended", "task", task.ID, "item", text(task.ItemKey), "connector", text(task.Connector), "stage", task.Stage,
 		"state", task.State, "outputs", len(body.Outputs))
 	JSON(w, http.StatusOK, viewOf(task, h.store.Now()))
+}
+
+// retry queues a failed task again for a person. A model stage's task whose
+// run failed then dispatches again, and one whose run waits follows it.
+func (h taskHandlers) retry(w http.ResponseWriter, r *http.Request) {
+	task, err := h.store.RetryTask(r.Context(), r.PathValue("id"))
+	switch {
+	case errors.Is(err, store.ErrNoTask):
+		Refuse(w, http.StatusNotFound, CodeTaskNotFound, "no task %s", r.PathValue("id"))
+		return
+	case errors.Is(err, store.ErrTaskDone):
+		Refuse(w, http.StatusConflict, CodeTaskDone, "task %s ended done, so nothing is retried: items replay runs its stage again", r.PathValue("id"))
+		return
+	case err != nil:
+		h.internal(w, r, "retry a task", err)
+		return
+	}
+	h.log.Info("a task was queued again", "task", task.ID, "item", text(task.ItemKey), "stage", task.Stage)
+	JSON(w, http.StatusOK, TaskRetryAnswer{SchemaVersion: 1, Task: viewOf(task, h.store.Now())})
+}
+
+// TaskRetryAnswer is what POST /api/v1/tasks/{id}/retries answers:
+// schemas/task-retry.schema.json.
+type TaskRetryAnswer struct {
+	SchemaVersion int      `json:"schema_version"`
+	Task          TaskView `json:"task"`
 }
 
 // parse answers the newest done parse of the item whose task the caller

@@ -180,12 +180,17 @@ type Output struct {
 	LensVersion     *string `json:"lens_version"`
 	// InputProducer and InputVersion name the parse a later stage read, such
 	// as the parse a scan's findings index the units of.
-	InputProducer  *string         `json:"input_producer"`
-	InputVersion   *string         `json:"input_version"`
-	State          string          `json:"state"`
-	BlobSHA256     *string         `json:"blob_sha256"`
-	DispatchID     *string         `json:"dispatch_id"`
-	RunID          *string         `json:"run_id"`
+	InputProducer *string `json:"input_producer"`
+	InputVersion  *string `json:"input_version"`
+	State         string  `json:"state"`
+	BlobSHA256    *string `json:"blob_sha256"`
+	DispatchID    *string `json:"dispatch_id"`
+	RunID         *string `json:"run_id"`
+	// Model and Effort are what a model stage asked its run for, and
+	// AnsweredModel the model that its run reports answering on.
+	Model          *string         `json:"model"`
+	Effort         *string         `json:"effort"`
+	AnsweredModel  *string         `json:"answered_model"`
 	Tokens         *Tokens         `json:"tokens"`
 	Findings       []Finding       `json:"findings"`
 	Quality        *int            `json:"quality"`
@@ -196,6 +201,27 @@ type Output struct {
 	Error          *string         `json:"error"`
 	CreatedTS      string          `json:"created_ts"`
 	UpdatedTS      string          `json:"updated_ts"`
+}
+
+// NewestDone is the newest done output of stage among outputs, and nil where
+// none is. A model stage's newest done output is its answer.
+func NewestDone(outputs []Output, stage string) *Output {
+	var newest *Output
+	for i := range outputs {
+		o := &outputs[i]
+		if o.Stage == stage && o.State == OutputDone && (newest == nil || o.UpdatedTS >= newest.UpdatedTS) {
+			newest = o
+		}
+	}
+	return newest
+}
+
+// Run names the run that wrote o: its run id, else its producer and version.
+func (o Output) Run() string {
+	if o.RunID != nil {
+		return *o.RunID
+	}
+	return o.Producer + "/" + o.ProducerVersion
 }
 
 // Decision is one gate's decision on one item. The newest at a gate decides.

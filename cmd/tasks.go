@@ -61,6 +61,21 @@ var tasksListCmd = &cobra.Command{
 	RunE: runTasksList,
 }
 
+var tasksRetryCmd = &cobra.Command{
+	Use:   "retry <task>",
+	Short: "Queue a failed task again",
+	Long: "Queues a failed task again, with its attempts and backoff cleared, and prints\n" +
+		"it. A model stage's task whose run failed then dispatches a new run, under a\n" +
+		"key that names the failed one. A task that is queued or leased is printed as\n" +
+		"it stands, so its run is never sent twice. A task that ended done is refused,\n" +
+		"and `items replay` runs its stage again. tasks list --state failed lists the\n" +
+		"failed tasks, and items show prints why each failed.",
+	Example: "  ingestion tasks list --state failed\n" +
+		"  ingestion tasks retry 3f9a1c0d7e2b48a65c1e09d3b7f2a614",
+	Args: cobra.ExactArgs(1),
+	RunE: runTasksRetry,
+}
+
 func init() {
 	goclikit.AsNamespace(tasksCmd)
 	tasksListCmd.Flags().StringSlice("state", nil, "Keep tasks in these states: queued, leased, done, failed")
@@ -69,7 +84,10 @@ func init() {
 	tasksListCmd.Flags().String("api", "", "Call this server rather than the config file's api")
 	tasksListCmd.Flags().Bool("all-workers", false, "List every worker the service holds, not only those heard from lately")
 	addConfigFlag(tasksListCmd)
-	tasksCmd.AddCommand(tasksListCmd)
+	tasksRetryCmd.Flags().Bool("json", false, "Print the service's answer as JSON")
+	tasksRetryCmd.Flags().String("api", "", "Call this server rather than the config file's api")
+	addConfigFlag(tasksRetryCmd)
+	tasksCmd.AddCommand(tasksListCmd, tasksRetryCmd)
 	rootCmd.AddCommand(tasksCmd)
 }
 
@@ -111,6 +129,30 @@ func runTasksList(cmd *cobra.Command, _ []string) error {
 	}
 	writeTasks(w, answer)
 	return nil
+}
+
+func runTasksRetry(cmd *cobra.Command, args []string) error {
+	asJSON, _ := cmd.Flags().GetBool("json")
+	api, _ := cmd.Flags().GetString("api")
+	id := strings.TrimSpace(args[0])
+	var answer server.TaskRetryAnswer
+	raw, err := sendJSON(cmd.Context(), configPath(cmd), api, server.RouteTaskRetries,
+		"/api/v1/tasks/"+url.PathEscape(id)+"/retries", []byte("{}"), &answer)
+	if err := argumentRefusal(err, server.CodeTaskNotFound, server.CodeTaskDone); err != nil {
+		return err
+	}
+	w := cmd.OutOrStdout()
+	if asJSON {
+		_, err := w.Write(raw)
+		return err
+	}
+	t := answer.Task
+	subject := "—"
+	if t.ItemKey != nil {
+		subject = *t.ItemKey
+	}
+	_, err = fmt.Fprintf(w, "Task %s, %s on %s, is %s.\n", t.ID, t.Stage, subject, t.State)
+	return err
 }
 
 func writeTasks(w io.Writer, answer server.TasksAnswer) {
