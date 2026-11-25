@@ -23,6 +23,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/datapointchris/ingestion/modelport"
 	"github.com/datapointchris/ingestion/modelstage"
@@ -94,7 +95,7 @@ func NewHandler(port modelport.Port, client *worker.Client, scanner Scanner, set
 		Data: func(ctx context.Context, task worker.Task) (any, error) {
 			return read(ctx, client, task)
 		},
-		Keep: func(ctx context.Context, p prompts.Prompt, raw json.RawMessage, out *server.ReportOutput) error {
+		Keep: func(ctx context.Context, p prompts.Prompt, raw json.RawMessage, out *server.ReportOutput) ([]any, error) {
 			return keep(ctx, scanner, p, raw, out)
 		},
 	}, settings, log)
@@ -140,19 +141,32 @@ func read(ctx context.Context, client *worker.Client, task worker.Task) (promptD
 
 // keep scans the answer's suggestion and keeps its findings and their spans
 // on the output, under the rules' version. A scan that fails fails the
-// output, so no sentence is kept unscanned.
-func keep(ctx context.Context, scanner Scanner, p prompts.Prompt, raw json.RawMessage, out *server.ReportOutput) error {
+// output, so no sentence is kept unscanned. It logs each field's length
+// alone, because a model wrote both from outsider text.
+func keep(ctx context.Context, scanner Scanner, p prompts.Prompt, raw json.RawMessage, out *server.ReportOutput) ([]any, error) {
 	a, err := ReadAnswer(p, raw)
-	if err != nil || a.Suggestion == nil {
-		return err
+	if err != nil {
+		return nil, err
+	}
+	logged := []any{"summary_runes", runeCount(a.Summary), "suggestion_runes", runeCount(a.Suggestion)}
+	if a.Suggestion == nil {
+		return logged, nil
 	}
 	findings, spans, err := scanner.Scan(ctx, *a.Suggestion)
 	if err != nil {
-		return fmt.Errorf("scan the suggestion: %w", err)
+		return nil, fmt.Errorf("scan the suggestion: %w", err)
 	}
 	rules := scanner.Version()
 	out.Findings, out.Spans, out.RulesVersion = findings, spans, &rules
-	return nil
+	return logged, nil
+}
+
+// runeCount is the length of a field that may be null, which counts as 0.
+func runeCount(s *string) int {
+	if s == nil {
+		return 0
+	}
+	return utf8.RuneCountInString(*s)
 }
 
 // due says whether a replay runs the read on an item: its newest decisions

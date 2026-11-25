@@ -64,14 +64,14 @@ func opening(ctx context.Context, client *worker.Client, task worker.Task) (prom
 }
 
 // keep keeps the answer's quality and side guess in the output's own
-// columns.
-func keep(_ context.Context, _ prompts.Prompt, raw json.RawMessage, out *server.ReportOutput) error {
+// columns, and logs them with the verdict.
+func keep(_ context.Context, _ prompts.Prompt, raw json.RawMessage, out *server.ReportOutput) ([]any, error) {
 	answer, err := readAnswer(raw)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	out.Quality, out.SideGuess, out.SideConfidence = &answer.Quality, &answer.Side, &answer.SideConfidence
-	return nil
+	return []any{"verdict", answer.Verdict, "quality", answer.Quality, "side", answer.Side, "side_confidence", answer.SideConfidence}, nil
 }
 
 func deref(s *string) string {

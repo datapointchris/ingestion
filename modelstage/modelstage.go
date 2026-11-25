@@ -60,10 +60,11 @@ type Stage struct {
 	// call starts. An error marked modelport.ErrRefused fails the task, and
 	// any other tries again after a backoff.
 	Data func(ctx context.Context, task worker.Task) (any, error)
-	// Keep fills out from the answer that a run gave to prompt. An error
-	// fails the output, as an answer that breaks prompt's schema does, and
-	// `tasks retry` starts a new run.
-	Keep func(ctx context.Context, prompt prompts.Prompt, answer json.RawMessage, out *server.ReportOutput) error
+	// Keep fills out from the answer that a run gave to prompt, and returns
+	// the answer's fields that the answered line logs, never outsider text.
+	// An error fails the output, as an answer that breaks prompt's schema
+	// does, and `tasks retry` starts a new run.
+	Keep func(ctx context.Context, prompt prompts.Prompt, answer json.RawMessage, out *server.ReportOutput) (logged []any, err error)
 }
 
 // NewHandler is the worker handler that runs stage's tasks through port under
@@ -140,14 +141,15 @@ func (h handler) Run(ctx context.Context, task worker.Task) worker.Result {
 		return worker.Result{Outcome: server.OutcomeFailed, Error: &failed, Outputs: []server.ReportOutput{out}}
 	}
 	kept := out
-	if err := h.stage.Keep(ctx, prompt, a.Output, &kept); err != nil {
+	logged, err := h.stage.Keep(ctx, prompt, a.Output, &kept)
+	if err != nil {
 		reason := err.Error()
 		out.State, out.Error = store.OutputFailed, &reason
 		log.Warn("the run's answer was not kept, so its output fails", "dispatch", progress.Dispatch, "run", a.Run, "error", err)
 		return worker.Result{Outcome: server.OutcomeFailed, Error: &reason, Outputs: []server.ReportOutput{out}}
 	}
 	kept.State, kept.Answer = store.OutputDone, a.Output
-	log.Info("the stage's run answered", "dispatch", progress.Dispatch, "run", a.Run, "findings", len(kept.Findings))
+	log.Info("the stage's run answered", append([]any{"dispatch", progress.Dispatch, "run", a.Run, "findings", len(kept.Findings)}, logged...)...)
 	return worker.Result{Outcome: server.OutcomeDone, Outputs: []server.ReportOutput{kept}}
 }
 
