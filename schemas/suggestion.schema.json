@@ -28,7 +28,7 @@
           "rule": {"type": "string"},
           "severity": {"$ref": "ingestion-record.schema.json#/$defs/severity"},
           "in": {"description": "Where the span was found.", "enum": ["source", "sentence"]},
-          "span": {"description": "The matched text.", "type": "string"}
+          "span": {"description": "The matched text, null where the output's text holds no span for the finding.", "type": ["string", "null"]}
         }
       }
     },
