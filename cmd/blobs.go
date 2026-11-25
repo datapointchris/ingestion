@@ -46,7 +46,7 @@ func runBlobsUnpaired(cmd *cobra.Command, _ []string) error {
 	asJSON, _ := cmd.Flags().GetBool("json")
 	api, _ := cmd.Flags().GetString("api")
 	var answer server.UnpairedAnswer
-	raw, err := getJSON(cmd.Context(), configPath(cmd), api, "/api/v1/blobs/unpaired", &answer)
+	raw, err := getJSON(cmd.Context(), configPath(cmd), api, server.RouteBlobsUnpaired, "/api/v1/blobs/unpaired", &answer)
 	if err != nil {
 		return err
 	}

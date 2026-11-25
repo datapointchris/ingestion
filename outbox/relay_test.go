@@ -53,10 +53,9 @@ func TestAnItemGainsEachStageRecordAndEachChangeReachesTheCollectorOnce(t *testi
 			return tx.PutSighting(ctx, store.Sighting{ItemKey: key, Connector: "reddit-exports", Zone: store.Outside, ExternalKey: "https://redd.it/aq7ggd"})
 		}},
 		{"parsed", func(tx *store.Tx) error {
-			return tx.PutOutput(ctx, store.Output{
-				ItemKey: key, Stage: store.StageParse, Producer: "thread-text", ProducerVersion: "1",
-				State: store.OutputDone, Text: &text, Units: []store.Unit{{N: 1, Text: text}},
-			})
+			return tx.PutOutputWithUnits(ctx, store.Output{
+				ItemKey: key, Stage: store.StageParse, Producer: "thread-text", ProducerVersion: "1", State: store.OutputDone,
+			}, []store.Unit{{N: 1, Text: text}})
 		}},
 		{"scanned", func(tx *store.Tx) error {
 			return tx.PutOutput(ctx, store.Output{
@@ -129,6 +128,10 @@ func TestAnItemGainsEachStageRecordAndEachChangeReachesTheCollectorOnce(t *testi
 	if _, err := st.Claim(ctx, store.Claim{Worker: store.Worker{ID: "w1", Capabilities: []string{"reddit"}, Version: "test"}, Max: 1, Lease: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
+	if _, _, err := st.Replay(ctx, store.Replay{ID: strings.Repeat("d", 32), Stage: store.StageParse, RequestedBy: "person:test"},
+		func(store.Item) (string, bool) { return "", false }); err != nil {
+		t.Fatal(err)
+	}
 	drain(t, relay)
 
 	got := collector.records()
@@ -192,7 +195,7 @@ func TestAnItemGainsEachStageRecordAndEachChangeReachesTheCollectorOnce(t *testi
 			}
 		}
 	}
-	for _, kind := range []string{"items", "sightings", "homes", "outputs"} {
+	for _, kind := range []string{"items", "sightings", "homes", "outputs", "parse_units"} {
 		if !collector.has(TextKind, kind) {
 			t.Errorf("no %s text reached the collector as %s", kind, TextKind)
 		}

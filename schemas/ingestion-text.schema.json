@@ -8,6 +8,7 @@
     {"$ref": "#/$defs/sightings"},
     {"$ref": "#/$defs/homes"},
     {"$ref": "#/$defs/outputs"},
+    {"$ref": "#/$defs/parse_units"},
     {"$ref": "#/$defs/tasks"}
   ],
   "$defs": {
@@ -40,25 +41,12 @@
     },
     "outputs": {
       "title": "outputs",
-      "description": "A parse holds its text and units. A scan holds each finding's span. A model stage holds its answer. A failed output holds its error.",
+      "description": "A scan holds each finding's span. A model stage holds its answer. A failed output holds its error. A parse's text is in parse_units.",
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "text": {"description": "A parse's whole text.", "type": ["string", "null"]},
-        "units": {
-          "description": "A parse's units in order, such as a thread's posts or a book's pages.",
-          "type": ["array", "null"],
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["n", "text"],
-            "properties": {
-              "n": {"description": "The unit's place, from 1.", "type": "integer", "minimum": 1},
-              "label": {"description": "The unit's own heading, such as a comment's author or a chapter's title.", "type": ["string", "null"]},
-              "text": {"type": "string"}
-            }
-          }
-        },
+        "text": {"description": "Null. A parse's text is its parse_units rows joined by a blank line.", "type": "null"},
+        "units": {"description": "Null. A parse's units are rows of parse_units.", "type": "null"},
         "spans": {
           "description": "Each finding's matched text, in the order of the record's findings.",
           "type": ["array", "null"],
@@ -78,6 +66,17 @@
           "type": ["object", "null"]
         },
         "error": {"description": "Why the output failed, such as an extractor's stderr or the run's error.", "type": ["string", "null"]}
+      }
+    },
+    "parse_units": {
+      "title": "parse_units",
+      "description": "One unit of a parse, such as a thread's post or comment or a book's page. A parse's whole text is its units' text in the order of n, joined by a blank line.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text"],
+      "properties": {
+        "label": {"description": "The unit's own heading, such as a comment's author or a chapter's title.", "type": ["string", "null"]},
+        "text": {"type": "string"}
       }
     },
     "tasks": {

@@ -29,7 +29,7 @@
         }
       }
     },
-    "rules_version": {"description": "The scanner's rules version the findings came from.", "type": ["string", "null"]},
+    "rules_version": {"description": "The rules version of the newest scan that read this parse, and null where no scan read it. Each finding's unit is a place in this parse's units.", "type": ["string", "null"]},
     "findings": {
       "type": "array",
       "items": {

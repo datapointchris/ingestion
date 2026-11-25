@@ -45,13 +45,17 @@ type Config struct {
 	// Homes maps each named root, such as books, to the directory it names. A
 	// file under a root is referenced in place rather than copied.
 	Homes map[string]string
+	// QueueParse queues the parse of an item new to the store, in the write
+	// that adds it. Nil queues none.
+	QueueParse func(context.Context, *store.Tx, store.Item) error
 }
 
 // Lander lands arrivals.
 type Lander struct {
-	store *store.Store
-	blobs *Blobs
-	homes map[string]string
+	store      *store.Store
+	blobs      *Blobs
+	homes      map[string]string
+	queueParse func(context.Context, *store.Tx, store.Item) error
 }
 
 // New is a lander over cfg. It refuses a root whose name is not lowercase
@@ -65,7 +69,7 @@ func New(cfg Config) (*Lander, error) {
 			return nil, fmt.Errorf("home root %s names %q, which is not an absolute directory", name, dir)
 		}
 	}
-	return &Lander{store: cfg.Store, blobs: cfg.Blobs, homes: cfg.Homes}, nil
+	return &Lander{store: cfg.Store, blobs: cfg.Blobs, homes: cfg.Homes, queueParse: cfg.QueueParse}, nil
 }
 
 // Home is a file that already lives under a named root.
@@ -126,9 +130,9 @@ type Landed struct {
 }
 
 // Land lands the arrival a. Bytes go to the volume, or are hashed in place,
-// before any row names them. The item, its blob row, its home and its
-// sighting are then written in one transaction. An item takes the strictest
-// zone of its sightings and its parent.
+// before any row names them. The item, its blob row, its home, its sighting
+// and a new item's parse task are then written in one transaction. An item
+// takes the strictest zone of its sightings and its parent.
 func (l *Lander) Land(ctx context.Context, a Arrival) (Landed, error) {
 	if err := l.check(a); err != nil {
 		return Landed{}, err
@@ -176,8 +180,14 @@ func (l *Lander) Land(ctx context.Context, a Arrival) (Landed, error) {
 	var landed Landed
 	err = l.store.Update(ctx, func(tx *store.Tx) error {
 		var err error
-		landed, err = record(ctx, tx, a, key, written, modified)
-		return err
+		if landed, err = record(ctx, tx, a, key, written, modified); err != nil || !landed.ItemAdded || l.queueParse == nil {
+			return err
+		}
+		item, _, err := tx.Item(ctx, key)
+		if err != nil {
+			return err
+		}
+		return l.queueParse(ctx, tx, item)
 	})
 	return landed, err
 }

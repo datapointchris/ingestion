@@ -128,8 +128,17 @@ the prompt's version, and gets back the structured answer.
   under a fencing token. It reads and writes bytes through the service's blob routes, so a heavy
   extractor never shares memory with the writer. This is the external task pattern that Camunda
   uses.
-- **An extractor whose library is Python runs as a program in the worker image.** It reads bytes
-  and writes JSON lines.
+- **An extractor whose library is Python runs as a program in the worker image.** It lives in
+  `extract.ProgramDir`, and `extract.Program` registers it. It reads the item's bytes on stdin
+  and writes one `{"label", "text"}` line per unit on stdout. It runs through
+  `extract/program.go` alone, whose environment carries none of the worker's secrets, because
+  the program reads outsider bytes. The worker marks itself undumpable for the same reason, so
+  the program cannot read the worker's environment through `/proc`.
+- **A parse's units are rows of `parse_units`, one per unit.** The parse's `outputs` row holds no
+  text. Its whole text is the units joined by a blank line, so the text has one owner. A version
+  whose parse is done keeps it, so a failed rerun of that version fails only its task.
+- **Each route's row in `server/routes.go` declares what a repeat does.** The CLI's sender reads
+  the row to decide a retry, and sets the `Idempotency-Key` of a keyed route itself.
 - **A CLI command whose server gave no answer exits 4**, and does nothing locally.
 
 ## Testing

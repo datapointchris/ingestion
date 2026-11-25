@@ -28,13 +28,12 @@ type Router struct {
 	scopes map[string][]string
 }
 
-// Handle serves pattern, written as ServeMux reads it ("POST /api/v1/x"), with
-// h. A service reaches it only while its token carries scope. An empty scope
-// admits a person's token alone.
-func (r *Router) Handle(pattern, scope string, h http.HandlerFunc) {
-	r.mux.HandleFunc(pattern, h)
-	if scope != "" {
-		r.scopes[scope] = append(r.scopes[scope], pattern)
+// Handle serves route with h. A service reaches it only while its token
+// carries the route's scope.
+func (r *Router) Handle(route Route, h http.HandlerFunc) {
+	r.mux.HandleFunc(route.Pattern, h)
+	if route.Scope != "" {
+		r.scopes[route.Scope] = append(r.scopes[route.Scope], route.Pattern)
 	}
 }
 
@@ -99,7 +98,7 @@ func Handler(cfg Config, routes ...Routes) http.Handler {
 	})
 	// The version a caller compares its own with, behind the same token as
 	// the routes it calls.
-	r.Handle("GET /api/v1/version", ScopeTasksClaim, func(w http.ResponseWriter, _ *http.Request) {
+	r.Handle(RouteVersion, func(w http.ResponseWriter, _ *http.Request) {
 		JSON(w, http.StatusOK, map[string]string{"version": cfg.Version})
 	})
 	for _, register := range routes {
@@ -125,6 +124,7 @@ const (
 	CodeRouteNotFound = "route_not_found"
 	CodeTaskNotFound  = "task_not_found"
 	CodeItemNotFound  = "item_not_found"
+	CodeParseNotFound = "parse_not_found"
 	CodeStaleLease    = "stale_lease"
 	CodeInternal      = "internal"
 	CodeUnknownField  = "unknown_field"

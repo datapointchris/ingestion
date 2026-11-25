@@ -48,6 +48,11 @@ type LeasedTask struct {
 	Attempts       int    `json:"attempts"`
 	LeaseToken     int64  `json:"lease_token"`
 	LeaseExpiresTS string `json:"lease_expires_ts"`
+	// MediaType and BlobSHA256 are the item's, so a worker reads its bytes
+	// holding no scope to read items. BlobSHA256 is null where the item holds
+	// no bytes.
+	MediaType  string  `json:"media_type"`
+	BlobSHA256 *string `json:"blob_sha256"`
 }
 
 // ClaimAnswer is every task that the claim leased, and none where nothing waits.
@@ -79,9 +84,9 @@ type ReportRequest struct {
 }
 
 // ReportOutput is one output a worker reports: each field of an outputs row
-// that the stage's work decides. The service takes the item and stage from
-// the task and stamps the row, so a column the store adds for itself never
-// changes what a worker sends.
+// that the stage's work decides, and a parse's units. The service takes the
+// item and stage from the task and stamps the row, so a column the store adds
+// for itself never changes what a worker sends.
 type ReportOutput struct {
 	Producer        string          `json:"producer"`
 	ProducerVersion string          `json:"producer_version"`
@@ -96,11 +101,12 @@ type ReportOutput struct {
 	Quality         *int            `json:"quality,omitempty"`
 	SideGuess       *string         `json:"side_guess,omitempty"`
 	SideConfidence  *float64        `json:"side_confidence,omitempty"`
-	Text            *string         `json:"text,omitempty"`
-	Units           []store.Unit    `json:"units,omitempty"`
-	Spans           []store.Span    `json:"spans,omitempty"`
-	Answer          json.RawMessage `json:"answer,omitempty"`
-	Error           *string         `json:"error,omitempty"`
+	// Units are a parse's, numbered from 1 in order, which the service writes
+	// as rows of parse_units under the producer and its version.
+	Units  []store.Unit    `json:"units,omitempty"`
+	Spans  []store.Span    `json:"spans,omitempty"`
+	Answer json.RawMessage `json:"answer,omitempty"`
+	Error  *string         `json:"error,omitempty"`
 }
 
 // output is o as the row it writes for task.
@@ -109,8 +115,7 @@ func (o ReportOutput) output(task store.Task) store.Output {
 		ItemKey: task.ItemKey, Stage: task.Stage, Producer: o.Producer, ProducerVersion: o.ProducerVersion,
 		Lens: o.Lens, LensVersion: o.LensVersion, State: o.State, BlobSHA256: o.BlobSHA256,
 		DispatchID: o.DispatchID, RunID: o.RunID, Tokens: o.Tokens, Findings: o.Findings, Quality: o.Quality,
-		SideGuess: o.SideGuess, SideConfidence: o.SideConfidence, Text: o.Text, Units: o.Units, Spans: o.Spans,
-		Answer: o.Answer, Error: o.Error,
+		SideGuess: o.SideGuess, SideConfidence: o.SideConfidence, Spans: o.Spans, Answer: o.Answer, Error: o.Error,
 	}
 }
 
@@ -156,10 +161,10 @@ func TaskRoutes(st *store.Store, log *slog.Logger) Routes {
 	}
 	h := taskHandlers{store: st, log: log}
 	return func(r *Router) {
-		r.Handle("POST /api/v1/tasks/claims", ScopeTasksClaim, h.claim)
-		r.Handle("POST /api/v1/tasks/{id}/heartbeats", ScopeTasksClaim, h.heartbeat)
-		r.Handle("POST /api/v1/tasks/{id}/reports", ScopeTasksClaim, h.report)
-		r.Handle("GET /api/v1/tasks", "", h.list)
+		r.Handle(RouteTaskClaims, h.claim)
+		r.Handle(RouteTaskHeartbeats, h.heartbeat)
+		r.Handle(RouteTaskReports, h.report)
+		r.Handle(RouteTasks, h.list)
 	}
 }
 
@@ -197,7 +202,7 @@ func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
 	for _, t := range tasks {
 		answer.Tasks = append(answer.Tasks, LeasedTask{
 			ID: t.ID, ItemKey: t.ItemKey, Stage: t.Stage, Capability: t.Capability, Attempts: t.Attempts,
-			LeaseToken: *t.LeaseToken, LeaseExpiresTS: *t.LeaseExpiresTS,
+			LeaseToken: *t.LeaseToken, LeaseExpiresTS: *t.LeaseExpiresTS, MediaType: t.MediaType, BlobSHA256: t.BlobSHA256,
 		})
 	}
 	for _, t := range answer.Tasks {
@@ -242,7 +247,7 @@ func (h taskHandlers) report(w http.ResponseWriter, r *http.Request) {
 	}
 	task, err := h.store.Report(r.Context(), r.PathValue("id"), body.Token, outcome, func(tx *store.Tx, task store.Task) error {
 		for _, o := range body.Outputs {
-			if err := tx.PutOutput(r.Context(), o.output(task)); err != nil {
+			if err := tx.PutOutputWithUnits(r.Context(), o.output(task), o.Units); err != nil {
 				return err
 			}
 		}
@@ -324,6 +329,8 @@ func (h taskHandlers) leaseRefused(w http.ResponseWriter, r *http.Request, err e
 		Refuse(w, http.StatusConflict, CodeStaleLease, "%v", err)
 	case errors.Is(err, store.ErrNoItem):
 		Refuse(w, http.StatusUnprocessableEntity, CodeItemNotFound, "%v", err)
+	case errors.Is(err, store.ErrUnitsOutsideParse), errors.Is(err, store.ErrUnitsOutOfOrder):
+		Refuse(w, http.StatusUnprocessableEntity, CodeInvalidBody, "%v", err)
 	default:
 		h.internal(w, r, "update a task", err)
 	}
