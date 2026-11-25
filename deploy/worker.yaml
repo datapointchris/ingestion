@@ -1,0 +1,87 @@
+# ingestion's workers, which lease tasks from the service and hold no store.
+#
+# The cluster supplies what this directory does not create:
+#
+# - The ConfigMap named ingestion-config, shared with serve. A worker reads
+#   its api, the service's address in the cluster; its issuer; its client_id,
+#   naming the worker's service client; and its [worker] table.
+# - A Secret named ingestion-worker-client. Its secret key holds that client's
+#   secret.
+# - A NetworkPolicy for each egress: the service, the identity provider and
+#   each outside source.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ingestion-worker
+  labels:
+    app.kubernetes.io/instance: ingestion-worker
+    app.kubernetes.io/component: worker
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ingestion-worker
+  labels:
+    app.kubernetes.io/instance: ingestion-worker
+    app.kubernetes.io/component: worker
+  annotations:
+    kubernetes.io/description: ingestion's workers, leasing each stage's tasks by capability from the service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ingestion
+      app.kubernetes.io/instance: ingestion-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: ingestion-worker
+        app.kubernetes.io/component: worker
+    spec:
+      serviceAccountName: ingestion-worker
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10600
+        runAsGroup: 10600
+        seccompProfile:
+          type: RuntimeDefault
+      # A stopping worker stops claiming. A task it still holds returns to the
+      # next claim once its lease lapses.
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: worker
+          image: ingestion
+          imagePullPolicy: IfNotPresent
+          args: [worker, run]
+          env:
+            - name: INGESTION_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: ingestion-worker-client
+                  key: secret
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/ingestion
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: ingestion-config
+        - name: tmp
+          emptyDir: {}

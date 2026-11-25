@@ -1,0 +1,136 @@
+package cmd
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/BurntSushi/toml"
+	"github.com/datapointchris/goclilogin"
+	"github.com/spf13/cobra"
+	"golang.org/x/oauth2"
+)
+
+// product names the config file's directory, the state directory and the
+// client id prefixes.
+const product = "ingestion"
+
+// keyringService namespaces the CLI's entries in the OS keychain. It is a
+// deployed identifier, so it keeps its spelling whatever the binary is named.
+const keyringService = "ingestion-cli"
+
+// clientSecretEnv selects the client-credentials grant for the client the
+// config file names, as a worker runs. It is read from the environment alone,
+// so it is never written to the file and no command prints it.
+const clientSecretEnv = "INGESTION_CLIENT_SECRET"
+
+// workerScope is what the worker's service client asks for.
+const workerScope = "ingestion.tasks.claim"
+
+// fileConfig is the config file. Its top-level api, issuer and client_id are
+// goclilogin's, read by every command that calls the service. serve reads
+// issuer and its own table, and worker run reads its own table.
+type fileConfig struct {
+	Issuer string `toml:"issuer"`
+	Serve  struct {
+		Listen         string `toml:"listen"`
+		StateDir       string `toml:"state_dir"`
+		PublicURL      string `toml:"public_url"`
+		RecordsOTLPURL string `toml:"records_otlp_url"`
+	} `toml:"serve"`
+	Worker struct {
+		Slots int      `toml:"slots"`
+		Lease duration `toml:"lease"`
+		Poll  duration `toml:"poll"`
+	} `toml:"worker"`
+}
+
+// duration is a TOML string such as "5m".
+type duration struct{ time.Duration }
+
+func (d *duration) UnmarshalText(text []byte) error {
+	var err error
+	d.Duration, err = time.ParseDuration(string(text))
+	return err
+}
+
+// configPath is the --config flag's value where cmd declares one and it is
+// set, and $XDG_CONFIG_HOME/ingestion/config.toml otherwise.
+func configPath(cmd *cobra.Command) string {
+	if f := cmd.Flags().Lookup("config"); f != nil && f.Value.String() != "" {
+		return f.Value.String()
+	}
+	return goclilogin.ConfigPath(product)
+}
+
+// addConfigFlag declares --config on cmd.
+func addConfigFlag(cmd *cobra.Command) {
+	cmd.Flags().String("config", "", "Read this config file (default $XDG_CONFIG_HOME/ingestion/config.toml)")
+}
+
+// readConfig reads the config file at path. A file that is missing reads as
+// every default.
+func readConfig(path string) (fileConfig, error) {
+	var c fileConfig
+	_, err := toml.DecodeFile(path, &c)
+	if errors.Is(err, fs.ErrNotExist) {
+		return c, nil
+	}
+	if err != nil {
+		return c, fmt.Errorf("read %s: %w", path, err)
+	}
+	return c, nil
+}
+
+// stateDir is where serve keeps its store: the file's state_dir, or
+// $XDG_STATE_HOME/ingestion.
+func stateDir(c fileConfig) string {
+	if c.Serve.StateDir != "" {
+		return c.Serve.StateDir
+	}
+	if dir := os.Getenv("XDG_STATE_HOME"); dir != "" {
+		return filepath.Join(dir, product)
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".local", "state", product)
+}
+
+// errNeedsLogin is a command run where this machine holds no token.
+var errNeedsLogin = errors.New("not logged in — run `ingestion auth login`")
+
+// loadDeployment reads where the CLI is pointed from the config file at path,
+// with api outranking the file's.
+func loadDeployment(ctx context.Context, path, api string) (goclilogin.Deployment, error) {
+	return goclilogin.LoadDeploymentFrom(ctx, product, path, api)
+}
+
+// loginConfig is the goclilogin view of a deployment for a person's login.
+func loginConfig(d goclilogin.Deployment) goclilogin.Config {
+	return goclilogin.Config{
+		Issuer: d.Issuer.Value, ClientID: d.ClientID.Value,
+		KeyringService: keyringService, StateDir: goclilogin.StateDir(product),
+	}
+}
+
+// tokenSource is the file's token_command where it names one, the
+// client-credentials grant where INGESTION_CLIENT_SECRET is set, and the token
+// this machine logged in for otherwise.
+func tokenSource(ctx context.Context, d goclilogin.Deployment) (oauth2.TokenSource, error) {
+	if d.HandsTokens() {
+		return goclilogin.CommandTokenSource(ctx, d.TokenCommand.Argv())
+	}
+	if secret := os.Getenv(clientSecretEnv); secret != "" {
+		return goclilogin.ClientCredentialsTokenSource(ctx,
+			goclilogin.ServiceClient{Issuer: d.Issuer.Value, ClientID: d.ClientID.Value, Scopes: []string{workerScope}}, secret)
+	}
+	login := loginConfig(d)
+	source, err := goclilogin.TokenSource(ctx, login, goclilogin.NewTokenStore(login))
+	if errors.Is(err, goclilogin.ErrNotLoggedIn) {
+		return nil, errNeedsLogin
+	}
+	return source, err
+}

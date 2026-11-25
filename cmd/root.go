@@ -53,5 +53,9 @@ func exitCode(w io.Writer, err error) int {
 	if errors.Is(err, goclikit.ErrUsage) {
 		return 2
 	}
+	// 4 says the server gave no answer, so the command did nothing.
+	if errors.Is(err, errNoAnswer) {
+		return 4
+	}
 	return 1
 }

@@ -43,6 +43,19 @@ API answer. Each store table's columns are its fields in `ingestion-record.schem
 test in the package that writes a shape validates real output against its file. A data catalog
 builds its contracts from these files, so a reader points at them rather than copying the fields.
 
+`store/` holds one `.sql` file per stage, converged on every open, with no numbered migrations.
+A new table or index converges through its `CREATE … IF NOT EXISTS`. A file's `CREATE TABLE` never
+changes a table that exists, so a column added to one converges through the `ALTER TABLE … ADD
+COLUMN` that `converge` runs where the table lacks it, carrying the column's type, `NOT NULL` and
+default and no other constraint. A stage declares each table it adds in `store/tables.go`, naming
+its key, its stamp, its text columns, and whether it appends or upserts. `Open` refuses a table
+that is neither declared there nor listed as unlogged, and the outbox ships every declared table.
+Every write runs through `Store.Update`, and each logged table's triggers refuse a row stamped
+other than by that write.
+
+`deploy/` holds the Kubernetes manifests, and `release/` the scripts that the release job runs to
+pin and publish them. The `Dockerfile` builds the one image that `serve` and `worker run` share.
+
 ## Every item passes one line of stages
 
 ```text
@@ -130,6 +143,11 @@ A push to `main` runs `release.yml`. It validates through `validate.yml`, then g
 tags a version from the conventional-commit types, and goreleaser builds linux and darwin archives
 for it. `allow-initial-development-versions` holds the major at 0. Drop that input once the API is
 settled enough to promise compatibility.
+
+A push that cut a version also builds the image `ghcr.io/datapointchris/ingestion:<version>`. It
+then pushes `deploy/` as the OCI artifact `ghcr.io/datapointchris/ingestion/manifests:<version>`,
+with that image pinned by digest, and signs both with cosign. `release/pin-manifests` writes the
+pinned copy, and `release/install-tools` installs kustomize, flux and cosign at pinned SHA-256s.
 
 ## Never write the breaking-change trailer in a commit message
 
