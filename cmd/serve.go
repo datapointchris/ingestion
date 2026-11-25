@@ -20,6 +20,7 @@ import (
 	"github.com/datapointchris/ingestion/extract"
 	"github.com/datapointchris/ingestion/landing"
 	"github.com/datapointchris/ingestion/outbox"
+	"github.com/datapointchris/ingestion/route"
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
 )
@@ -112,9 +113,12 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 	handler := server.Handler(server.Config{
 		Store: st, Gate: gate, Issuer: cfg.Issuer, PublicURL: cfg.Serve.PublicURL, Version: version, Log: log,
-	}, server.TaskRoutes(st, log), server.BlobRoutes(lander, log), server.ItemRoutes(st, log),
-		server.ConnectorRoutes(server.ConnectorConfig{Store: st, Lander: lander, Scheduler: scheduler, Roots: roots, Log: log}),
-		server.ReplayRoutes(st, map[string]server.Replayable{store.StageParse: extractors.Replayable()}, log))
+	}, server.TaskRoutes(st, log, route.AfterStage(log)), server.BlobRoutes(lander, log), server.ItemRoutes(st, log),
+		server.ConnectorRoutes(server.ConnectorConfig{
+			Store: st, Lander: lander, Scheduler: scheduler, Roots: roots, AfterApply: route.AfterApply(log), Log: log,
+		}),
+		server.ReplayRoutes(st, map[string]server.Replayable{store.StageParse: extractors.Replayable()}, log),
+		server.ReviewRoutes(st, log))
 	srv := &http.Server{Addr: listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 
 	var wg sync.WaitGroup

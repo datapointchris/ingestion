@@ -54,7 +54,7 @@ func TestTheSchedulerLandsEachNewFileOnceMakesOnePollTaskAndKeepsAFailedScan(t *
 		{Name: "books-folder", Mode: connectors.ModeFolder, Source: "local-books", Schedule: "*/15 * * * *", Zone: store.Outside, Root: "books"},
 		{Name: "feed-reader", Mode: connectors.ModePoll, Source: "rss-feeds", Schedule: "@hourly", Zone: store.Outside},
 	}}
-	if _, err := connectors.Apply(ctx, st, set, "0123456", nil, "test", []string{"books"}); err != nil {
+	if _, err := connectors.Apply(ctx, st, set, "0123456", nil, "test", []string{"books"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	scheduler := connectors.NewScheduler(st, lander, slog.New(slog.DiscardHandler))

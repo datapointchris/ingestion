@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -162,13 +163,19 @@ type TasksAnswer struct {
 // workers that stopped outnumber the live ones within a few releases.
 const WorkersHeardWithin = 10 * time.Minute
 
+// AfterStage runs in the write that ends an item's task done, after the
+// stage's outputs, such as the gates that follow an item's parse. An error
+// rolls the whole report back, so the task stays leased.
+type AfterStage func(ctx context.Context, tx *store.Tx, task store.Task) error
+
 // TaskRoutes are the routes for a worker to lease tasks through, and the
-// list for a person to read.
-func TaskRoutes(st *store.Store, log *slog.Logger) Routes {
+// list for a person to read. after runs in the write that ends each item's
+// task done, and nil runs nothing.
+func TaskRoutes(st *store.Store, log *slog.Logger, after AfterStage) Routes {
 	if log == nil {
 		log = slog.Default()
 	}
-	h := taskHandlers{store: st, log: log}
+	h := taskHandlers{store: st, log: log, after: after}
 	return func(r *Router) {
 		r.Handle(RouteTaskClaims, h.claim)
 		r.Handle(RouteTaskHeartbeats, h.heartbeat)
@@ -180,6 +187,7 @@ func TaskRoutes(st *store.Store, log *slog.Logger) Routes {
 type taskHandlers struct {
 	store *store.Store
 	log   *slog.Logger
+	after AfterStage
 }
 
 func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
@@ -263,6 +271,9 @@ func (h taskHandlers) report(w http.ResponseWriter, r *http.Request) {
 			if err := tx.PutOutputWithUnits(r.Context(), o.output(task), o.Units); err != nil {
 				return err
 			}
+		}
+		if h.after != nil && outcome.State == store.TaskDone && task.ItemKey != nil {
+			return h.after(r.Context(), tx, task)
 		}
 		return nil
 	})

@@ -85,13 +85,14 @@ type HomeView struct {
 
 // SightingView is one connector's arrival of the item.
 type SightingView struct {
-	Connector      string     `json:"connector"`
-	ExternalKey    string     `json:"external_key"`
-	Tags           []string   `json:"tags"`
-	Zone           store.Zone `json:"zone"`
-	CursorPosition *string    `json:"cursor_position"`
-	FirstSeenTS    string     `json:"first_seen_ts"`
-	LastSeenTS     string     `json:"last_seen_ts"`
+	Connector      string            `json:"connector"`
+	ExternalKey    string            `json:"external_key"`
+	Tags           []string          `json:"tags"`
+	Fields         map[string]string `json:"fields"`
+	Zone           store.Zone        `json:"zone"`
+	CursorPosition *string           `json:"cursor_position"`
+	FirstSeenTS    string            `json:"first_seen_ts"`
+	LastSeenTS     string            `json:"last_seen_ts"`
 }
 
 // OutputView is one stage's output, with a parse's units counted and each
@@ -127,6 +128,8 @@ type DecisionView struct {
 	Cause       string   `json:"cause"`
 	Destination *string  `json:"destination"`
 	Note        *string  `json:"note"`
+	Lens        *string  `json:"lens"`
+	ClientID    *string  `json:"client_id"`
 	DecidedTS   string   `json:"decided_ts"`
 }
 
@@ -320,7 +323,7 @@ func itemAnswer(rec store.ItemRecords) ItemAnswer {
 	}
 	for _, s := range rec.Sightings {
 		a.Sightings = append(a.Sightings, SightingView{
-			Connector: s.Connector, ExternalKey: s.ExternalKey, Tags: s.Tags, Zone: s.Zone, CursorPosition: s.CursorPosition,
+			Connector: s.Connector, ExternalKey: s.ExternalKey, Tags: s.Tags, Fields: s.Fields, Zone: s.Zone, CursorPosition: s.CursorPosition,
 			FirstSeenTS: s.FirstSeenTS, LastSeenTS: s.LastSeenTS,
 		})
 	}
@@ -342,10 +345,7 @@ func itemAnswer(rec store.ItemRecords) ItemAnswer {
 		a.Outputs = append(a.Outputs, view)
 	}
 	for _, d := range rec.Decisions {
-		a.Decisions = append(a.Decisions, DecisionView{
-			Gate: d.Gate, Verdict: d.Verdict, DecidedBy: d.DecidedBy, Confidence: d.Confidence, Cause: d.Cause,
-			Destination: d.Destination, Note: d.Note, DecidedTS: d.DecidedTS,
-		})
+		a.Decisions = append(a.Decisions, decisionView(d))
 	}
 	for _, d := range rec.Deliveries {
 		a.Deliveries = append(a.Deliveries, DeliveryView{
@@ -353,6 +353,13 @@ func itemAnswer(rec store.ItemRecords) ItemAnswer {
 		})
 	}
 	return a
+}
+
+func decisionView(d store.Decision) DecisionView {
+	return DecisionView{
+		Gate: d.Gate, Verdict: d.Verdict, DecidedBy: d.DecidedBy, Confidence: d.Confidence, Cause: d.Cause,
+		Destination: d.Destination, Note: d.Note, Lens: d.Lens, ClientID: d.ClientID, DecidedTS: d.DecidedTS,
+	}
 }
 
 func optional(s string) *string {

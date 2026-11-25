@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -151,11 +150,7 @@ func runItemsReplay(cmd *cobra.Command, _ []string) error {
 	}
 	var answer server.ReplayAnswer
 	raw, err := sendJSON(cmd.Context(), configPath(cmd), api, server.RouteReplays, "/api/v1/replays", body, &answer)
-	var refused *refusal
-	if errors.As(err, &refused) && refused.Code == server.CodeInvalidKey {
-		return fmt.Errorf("%w: %s", goclikit.ErrUsage, refused.Message)
-	}
-	if err != nil {
+	if err := argumentRefusal(err); err != nil {
 		return err
 	}
 	w := cmd.OutOrStdout()
@@ -258,11 +253,7 @@ func runItemsShow(cmd *cobra.Command, args []string) error {
 	// the item that the service's own itemkey names.
 	var answer server.ItemAnswer
 	raw, err := getJSON(cmd.Context(), configPath(cmd), api, server.RouteItem, "/api/v1/items/"+url.PathEscape(strings.TrimSpace(args[0])), &answer)
-	var refused *refusal
-	if errors.As(err, &refused) && refused.Code == server.CodeInvalidKey {
-		return fmt.Errorf("%w: %s", goclikit.ErrUsage, refused.Message)
-	}
-	if err != nil {
+	if err := argumentRefusal(err); err != nil {
 		return err
 	}
 	w := cmd.OutOrStdout()
@@ -334,7 +325,19 @@ func writeItem(w io.Writer, a server.ItemAnswer) {
 		row(o.Stage, "%s", out)
 	}
 	for _, d := range a.Decisions {
-		row(d.Gate, "%s  by %s  cause %s", d.Verdict, d.DecidedBy, d.Cause)
+		decision := d.Verdict
+		if d.Destination != nil {
+			decision += " on " + *d.Destination
+		}
+		decision += "  by " + d.DecidedBy
+		if d.Confidence != nil {
+			decision += fmt.Sprintf(" at %.2f", *d.Confidence)
+		}
+		decision += "  cause " + d.Cause
+		if d.Lens != nil {
+			decision += "  lens " + *d.Lens
+		}
+		row(d.Gate, "%s", decision)
 	}
 	for _, d := range a.Deliveries {
 		row("delivery", "%s  %s  attempts %d", d.Destination, d.Outcome, d.Attempts)
