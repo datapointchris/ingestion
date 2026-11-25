@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	crand "crypto/rand"
 	"encoding/hex"
@@ -232,12 +233,14 @@ func sendJSON(ctx context.Context, path, api string, route server.Route, target 
 }
 
 // call is one request to the server: a row of its route table, target, a
-// path that the row's pattern matches, and any header and body.
+// path that the row's pattern matches, and any header and body. Deadline bounds
+// its every try together, and answerDeadline does where it is zero.
 type call struct {
-	Route  server.Route
-	Target string
-	Header http.Header
-	Body   []byte
+	Route    server.Route
+	Target   string
+	Header   http.Header
+	Body     []byte
+	Deadline time.Duration
 }
 
 // callJSON sends c on the server the config file at path names, or api where
@@ -250,7 +253,8 @@ type call struct {
 // and what chose it.
 func callJSON(ctx context.Context, path, api string, c call, into any) (int, []byte, error) {
 	route, target, body := c.Route, c.Target, c.Body
-	ctx, cancel := context.WithTimeout(ctx, answerDeadline)
+	deadline := cmp.Or(c.Deadline, answerDeadline)
+	ctx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
 	d, err := loadDeployment(ctx, path, api)
 	var unreachable *url.Error
@@ -288,7 +292,7 @@ func callJSON(ctx context.Context, path, api string, c call, into any) (int, []b
 			wait := time.Duration(tries)*time.Second + rand.N(500*time.Millisecond)
 			select {
 			case <-ctx.Done():
-				return 0, nil, fmt.Errorf("%w: %s, within %s: %v", errNoAnswer, named, answerDeadline, lastErr)
+				return 0, nil, fmt.Errorf("%w: %s, within %s: %v", errNoAnswer, named, deadline, lastErr)
 			case <-time.After(wait):
 			}
 		}

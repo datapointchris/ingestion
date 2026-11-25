@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/datapointchris/goclikit"
 	"github.com/spf13/cobra"
@@ -504,6 +505,11 @@ func byteSize(n int64) string {
 	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
+// dropDeadline bounds a drop's tries. The server answers once it has landed
+// every item the file holds, at about 0.4 s a Reddit save, so an export of a
+// few hundred saves outlasts the deadline every other command keeps.
+const dropDeadline = 10 * time.Minute
+
 func runItemsDrop(cmd *cobra.Command, args []string) error {
 	connector, _ := cmd.Flags().GetString("connector")
 	asJSON, _ := cmd.Flags().GetBool("json")
@@ -528,7 +534,8 @@ func runItemsDrop(cmd *cobra.Command, args []string) error {
 			"Content-Disposition": {mime.FormatMediaType("attachment", map[string]string{"filename": name})},
 			server.IdempotencyKey: {"drop-" + hex.EncodeToString(sum[:16])},
 		},
-		Body: body,
+		Body:     body,
+		Deadline: dropDeadline,
 	}, &answer)
 	if err != nil {
 		return refusedAsUsage(err)
