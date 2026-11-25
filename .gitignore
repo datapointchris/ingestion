@@ -1,0 +1,13 @@
+# The binary `task build` writes
+/ingestion
+
+# Test binaries and coverage
+*.test
+coverage.out
+coverage.html
+
+# goreleaser output
+/dist/
+
+# Task's checksum cache
+/.task/

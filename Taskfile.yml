@@ -1,0 +1,49 @@
+version: "3"
+
+tasks:
+  default:
+    desc: Show available tasks
+    silent: true
+    cmds:
+      - task --list
+
+  # A fresh checkout holds no module cache, and go.sum names everything it needs.
+  setup:
+    desc: Make a fresh checkout runnable
+    cmds:
+      - go mod download
+
+  build:
+    desc: Build the ingestion binary into the repo root
+    cmds:
+      - go build -o ingestion .
+    sources:
+      - "**/*.go"
+      - go.mod
+      - go.sum
+    generates:
+      - ingestion
+
+  # `go install` is also how a release installs, so the dev build replaces it
+  # in place and the next release replaces the dev build.
+  install:
+    desc: Build and install a dev build where `go install` puts the release
+    cmds:
+      - go install .
+
+  test:
+    desc: Run the test suite
+    cmds:
+      - go test ./...
+
+  lint:
+    desc: Check formatting and lint without writing a file
+    cmds:
+      - gofumpt -d .
+      - golangci-lint run
+
+  format:
+    desc: Format with gofumpt and apply golangci-lint's autofixes
+    cmds:
+      - gofumpt -w .
+      - golangci-lint run --fix
