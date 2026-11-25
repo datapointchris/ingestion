@@ -1,9 +1,0 @@
-# The build reads the Go module. What it never reads stays out of the context.
-.git
-.github
-.task
-deploy
-release
-dist
-ingestion
-*.md
