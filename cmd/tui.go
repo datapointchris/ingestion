@@ -15,13 +15,13 @@ import (
 	"github.com/datapointchris/goclikit"
 	"github.com/datapointchris/goclilogin"
 	"github.com/datapointchris/gotermboard"
+	"github.com/datapointchris/gotermboard/keywrites"
 	"github.com/datapointchris/gotermstyle"
 	"github.com/pkg/browser"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
 	"github.com/datapointchris/ingestion/server"
-	"github.com/datapointchris/ingestion/views/keywrites"
 	"github.com/datapointchris/ingestion/views/review"
 )
 
@@ -42,11 +42,12 @@ type tuiTab struct {
 	open        func(ctx context.Context, o tuiOptions) tuiBoard
 }
 
-// tuiBoard is a tab's board: it reads every source once for a printed frame, prints its snapshot,
-// and holds the writes its keys queued, which quitting awaits.
+// tuiBoard is a tab's board: it reads every source once for a printed frame, answering why its
+// main read failed, prints its snapshot, and holds the writes its keys queued, which quitting
+// awaits.
 type tuiBoard interface {
 	gotermboard.Board
-	ReadAll(ctx context.Context)
+	ReadAll(ctx context.Context) error
 	AwaitWrites(announce func(doing []string)) []keywrites.Ended
 	print(out io.Writer, asJSON bool) error
 }
@@ -60,11 +61,12 @@ func tuiTabList() []tuiTab {
 				"long the item has waited. The side panel reads the item under the cursor: its URL,\n" +
 				"the quality gate's whole answer, the scan's findings, and its text, the post first\n" +
 				"and then each comment. enter reads it full screen. A digit places the item on the\n" +
-				"destination the strip numbers with it, x drops it after asking what decided it, n\n" +
-				"places it with a note, and o opens its URL. Each calls the routes `ingestion review\n" +
-				"place` and `drop` call, under the same login, so the decision is yours.",
+				"destination numbered with it under the strip. x drops it after asking what decided\n" +
+				"it. n writes a note in $VISUAL or $EDITOR, then places the item with the note on the\n" +
+				"destination you pick. o opens its URL. Each key calls the routes that `ingestion\n" +
+				"review place` and `drop` call, under the same login, so the decision is yours.",
 			func(ctx context.Context, o tuiOptions) tuiBoard {
-				return reviewTab{review.NewBoard(ctx, reviewService(o), openInBrowser)}
+				return reviewTab{review.NewBoard(ctx, reviewService(o), review.Outside{Open: openInBrowser})}
 			},
 		},
 	}
@@ -144,12 +146,17 @@ func runTUICommand(cmd *cobra.Command, _ []string) error {
 }
 
 // printTUITab reads the tab --view names, or the first, and prints it once. It builds no other.
+// A main read that failed still prints, then fails the command as the CLI's own read would, so a
+// server that gave no answer exits 4.
 func printTUITab(ctx context.Context, out io.Writer, o tuiOptions) error {
 	tabs := tuiTabList()
 	at := max(slices.IndexFunc(tabs, func(tab tuiTab) bool { return tab.name == o.view }), 0)
 	board := tabs[at].open(ctx, o)
-	board.ReadAll(ctx)
-	return board.print(out, o.asJSON)
+	readErr := board.ReadAll(ctx)
+	if err := board.print(out, o.asJSON); err != nil {
+		return err
+	}
+	return readErr
 }
 
 // runTUI runs the tabs until the person quits, then waits for every decision a key sent, so

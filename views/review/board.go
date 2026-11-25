@@ -7,16 +7,19 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"os/exec"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/datapointchris/gotermboard"
+	"github.com/datapointchris/gotermboard/keywrites"
 	"github.com/datapointchris/gotermboard/markdown"
 
 	"github.com/datapointchris/ingestion/qualitygate"
+	"github.com/datapointchris/ingestion/redditexport"
 	"github.com/datapointchris/ingestion/server"
-	"github.com/datapointchris/ingestion/views/keywrites"
 )
 
 // Service is the set of routes that the tab reads and writes through. cmd fills it with the calls `ingestion
@@ -39,7 +42,7 @@ const (
 	sourceParses = "parse"
 )
 
-// The groupings v cycles, the first the one the tab opens on.
+// The groupings v cycles. The first is the default, which a remembered display overrides on screen.
 const (
 	byReason = "reason"
 	bySource = "source"
@@ -76,13 +79,23 @@ type parsed struct {
 	found  bool
 }
 
+// Outside is how the tab reaches the programs beside it. Open hands a URL to the browser. HandOver
+// gives the terminal to the person's editor for a note, as gotermboard.Model.HandOver does where it
+// is nil.
+type Outside struct {
+	Open     func(url string) error
+	HandOver func(m *gotermboard.Model, cmd *exec.Cmd, then func(*gotermboard.Model, error, []byte) tea.Cmd) tea.Cmd
+}
+
 // Board is the review tab: a gotermboard board with keys of its own. Everything but the sources,
 // the cursor and the writes is the screen loop's own.
 type Board struct {
 	ctx     context.Context
 	service Service
-	open    func(url string) error
+	outside Outside
 	queue   *gotermboard.Source[held]
+	// queueErr is why the newest read of the queue failed, and nil where it read.
+	queueErr atomic.Pointer[error]
 	// parses holds the parse of each item the cursor has rested on. Each is read off the screen's
 	// loop, as the cursor lands, rather than one per row on every read of the queue.
 	parses   *gotermboard.Source[map[string]parsed]
@@ -95,9 +108,14 @@ type Board struct {
 	drawnIn map[string]string
 }
 
-// NewBoard declares the board's reads, reading nothing yet. open hands a URL to the browser.
-func NewBoard(ctx context.Context, service Service, open func(url string) error) *Board {
-	b := &Board{ctx: ctx, service: service, open: open, renderer: markdown.New(nil), drawnIn: map[string]string{}}
+// NewBoard declares the board's reads, reading nothing yet.
+func NewBoard(ctx context.Context, service Service, outside Outside) *Board {
+	if outside.HandOver == nil {
+		outside.HandOver = func(m *gotermboard.Model, cmd *exec.Cmd, then func(*gotermboard.Model, error, []byte) tea.Cmd) tea.Cmd {
+			return m.HandOver(cmd, then)
+		}
+	}
+	b := &Board{ctx: ctx, service: service, outside: outside, renderer: markdown.New(nil), drawnIn: map[string]string{}}
 	b.queue = gotermboard.NewSource(sourceQueue, 30*time.Second, b.readQueue)
 	b.parses = gotermboard.NewSource(sourceParses, time.Hour, b.readParse)
 	return b
@@ -107,8 +125,10 @@ func (b *Board) readQueue(ctx context.Context) (held, string, error) {
 	readFrom := time.Now()
 	answer, err := b.service.Queue(ctx)
 	if err != nil {
+		b.queueErr.Store(&err)
 		return held{}, "", err
 	}
+	b.queueErr.Store(nil)
 	h := held{at: time.Now(), readFrom: readFrom, destinations: answer.Destinations, index: make(map[string]int, len(answer.Items))}
 	for i, it := range answer.Items {
 		decoded := item{ReviewItem: it}
@@ -168,21 +188,25 @@ func (b *Board) Sources() []gotermboard.Refresher {
 	return []gotermboard.Refresher{b.queue, b.parses}
 }
 
-// Groupings is gotermboard.Board's: why each item waits, which the tab opens on, its source, or
-// none.
+// Groupings is gotermboard.Board's: why each item waits, the default, then its source, or none.
 func (b *Board) Groupings() []string { return []string{byReason, bySource, byNone} }
 
 // TwoLines is gotermboard.TwoLineBoard's: each row's key and the gate's idea sit dim under it.
 func (b *Board) TwoLines() bool { return true }
 
-// ReadAll reads the queue, then the parse of the first row that the opening grouping draws, for a frame
-// printed once or a snapshot, so the printed side panel reads as a person's first screen does.
-func (b *Board) ReadAll(ctx context.Context) {
+// ReadAll reads the queue, then the parse of the first row under the default grouping, for a frame
+// printed once or a snapshot. It answers why the queue was not read, so a printed frame of a queue
+// never read fails as `ingestion review list` does.
+func (b *Board) ReadAll(ctx context.Context) error {
 	b.queue.Refresh(ctx)
+	if failed := b.queueErr.Load(); failed != nil {
+		return *failed
+	}
 	if rows := b.ordered(b.Groupings()[0]); len(rows) > 0 {
 		b.CursorOn(rows[0].Key)
 		b.parses.Refresh(ctx)
 	}
+	return nil
 }
 
 // reread reads the queue now, or straight after a read already under way, which may have begun
@@ -207,7 +231,7 @@ func (b *Board) Writing() bool { return b.writes.Writing() }
 // carries one, as r/golang for a Reddit save's subreddit, and else the connector that brought it.
 func sourceOf(it item) string {
 	for _, s := range it.Sightings {
-		if sub := s.Fields["subreddit"]; sub != "" {
+		if sub := s.Fields[redditexport.FieldSubreddit]; sub != "" {
 			return "r/" + sub
 		}
 		for _, name := range sortedKeys(s.Fields) {

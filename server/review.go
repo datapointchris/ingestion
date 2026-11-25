@@ -40,9 +40,14 @@ var errActingForAnother = errors.New("a person's token places only as that perso
 // schemas/ingestion-record.schema.json holds it.
 var causeSpelling = regexp.MustCompile(`^[a-z][a-z-]{0,63}$`)
 
+// ValidCause reports whether cause is spelled as the place and drop routes
+// take one.
+func ValidCause(cause string) bool { return causeSpelling.MatchString(cause) }
+
 // ReviewAnswer is what GET /api/v1/review answers:
 // schemas/review-list.schema.json. Destinations are those a placement takes,
-// in the order the set in force declares them.
+// in the order the set in force declares them, and nil where the set in force
+// could not be read.
 type ReviewAnswer struct {
 	SchemaVersion int                 `json:"schema_version"`
 	Items         []ReviewItem        `json:"items"`
@@ -55,7 +60,8 @@ type ReviewItem struct {
 	Zone  store.Zone `json:"zone"`
 	Title *string    `json:"title"`
 	URL   *string    `json:"url"`
-	// Reason is tags-disagree, below-floor, no-guess or no-parse.
+	// Reason is why the item waits, as schemas/review-list.schema.json
+	// enumerates it.
 	Reason string       `json:"reason"`
 	Guess  *ReviewGuess `json:"guess"`
 	// QualityAnswer is the quality gate's newest done answer as the store
@@ -164,12 +170,13 @@ func (h reviewHandlers) list(w http.ResponseWriter, r *http.Request) {
 }
 
 // destinations are those the set in force declares. A set that cannot be read
-// answers none, so the queue itself still reads.
+// answers nil, which the answer carries as null, so the queue itself still
+// reads and a reader tells the fault from a set that declares none.
 func (h reviewHandlers) destinations(r *http.Request) []ReviewDestination {
 	set, err := connectors.AppliedSet(r.Context(), h.store)
 	if err != nil {
 		h.log.ErrorContext(r.Context(), "read the set in force for the review queue's destinations", "error", err)
-		return []ReviewDestination{}
+		return nil
 	}
 	out := make([]ReviewDestination, 0, len(set.Destinations))
 	for _, d := range set.Destinations {
@@ -187,7 +194,7 @@ func (h reviewHandlers) place(w http.ResponseWriter, r *http.Request) {
 		Refuse(w, http.StatusBadRequest, CodeInvalidBody, "a placement names its destination")
 		return
 	}
-	if body.Cause != "" && !causeSpelling.MatchString(body.Cause) {
+	if body.Cause != "" && !ValidCause(body.Cause) {
 		Refuse(w, http.StatusBadRequest, CodeInvalidBody, "cause is a lowercase word or words joined by hyphens, such as subreddit, not %q", body.Cause)
 		return
 	}
@@ -199,7 +206,7 @@ func (h reviewHandlers) drop(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &body) {
 		return
 	}
-	if body.Cause != "" && !causeSpelling.MatchString(body.Cause) {
+	if body.Cause != "" && !ValidCause(body.Cause) {
 		Refuse(w, http.StatusBadRequest, CodeInvalidBody, "cause is a lowercase word or words joined by hyphens, such as subreddit, not %q", body.Cause)
 		return
 	}

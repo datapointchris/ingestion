@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/datapointchris/ingestion/schemas/review-list.schema.json",
   "title": "Items waiting on a person's placement",
-  "description": "What GET /api/v1/review answers and `ingestion review list --json` prints: each item that waits on a person, the longest waiting first: one that the side gate sent to review, one that holds no usable parse, and one that the quality gate sent to review before any side decision. POST /api/v1/review/{key}/place takes one of the destinations the set in force declares, and answers schemas/review-placement.schema.json.",
+  "description": "What GET /api/v1/review answers and `ingestion review list --json` prints: each item that waits on a person, the longest waiting first: one that the side gate sent to review, one that holds no usable parse, and one that the quality gate sent to review before any side decision. POST /api/v1/review/{key}/place takes one of the destinations the set in force declares, and answers schemas/review-placement.schema.json. A caller holding ingestion.review.read reads each item's title, URL, quality answer and sightings' fields here, without ingestion.items.read. Where the zone is outside, each is a stranger's text or a model's reading of it.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "items"],
@@ -34,7 +34,7 @@
             }
           },
           "quality_answer": {
-            "description": "The quality gate's newest done answer, as prompts/quality/answer.schema.json holds it: its verdict and confidence, quality, idea, genre, domains, themes, and side and confidence. Null where the gate gave none. Its idea and themes are a model's reading of the item, so they take the item's zone.",
+            "description": "The quality gate's newest done answer, in the shape prompts/quality/answer.schema.json holds. Null where the gate gave none. Its idea and themes are a model's reading of the item, so they take the item's zone.",
             "type": ["object", "null"]
           },
           "connectors": {"type": "array", "items": {"type": "string"}},
@@ -57,8 +57,8 @@
       }
     },
     "destinations": {
-      "description": "Each destination the set in force declares, in its order, which a placement takes. side is the side an item placed there takes, and null where the destination drops what it takes. Empty where the set in force cannot be read.",
-      "type": "array",
+      "description": "Each destination the set in force declares, in its order, which a placement takes. side is the side an item placed there takes, and null where the destination drops what it takes. Empty where the set declares none, and null where the set in force could not be read, so the queue still answers.",
+      "type": ["array", "null"],
       "items": {
         "type": "object",
         "additionalProperties": false,

@@ -41,8 +41,7 @@ never ahead of it. A stage's code goes in its own package:
 | `server` | the HTTP API that `ingestion serve` answers, and its route table, whose rows name each route's scope and what a repeat does, read by the CLI's retry and the router's key check |
 | `worker` | `ingestion worker run`, which leases tasks by capability under a fencing token |
 | `push` | `ingestion push`, which hands a URL or a key straight to a named destination |
-| `views/review` | the review tab of `ingestion tui`: a reader of the review queue and the parse under the cursor, a renderer of each into a gotermboard frame, and the keys that place or drop an item through a `Service` port, which `cmd/tui.go` fills with the CLI's own calls |
-| `views/keywrites` | the queue that runs a tab's key writes off the screen's loop, one at a time, and keeps each item pending until a read begun after its write shows it |
+| `views/review` | the review tab of `ingestion tui`: a reader of the review queue and the parse under the cursor, a renderer of each into a gotermboard frame, and the keys that place or drop an item through a `Service` port, which `cmd/tui.go` fills with the CLI's own calls. Its keys' writes run through gotermboard's `keywrites` queue |
 
 `views/` holds the TUI's tabs, one package each, so a later tab joins as its own package beside
 `review`. A tab is a read model, as in CQRS: its reader builds a snapshot from the service's

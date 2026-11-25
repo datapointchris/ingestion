@@ -8,10 +8,12 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/datapointchris/gotermboard"
 	"github.com/datapointchris/gotermboard/terminalcontrol"
 
+	"github.com/datapointchris/ingestion/route"
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
 )
@@ -28,10 +30,10 @@ var columns = []gotermboard.Column{
 // lead, because the reading pane decides them best.
 var reasons = []struct{ reason, title string }{
 	{store.ReasonQualityReview, "the gate asks"},
-	{"below-floor", "guess below its floor"},
-	{"tags-disagree", "tags name both sides"},
-	{"no-guess", "no rule, no answer"},
-	{"gate-error", "set unreadable"},
+	{route.CauseBelowFloor, "guess below its floor"},
+	{route.CauseTagsDisagree, "tags name both sides"},
+	{route.CauseNoGuess, "no rule, no answer"},
+	{route.CauseGateError, "the gate could not read the set or the sightings"},
 	{store.ReasonNoParse, "no usable parse"},
 }
 
@@ -60,28 +62,59 @@ func (b *Board) Frame(now time.Time, grouping string) gotermboard.Frame {
 			gotermboard.ReadStatus(b.statuses(), now),
 			b.writes.Line(now),
 		},
+		Charts:  func(width, _ int) []gotermboard.Line { return legend(h, unread, width) },
 		Columns: columns,
 		Groups:  groups,
 	}
 }
 
-// header counts what waits, names the grouping, and lists the key that places on each destination.
+// header counts what waits and names the grouping.
 func (b *Board) header(h held, grouping string, unread bool) gotermboard.Line {
 	count := "unread"
 	if !unread {
 		count = strconv.Itoa(len(b.shown(h))) + " waiting"
 	}
-	line := gotermboard.Line{gotermboard.C("review ", ""), gotermboard.C(count, gotermboard.Bold), gotermboard.C("  group ", ""), gotermboard.C(grouping, gotermboard.Bold), gotermboard.C("  ", "")}
-	if !unread && len(h.destinations) == 0 {
-		return append(line, gotermboard.C("the set in force declares no destination, so no key places", gotermboard.Yellow))
+	return gotermboard.Line{gotermboard.C("review ", ""), gotermboard.C(count, gotermboard.Bold), gotermboard.C("  group ", ""), gotermboard.C(grouping, gotermboard.Bold)}
+}
+
+// legend is the digit that places on each destination, wrapped at the screen's width. A strip
+// line would cut it, and a digit places at once, so every digit stays on screen. Where no key
+// places, it says why.
+func legend(h held, unread bool, width int) []gotermboard.Line {
+	if unread {
+		return nil
 	}
-	for i, d := range h.destinations {
-		if i == 9 {
-			break
+	if missing := destinationsMissing(h.destinations); missing != "" {
+		return []gotermboard.Line{{gotermboard.C(missing, gotermboard.Yellow)}}
+	}
+	var lines []gotermboard.Line
+	var line gotermboard.Line
+	used := 0
+	for i, d := range h.destinations[:min(len(h.destinations), 9)] {
+		digit, label := strconv.Itoa(i+1), " "+destinationLabel(d)
+		wide := utf8.RuneCountInString(digit + label)
+		if used > 0 && used+2+wide > width {
+			lines, line, used = append(lines, line), nil, 0
 		}
-		line = append(line, gotermboard.C(strconv.Itoa(i+1), gotermboard.Bold), gotermboard.C(" "+destinationLabel(d)+"  ", ""))
+		if used > 0 {
+			line, used = append(line, gotermboard.C("  ", "")), used+2
+		}
+		line, used = append(line, gotermboard.C(digit, gotermboard.Bold), gotermboard.C(label, "")), used+wide
 	}
-	return line
+	return append(lines, line)
+}
+
+// destinationsMissing is why no key places, or empty where the set declares a destination. The
+// queue comes without its destinations where the service could not read its set in force, or
+// where its release is older than the list.
+func destinationsMissing(destinations []server.ReviewDestination) string {
+	switch {
+	case destinations == nil:
+		return "the queue came without its destinations, so no key places: the service could not read its set in force, or predates the list"
+	case len(destinations) == 0:
+		return "the set in force declares no destination, so no key places"
+	}
+	return ""
 }
 
 // destinationLabel is a destination with the side it gives, as `reading-list → personal`.
@@ -276,9 +309,9 @@ func sortedKeys(m map[string]string) []string { return slices.Sorted(maps.Keys(m
 // schemas/tui-review.schema.json holds.
 const SchemaVersion = 1
 
-// Snapshot is what --json prints: each waiting item in the order the opening grouping draws it,
+// Snapshot is what --json prints: each waiting item ordered by the board's default grouping,
 // beside the group it draws under and the source the row names, then the key that places on each
-// destination, and how each read stands.
+// destination, and how each read stands. A display left grouped otherwise does not change it.
 type Snapshot struct {
 	SchemaVersion int                  `json:"schema_version"`
 	TakenAt       time.Time            `json:"taken_at"`
@@ -307,9 +340,9 @@ type ItemShown struct {
 func (b *Board) Snapshot(now time.Time) Snapshot {
 	h := b.queue.Value()
 	grouping := b.Groupings()[0]
-	snap := Snapshot{
-		SchemaVersion: SchemaVersion, TakenAt: now, Grouping: grouping,
-		Destinations: []DestinationKey{}, Items: []ItemShown{}, Sources: b.statuses(),
+	snap := Snapshot{SchemaVersion: SchemaVersion, TakenAt: now.UTC(), Grouping: grouping, Items: []ItemShown{}, Sources: b.statuses()}
+	if h.destinations != nil {
+		snap.Destinations = []DestinationKey{}
 	}
 	for i, d := range h.destinations {
 		if i == 9 {

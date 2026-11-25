@@ -152,14 +152,16 @@ func literalLine(text string) string {
 }
 
 // literalBlock is text as markdown paragraphs that read as typed. A blank line ends a paragraph,
-// and every other line break is kept as a hard break. A line's leading spaces become no-break
-// spaces, so an indented line keeps its indent rather than opening a code block.
+// and every other line break is kept as a hard break of two trailing spaces. A backslash break
+// would follow a line's own escaped closing backslash, and goldmark then draws both and joins the
+// lines. A line's leading spaces become no-break spaces, so an indented line keeps its indent
+// rather than opening a code block.
 func literalBlock(text string) string {
 	var paragraphs []string
 	var lines []string
 	flush := func() {
 		if len(lines) > 0 {
-			paragraphs = append(paragraphs, strings.Join(lines, "\\\n"))
+			paragraphs = append(paragraphs, strings.Join(lines, "  \n"))
 			lines = nil
 		}
 	}
