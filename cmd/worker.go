@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/oauth2"
 
+	"github.com/datapointchris/ingestion/extract"
 	"github.com/datapointchris/ingestion/worker"
 )
 
@@ -26,7 +27,9 @@ const (
 
 // workerHandlers lists the stage handlers for a worker to run. A stage whose work
 // runs in a worker adds its handler here.
-func workerHandlers() []worker.Handler { return nil }
+func workerHandlers(client *worker.Client, log *slog.Logger) []worker.Handler {
+	return extract.Builtin().Handlers(client, log)
+}
 
 var workerCmd = &cobra.Command{
 	Use:   "worker",
@@ -97,5 +100,5 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 		run.Poll = defaultPoll
 	}
 	client := worker.NewClient(d.API.Value, oauth2.NewClient(ctx, source))
-	return worker.Run(ctx, client, run, workerHandlers()...)
+	return worker.Run(ctx, client, run, workerHandlers(client, run.Log)...)
 }

@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS tasks (
 );
 CREATE INDEX IF NOT EXISTS tasks_by_stamp ON tasks (updated_ts);
 CREATE INDEX IF NOT EXISTS tasks_claimable ON tasks (capability, state, created_ts);
+CREATE INDEX IF NOT EXISTS tasks_by_item ON tasks (item_key, stage);
 
 CREATE TABLE IF NOT EXISTS workers (
     id           TEXT PRIMARY KEY,

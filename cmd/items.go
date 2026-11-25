@@ -1,11 +1,15 @@
 package cmd
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -14,6 +18,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/datapointchris/ingestion/server"
+	"github.com/datapointchris/ingestion/store"
 )
 
 var itemsCmd = &cobra.Command{
@@ -53,18 +58,105 @@ var itemsShowCmd = &cobra.Command{
 	RunE: runItemsShow,
 }
 
+// replayStages are the stages that --stage names.
+var replayStages = []string{store.StageParse, store.StageScan, store.StageQuality, store.StageModelRead, store.StageDeliver}
+
+var itemsReplayCmd = &cobra.Command{
+	Use:   "replay --stage <stage>",
+	Short: "Run a stage again over landed items, and print how many it queued",
+	Long: "Runs one stage again over the items that --connector and --key select, or\n" +
+		"over every item where neither is given, and prints how many it queued. A new\n" +
+		"extractor version, rule set or prompt is replayed this way, and its output is\n" +
+		"written beside the old one's.\n" +
+		"\n" +
+		"--stage is one of " + strings.Join(replayStages, ", ") + ". The service refuses a stage\n" +
+		"that no replay runs yet. A stage that calls a model first prints its count and\n" +
+		"an estimate of its tokens by kind, and queues only with --yes. A model-free\n" +
+		"stage, such as parse, queues at once.\n" +
+		"\n" +
+		"Each run sends one Idempotency-Key, and its retries send the same, so the\n" +
+		"service queues each replay once.",
+	Example: "  # parse every item again with the extractors the service holds\n" +
+		"  ingestion items replay --stage parse\n" +
+		"\n" +
+		"  # one connector's items\n" +
+		"  ingestion items replay --stage parse --connector reddit-exports\n" +
+		"\n" +
+		"  # one item, by key or by URL\n" +
+		"  ingestion items replay --stage parse --key reddit/t3_aq7ggd",
+	Args: cobra.NoArgs,
+	RunE: runItemsReplay,
+}
+
 func init() {
 	goclikit.AsNamespace(itemsCmd)
 	itemsListCmd.Flags().Int("limit", server.DefaultItemsListed, "List at most this many items")
 	itemsListCmd.Flags().Bool("keys", false, "Print each item's key alone, one per line")
 	itemsListCmd.Flags().Bool("json", false, "Print the service's answer as JSON")
 	itemsShowCmd.Flags().Bool("json", false, "Print the service's answer as JSON")
-	for _, c := range []*cobra.Command{itemsListCmd, itemsShowCmd} {
+	itemsReplayCmd.Flags().String("stage", "", "Run this stage again: "+strings.Join(replayStages, ", "))
+	itemsReplayCmd.Flags().String("connector", "", "Run it over the items this connector sighted")
+	itemsReplayCmd.Flags().String("key", "", "Run it over the item under this key or URL")
+	itemsReplayCmd.Flags().Bool("yes", false, "Queue a model stage once its estimate is read")
+	itemsReplayCmd.Flags().Bool("json", false, "Print the service's answer as JSON")
+	for _, c := range []*cobra.Command{itemsListCmd, itemsShowCmd, itemsReplayCmd} {
 		c.Flags().String("api", "", "Call this server rather than the config file's api")
 		addConfigFlag(c)
 	}
-	itemsCmd.AddCommand(itemsListCmd, itemsShowCmd)
+	itemsCmd.AddCommand(itemsListCmd, itemsShowCmd, itemsReplayCmd)
 	rootCmd.AddCommand(itemsCmd)
+}
+
+func runItemsReplay(cmd *cobra.Command, _ []string) error {
+	stage, _ := cmd.Flags().GetString("stage")
+	connector, _ := cmd.Flags().GetString("connector")
+	key, _ := cmd.Flags().GetString("key")
+	yes, _ := cmd.Flags().GetBool("yes")
+	asJSON, _ := cmd.Flags().GetBool("json")
+	api, _ := cmd.Flags().GetString("api")
+	if !slices.Contains(replayStages, stage) {
+		return fmt.Errorf("%w: --stage is one of %s, not %q", goclikit.ErrUsage, strings.Join(replayStages, ", "), stage)
+	}
+	req := server.ReplayRequest{Stage: stage, Confirm: yes}
+	if connector = strings.TrimSpace(connector); connector != "" {
+		req.Connector = &connector
+	}
+	if key = strings.TrimSpace(key); key != "" {
+		req.Key = &key
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		return err
+	}
+	idempotencyKey := make([]byte, 16)
+	_, _ = rand.Read(idempotencyKey)
+	header := http.Header{server.IdempotencyKey: {hex.EncodeToString(idempotencyKey)}}
+	var answer server.ReplayAnswer
+	raw, err := sendJSON(cmd.Context(), configPath(cmd), api, http.MethodPost, "/api/v1/replays", header, body, &answer)
+	var refused *refusal
+	if errors.As(err, &refused) && refused.Code == server.CodeInvalidKey {
+		return fmt.Errorf("%w: %s", goclikit.ErrUsage, refused.Message)
+	}
+	if err != nil {
+		return err
+	}
+	w := cmd.OutOrStdout()
+	if asJSON {
+		_, err := w.Write(raw)
+		return err
+	}
+	if answer.Queued {
+		_, err = fmt.Fprintf(w, "Queued %s on %d items.\n", answer.Stage, answer.Items)
+		return err
+	}
+	estimate := store.Tokens{}
+	if answer.Estimate != nil {
+		estimate = *answer.Estimate
+	}
+	_, err = fmt.Fprintf(w, "%s would run on %d items, estimated at uncached input %d, cache write %d, cache read %d and output %d tokens.\n"+
+		"Nothing is queued. --yes queues them.\n", answer.Stage, answer.Items,
+		estimate.UncachedInput, estimate.CacheWrite, estimate.CacheRead, estimate.Output)
+	return err
 }
 
 func runItemsList(cmd *cobra.Command, _ []string) error {

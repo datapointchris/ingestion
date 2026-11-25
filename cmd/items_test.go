@@ -93,11 +93,13 @@ func TestItemsListAndShowReadTheServiceAndUnpairedExits3OnAStrayBlob(t *testing.
 }
 
 // runCLI runs the command line args, with every flag at its default first,
-// and answers what it printed to stdout.
+// and answers what it printed to stdout. Each command takes this test's
+// context, because cobra keeps the first one a subcommand was given.
 func runCLI(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	var reset func(*cobra.Command)
 	reset = func(c *cobra.Command) {
+		c.SetContext(t.Context())
 		c.Flags().VisitAll(func(f *pflag.Flag) {
 			_ = f.Value.Set(f.DefValue)
 			f.Changed = false

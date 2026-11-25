@@ -95,17 +95,18 @@ poll = "10s"  # how often an idle worker asks for work
 - **The access token decides what a caller reaches.** A person's token reaches every route. A
   service token reaches only the routes its scopes grant. A worker needs
   `ingestion.tasks.claim`, which also reads and writes bytes through
-  `/api/v1/blobs/{sha256}`, and a service that reads items needs `ingestion.items.read`.
+  `/api/v1/blobs/{sha256}`. A service that reads items needs `ingestion.items.read`, and one that
+  runs a stage again needs `ingestion.items.replay`.
 
 `ingestion auth login`, `auth status` and `auth logout` hold a person's login. `ingestion tasks
 list` reads the service's open tasks and the workers it has heard from:
 
 ```text
-TASK                              ITEM              STAGE  CAPABILITY       STATE   ATTEMPTS  LEASE  UPDATED
-8a35d7545c3cb9c4cfdf1bb5128fddfd  reddit/t3_aq7ggd  parse  parse:text/html  queued  0         —      2026-11-24 21:13:50 EST
+TASK                              ITEM              STAGE  CAPABILITY         STATE   ATTEMPTS  LEASE  UPDATED
+8a35d7545c3cb9c4cfdf1bb5128fddfd  reddit/t3_aq7ggd  parse  parse:thread-text  queued  0         —      2026-11-24 21:13:50 EST
 
-WORKER                                     VERSION  CAPABILITIES  STARTED                  LAST HEARTBEAT
-ingestion-worker-7c9d8f6b4-x2kqp-0f683526  0.4.0    —             2026-11-24 21:13:50 EST  2026-11-24 21:13:53 EST
+WORKER                                     VERSION  CAPABILITIES       STARTED                  LAST HEARTBEAT
+ingestion-worker-7c9d8f6b4-x2kqp-0f683526  0.4.0    parse:thread-text  2026-11-24 21:13:50 EST  2026-11-24 21:13:53 EST
 ```
 
 `--state` narrows the list to one state and repeats, `--limit` caps it, and `--json` prints the
@@ -141,6 +142,30 @@ differs is hashed again before it is served, and is not served where its bytes c
 `ingestion blobs unpaired` names each blob in the volume that no row names, and each row whose
 bytes are missing. It exits 3 where it names any, and 1 where it could not compare. It deletes
 nothing.
+
+### Parsing an item, and running a stage again
+
+Landing a new item queues its parse in the same write. A worker runs the extractor registered for
+the item's media type, which writes the item's text as numbered units. `thread-text` reads a saved
+Reddit post or comment: the post first, then each comment depth first, each unit labeled with
+its author. A deleted or removed comment is left out, and its replies are kept.
+
+`GET /api/v1/items/{key}/parse` answers the newest parse: its text, its units and the scan's
+findings, in `schemas/item-parse.schema.json`. The text is the units joined by a blank line.
+`?extractor=` and `?version=` read an older parse, and every version stays readable. An extractor
+that finds no text fails its task with the reason, and the item waits in review.
+
+`ingestion items replay --stage <stage>` runs a stage again over the items that `--connector` and
+`--key` select, or over every item. A new extractor version writes its parse beside the old one.
+
+```text
+$ ingestion items replay --stage parse --connector reddit-exports
+Queued parse on 12 items.
+```
+
+The command posts to `POST /api/v1/replays` under one `Idempotency-Key`, so a retry queues
+nothing twice. The answer is `schemas/replay.schema.json`. Parse is the one stage that replays so
+far, and the service refuses the others with `stage_not_replayable`.
 
 ### Running it in a container
 

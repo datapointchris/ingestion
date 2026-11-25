@@ -125,6 +125,7 @@ const (
 	CodeRouteNotFound = "route_not_found"
 	CodeTaskNotFound  = "task_not_found"
 	CodeItemNotFound  = "item_not_found"
+	CodeParseNotFound = "parse_not_found"
 	CodeStaleLease    = "stale_lease"
 	CodeInternal      = "internal"
 	CodeUnknownField  = "unknown_field"

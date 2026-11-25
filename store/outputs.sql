@@ -1,6 +1,7 @@
 -- One row per item, stage, producer and producer version, so a new extractor,
--- rule set or prompt writes beside the old one. text, units, spans, answer and
--- error are outsider-written, so the outbox ships them as ingestion.text.
+-- rule set or prompt writes beside the old one. A parse's units are rows of
+-- parse_units. spans, answer and error are outsider-written, so the outbox
+-- ships them as ingestion.text.
 
 CREATE TABLE IF NOT EXISTS outputs (
     item_key         TEXT NOT NULL REFERENCES items (key),
@@ -18,8 +19,6 @@ CREATE TABLE IF NOT EXISTS outputs (
     quality          INTEGER,
     side_guess       TEXT,
     side_confidence  REAL,
-    text             TEXT,
-    units            TEXT,
     spans            TEXT,
     answer           TEXT,
     error            TEXT,

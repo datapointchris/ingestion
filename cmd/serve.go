@@ -16,6 +16,7 @@ import (
 	"github.com/datapointchris/goapiauth"
 	"github.com/spf13/cobra"
 
+	"github.com/datapointchris/ingestion/extract"
 	"github.com/datapointchris/ingestion/landing"
 	"github.com/datapointchris/ingestion/outbox"
 	"github.com/datapointchris/ingestion/server"
@@ -89,7 +90,8 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	lander, err := landing.New(landing.Config{Store: st, Blobs: blobs, Homes: cfg.Serve.Homes})
+	extractors := extract.Builtin()
+	lander, err := landing.New(landing.Config{Store: st, Blobs: blobs, Homes: cfg.Serve.Homes, QueueParse: extractors.QueueParse})
 	if err != nil {
 		return fmt.Errorf("%s: %w", path, err)
 	}
@@ -103,7 +105,8 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 	handler := server.Handler(server.Config{
 		Store: st, Gate: gate, Issuer: cfg.Issuer, PublicURL: cfg.Serve.PublicURL, Version: version, Log: log,
-	}, server.TaskRoutes(st, log), server.BlobRoutes(lander, log), server.ItemRoutes(st, log))
+	}, server.TaskRoutes(st, log), server.BlobRoutes(lander, log), server.ItemRoutes(st, log),
+		server.ReplayRoutes(st, map[string]server.Replayable{store.StageParse: extractors.Replayable()}, log))
 	srv := &http.Server{Addr: listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 
 	var wg sync.WaitGroup

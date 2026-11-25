@@ -9,6 +9,8 @@
     {"$ref": "#/$defs/blobs"},
     {"$ref": "#/$defs/homes"},
     {"$ref": "#/$defs/outputs"},
+    {"$ref": "#/$defs/parse_units"},
+    {"$ref": "#/$defs/replays"},
     {"$ref": "#/$defs/decisions"},
     {"$ref": "#/$defs/deliveries"},
     {"$ref": "#/$defs/tasks"},
@@ -106,7 +108,7 @@
     },
     "outputs": {
       "title": "outputs, one row per item, stage, producer and version",
-      "description": "ingestion.record.id is <item key>/<stage>/<producer>/<producer_version>. A parse's text and units, each finding's span, a model's answer and an error's text ship as ingestion.text.",
+      "description": "ingestion.record.id is <item key>/<stage>/<producer>/<producer_version>. A parse's units are rows of parse_units. Each finding's span, a model's answer and an error's text ship as ingestion.text.",
       "type": "object",
       "additionalProperties": false,
       "required": ["item_key", "stage", "producer", "producer_version", "state", "created_ts", "updated_ts"],
@@ -140,6 +142,36 @@
         "side_confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
         "created_ts": {"$ref": "#/$defs/timestamp"},
         "updated_ts": {"$ref": "#/$defs/timestamp"}
+      }
+    },
+    "parse_units": {
+      "title": "parse_units, one row per unit of one parse, appended",
+      "description": "ingestion.record.id is <item key>/<extractor>/<extractor_version>/<n>. A parse's whole text is its units' text in order, joined by a blank line. Each unit's label and text ship as ingestion.text.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["item_key", "extractor", "extractor_version", "n", "created_ts"],
+      "properties": {
+        "item_key": {"$ref": "#/$defs/item_key"},
+        "extractor": {"description": "The extractor that wrote the parse, which its outputs row names as the producer.", "type": "string"},
+        "extractor_version": {"description": "The extractor's version, which its outputs row names as the producer_version.", "type": "string"},
+        "n": {"description": "The unit's place in the parse, from 1.", "type": "integer", "minimum": 1},
+        "created_ts": {"$ref": "#/$defs/timestamp"}
+      }
+    },
+    "replays": {
+      "title": "replays, one row per replay that queued a stage again, appended",
+      "description": "ingestion.record.id is the replay's id, which derives from the caller and its Idempotency-Key. A replay holds no outsider text.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "stage", "items", "requested_by", "requested_ts"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+        "stage": {"$ref": "#/$defs/stage"},
+        "connector": {"description": "The connector whose sightings selected the items, and null for every connector.", "type": ["string", "null"]},
+        "item_key": {"description": "The one item the replay selected, and null for every item.", "anyOf": [{"$ref": "#/$defs/item_key"}, {"type": "null"}]},
+        "items": {"description": "How many items the replay queued a task for.", "type": "integer", "minimum": 0},
+        "requested_by": {"description": "Who asked: person:<login> or service:<client id>.", "type": "string"},
+        "requested_ts": {"$ref": "#/$defs/timestamp"}
       }
     },
     "decisions": {

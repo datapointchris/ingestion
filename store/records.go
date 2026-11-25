@@ -109,11 +109,36 @@ type Finding struct {
 	Severity string `json:"severity"`
 }
 
-// Unit is one part of a parse, such as a post or a page.
+// Unit is one part of a parse, such as a post or a page, numbered from 1.
 type Unit struct {
 	N     int     `json:"n"`
 	Label *string `json:"label"`
 	Text  string  `json:"text"`
+}
+
+// ParseUnit is one unit as parse_units holds it.
+type ParseUnit struct {
+	ItemKey          string  `json:"item_key"`
+	Extractor        string  `json:"extractor"`
+	ExtractorVersion string  `json:"extractor_version"`
+	N                int     `json:"n"`
+	Label            *string `json:"label"`
+	Text             string  `json:"text"`
+	CreatedTS        string  `json:"created_ts"`
+}
+
+// Replay is one replay that queued a stage again over the items its connector
+// and key select.
+type Replay struct {
+	// ID derives from the caller and its Idempotency-Key.
+	ID        string  `json:"id"`
+	Stage     string  `json:"stage"`
+	Connector *string `json:"connector"`
+	ItemKey   *string `json:"item_key"`
+	// Items counts the tasks queued, one per item.
+	Items       int    `json:"items"`
+	RequestedBy string `json:"requested_by"`
+	RequestedTS string `json:"requested_ts"`
 }
 
 // Span is the text one finding matched.
@@ -147,8 +172,6 @@ type Output struct {
 	Quality         *int            `json:"quality"`
 	SideGuess       *string         `json:"side_guess"`
 	SideConfidence  *float64        `json:"side_confidence"`
-	Text            *string         `json:"text"`
-	Units           []Unit          `json:"units"`
 	Spans           []Span          `json:"spans"`
 	Answer          json.RawMessage `json:"answer"`
 	Error           *string         `json:"error"`

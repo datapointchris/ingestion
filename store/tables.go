@@ -57,9 +57,14 @@ var Tables = []Table{
 	},
 	{
 		Name: "outputs", Key: []string{"item_key", "stage", "producer", "producer_version"}, Stamp: []string{"updated_ts"},
-		JSON: []string{"tokens", "findings", "units", "spans", "answer"},
-		Text: []string{"text", "units", "spans", "answer", "error"}, Kept: []string{"created_ts"}, Writes: Upserts,
+		JSON: []string{"tokens", "findings", "spans", "answer"},
+		Text: []string{"spans", "answer", "error"}, Kept: []string{"created_ts"}, Writes: Upserts,
 	},
+	{
+		Name: "parse_units", Key: []string{"item_key", "extractor", "extractor_version", "n"}, Stamp: []string{"created_ts"},
+		Text: []string{"label", "text"}, Writes: Appends,
+	},
+	{Name: "replays", Key: []string{"id"}, Stamp: []string{"requested_ts"}, Writes: Appends},
 	{Name: "decisions", Key: []string{"item_key", "gate", "sequence"}, Stamp: []string{"decided_ts"}, Writes: Appends},
 	{Name: "deliveries", Key: []string{"item_key", "destination"}, Stamp: []string{"updated_ts"}, Writes: Upserts},
 	{

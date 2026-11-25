@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -158,11 +159,18 @@ func localTime(stamp string) string {
 }
 
 // getJSON reads route from the server the config file at path names, or api
-// where it is set, into into, and answers the body as it came. It tries a
-// bounded few times within one deadline, again on no answer and on 429, 502,
-// 503 or 504. A server that gives no answer is errNoAnswer, naming the server
-// and what chose it.
+// where it is set, into into, and answers the body as it came.
 func getJSON(ctx context.Context, path, api, route string, into any) ([]byte, error) {
+	return sendJSON(ctx, path, api, http.MethodGet, route, nil, nil, into)
+}
+
+// sendJSON sends method to route on the server the config file at path names,
+// or api where it is set, with header and body, and reads a 200 or 201 answer
+// into into. It answers the body as it came. It tries a bounded few times
+// within one deadline, again on no answer and on 429, 502, 503 or 504, so a
+// write it sends is one its route reads as safe to repeat. A server that
+// gives no answer is errNoAnswer, naming the server and what chose it.
+func sendJSON(ctx context.Context, path, api, method, route string, header http.Header, body []byte, into any) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, answerDeadline)
 	defer cancel()
 	d, err := loadDeployment(ctx, path, api)
@@ -196,9 +204,19 @@ func getJSON(ctx context.Context, path, api, route string, into any) ([]byte, er
 			case <-time.After(wait):
 			}
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+route, nil)
+		var sent io.Reader
+		if body != nil {
+			sent = bytes.NewReader(body)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, base+route, sent)
 		if err != nil {
 			return nil, err
+		}
+		for name, values := range header {
+			req.Header[name] = values
+		}
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
 		}
 		resp, err := client.Do(req)
 		if err != nil {
@@ -212,32 +230,32 @@ func getJSON(ctx context.Context, path, api, route string, into any) ([]byte, er
 			continue
 		}
 		switch resp.StatusCode {
-		case http.StatusOK:
+		case http.StatusOK, http.StatusCreated:
 			return raw, json.Unmarshal(raw, into)
 		case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
 			lastErr = fmt.Errorf("it answered %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
 			continue
 		}
-		return nil, refusalOf(named, route, resp.StatusCode, raw)
+		return nil, refusalOf(named, method, route, resp.StatusCode, raw)
 	}
 	return nil, fmt.Errorf("%w: %s, after %d tries: %v", errNoAnswer, named, answerAttempts, lastErr)
 }
 
-// refusal is the server refusing a read. Code and Message are what its body
+// refusal is the server refusing a call. Code and Message are what its body
 // names, where the body is the server's refusal.
 type refusal struct {
-	Server, Route string
-	Status        int
-	Code, Message string
-	Body          string
+	Server, Method, Route string
+	Status                int
+	Code, Message         string
+	Body                  string
 }
 
 func (r *refusal) Error() string {
-	return fmt.Sprintf("%s refused GET %s with %d: %s", r.Server, r.Route, r.Status, r.Body)
+	return fmt.Sprintf("%s refused %s %s with %d: %s", r.Server, r.Method, r.Route, r.Status, r.Body)
 }
 
-func refusalOf(server, route string, status int, raw []byte) *refusal {
-	r := &refusal{Server: server, Route: route, Status: status, Body: strings.TrimSpace(string(raw))}
+func refusalOf(server, method, route string, status int, raw []byte) *refusal {
+	r := &refusal{Server: server, Method: method, Route: route, Status: status, Body: strings.TrimSpace(string(raw))}
 	var body struct {
 		Code    string `json:"code"`
 		Message string `json:"message"`
