@@ -1,12 +1,14 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
 
+	"github.com/datapointchris/ingestion/connectors"
 	"github.com/datapointchris/ingestion/itemkey"
 	"github.com/datapointchris/ingestion/store"
 )
@@ -55,6 +57,18 @@ type ItemAnswer struct {
 	Outputs       []OutputView   `json:"outputs"`
 	Decisions     []DecisionView `json:"decisions"`
 	Deliveries    []DeliveryView `json:"deliveries"`
+	// Undelivered says why an item placed on a side and read as is reaches
+	// no deliverer, and is null where it does or holds a delivery.
+	Undelivered *UndeliveredView `json:"undelivered"`
+}
+
+// UndeliveredView is why an item reaches no deliverer, in the words of
+// connectors.Undelivered.
+type UndeliveredView struct {
+	Reason      string  `json:"reason"`
+	Side        string  `json:"side"`
+	Destination *string `json:"destination"`
+	Message     string  `json:"message"`
 }
 
 // ItemView is the item, with its bytes' size and MD5 and its derived phase.
@@ -245,7 +259,36 @@ func (h itemHandlers) show(w http.ResponseWriter, r *http.Request) {
 		h.internal(w, r, "read an item", err)
 		return
 	}
-	JSON(w, http.StatusOK, itemAnswer(rec))
+	answer := itemAnswer(rec)
+	if answer.Undelivered, err = h.undelivered(r.Context(), rec); err != nil {
+		h.internal(w, r, "read the set in force", err)
+		return
+	}
+	JSON(w, http.StatusOK, answer)
+}
+
+// undelivered is why rec's item, placed on a side and read as is, reaches no
+// deliverer under the set in force, and nil where it does or holds a
+// delivery.
+func (h itemHandlers) undelivered(ctx context.Context, rec store.ItemRecords) (*UndeliveredView, error) {
+	side, sided := rec.NewestDecision(store.GateSide)
+	read, readDecided := rec.NewestDecision(store.GateRead)
+	if _, onASide := rec.Side(); !sided || !onASide || !readDecided || read.Verdict != connectors.ReadAsIs || len(rec.Deliveries) > 0 {
+		return nil, nil
+	}
+	set := connectors.Set{}
+	if applied, ok, err := h.store.AppliedDeclarations(ctx); err != nil {
+		return nil, err
+	} else if ok {
+		if set, err = connectors.Decode(applied); err != nil {
+			return nil, err
+		}
+	}
+	_, u := set.DeliveryTo(side)
+	if u == nil {
+		return nil, nil
+	}
+	return &UndeliveredView{Reason: u.Reason, Side: u.Side, Destination: optional(u.Destination), Message: u.Error()}, nil
 }
 
 func (h itemHandlers) parse(w http.ResponseWriter, r *http.Request) {

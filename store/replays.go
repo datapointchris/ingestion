@@ -15,15 +15,17 @@ var ErrNoSighting = errors.New("the connector sighted no item")
 
 // ReplayItems reads the items that r covers, oldest first: each item that r's
 // connector sighted and r's key names, or every item where neither is set,
-// that capability takes. capability answers the task's capability for an
-// item, and false where the stage does not run on it. It answers ErrNoItem
-// where r's key names no item, and ErrNoSighting where r's connector sighted
-// none.
-func (s *Store) ReplayItems(ctx context.Context, r Replay, capability func(Item) (string, bool)) ([]Item, error) {
-	return replayItems(ctx, s.read, r, capability)
+// that takes says the stage runs on. It answers ErrNoItem where r's key names
+// no item, and ErrNoSighting where r's connector sighted none.
+func (s *Store) ReplayItems(ctx context.Context, r Replay, takes func(Item) bool) ([]Item, error) {
+	return replayItems(ctx, s.read, r, takes)
 }
 
-func replayItems(ctx context.Context, db querier, r Replay, capability func(Item) (string, bool)) ([]Item, error) {
+// ReplayQueue queues a stage's tasks for item, and answers whether it queued
+// any.
+type ReplayQueue func(ctx context.Context, tx *Tx, item Item) (bool, error)
+
+func replayItems(ctx context.Context, db querier, r Replay, takes func(Item) bool) ([]Item, error) {
 	where, args := `1`, []any{}
 	if connector := deref(r.Connector); connector != "" {
 		_, found, err := first[Sighting](ctx, db, table("sightings"), `connector = ?`, connector)
@@ -49,21 +51,24 @@ func replayItems(ctx context.Context, db querier, r Replay, capability func(Item
 	if err != nil {
 		return nil, err
 	}
+	if takes == nil {
+		return selected, nil
+	}
 	var items []Item
 	for _, item := range selected {
-		if _, ok := capability(item); ok {
+		if takes(item) {
 			items = append(items, item)
 		}
 	}
 	return items, nil
 }
 
-// Replay queues a task of r.Stage for each item that ReplayItems answers for
-// r, then records r with its count, in one write. A replay already recorded
+// Replay runs queue over each item that r covers, then records r with the
+// count of items queue queued for, in one write. A replay already recorded
 // under r.ID answers as recorded and queues nothing, and one recorded with
 // another stage, connector or key answers ErrReplayDiffers. The bool says
 // whether this call queued.
-func (s *Store) Replay(ctx context.Context, r Replay, capability func(Item) (string, bool)) (Replay, bool, error) {
+func (s *Store) Replay(ctx context.Context, r Replay, queue ReplayQueue) (Replay, bool, error) {
 	queued := false
 	err := s.Update(ctx, func(tx *Tx) error {
 		held, found, err := first[Replay](ctx, tx.tx, table("replays"), `id = ?`, r.ID)
@@ -77,17 +82,21 @@ func (s *Store) Replay(ctx context.Context, r Replay, capability func(Item) (str
 			r = held
 			return nil
 		}
-		items, err := replayItems(ctx, tx.tx, r, capability)
+		items, err := replayItems(ctx, tx.tx, r, nil)
 		if err != nil {
 			return err
 		}
+		r.Items = 0
 		for _, item := range items {
-			c, _ := capability(item)
-			if _, err := tx.Enqueue(ctx, Task{ItemKey: &item.Key, Stage: r.Stage, Capability: c}); err != nil {
+			ok, err := queue(ctx, tx, item)
+			if err != nil {
 				return err
 			}
+			if ok {
+				r.Items++
+			}
 		}
-		r.Items, r.RequestedTS = len(items), tx.stamp()
+		r.RequestedTS = tx.stamp()
 		queued = true
 		return tx.put(ctx, table("replays"), r)
 	})

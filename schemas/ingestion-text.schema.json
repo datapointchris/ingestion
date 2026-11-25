@@ -9,6 +9,7 @@
     {"$ref": "#/$defs/homes"},
     {"$ref": "#/$defs/outputs"},
     {"$ref": "#/$defs/parse_units"},
+    {"$ref": "#/$defs/deliveries"},
     {"$ref": "#/$defs/tasks"},
     {"$ref": "#/$defs/cursors"}
   ],
@@ -79,6 +80,14 @@
       "properties": {
         "label": {"description": "The unit's own heading, such as a comment's author or a chapter's title.", "type": ["string", "null"]},
         "text": {"type": "string"}
+      }
+    },
+    "deliveries": {
+      "title": "deliveries",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "last_error": {"description": "The destination's answer to the last write that failed, or what a refusal names.", "type": ["string", "null"]}
       }
     },
     "tasks": {

@@ -72,7 +72,7 @@ func newPipeline(t *testing.T, extractors *extract.Registry, after server.AfterS
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	api := httptest.NewServer(server.Handler(server.Config{Store: st, Gate: gate, Issuer: provider.URL, Version: "test", Log: log},
 		server.TaskRoutes(st, log, after), server.BlobRoutes(lander, log), server.ItemRoutes(st, log), server.ReviewRoutes(st, log),
-		server.ReplayRoutes(st, map[string]server.Replayable{store.StageParse: extractors.Replayable()}, log)))
+		server.ReplayRoutes(st, replayStages(extractors), log)))
 	t.Cleanup(api.Close)
 	person := provider.Person(t, "ingestion-cli-test", "person")
 	tokenFile, config := filepath.Join(dir, "token.json"), filepath.Join(dir, "config.toml")
@@ -99,10 +99,18 @@ func newPipeline(t *testing.T, extractors *extract.Registry, after server.AfterS
 // worker does, and counts the tasks it ran.
 func (p *pipeline) parse(t *testing.T, extractors *extract.Registry) int {
 	t.Helper()
+	return p.run(t, extractors.Handlers(p.worker, slog.New(slog.NewTextHandler(io.Discard, nil)))...)
+}
+
+// run claims and runs every task that one of handlers holds the capability
+// of, until no claim answers one, and reports each as a worker does. It counts
+// the tasks it ran. A task sent back with backoff waits past this run.
+func (p *pipeline) run(t *testing.T, workers ...worker.Handler) int {
+	t.Helper()
 	ctx := t.Context()
 	handlers := map[string]worker.Handler{}
 	var capabilities []string
-	for _, h := range extractors.Handlers(p.worker, slog.New(slog.NewTextHandler(io.Discard, nil))) {
+	for _, h := range workers {
 		handlers[h.Capability()] = h
 		capabilities = append(capabilities, h.Capability())
 	}
@@ -119,6 +127,7 @@ func (p *pipeline) parse(t *testing.T, extractors *extract.Registry) int {
 			result := handlers[task.Capability].Run(ctx, task)
 			if err := p.worker.Report(ctx, task.ID, server.ReportRequest{
 				Token: task.LeaseToken, Outcome: result.Outcome, Error: result.Error, Outputs: result.Outputs,
+				RetryAfterSeconds: int(result.RetryAfter.Seconds()), Delivery: result.Delivery,
 			}); err != nil {
 				t.Fatal(err)
 			}

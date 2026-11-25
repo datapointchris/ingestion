@@ -66,6 +66,18 @@ func init() {
 	rootCmd.AddCommand(serveCmd)
 }
 
+// replayStages are the stages that serve replays: the parse, by each item's
+// extractor, and the delivery of each item read as is whose delivery is not
+// settled.
+func replayStages(extractors *extract.Registry) map[string]server.Replayable {
+	return map[string]server.Replayable{
+		store.StageParse: extractors.Replayable(),
+		store.StageDeliver: {Queue: func(ctx context.Context, tx *store.Tx, item store.Item) (bool, error) {
+			return route.QueueDelivery(ctx, tx, item.Key)
+		}},
+	}
+}
+
 func runServe(cmd *cobra.Command, _ []string) error {
 	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
@@ -117,7 +129,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		server.ConnectorRoutes(server.ConnectorConfig{
 			Store: st, Lander: lander, Scheduler: scheduler, Roots: roots, AfterApply: route.AfterApply(log), Log: log,
 		}),
-		server.ReplayRoutes(st, map[string]server.Replayable{store.StageParse: extractors.Replayable()}, log),
+		server.ReplayRoutes(st, replayStages(extractors), log),
 		server.ReviewRoutes(st, log))
 	srv := &http.Server{Addr: listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 

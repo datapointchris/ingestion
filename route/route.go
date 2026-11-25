@@ -13,7 +13,8 @@
 // that the gate itself sent to review, or a model's guess below the floor, so
 // a guess or a rule that arrives later reaches it. A person's placement from
 // review runs the read gate the same way. Each decision is appended, and the
-// newest at a gate decides.
+// newest at a gate decides. A read as is queues the item's delivery in the
+// same write.
 package route
 
 import (
@@ -219,7 +220,9 @@ func AfterStage(log *slog.Logger) func(context.Context, *store.Tx, store.Task) e
 
 // AfterApply is the hook that serve runs in the write that applies a changed
 // set. It runs the gates again over each parsed item that no side decision
-// placed, so a rule the set adds places what it matches.
+// placed, so a rule the set adds places what it matches. It then queues the
+// delivery of each item read as is that holds none, so a side's default or a
+// deliverer that the set adds reaches the items that waited for one.
 func AfterApply(log *slog.Logger) connectors.AfterApply {
 	return func(ctx context.Context, tx *store.Tx) error {
 		keys, err := tx.UnplacedParsedKeys(ctx)
@@ -229,6 +232,14 @@ func AfterApply(log *slog.Logger) connectors.AfterApply {
 		for _, key := range keys {
 			if _, err := Gate(ctx, tx, key, log); err != nil {
 				return fmt.Errorf("the side gate on %s: %w", key, err)
+			}
+		}
+		if keys, err = tx.UndeliveredAsIsKeys(ctx); err != nil {
+			return err
+		}
+		for _, key := range keys {
+			if _, err := QueueDelivery(ctx, tx, key); err != nil {
+				return fmt.Errorf("queue the delivery of %s: %w", key, err)
 			}
 		}
 		return nil
@@ -337,7 +348,42 @@ func decide(ctx context.Context, tx *store.Tx, key string, side store.Decision, 
 	if written, err = tx.AddDecision(ctx, read); err != nil {
 		return nil, err
 	}
+	if read.Verdict == connectors.ReadAsIs {
+		if _, err := queueDelivery(ctx, tx, set, key, side); err != nil {
+			return nil, err
+		}
+	}
 	return append(out, written), nil
+}
+
+// QueueDelivery queues the delivery of the item under key where its newest
+// side decision placed it on a side and its newest read decision reads it as
+// is, to the destination that the set in force resolves for that placement.
+// It queues nothing where no destination with a deliverer resolves, where the
+// delivery is settled, or where its task is already in flight. It answers
+// whether it queued.
+func QueueDelivery(ctx context.Context, tx *store.Tx, key string) (bool, error) {
+	side, sided, err := tx.NewestDecision(ctx, key, store.GateSide)
+	if err != nil || !sided || !onASide(side.Verdict) {
+		return false, err
+	}
+	read, ok, err := tx.NewestDecision(ctx, key, store.GateRead)
+	if err != nil || !ok || read.Verdict != connectors.ReadAsIs {
+		return false, err
+	}
+	set, err := connectors.AppliedSet(ctx, tx)
+	if err != nil {
+		return false, err
+	}
+	return queueDelivery(ctx, tx, set, key, side)
+}
+
+func queueDelivery(ctx context.Context, tx *store.Tx, set connectors.Set, key string, side store.Decision) (bool, error) {
+	destination, undelivered := set.DeliveryTo(side)
+	if undelivered != nil {
+		return false, nil
+	}
+	return tx.QueueDelivery(ctx, key, destination.Name, destination.Deliverer)
 }
 
 // Placement is a person's decision on an item.

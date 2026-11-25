@@ -29,6 +29,11 @@ const (
 // item to write them for.
 var errOutputsWithoutItem = errors.New("a poll's task reports no outputs")
 
+var (
+	errDeliveryOutsideDeliver = errors.New("only a deliver task reports a delivery")
+	errBadDelivery            = errors.New("the delivery is not one the store records")
+)
+
 // MaxListed is the most tasks one list answers.
 const MaxListed = 1000
 
@@ -61,6 +66,15 @@ type LeasedTask struct {
 	// is null where the item holds no bytes.
 	MediaType  string  `json:"media_type"`
 	BlobSHA256 *string `json:"blob_sha256"`
+	// Zone, Title, URL and LandedTS are the item's too, so a deliverer writes
+	// it holding no scope to read items. A poll carries none of them.
+	Zone     store.Zone `json:"zone,omitempty"`
+	Title    *string    `json:"title"`
+	URL      *string    `json:"url"`
+	LandedTS string     `json:"landed_ts,omitempty"`
+	// Destination names where a deliver task writes its item, and is null
+	// for every other task.
+	Destination *string `json:"destination"`
 }
 
 // ClaimAnswer is every task that the claim leased, and none where nothing waits.
@@ -82,13 +96,24 @@ const (
 )
 
 // ReportRequest ends a lease. Outputs are the stage's records for the task's
-// item, written in the same transaction that ends the lease.
+// item, and Delivery is how a deliver task's write ended, each written in the
+// same transaction that ends the lease.
 type ReportRequest struct {
-	Token             int64          `json:"token"`
-	Outcome           string         `json:"outcome"`
-	Error             *string        `json:"error,omitempty"`
-	RetryAfterSeconds int            `json:"retry_after_seconds,omitempty"`
-	Outputs           []ReportOutput `json:"outputs,omitempty"`
+	Token             int64           `json:"token"`
+	Outcome           string          `json:"outcome"`
+	Error             *string         `json:"error,omitempty"`
+	RetryAfterSeconds int             `json:"retry_after_seconds,omitempty"`
+	Outputs           []ReportOutput  `json:"outputs,omitempty"`
+	Delivery          *ReportDelivery `json:"delivery,omitempty"`
+}
+
+// ReportDelivery is how one write of a deliver task's item ended: its outcome,
+// the destination's id for the record that holds the item, and the
+// destination's answer where the delivery is pending or refused.
+type ReportDelivery struct {
+	Outcome       string  `json:"outcome"`
+	DestinationID *string `json:"destination_id,omitempty"`
+	Error         *string `json:"error,omitempty"`
 }
 
 // ReportOutput is one output a worker reports: each field of an outputs row
@@ -134,6 +159,7 @@ type TaskView struct {
 	ID             string  `json:"id"`
 	ItemKey        *string `json:"item_key"`
 	Connector      *string `json:"connector"`
+	Destination    *string `json:"destination"`
 	Stage          string  `json:"stage"`
 	Capability     string  `json:"capability"`
 	State          string  `json:"state"`
@@ -219,7 +245,8 @@ func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
 	for _, t := range tasks {
 		answer.Tasks = append(answer.Tasks, LeasedTask{
 			ID: t.ID, ItemKey: t.ItemKey, Connector: t.Connector, Stage: t.Stage, Capability: t.Capability, Attempts: t.Attempts,
-			LeaseToken: *t.LeaseToken, LeaseExpiresTS: *t.LeaseExpiresTS, MediaType: t.MediaType, BlobSHA256: t.BlobSHA256,
+			LeaseToken: *t.LeaseToken, LeaseExpiresTS: *t.LeaseExpiresTS, MediaType: t.Item.MediaType, BlobSHA256: t.Item.BlobSHA256,
+			Zone: t.Item.Zone, Title: t.Item.Title, URL: t.Item.URL, LandedTS: t.Item.CreatedTS, Destination: t.Destination,
 		})
 	}
 	for _, t := range answer.Tasks {
@@ -270,6 +297,16 @@ func (h taskHandlers) report(w http.ResponseWriter, r *http.Request) {
 		for _, o := range body.Outputs {
 			if err := tx.PutOutputWithUnits(r.Context(), o.output(task), o.Units); err != nil {
 				return err
+			}
+		}
+		if d := body.Delivery; d != nil {
+			if task.Stage != store.StageDeliver || task.Destination == nil {
+				return errDeliveryOutsideDeliver
+			}
+			if err := tx.RecordDelivery(r.Context(), task, store.DeliveryAttempt{
+				Outcome: d.Outcome, DestinationID: d.DestinationID, Error: d.Error,
+			}); err != nil {
+				return fmt.Errorf("%w: %w", errBadDelivery, err)
 			}
 		}
 		if h.after != nil && outcome.State == store.TaskDone && task.ItemKey != nil {
@@ -335,8 +372,8 @@ func (h taskHandlers) list(w http.ResponseWriter, r *http.Request) {
 
 func viewOf(t store.Task, now time.Time) TaskView {
 	return TaskView{
-		ID: t.ID, ItemKey: t.ItemKey, Connector: t.Connector, Stage: t.Stage, Capability: t.Capability, State: t.State,
-		HeldBy: t.HeldBy, Lapsed: t.Lapsed(now),
+		ID: t.ID, ItemKey: t.ItemKey, Connector: t.Connector, Destination: t.Destination, Stage: t.Stage, Capability: t.Capability,
+		State: t.State, HeldBy: t.HeldBy, Lapsed: t.Lapsed(now),
 		LeaseHolder: t.LeaseHolder, LeaseExpiresTS: t.LeaseExpiresTS, Attempts: t.Attempts, HasError: t.Error != nil,
 		NotBeforeTS: t.NotBeforeTS, CreatedTS: t.CreatedTS, UpdatedTS: t.UpdatedTS,
 	}
@@ -357,6 +394,10 @@ func (h taskHandlers) leaseRefused(w http.ResponseWriter, r *http.Request, err e
 		Refuse(w, http.StatusUnprocessableEntity, CodeItemNotFound, "%v", err)
 	case errors.Is(err, errOutputsWithoutItem):
 		Refuse(w, http.StatusUnprocessableEntity, CodeInvalidBody, "task %s polls a connector, which carries no item, so it reports no outputs", r.PathValue("id"))
+	case errors.Is(err, errDeliveryOutsideDeliver):
+		Refuse(w, http.StatusUnprocessableEntity, CodeInvalidBody, "task %s delivers nothing, so it reports no delivery", r.PathValue("id"))
+	case errors.Is(err, errBadDelivery):
+		Refuse(w, http.StatusUnprocessableEntity, CodeInvalidBody, "%v", err)
 	case errors.Is(err, store.ErrUnitsOutsideParse), errors.Is(err, store.ErrUnitsOutOfOrder):
 		Refuse(w, http.StatusUnprocessableEntity, CodeInvalidBody, "%v", err)
 	default:

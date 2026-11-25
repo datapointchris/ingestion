@@ -101,7 +101,16 @@ func runCLI(t *testing.T, args ...string) (string, error) {
 	reset = func(c *cobra.Command) {
 		c.SetContext(t.Context())
 		c.Flags().VisitAll(func(f *pflag.Flag) {
-			_ = f.Value.Set(f.DefValue)
+			// A slice's default prints as [a,b], which Set would read as one value.
+			if slice, ok := f.Value.(pflag.SliceValue); ok {
+				var values []string
+				if def := strings.Trim(f.DefValue, "[]"); def != "" {
+					values = strings.Split(def, ",")
+				}
+				_ = slice.Replace(values)
+			} else {
+				_ = f.Value.Set(f.DefValue)
+			}
 			f.Changed = false
 		})
 		for _, child := range c.Commands() {

@@ -85,12 +85,22 @@ books = "/srv/books"
 slots = 4     # tasks leased at once
 lease = "10m" # how long a lease holds without a heartbeat
 poll = "10s"  # how often an idle worker asks for work
+
+# Where set, the worker delivers to life's articles as this service client.
+# The client needs the scope life.articles.write.
+[deliver.life]
+api = "https://life.example.com"
+client_id = "life-svc-ingestion"
+# issuer = "..."  # the OIDC provider that signs life's tokens, if not the one above
 ```
 
 `ingestion serve --help` and `ingestion worker run --help` print each setting's default.
 
 - **`INGESTION_CLIENT_SECRET`** is the worker's client secret. It makes the worker authenticate
   with the client-credentials grant. The worker requires it, or a `token_command`.
+- **`INGESTION_LIFE_CLIENT_SECRET`** is the secret of the client that `[deliver.life]` names. A
+  worker given that table refuses to start without it. A worker given no `[deliver.life]` claims
+  no delivery to life.
 - **`NODE_NAME`**, where set, names the node in each shipped record's resource.
 - **The access token decides what a caller reaches.** A person's token reaches every route. A
   service token reaches only the routes its scopes grant. A worker needs
@@ -187,6 +197,13 @@ A routing rule is named, and its match holds a `connector`, a `tag`, or a source
 destination names its `side`, `personal` or `fleet`, and the `tags` that place an item there. A
 destination with no side drops what it takes. The side gate reads the rules and destinations of
 the set in force.
+
+A destination's `deliverer` names the code that writes each item placed there into its app, such
+as `life-articles`. A destination with none keeps its items in ingestion for a reader to pull.
+`default_for_side: true` makes a destination take each item placed on its side with no
+destination named. The quality gate's guess places an item that way, and so do tags naming two
+destinations on one side. A side holds one default at most. A set naming a deliverer that the
+build does not carry is refused.
 
 `ingestion connectors apply <dir>` reads the whole set, checks each file against its schema, and
 sends it to the service, which keeps it beside its commit. The commit is the directory's `HEAD`,
@@ -336,6 +353,41 @@ answers. Sending the same placement again changes nothing. A service placing for
 the person's `login` in its body, because a service token carries no person. The decision keeps
 the service's client id beside the login.
 
+### An item read as is reaches its destination's app once, under its key
+
+Where the read gate reads an item as is, the service queues its delivery in the same write. The
+delivery goes to the destination that the side decision names, or else to its side's default. A
+worker running that destination's deliverer leases the task, whose capability is
+`deliver:<deliverer>`. It writes the item through the app's own API, never its store, and the app
+keeps the item's key as the record's source key. `life-articles` posts the item to life's
+`/api/v1/articles`. It sends the item's title, or its URL where it has none, its URL, the time it
+first landed as the save date, and its key as `source_key`.
+
+Each delivery ends in one outcome, which `items show` prints with the app's id for the record:
+
+```text
+delivery  reading-list  delivered as 3  attempts 1
+delivery  reading-list  delivered-to-existing as 8  attempts 1
+delivery  reading-list  refused as 5  attempts 1  life's article 5 holds this key from another body
+delivery  reading-list  pending  attempts 2  life answered 500: …
+delivery  none: no destination in the set in force is default_for_side personal, so an item placed on that side with no destination named waits
+```
+
+- **`delivered`**: the app saved the item under its key, or already held it there.
+- **`delivered-to-existing`**: the app held a record of the same URL under no key, and gave it
+  this key.
+- **`refused`**: the app holds a record that conflicts, such as one of the same URL under another
+  key. The delivery names that record, and is never tried again.
+- **`pending`**: the app failed, timed out or answered in part. The task tries again 30 seconds
+  later, doubling each time up to an hour. An answer that refuses the body as invalid fails the
+  task instead, and the delivery stays pending with that answer.
+- **`delivery  none:`** marks an item read as is that no deliverer takes. Its side has no default,
+  or its destination names no deliverer or is not declared. An apply that gives the side a default
+  or the destination a deliverer queues each such item.
+
+A settled delivery is never queued again, so a second sighting or a replay writes nothing to the
+app. `ingestion items replay --stage deliver` queues each delivery that is still pending.
+
 ### Running it in a container
 
 Each release publishes the image `ghcr.io/datapointchris/ingestion:<version>`. It runs `serve`
@@ -348,7 +400,9 @@ uid and gid 10600.
 `ghcr.io/datapointchris/ingestion/manifests:<version>`, with the image pinned by digest. Both are
 signed with cosign by the release workflow. The manifests leave two things for the cluster to
 supply: the ConfigMap `ingestion-config` holding `config.toml`, and the Secret
-`ingestion-worker-client` holding the worker's client secret under `secret`.
+`ingestion-worker-client` holding the worker's client secret under `secret`. Where the config
+sets `[deliver.life]`, the cluster also supplies the Secret `ingestion-life-client`, holding that
+client's secret under `secret`.
 
 **An upgrade that changes a table copies the store first.** Before `serve` changes the store's
 tables, it writes a copy beside the store, named `ingestion.db.before-<UTC time>`. A column that

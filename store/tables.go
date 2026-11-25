@@ -66,7 +66,10 @@ var Tables = []Table{
 	},
 	{Name: "replays", Key: []string{"id"}, Stamp: []string{"requested_ts"}, Writes: Appends},
 	{Name: "decisions", Key: []string{"item_key", "gate", "sequence"}, Stamp: []string{"decided_ts"}, Writes: Appends},
-	{Name: "deliveries", Key: []string{"item_key", "destination"}, Stamp: []string{"updated_ts"}, Writes: Upserts},
+	{
+		Name: "deliveries", Key: []string{"item_key", "destination"}, Stamp: []string{"updated_ts"}, Text: []string{"last_error"},
+		Writes: Upserts,
+	},
 	{
 		Name: "tasks", Key: []string{"id"}, Stamp: []string{"updated_ts"}, Text: []string{"error"},
 		Kept: []string{"created_ts"}, Writes: Upserts,

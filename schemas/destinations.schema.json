@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/datapointchris/ingestion/schemas/destinations.schema.json",
   "title": "The destinations",
-  "description": "What destinations.yml holds in a directory that `ingestion connectors apply` sends: each place an item is delivered, the side it takes, and the tags that place an item there. The side gate, a person's placement and every routing rule name a destination from here.",
+  "description": "What destinations.yml holds in a directory that `ingestion connectors apply` sends: each place an item is delivered, the side it takes, the tags that place an item there, the deliverer that writes to it, and whether it takes its side's items placed with no destination named. The side gate, a person's placement and every routing rule name a destination from here.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -13,10 +13,13 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["name"],
+      "dependentRequired": {"deliverer": ["side"], "default_for_side": ["side"]},
       "properties": {
         "name": {"type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
         "side": {"description": "The side an item placed here takes. Left out, it takes neither, as a destination that drops what it takes does.", "enum": ["personal", "fleet"]},
-        "tags": {"description": "Each tag that places an item here. A tag places an item on one destination only.", "type": "array", "items": {"$ref": "connector.schema.json#/$defs/tag"}, "uniqueItems": true}
+        "tags": {"description": "Each tag that places an item here. A tag places an item on one destination only.", "type": "array", "items": {"$ref": "connector.schema.json#/$defs/tag"}, "uniqueItems": true},
+        "deliverer": {"description": "The deliverer that writes each item placed here through the destination's own API, under the item's key, such as life-articles. Left out, nothing is delivered, as for a destination whose reader pulls its items itself.", "type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
+        "default_for_side": {"description": "Whether an item placed on this destination's side with no destination named, as by the quality gate's guess, comes here. One destination at most is a side's default. With none, such an item waits.", "type": "boolean"}
       }
     }
   }

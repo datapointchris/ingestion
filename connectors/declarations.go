@@ -116,6 +116,13 @@ type Destination struct {
 	// such as one that drops what it takes.
 	Side string   `json:"side,omitempty" yaml:"side"`
 	Tags []string `json:"tags" yaml:"tags"`
+	// Deliverer names the deliverer that writes each item placed here, as
+	// RegisterDeliverer registered it. Left out, nothing is delivered, as for
+	// a destination whose reader pulls its items itself.
+	Deliverer string `json:"deliverer,omitempty" yaml:"deliverer"`
+	// DefaultForSide makes this the destination of an item placed on its side
+	// with no destination named, as the quality gate's guess places one.
+	DefaultForSide bool `json:"default_for_side,omitempty" yaml:"default_for_side"`
 }
 
 // Set is every declaration applied together.
@@ -140,6 +147,17 @@ func (s Set) Connector(name string) (Connector, bool) {
 func (s Set) Destination(name string) (Destination, bool) {
 	for _, d := range s.Destinations {
 		if d.Name == name {
+			return d, true
+		}
+	}
+	return Destination{}, false
+}
+
+// SideDefault is the destination that takes side's items placed with no
+// destination named, and false where none is. Validate refuses two on a side.
+func (s Set) SideDefault(side string) (Destination, bool) {
+	for _, d := range s.Destinations {
+		if d.DefaultForSide && d.Side == side {
 			return d, true
 		}
 	}
@@ -289,8 +307,10 @@ func decodeFile(file string, into any) error {
 // the rules a single declaration holds to. Validate adds only what a schema
 // cannot say: that no two declarations of a kind share a name, that a rule's
 // connector and destination are declared, that a tag places an item on one
-// destination, that a schedule parses, that a drop's format is registered,
-// and that a folder's root is one of roots. nil roots skips that check.
+// destination, that one destination at most is a side's default, that a
+// schedule parses, that a drop's format and a destination's deliverer are
+// registered, and that a folder's root is one of roots. nil roots skips that
+// check.
 func Validate(s Set, roots []string) []Invalid {
 	compiled, err := compiledSchemas()
 	if err != nil {
@@ -313,12 +333,22 @@ func Validate(s Set, roots []string) []Invalid {
 	}
 	destinations := map[string]bool{}
 	tagged := map[string]string{}
+	sideDefaults := map[string]string{}
 	for _, d := range s.Destinations {
 		problems := schemaProblems(compiled.destination, d.normalized())
 		if destinations[d.Name] {
 			problems = append(problems, "another destination has this name")
 		}
 		destinations[d.Name] = true
+		if d.Deliverer != "" && !deliverers[d.Deliverer] {
+			problems = append(problems, fmt.Sprintf("deliverer %s names no deliverer this build registers", d.Deliverer))
+		}
+		if d.DefaultForSide && d.Side != "" {
+			if other, taken := sideDefaults[d.Side]; taken {
+				problems = append(problems, fmt.Sprintf("%s is already the default for side %s", other, d.Side))
+			}
+			sideDefaults[d.Side] = d.Name
+		}
 		for _, tag := range d.Tags {
 			if other, taken := tagged[tag]; taken && other != d.Name {
 				problems = append(problems, fmt.Sprintf("tag %s already places an item on %s", tag, other))

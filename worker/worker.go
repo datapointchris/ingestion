@@ -31,9 +31,11 @@ type Result struct {
 	Outcome    string
 	Error      *string
 	RetryAfter time.Duration
-	// Outputs are the stage's records for the task's item, which the service
-	// writes in the transaction that ends the lease.
-	Outputs []server.ReportOutput
+	// Outputs are the stage's records for the task's item, and Delivery is how
+	// a deliver task's write ended. The service writes both in the
+	// transaction that ends the lease.
+	Outputs  []server.ReportOutput
+	Delivery *server.ReportDelivery
 }
 
 // Handler runs the tasks of one capability.
@@ -160,7 +162,7 @@ func runTask(ctx context.Context, client *Client, cfg Config, h Handler, task Ta
 	}
 	err := report(ctx, runCtx, client, cfg, log, task, server.ReportRequest{
 		Token: task.LeaseToken, Outcome: result.Outcome, Error: result.Error,
-		RetryAfterSeconds: int(result.RetryAfter.Seconds()), Outputs: result.Outputs,
+		RetryAfterSeconds: int(result.RetryAfter.Seconds()), Outputs: result.Outputs, Delivery: result.Delivery,
 	})
 	switch {
 	case errors.Is(err, ErrStaleLease):

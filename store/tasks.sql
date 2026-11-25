@@ -2,13 +2,15 @@
 -- by a worker holding its capability. lease_token rises with every claim, so a
 -- report under an older token is refused. held_by names the connector whose
 -- first fill holds a model stage's task, which no claim takes until a person
--- releases the fill. error is outsider-written, because an extractor's stderr
--- can quote the item, so the outbox ships it as ingestion.text.
+-- releases the fill. destination names the destination a deliver task writes
+-- its item to. error is outsider-written, because an extractor's stderr can
+-- quote the item, so the outbox ships it as ingestion.text.
 
 CREATE TABLE IF NOT EXISTS tasks (
     id               TEXT PRIMARY KEY,
     item_key         TEXT REFERENCES items (key),
     connector        TEXT,
+    destination      TEXT,
     stage            TEXT NOT NULL,
     capability       TEXT NOT NULL,
     state            TEXT NOT NULL CHECK (state IN ('queued', 'leased', 'done', 'failed')),

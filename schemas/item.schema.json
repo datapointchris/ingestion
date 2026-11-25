@@ -133,12 +133,29 @@
         "required": ["destination", "outcome", "attempts"],
         "properties": {
           "destination": {"description": "One the destinations file names.", "type": "string"},
-          "destination_id": {"type": ["string", "null"]},
-          "outcome": {"enum": ["pending", "delivered", "delivered-to-existing", "refused"]},
+          "destination_id": {"description": "The id of the destination's record that holds the item, or that a refusal names.", "type": ["string", "null"]},
+          "outcome": {"description": "delivered-to-existing is a record the destination held under no key, which took the item's key. refused is a 409 naming an existing record, kept and never retried. pending waits on its task, which tries again after a failure.", "enum": ["pending", "delivered", "delivered-to-existing", "refused"]},
           "attempts": {"type": "integer"},
-          "last_error": {"type": ["string", "null"]}
+          "last_error": {"description": "The destination's answer to the last write that failed, or what a refusal names.", "type": ["string", "null"]}
         }
       }
+    },
+    "undelivered": {
+      "description": "Why an item placed on a side and read as is reaches no deliverer, and null where it does or holds a delivery.",
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["reason", "side", "destination", "message"],
+          "properties": {
+            "reason": {"description": "no-side-default: the placement named a side and no destination, and no destination in the set in force is that side's default, so the item waits for a set that names one. not-declared: the set in force does not declare the destination placed on. no-deliverer: the destination names no deliverer, as one whose reader pulls its items itself.", "enum": ["no-side-default", "not-declared", "no-deliverer"]},
+            "side": {"enum": ["personal", "fleet"]},
+            "destination": {"type": ["string", "null"]},
+            "message": {"type": "string"}
+          }
+        },
+        {"type": "null"}
+      ]
     },
     "suggestion": {"anyOf": [{"$ref": "suggestion.schema.json"}, {"type": "null"}]}
   }

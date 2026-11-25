@@ -12,13 +12,14 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "item_key", "connector", "stage", "capability", "state", "held_by", "lapsed", "lease_holder", "lease_expires_ts", "attempts", "has_error", "not_before_ts", "created_ts", "updated_ts"],
+        "required": ["id", "item_key", "connector", "destination", "stage", "capability", "state", "held_by", "lapsed", "lease_holder", "lease_expires_ts", "attempts", "has_error", "not_before_ts", "created_ts", "updated_ts"],
         "properties": {
           "id": {"type": "string"},
           "item_key": {"description": "The item a stage's task works on, and null for a poll.", "type": ["string", "null"]},
           "connector": {"description": "The connector a poll fetches for, and null for a stage's task.", "type": ["string", "null"]},
+          "destination": {"description": "The destination a deliver task writes its item to, and null for every other task.", "type": ["string", "null"]},
           "stage": {"enum": ["poll", "land", "parse", "scan", "quality", "model-read", "deliver"]},
-          "capability": {"description": "What a worker needs to claim the task, and poll:<source> for a poll.", "type": "string"},
+          "capability": {"description": "What a worker needs to claim the task: poll:<source> for a poll, parse:<extractor> for a parse and deliver:<deliverer> for a delivery.", "type": "string"},
           "state": {"enum": ["queued", "leased", "done", "failed"]},
           "held_by": {"description": "The connector whose first fill holds this queued task until a person releases it.", "type": ["string", "null"]},
           "lapsed": {"description": "The task is leased and its lease ran out, so the next claim takes it.", "type": "boolean"},

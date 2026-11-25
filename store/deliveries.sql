@@ -1,5 +1,7 @@
--- One row per item and destination. refused is a 409 naming an existing
--- record, kept and never retried.
+-- One row per item and destination, written pending when its deliver task is
+-- queued. refused is a 409 naming an existing record, kept with that record's
+-- id and never retried. last_error is the destination's answer, which can
+-- quote the item, so the outbox ships it as ingestion.text.
 
 CREATE TABLE IF NOT EXISTS deliveries (
     item_key       TEXT NOT NULL REFERENCES items (key),
