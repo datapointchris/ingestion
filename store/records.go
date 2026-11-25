@@ -186,6 +186,8 @@ type Output struct {
 	BlobSHA256     *string         `json:"blob_sha256"`
 	DispatchID     *string         `json:"dispatch_id"`
 	RunID          *string         `json:"run_id"`
+	Model          *string         `json:"model"`
+	Effort         *string         `json:"effort"`
 	Tokens         *Tokens         `json:"tokens"`
 	Findings       []Finding       `json:"findings"`
 	Quality        *int            `json:"quality"`

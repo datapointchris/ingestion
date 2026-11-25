@@ -28,12 +28,13 @@ package:
 | `extract` | one extractor per media type, each writing versioned text and units |
 | `isolatedprocess` | the one door that starts a program over outsider bytes, in a temporary directory of its own with an environment that holds no secret |
 | `scan` | the scanner, which runs YARA-X's `yr` over a parse's text or over one sentence, its stored findings, and `build-rules`, which converts Agent Threat Rules and tests each by its own examples |
-| `qualitygate` | the model stage that reads an item's opening and answers its quality, genre, domains, themes, a one-line idea and a side guess |
-| `route` | the side gate and the read gate, which serve runs in the write that ends each stage between the parse and them, once the item's newest parse is scanned, and in the write that applies a changed set: a sighting's tags, then a rule, then the quality gate's guess at or above its confidence floor, else review; a person's placement from review; and `Due`, the one predicate for where an item is due a delivery, which each decision's write reconciles, queueing a read as is and withdrawing what a drop or a move no longer reaches |
+| `qualitygate` | the model stage that reads an item's opening and answers its quality, genre, domains, themes, a one-line idea and a side guess: the write after the scan that queues its task, the worker's handler that dispatches once and follows the stored dispatch, and the decision that its answer appends |
+| `route` | the side gate and the read gate, which serve runs in the write that ends each stage between the parse and them, once the item's newest parse is scanned, and in the write that applies a changed set: a sighting's tags, then a rule, then the quality gate's drop, review or guess at or above its confidence floor, else review, with a tag, rule or person withdrawing the item's queued quality task; a person's placement from review; and `Due`, the one predicate for where an item is due a delivery, which each decision's write reconciles, queueing a read as is and withdrawing what a drop or a move no longer reaches |
 | `modelread` | the model stage that answers an item's note with a summary, a suggestion sentence, or both |
 | `connectors` | the declaration set, checked against its schemas, and its apply, the scheduler that makes each connector due, the folder scan, the drop handler each source registers under its format, the deliverer each destination names, and the side default that takes an item placed with no destination |
 | `deliver` | each deliverer, registered with what it takes and how a worker opens it, which upserts an item into its destination through that destination's own API under the item's key, and how its answer maps to an outcome |
 | `modelport` | the one port that carries every model call, and its `queue` and `claude-cli` adapters |
+| `prompts` | each model stage's prompt template and answer schema, one directory per stage, embedded and versioned by a digest of both |
 | `outbox` | the relay that ships each logged change past its mark, with outsider text on a channel of its own |
 | `server` | the HTTP API that `ingestion serve` answers, and its route table, whose rows name each route's scope and what a repeat does, read by the CLI's retry and the router's key check |
 | `worker` | `ingestion worker run`, which leases tasks by capability under a fencing token |
@@ -117,9 +118,10 @@ the prompt's version, and gets back the structured answer.
 - **The port has two adapters, and refuses with neither.**
   - `queue` posts the prompt and schema to an HTTP dispatch service and reads the answer back.
   - `claude-cli` runs `claude -p` on the host with `--safe-mode`, `--setting-sources ""`,
-    `--permission-mode default`, `--permission-prompts none`, `--tools ""` and the stage's
-    `--json-schema`, with the prompt on stdin. Without `--safe-mode`, the host's own instructions
-    ride beside the prompt.
+    `--permission-mode default`, `--permission-prompts none`, `--tools ""`,
+    `--no-session-persistence` and the stage's `--json-schema`, with the prompt on stdin. Without
+    `--safe-mode`, the host's own instructions ride beside the prompt. It runs through
+    `isolatedprocess`, inheriting only the variables that carry claude's own login.
 
   A model stage runs only where config names an adapter. With none named, the stage refuses, and
   the item waits there naming the missing setting. A stage never falls back to reaching a model
@@ -132,7 +134,9 @@ the prompt's version, and gets back the structured answer.
   taken from the text.
 - **A model stage dispatches once.** It sends under an idempotency key of item, stage and prompt
   version. It stores the dispatch id in the same write that ends the worker's lease. A task whose
-  lease lapsed reads the run it already started, rather than paying for a second.
+  lease lapsed reads the run it already started, rather than paying for a second. A run that
+  failed dispatches again only once `tasks retry` queues its task, under a key that also names the
+  failed dispatch, because a dispatch service may answer the old key with the failed run.
 
 ## The service is the one writer, and a worker does the heavy work
 

@@ -62,7 +62,40 @@ type fileConfig struct {
 	// Deliver holds a table for each deliverer that a worker opens, under the
 	// name the deliverer registers, read by worker run.
 	Deliver map[string]serviceClient `toml:"deliver"`
+	// Model names the adapter that carries every model call, its settings,
+	// and what each model stage asks its run for, read by worker run.
+	Model modelConfig `toml:"model"`
 }
+
+// modelConfig is the [model] table.
+type modelConfig struct {
+	// Adapter is "queue" or "claude-cli". With none, a worker runs no model
+	// stage.
+	Adapter string `toml:"adapter"`
+	Queue   struct {
+		serviceClient
+		// Agent is the kind of run the dispatch service starts.
+		Agent string `toml:"agent"`
+		// Scopes are what the client's token asks for, as the dispatch
+		// service names them.
+		Scopes []string `toml:"scopes"`
+	} `toml:"queue"`
+	ClaudeCLI struct {
+		// Command is the claude binary, by path or by name on PATH.
+		Command string `toml:"command"`
+	} `toml:"claude-cli"`
+	Quality stageModel `toml:"quality"`
+}
+
+// stageModel is what one model stage asks its run for.
+type stageModel struct {
+	Model  string `toml:"model"`
+	Effort string `toml:"effort"`
+}
+
+// modelSecretEnv holds the secret of the service client that [model.queue]
+// names, read from the environment alone, as clientSecretEnv is.
+const modelSecretEnv = "INGESTION_MODEL_QUEUE_CLIENT_SECRET"
 
 // serviceClient is how a worker reaches a destination app: the app's API, and
 // the service client it writes as, by client_id or by the token that

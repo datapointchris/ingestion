@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,9 +25,11 @@ import (
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/clientcredentials"
 
+	"github.com/datapointchris/ingestion/connectors"
 	"github.com/datapointchris/ingestion/extract"
 	"github.com/datapointchris/ingestion/landing"
 	"github.com/datapointchris/ingestion/redditexport"
+	"github.com/datapointchris/ingestion/route"
 	"github.com/datapointchris/ingestion/schemas"
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
@@ -49,7 +52,13 @@ type pipeline struct {
 	// service is the worker's own client, under its service token.
 	service *http.Client
 	worker  *worker.Client
+	// ahead is how far the store's clock runs past the system's.
+	ahead *atomic.Int64
 }
+
+// advance moves the store's clock on by d, so a task sent back with backoff
+// falls due.
+func (p *pipeline) advance(d time.Duration) { p.ahead.Add(int64(d)) }
 
 // newPipeline serves the routes with after run in the write that ends each
 // item's task done, as serve runs the gates there.
@@ -57,7 +66,9 @@ func newPipeline(t *testing.T, extractors *extract.Registry, after server.AfterS
 	t.Helper()
 	ctx := t.Context()
 	dir := t.TempDir()
-	st, err := store.Open(ctx, filepath.Join(dir, "ingestion.db"))
+	ahead := &atomic.Int64{}
+	st, err := store.Open(ctx, filepath.Join(dir, "ingestion.db"),
+		store.WithClock(func() time.Time { return time.Now().Add(time.Duration(ahead.Load())) }))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +87,11 @@ func newPipeline(t *testing.T, extractors *extract.Registry, after server.AfterS
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	api := httptest.NewServer(server.Handler(server.Config{Store: st, Gate: gate, Issuer: provider.URL, Version: "test", Log: log},
 		server.TaskRoutes(st, log, after), server.BlobRoutes(lander, log), server.ItemRoutes(st, log), server.ReviewRoutes(st, log),
-		server.ReplayRoutes(st, replayableStages(extractors), log)))
+		server.ConnectorRoutes(server.ConnectorConfig{
+			Store: st, Lander: lander, Scheduler: connectors.NewScheduler(st, lander, log),
+			AfterApply: route.AfterApply(log), Log: log,
+		}),
+		server.ReplayRoutes(st, replayableStages(st, extractors), log)))
 	t.Cleanup(api.Close)
 	person := provider.Person(t, "ingestion-cli-test", "person")
 	tokenFile, config := filepath.Join(dir, "token.json"), filepath.Join(dir, "config.toml")
@@ -94,7 +109,7 @@ func newPipeline(t *testing.T, extractors *extract.Registry, after server.AfterS
 		Scopes: []string{server.ScopeTasksClaim},
 	}).Client(ctx)
 	return &pipeline{
-		st: st, lander: lander, api: api, provider: provider, config: config, service: service,
+		st: st, lander: lander, api: api, provider: provider, config: config, service: service, ahead: ahead,
 		worker: worker.NewClient(api.URL, service),
 		person: oauth2.NewClient(ctx, oauth2.StaticTokenSource(&oauth2.Token{AccessToken: person})),
 	}

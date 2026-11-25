@@ -212,11 +212,14 @@ type Claim struct {
 // Leased is a leased task with its item's row, so a worker runs the task
 // holding no scope to read items. A poll task has no item, so its Item is
 // empty. A deliver task carries its delivery's row too, whose title and URL
-// every attempt sends.
+// every attempt sends. A model stage's task carries the item's outputs at its
+// stage, so a task whose run is already dispatched reads that run rather than
+// starting another.
 type Leased struct {
 	Task
 	Item     Item
 	Delivery *Delivery
+	Outputs  []Output
 }
 
 // Claim records the worker's heartbeat and leases it up to c.Max tasks whose
@@ -280,6 +283,12 @@ func (s *Store) Claim(ctx context.Context, c Claim) ([]Leased, error) {
 			leased := Leased{Task: task}
 			if task.ItemKey != nil {
 				if leased.Item, _, err = tx.Item(ctx, *task.ItemKey); err != nil {
+					return err
+				}
+			}
+			if task.ItemKey != nil && slices.Contains(modelStages, task.Stage) {
+				if leased.Outputs, err = readInto[Output](ctx, tx.tx, table("outputs"), `item_key = ? AND stage = ? ORDER BY created_ts, rowid`,
+					*task.ItemKey, task.Stage); err != nil {
 					return err
 				}
 			}
@@ -390,6 +399,60 @@ func (s *Store) Report(ctx context.Context, id string, token int64, outcome Outc
 		return err
 	})
 	return task, err
+}
+
+// WithdrawQueued ends each queued task of the item under key at stage done,
+// with why as its error, where a later decision made the stage needless. A
+// task already leased runs on.
+func (t *Tx) WithdrawQueued(ctx context.Context, key, stage, why string) error {
+	if _, err := t.tx.ExecContext(ctx, `UPDATE tasks SET state = 'done', error = ?, updated_ts = ?
+		WHERE item_key = ? AND stage = ? AND state = 'queued'`, why, t.stamp(), key, stage); err != nil {
+		return fmt.Errorf("withdraw the %s tasks of %s: %w", stage, key, err)
+	}
+	return nil
+}
+
+// ErrTaskDone is a retry of a task that ended done, which a replay runs again
+// instead.
+var ErrTaskDone = errors.New("the task ended done")
+
+// RetryTask queues the failed task id again, with its attempts and backoff
+// cleared, and answers it. A task that is queued or leased is answered as it
+// is, so a retry sent twice queues it once. It answers ErrNoTask where there
+// is no such task, and ErrTaskDone where it ended done.
+func (s *Store) RetryTask(ctx context.Context, id string) (Task, error) {
+	var task Task
+	err := s.Update(ctx, func(tx *Tx) error {
+		var err error
+		if task, err = tx.task(ctx, id); err != nil {
+			return err
+		}
+		switch task.State {
+		case TaskDone:
+			return fmt.Errorf("task %s: %w", id, ErrTaskDone)
+		case TaskQueued, TaskLeased:
+			return nil
+		}
+		if _, err := tx.tx.ExecContext(ctx, `UPDATE tasks SET state = 'queued', attempts = 0, error = NULL, not_before_ts = NULL,
+			updated_ts = ? WHERE id = ?`, tx.stamp(), id); err != nil {
+			return fmt.Errorf("queue task %s again: %w", id, err)
+		}
+		task, err = tx.task(ctx, id)
+		return err
+	})
+	return task, err
+}
+
+// OpenTask reads the item under key's task at stage that is queued or leased,
+// and false where none is.
+func (t *Tx) OpenTask(ctx context.Context, key, stage string) (Task, bool, error) {
+	return first[Task](ctx, t.tx, table("tasks"), `item_key = ? AND stage = ? AND state IN ('queued', 'leased') ORDER BY created_ts`, key, stage)
+}
+
+// HasTask says whether the item under key ever held a task at stage.
+func (t *Tx) HasTask(ctx context.Context, key, stage string) (bool, error) {
+	_, found, err := first[Task](ctx, t.tx, table("tasks"), `item_key = ? AND stage = ?`, key, stage)
+	return found, err
 }
 
 // TaskQuery selects tasks to list.

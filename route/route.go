@@ -1,10 +1,13 @@
 // Package route holds the side gate and the read gate. The side gate places
 // an item by the first rung that decides it: every sighting's tags, then a
-// routing rule, then the quality gate's side guess at or above its floor, else
-// review. A rule placed before the model always wins over it, so the model
-// judges only what the rules leave. The read gate then chooses whether an item
-// placed on a side is read as is or by a model: by its connector's read rule,
-// else its side's default.
+// routing rule, then the quality gate, else review. A rule placed before the
+// model always wins over it, so the model judges only what the rules leave.
+// The quality gate's rung drops the item where the gate dropped it, sends it
+// to review where the gate was unsure, and otherwise places it by the gate's
+// side guess at or above its floor. While the item's quality task is open,
+// the side gate decides nothing, and the item waits at the quality gate. The
+// read gate then chooses whether an item placed on a side is read as is or by
+// a model: by its connector's read rule, else its side's default.
 //
 // The side gate places an item only once the scan of its newest parse is
 // done. The service runs both gates in the write that ends each stage after
@@ -53,6 +56,10 @@ const (
 	// CauseGateError sends to review an item whose gate could not read the
 	// set in force or the item's sightings. The item keeps its parse.
 	CauseGateError = "gate-error"
+	// CauseQualityDrop drops an item that the quality gate dropped, and
+	// CauseQualityReview sends to review one that it was unsure of.
+	CauseQualityDrop   = "quality-drop"
+	CauseQualityReview = store.ReasonQualityReview
 	// CauseConnector and CauseSideDefault are the read gate's.
 	CauseConnector   = "connector"
 	CauseSideDefault = "side-default"
@@ -265,7 +272,7 @@ func AfterApply(log *slog.Logger) connectors.AfterApply {
 // next stage or apply runs the gate again.
 func Gate(ctx context.Context, tx *store.Tx, key string, log *slog.Logger) ([]store.Decision, error) {
 	newest, sided, err := tx.NewestDecision(ctx, key, store.GateSide)
-	if err != nil || (sided && !provisional(newest)) {
+	if err != nil || (sided && !Provisional(newest)) {
 		return nil, err
 	}
 	outputs, err := tx.Outputs(ctx, key)
@@ -277,11 +284,52 @@ func Gate(ctx context.Context, tx *store.Tx, key string, log *slog.Logger) ([]st
 	if err != nil {
 		log.ErrorContext(ctx, "the side gate could not read what it decides from, so the item waits in review", "item", key, "error", err)
 		side = store.Decision{Gate: store.GateSide, Verdict: VerdictReview, DecidedBy: ByGate, Cause: CauseGateError}
+	} else if byQualityRung(side) {
+		var waits bool
+		if side, waits, err = byQuality(ctx, tx, key, side); err != nil || waits {
+			return nil, err
+		}
 	}
 	if sided && sameDecision(newest, side) {
 		return nil, nil
 	}
 	return decide(ctx, tx, key, side, set, sightings, nil)
+}
+
+// byQualityRung says whether side came from the rungs after the rules: the
+// guess, or review for want of one.
+func byQualityRung(side store.Decision) bool {
+	return side.Cause == CauseGuess || side.Cause == CauseBelowFloor || side.Cause == CauseNoGuess
+}
+
+// byQuality is the side gate's decision on the item under key, which no tag
+// or rule placed, by the quality gate's newest decision: a drop where it
+// dropped the item, review where it was unsure, and side, the guess's
+// decision, where it passed the item. It is true where the gate has not
+// decided and the item's quality task is open, so the item waits at the
+// quality gate.
+func byQuality(ctx context.Context, tx *store.Tx, key string, side store.Decision) (store.Decision, bool, error) {
+	quality, judged, err := tx.NewestDecision(ctx, key, store.GateQuality)
+	if err != nil {
+		return side, false, err
+	}
+	if !judged {
+		_, open, err := tx.OpenTask(ctx, key, store.StageQuality)
+		return side, open, err
+	}
+	switch quality.Verdict {
+	case VerdictDrop:
+		return store.Decision{
+			Gate: store.GateSide, Verdict: VerdictDrop, DecidedBy: quality.DecidedBy, Confidence: quality.Confidence,
+			Cause: CauseQualityDrop,
+		}, false, nil
+	case VerdictReview:
+		return store.Decision{
+			Gate: store.GateSide, Verdict: VerdictReview, DecidedBy: quality.DecidedBy, Confidence: quality.Confidence,
+			Cause: CauseQualityReview,
+		}, false, nil
+	}
+	return side, false, nil
 }
 
 // inputs reads the set in force and the item's sightings, which the side gate
@@ -295,11 +343,13 @@ func inputs(ctx context.Context, tx *store.Tx, key string) (connectors.Set, []st
 	return set, sightings, err
 }
 
-// provisional says whether a side decision waits on a later input: a review
+// Provisional says whether a side decision waits on a later input: a review
 // that the gate wrote for want of a rule or a guess, or for an error, and a
-// review for a model's guess below the floor.
-func provisional(d store.Decision) bool {
-	return d.Verdict == VerdictReview && (d.DecidedBy == ByGate || strings.HasPrefix(d.DecidedBy, byModel("")))
+// model's review or drop. A rule that a later set adds, or a later answer of
+// the quality gate, then decides the item again.
+func Provisional(d store.Decision) bool {
+	return (d.Verdict == VerdictReview && d.DecidedBy == ByGate) ||
+		((d.Verdict == VerdictReview || d.Verdict == VerdictDrop) && strings.HasPrefix(d.DecidedBy, byModel("")))
 }
 
 // sameDecision says whether b decides what a decides, by the same hand.
@@ -333,7 +383,9 @@ func GuessOf(outputs []store.Output) *Guess {
 }
 
 // decide appends side, and the read gate's decision where side places the
-// item on a side.
+// item on a side. Where a tag, a rule or a person decides the side for good,
+// it withdraws the item's queued quality task, so no model judges an item
+// already placed.
 func decide(ctx context.Context, tx *store.Tx, key string, side store.Decision, set connectors.Set, sightings []store.Sighting,
 	note *string,
 ) ([]store.Decision, error) {
@@ -341,6 +393,12 @@ func decide(ctx context.Context, tx *store.Tx, key string, side store.Decision, 
 	written, err := tx.AddDecision(ctx, side)
 	if err != nil {
 		return nil, err
+	}
+	if !Provisional(written) {
+		why := "withdrawn: " + written.DecidedBy + " decided the item's side before the quality gate ran"
+		if err := tx.WithdrawQueued(ctx, key, store.StageQuality, why); err != nil {
+			return nil, err
+		}
 	}
 	out := []store.Decision{written}
 	var read store.Decision

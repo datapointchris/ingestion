@@ -68,10 +68,12 @@ type Replayable struct {
 	// and answers whether it queued any. A stage whose task names more than
 	// its item, such as a delivery's destination, sets it.
 	Queue store.ReplayQueue
-	// Estimate is a model stage's tokens by kind over items. Where it is set,
-	// a replay answers the estimate and queues nothing until a request
-	// confirms it. A model-free stage leaves it nil, and queues at once.
-	Estimate func(ctx context.Context, items []store.Item) (store.Tokens, error)
+	// Estimate is how many of items a model stage would run on, and its
+	// tokens by kind over them. Where it is set, a replay answers the
+	// estimate and queues nothing until a request confirms it. A model-free
+	// stage leaves it nil, and queues at once.
+	// Its tokens are nil where it holds no stored run to estimate from.
+	Estimate func(ctx context.Context, items []store.Item) (int, *store.Tokens, error)
 }
 
 // ReplayRoutes is the route for a person to run one of stages again over
@@ -163,13 +165,13 @@ func (h replayHandlers) estimate(w http.ResponseWriter, r *http.Request, stage R
 		Refuse(w, http.StatusInternalServerError, CodeInternal, "the server could not select the replay's items")
 		return
 	}
-	tokens, err := stage.Estimate(r.Context(), items)
+	n, tokens, err := stage.Estimate(r.Context(), items)
 	if err != nil {
 		h.log.ErrorContext(r.Context(), "estimate a replay", "error", err, "stage", answer.Stage)
 		Refuse(w, http.StatusInternalServerError, CodeInternal, "the server could not estimate the replay")
 		return
 	}
-	answer.Items, answer.Estimate = len(items), &tokens
+	answer.Items, answer.Estimate = n, tokens
 	JSON(w, http.StatusOK, answer)
 }
 

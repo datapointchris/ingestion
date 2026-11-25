@@ -163,8 +163,8 @@ func TestADropRetriedUnderItsKeyLandsOnceAndAFirstFillHoldsAcrossARestartUntilRe
 		t.Fatalf("show after a restart answered %d %s", status, raw)
 	}
 	validate(t, schemas, "connectors-list#connector", raw)
-	if f := shown.FirstFill; f.State != store.FirstFillHeld || f.Held != 1 || f.ItemKey == nil || *f.ItemKey != items[0] || shown.Waiting != 1 {
-		t.Errorf("after a restart the first fill is %+v with %d waiting, want held on %s with 1 behind it", *f, shown.Waiting, items[0])
+	if f := shown.FirstFill; f.State != store.FirstFillHeld || f.Held != 1 || f.ItemKey == nil || *f.ItemKey != items[0] || shown.Waiting != 2 {
+		t.Errorf("after a restart the first fill is %+v with %d waiting, want held on %s with 1 behind it and both waiting at the model stage", *f, shown.Waiting, items[0])
 	}
 	if leased := claim("worker-2"); len(leased) != 0 {
 		t.Errorf("a claim after a restart leased %+v, want none while the fill holds", leased)

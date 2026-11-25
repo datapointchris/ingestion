@@ -248,7 +248,8 @@ var reached = map[string]string{
 // Phase is the item's phase in the words of schemas/items-list.schema.json:
 // dropped where the newest side decision drops it, review where WaitsOnPerson
 // says it waits, failed where another stage's newest task failed, dropped
-// where the quality gate drops it, waiting where a model stage holds it, and
+// where the quality gate drops it before any side decision, waiting where a
+// model stage holds it, and
 // otherwise the furthest stage whose condition is True. A person can place an
 // item whose parse failed, which moves it on from its parse.
 func (r ItemRecords) Phase() string {
@@ -268,7 +269,7 @@ func (r ItemRecords) Phase() string {
 			return "failed"
 		}
 	}
-	if quality, decided := r.NewestDecision(GateQuality); decided && quality.Verdict == "drop" {
+	if quality, decided := r.NewestDecision(GateQuality); decided && !sided && quality.Verdict == "drop" {
 		return "dropped"
 	}
 	phase := ""
@@ -345,8 +346,10 @@ func (r ItemRecords) NewestDecision(gate string) (Decision, bool) {
 }
 
 // outputCondition is True where any producer's output for stage is done,
-// Unknown where one waits or a first fill holds the stage's task, and False
-// where every one failed.
+// Unknown where one waits or a model stage's task is queued or leased, and
+// False where every one failed. A model stage's open task holds the item at
+// that stage, whether a first fill holds it, no worker claims it, or its
+// dispatch has not answered.
 func (r ItemRecords) outputCondition(stage string) (Condition, bool) {
 	states := map[string]bool{}
 	for _, o := range r.Outputs {
@@ -355,7 +358,7 @@ func (r ItemRecords) outputCondition(stage string) (Condition, bool) {
 		}
 	}
 	for _, t := range r.Tasks {
-		if t.Stage == stage && t.State == TaskQueued && t.HeldBy != nil {
+		if t.Stage == stage && slices.Contains(modelStages, stage) && (t.State == TaskQueued || t.State == TaskLeased) {
 			states[OutputWaiting] = true
 		}
 	}

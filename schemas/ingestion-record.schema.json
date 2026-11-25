@@ -136,10 +136,12 @@
         "input_producer": {"description": "The producer of the parse this output read, such as the parse a scan's findings index the units of.", "type": ["string", "null"]},
         "input_version": {"description": "The producer version of the parse this output read.", "type": ["string", "null"]},
         "lens_version": {"type": ["string", "null"]},
-        "state": {"description": "waiting holds a model stage's dispatch, done holds its output, failed holds why in the text.", "enum": ["waiting", "done", "failed"]},
+        "state": {"description": "waiting holds a model stage's dispatch that has not answered, done holds its output, failed holds why in the text.", "enum": ["waiting", "done", "failed"]},
         "blob_sha256": {"description": "The output's bytes.", "anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
         "dispatch_id": {"description": "A model stage's dispatch, stored in the write that ends the worker's lease.", "type": ["string", "null"]},
         "run_id": {"description": "The run that answered the dispatch.", "type": ["string", "null"]},
+        "model": {"description": "The model a model stage asked its run for, an alias such as haiku or a model id.", "type": ["string", "null"]},
+        "effort": {"description": "The effort a model stage asked its run for, such as medium.", "type": ["string", "null"]},
         "tokens": {"anyOf": [{"$ref": "#/$defs/tokens"}, {"type": "null"}]},
         "findings": {
           "description": "The scan's findings, in the order the matches sit in the text. A done scan that found nothing holds an empty list. Each matched span ships as ingestion.text.",
@@ -204,7 +206,7 @@
         },
         "confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
         "cause": {
-          "description": "What decided. The side gate writes tags, tags-disagree, rule, guess, below-floor, no-guess or gate-error, and the read gate connector or side-default. A person's decision names an aspect, such as subreddit, channel, theme or title, or unstated.",
+          "description": "What decided. The quality gate writes pass, drop, unsure, or below-drop-floor where it would drop the item below its confidence floor. The side gate writes tags, tags-disagree, rule, guess, below-floor, no-guess, gate-error, quality-drop or quality-review, and the read gate connector or side-default. A person's decision names an aspect, such as subreddit, channel, theme or title, or unstated.",
           "type": "string",
           "pattern": "^[a-z][a-z-]*$"
         },

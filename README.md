@@ -39,10 +39,37 @@ same machine:
 # the answer.
 # queue posts the same prompt and schema to an HTTP dispatch service instead.
 adapter = "claude-cli"
+
+[model.claude-cli]
+command = "claude"  # a path, or a name on PATH
+
+# What the quality gate asks each run for.
+[model.quality]
+model = "haiku"
+effort = "medium"
 ```
 
 With no adapter named, ingestion still lands, parses, scans and routes every item by its rules.
 An item that needs a model then waits at that stage, and its status names the missing setting.
+
+The `queue` adapter posts each call to a dispatch service as one run of an agent with no tools,
+and reads the run's answer once it ends:
+
+```toml
+[model]
+adapter = "queue"
+
+[model.queue]
+api = "https://dispatch.example.com"
+agent = "outside-text"           # the kind of run the service starts
+scopes = ["dispatch.start"]      # what the client's token asks for, as the service names them
+client_id = "dispatch-svc-ingestion"
+# token_command = ["my-token-helper", "dispatch"]  # in place of client_id
+# issuer = "..."  # the OIDC provider that signs the service's tokens, if not the file's
+```
+
+The secret of the `client_id` client is in **`INGESTION_MODEL_QUEUE_CLIENT_SECRET`**. A worker logs
+a `[model]` table that cannot open and runs on without the model stages.
 
 ## Running the service and its workers
 
@@ -345,6 +372,64 @@ go run ./scan/build-rules --atr ./atr --yr ./bin/yr --out ./scan-rules
 with how many it dropped for that reason. `rules.json` beside the compiled rules records the
 decision on each rule.
 
+### The quality gate reads each item's opening before anyone reads it whole
+
+Where no tag or rule places an item, the write that ends the scan of its newest parse queues one
+task of capability `quality`. An item gets that task once, and only a replay runs the gate on it
+again. A worker whose config names a `[model] adapter` claims it. It reads the item's media type,
+title, URL and the first 2,000 characters of its parse, and puts them to the model through the
+prompt in `prompts/quality/prompt.tmpl`.
+
+- **The answer holds to `prompts/quality/answer.schema.json`.** It gives a genre, one or two
+  domains, up to four themes, a quality estimate from 1 to 10 and a one-line idea. It ends with a
+  verdict of `pass`, `drop` or `unsure` and a side of `personal`, `fleet` or `unsure`, each with
+  its confidence. An answer that breaks the schema fails the task rather than being patched.
+- **A drop is soft, and needs a confidence of 0.8.** A drop below it, or an `unsure`, sends the
+  item to review. A dropped item keeps its row and its one-line idea, and `items show` prints
+  both.
+- **The prompt's version is its number and a digest of both files**, such as `1-acfc1263`. A
+  change to either writes the gate's outputs beside the old ones.
+- **Each call is dispatched once.** The worker stores the dispatch in the write that ends its
+  lease. Until the run answers, the task goes back with a backoff from 15 seconds that doubles to
+  15 minutes, so a waiting item holds no worker slot. The next claim reads the stored dispatch's
+  run, even on a worker started again. A run that fails fails the task, and `ingestion tasks
+  retry <task>` dispatches it once more.
+- **Nothing model-free waits behind the gate.** A held run holds up its own item alone, and
+  `connectors list` counts that item as waiting.
+
+`items show` says why an item waits at the gate, and why its run failed:
+
+```text
+$ ingestion items show reddit/t3_bb2    # no worker's config names a [model] adapter
+reddit/t3_bb2   outside   waiting at quality
+  ...
+  waiting  unclaimed: no worker heard from lately claims quality tasks. A worker claims them once its config names a [model] adapter
+
+$ ingestion items show reddit/t3_bb2    # the dispatch service holds the run
+reddit/t3_bb2   outside   waiting at quality
+  ...
+  quality  quality-gate v1-acfc1263  waiting  haiku at medium  dispatch 7f3a9c
+  waiting  dispatched: dispatch 7f3a9c has not answered: the model budget holds new runs
+
+$ ingestion items show reddit/t3_bb2    # the run failed
+reddit/t3_bb2   outside   failed
+  ...
+  quality  quality-gate v1-acfc1263  failed  haiku at medium  dispatch 7f3a9c  uncached input 12, cache write 3400, cache read 0, output 180
+           "claude_failed: claude exited 1"
+$ ingestion tasks retry c2e134a22919ae6efb0bbee0c02b0fb1
+Task c2e134a22919ae6efb0bbee0c02b0fb1, quality on reddit/t3_bb2, is queued.
+```
+
+A connector's first fill holds the item's task as `first-fill` until `ingestion connectors
+release`. `tasks retry` posts to `/api/v1/tasks/{id}/retries`, and its `--json` prints
+`schemas/task-retry.schema.json`. It queues a failed task again, prints a queued or leased task as
+it stands, and refuses a done one.
+
+`ingestion items replay --stage quality` runs the prompt in force over each scanned item that no
+tag or rule placed and that holds no answer of that prompt. It first prints how many items it
+would run on, and the median tokens by kind of the stage's newest stored runs times that count.
+It queues only with `--yes`.
+
 ### The side gate places each item, and a person places what it leaves
 
 When the scan of an item's newest parse is done, the service runs the side gate in the same
@@ -355,22 +440,25 @@ places the item by the first rung that decides it:
    destination's side. Tags naming two sides send it to review as `tags-disagree`.
 2. **A routing rule**: the first in the file whose match holds on one sighting. A Reddit save's
    sighting carries its `subreddit` field for a rule to match.
-3. **The quality gate's side guess**, where its confidence reaches the floor that
-   `route.GuessFloor` sets. A guess below the floor, or `unsure`, sends the item to review as
+3. **The quality gate.** The item waits at `quality` until the gate answers. A drop drops it as
+   `quality-drop`, and an unsure answer sends it to review as `quality-review`. A pass reads the
+   gate's side guess, which places the item where its confidence reaches the floor that
+   `route.GuessFloor` sets. A guess below the floor, or `unsure`, sends it to review as
    `below-floor`.
-4. **Review.** An item that no tag or rule placed, and that the quality gate gave no guess for,
-   waits as `no-guess`.
+4. **Review.** An item that no tag or rule placed, and that holds no answer of the quality gate,
+   waits as `no-guess`. That is an item whose gate run failed, once an apply runs the side gate
+   again.
 
 The gate runs again in the write that ends each later stage before it, such as the quality gate,
 and in the write that applies a changed set. Each run passes over an item whose newest parse is
 not scanned yet. Each run decides again an item that the gate sent to
-review as `no-guess`, `below-floor` or `gate-error`, so a guess or a rule that arrives later
-places it. A placed item stays where it is: a later sighting or parse moves nothing, and only a
+review as `no-guess`, `below-floor` or `gate-error`, or that the quality gate dropped or sent to
+review, so a guess or a rule that arrives later places it. A tag, a rule or a person that places
+an item withdraws its queued quality task, so no model judges an item already placed. A placed item stays where it is: a later sighting or parse moves nothing, and only a
 person's placement moves it. Where the gate cannot read the set in force or the item's sightings,
 it logs why and sends the item to review as `gate-error`, and the scan stands.
 
-An item whose parse failed waits in review as `no-parse`. One that the quality gate sent to
-review before any side decision waits as `quality-review`. When an item's scan fails for good
+An item whose parse failed waits in review as `no-parse`. When an item's scan fails for good
 before any side decision, the item waits neither on a side nor in review. Its phase reads
 `failed` until `items replay --stage scan` scans it.
 

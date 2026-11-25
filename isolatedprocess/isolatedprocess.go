@@ -1,9 +1,10 @@
 // Package isolatedprocess starts every program that reads outsider bytes.
 // Each such program runs in an empty directory of its own, with an
 // environment of PATH, HOME, TMPDIR and LANG alone, and inherits no
-// credential of the worker. A worker that runs one has called
-// worker.MarkUndumpable, so the program cannot read the worker's own
-// environment through /proc either.
+// credential of the worker. A program that needs a login of its own, as
+// claude does, names the variables that carry it, and inherits those alone.
+// A worker that runs one has called worker.MarkUndumpable, so the program
+// cannot read the worker's own environment through /proc either.
 package isolatedprocess
 
 import (
@@ -37,6 +38,13 @@ type Command struct {
 	// Stdout reads the program's stdout while it runs. A read that fails
 	// kills the run, and Run answers the read's error. Nil discards stdout.
 	Stdout func(io.Reader) error
+	// Inherit names the variables of this process's environment that the
+	// run keeps, each a name or a prefix ending in *, such as ANTHROPIC_*.
+	// Each replaces the run's own value, so inheriting HOME runs the program
+	// with this process's home rather than the run's directory.
+	Inherit []string
+	// Env holds entries set last, each NAME=value, over every other.
+	Env []string
 }
 
 // ExitError is a program that exited non-zero, with the end of its stderr.
@@ -81,7 +89,8 @@ func Run(ctx context.Context, c Command) (string, error) {
 	}
 	cmd := exec.CommandContext(ctx, c.Path, c.Args...)
 	cmd.Dir, cmd.Stdin, cmd.WaitDelay = dir, c.Stdin, exitWait
-	cmd.Env = []string{"PATH=/usr/local/bin:/usr/bin:/bin", "HOME=" + dir, "TMPDIR=" + dir, "LANG=C.UTF-8"}
+	cmd.Env = append(append([]string{"PATH=/usr/local/bin:/usr/bin:/bin", "HOME=" + dir, "TMPDIR=" + dir, "LANG=C.UTF-8"},
+		inherited(os.Environ(), c.Inherit)...), c.Env...)
 	stderr := &tail{max: stderrKept}
 	cmd.Stderr = stderr
 	stdout, err := cmd.StdoutPipe()
@@ -112,6 +121,22 @@ func Run(ctx context.Context, c Command) (string, error) {
 		return kept, fmt.Errorf("run %s: %w", c.Path, waitErr)
 	}
 	return kept, nil
+}
+
+// inherited is each entry of environ whose name one of names matches, as a
+// name or a prefix ending in *.
+func inherited(environ, names []string) []string {
+	var out []string
+	for _, entry := range environ {
+		name, _, _ := strings.Cut(entry, "=")
+		for _, n := range names {
+			if prefix, ok := strings.CutSuffix(n, "*"); (ok && strings.HasPrefix(name, prefix)) || name == n {
+				out = append(out, entry)
+				break
+			}
+		}
+	}
+	return out
 }
 
 // tail keeps the last max bytes written to it.

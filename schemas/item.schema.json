@@ -87,6 +87,9 @@
           },
           "answer": {"description": "A model stage's structured answer.", "type": ["object", "null"]},
           "run_id": {"type": ["string", "null"]},
+          "dispatch_id": {"description": "A model stage's dispatch, where the model port started one.", "type": ["string", "null"]},
+          "model": {"description": "The model that a model stage asked its run for, or the one that answered.", "type": ["string", "null"]},
+          "effort": {"description": "The effort that a model stage asked its run for.", "type": ["string", "null"]},
           "tokens": {
             "type": ["object", "null"],
             "additionalProperties": false,
@@ -148,6 +151,25 @@
             "reason": {"description": "no-side-default: the placement named a side and no destination, and no destination in the set in force is that side's default, so the item waits for a set that names one. not-declared: the set in force does not declare the destination placed on. no-deliverer: the destination names no deliverer, as one whose reader pulls its items itself. not-taken: the destination's deliverer cannot write the item, as one that saves links cannot write an item with no URL.", "enum": ["no-side-default", "not-declared", "no-deliverer", "not-taken"]},
             "side": {"enum": ["personal", "fleet"]},
             "destination": {"type": ["string", "null"]},
+            "message": {"type": "string"}
+          }
+        },
+        {"type": "null"}
+      ]
+    },
+    "waiting": {
+      "description": "Why the item waits at a model stage, and null where it waits at none.",
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["stage", "reason", "capability", "held_by", "dispatch_id", "message"],
+          "properties": {
+            "stage": {"enum": ["quality", "model-read"]},
+            "reason": {"description": "first-fill: a connector's first fill holds the task until it is released. dispatched: the model port started a run that has not answered, and message carries why in the dispatch service's words, such as a budget that holds it. unclaimed: no worker heard from lately claims the task's capability, as where no worker's config names a [model] adapter. queued: a worker claims the task next.", "enum": ["first-fill", "dispatched", "unclaimed", "queued"]},
+            "capability": {"type": "string"},
+            "held_by": {"description": "The connector whose first fill holds the task.", "type": ["string", "null"]},
+            "dispatch_id": {"type": ["string", "null"]},
             "message": {"type": "string"}
           }
         },

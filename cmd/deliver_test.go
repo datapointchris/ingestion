@@ -190,7 +190,7 @@ func (p *pipeline) lifeDeliverer(t *testing.T, life *standInLife) worker.Handler
 	t.Helper()
 	t.Setenv(deliverSecretEnv(deliver.LifeArticles), lifeSecret)
 	cfg := fileConfig{Deliver: map[string]serviceClient{deliver.LifeArticles: {API: life.URL, ClientID: lifeClient}}}
-	handlers := workerHandlers(p.worker, openDeliverers(t.Context(), cfg, p.provider.URL, quiet), quiet)
+	handlers := workerHandlers(p.worker, openDeliverers(t.Context(), cfg, p.provider.URL, quiet), nil, modelConfig{}, quiet)
 	i := slices.IndexFunc(handlers, func(h worker.Handler) bool { return h.Capability() == store.DeliverCapability(deliver.LifeArticles) })
 	if i < 0 {
 		t.Fatalf("the worker holds no %s handler", deliver.LifeArticles)
@@ -369,21 +369,13 @@ func TestAnItemPlacedOnASideAloneWaitsForThatSidesDefaultDestination(t *testing.
 	p := newGatedPipeline(t, lifeSet(t, "destinations:\n  - name: reading-list\n    side: personal\n    deliverer: life-articles\n"+
 		"  - name: work-inbox\n    side: fleet\n  - name: dropped\n"))
 	life := newStandInLife(t, p.provider)
+	stand := newStandInDispatch(t, p.provider)
+	stand.answer = answerBy(nil)
 	p.landExports(t, map[string][]byte{"first": redditExport(redditSave("t3_bb2", "golang"))})
 	p.parse(t, extract.Builtin())
 	p.scanFindingNothing(t)
-	key, guess, sure, run := "reddit/t3_bb2", connectors.SidePersonal, 0.9, "run-1"
-	if err := p.st.Update(ctx, func(tx *store.Tx) error {
-		if err := tx.PutOutput(ctx, store.Output{
-			ItemKey: key, Stage: store.StageQuality, Producer: "quality-gate", ProducerVersion: "1", State: store.OutputDone,
-			RunID: &run, SideGuess: &guess, SideConfidence: &sure,
-		}); err != nil {
-			return err
-		}
-		return route.AfterStage(quiet)(ctx, tx, store.Task{Stage: store.StageQuality, ItemKey: &key})
-	}); err != nil {
-		t.Fatal(err)
-	}
+	key := "reddit/t3_bb2"
+	p.run(t, p.qualityGate(t, stand.models(t, "", "")))
 	if u := p.shown(t, key).Undelivered; u == nil || u.Reason != connectors.UndeliveredNoSideDefault || u.Side != connectors.SidePersonal {
 		t.Fatalf("the guessed save shows undelivered %s, want no-side-default on personal", jsonOf(u))
 	}
