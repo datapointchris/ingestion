@@ -9,7 +9,9 @@
 // every one of those alike.
 //
 // Land lands an export as an item of its own and each save as its child, so a
-// connector that receives exports calls it rather than composing the two.
+// connector that receives exports calls it rather than composing the two. The
+// package registers Land as the drop handler of Format. Where a drop connector
+// names Format, each file dropped into it lands through Land.
 package redditexport
 
 import (
@@ -19,10 +21,33 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/datapointchris/ingestion/connectors"
 	"github.com/datapointchris/ingestion/itemkey"
 	"github.com/datapointchris/ingestion/landing"
 	"github.com/datapointchris/ingestion/store"
 )
+
+// Format is the format a drop connector names to land each file it takes as
+// a Reddit export: the export as an item, and each save as its child.
+const Format = "reddit-export"
+
+// Zone is the zone of every item that Land lands, because Reddit's users wrote
+// it. A connector naming Format declares it, or the set is refused.
+const Zone = store.Outside
+
+func init() {
+	connectors.RegisterDropHandler(Format, Zone, landDrop)
+}
+
+// landDrop lands a dropped file through Land, under the connector's name and
+// tags, and answers the export's arrival, then each save's.
+func landDrop(ctx context.Context, l *landing.Lander, d connectors.Drop) ([]landing.Landed, error) {
+	landed, err := Land(ctx, l, Drop{Connector: d.Connector.Name, Name: d.Name, Tags: d.Connector.Tags, Raw: d.Body})
+	if err != nil {
+		return nil, err
+	}
+	return append([]landing.Landed{landed.Export}, landed.Saves...), nil
+}
 
 // threadNeverFetched is why a top post carries no thread where its export
 // holds no entry for it.
@@ -233,37 +258,52 @@ type Landed struct {
 // Land lands d as an item of its own, keyed by its bytes, then each save it
 // carries as that item's child under reddit/<fullname>. A save's sighting
 // records the export's key as its cursor, which names the drop it came in,
-// and its subreddit under FieldSubreddit. Every arrival is outside, because
-// Reddit's users wrote it. A save that an
-// earlier export landed keeps that export as its parent, and its first bytes.
+// and its subreddit under FieldSubreddit. Every arrival takes Zone. A save
+// that an earlier export landed keeps that export as its parent, and its first
+// bytes.
+//
+// Land refuses a file that is not a whole export before it writes anything,
+// and marks that refusal with connectors.Refused. An export whose complete is
+// false is refused naming the bookmarklet's error, so a fetch that failed
+// partway is exported again rather than taken for this month's saves.
 func Land(ctx context.Context, l *landing.Lander, d Drop) (Landed, error) {
 	e, err := Parse(d.Raw)
 	if err != nil {
-		return Landed{}, err
+		return Landed{}, connectors.Refused(err)
+	}
+	if !e.Complete {
+		reason := e.Error
+		if reason == "" {
+			reason = "it names no error"
+		}
+		return Landed{}, connectors.Refused(fmt.Errorf("the %s export did not finish, so export again and drop the new file: %s", e.Kind, reason))
 	}
 	saves, err := e.Saves()
 	if err != nil {
-		return Landed{}, err
+		return Landed{}, connectors.Refused(err)
+	}
+	keys := make([]string, len(saves))
+	for i, s := range saves {
+		if keys[i], err = s.Key(); err != nil {
+			return Landed{}, connectors.Refused(err)
+		}
 	}
 	var out Landed
 	out.Export, err = l.Land(ctx, landing.Arrival{
-		Connector: d.Connector, Zone: store.Outside, MediaType: MediaTypeExport,
+		Connector: d.Connector, Zone: Zone, MediaType: MediaTypeExport,
 		ExternalKey: d.Name, Tags: d.Tags, Body: bytes.NewReader(d.Raw),
 	})
 	if err != nil {
 		return out, fmt.Errorf("land the export: %w", err)
 	}
-	for _, s := range saves {
-		key, err := s.Key()
-		if err != nil {
-			return out, err
-		}
+	for i, s := range saves {
+		key := keys[i]
 		var fields map[string]string
 		if s.Subreddit != "" {
 			fields = map[string]string{FieldSubreddit: s.Subreddit}
 		}
 		landed, err := l.Land(ctx, landing.Arrival{
-			Connector: d.Connector, Zone: store.Outside, Key: key, MediaType: MediaTypeSave,
+			Connector: d.Connector, Zone: Zone, Key: key, MediaType: MediaTypeSave,
 			ExternalKey: s.Fullname, Tags: d.Tags, Fields: fields, CursorPosition: out.Export.Key, Title: s.Title, URL: s.URL,
 			Parent: out.Export.Key, Body: bytes.NewReader(s.Bytes),
 		})

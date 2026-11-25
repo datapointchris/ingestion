@@ -396,8 +396,12 @@ func (c Connector) problems(compiled declarationSchemas, roots []string) []strin
 		}
 	}
 	if c.Format != "" {
-		if _, ok := dropHandlers[c.Format]; !ok {
+		f, ok := dropFormats[c.Format]
+		switch {
+		case !ok:
 			out = append(out, fmt.Sprintf("format %s names no drop handler this build registers", c.Format))
+		case c.Zone != "" && c.Zone != f.zone:
+			out = append(out, fmt.Sprintf("zone: format %s lands every item %s, not %s", c.Format, f.zone, c.Zone))
 		}
 	}
 	if c.Mode == ModeFolder {

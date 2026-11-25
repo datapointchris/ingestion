@@ -24,7 +24,7 @@ package:
 | `store` | the SQLite store: items, sightings, blobs, each stage's outputs and decisions, deliveries, task leases, connector cursors, the declaration sets applied, and each keyed request's answer |
 | `itemkey` | the one component that derives an item's key from any form of its artifact |
 | `landing` | an artifact's bytes written under their SHA-256 or referenced under a named root, the item and one sighting per connector, and the report of blobs and rows that disagree |
-| `redditexport` | the Reddit bookmarklet's export, as a store keeps it, split into one save each and landed as an item with a child per save |
+| `redditexport` | the Reddit bookmarklet's export, as a store keeps it, split into one save each and landed as an item with a child per save, registered as the drop format `reddit-export`; and in `bookmarklet/`, the bookmarklet and the command that writes the page installing it |
 | `extract` | one extractor per media type, each writing versioned text and units |
 | `isolatedprocess` | the one door that starts a program over outsider bytes, in a temporary directory of its own with an environment that holds no secret |
 | `scan` | the scanner, which runs YARA-X's `yr` over a parse's text or over one sentence, its stored findings, and `build-rules`, which converts Agent Threat Rules and tests each by its own examples |

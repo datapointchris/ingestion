@@ -1,9 +1,11 @@
 # A drop connector takes a file a person drops with
 # `ingestion items drop <file> --connector reddit-exports`.
-# It is due again 30 days after its last drop.
+# It is due again 30 days after its last drop. Its format lands each Reddit
+# bookmarklet export as one item, and each save in it as that item's child.
 name: reddit-exports
 mode: drop
 source: reddit-bookmarklet-exports
+format: reddit-export
 due_interval: 30d
 zone: outside
 tags: []
