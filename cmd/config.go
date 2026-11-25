@@ -41,6 +41,9 @@ type fileConfig struct {
 		StateDir       string `toml:"state_dir"`
 		PublicURL      string `toml:"public_url"`
 		RecordsOTLPURL string `toml:"records_otlp_url"`
+		// Homes maps each named root to the directory it names, where a file
+		// already lives and is referenced rather than copied.
+		Homes map[string]string `toml:"homes"`
 	} `toml:"serve"`
 	Worker struct {
 		Slots int      `toml:"slots"`

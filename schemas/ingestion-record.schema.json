@@ -51,7 +51,7 @@
         "key": {"$ref": "#/$defs/item_key"},
         "media_type": {"description": "The artifact's media type, such as text/html or application/pdf.", "type": "string"},
         "zone": {"$ref": "#/$defs/zone"},
-        "blob_sha256": {"description": "The landed bytes, or null where a home holds the file instead.", "anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+        "blob_sha256": {"description": "The SHA-256 of the item's bytes, which the blob volume or a home in homes holds. Null where the item landed no bytes, such as a link not yet fetched.", "anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
         "parent_key": {"description": "The item this one was split from, such as the export a Reddit save came in.", "anyOf": [{"$ref": "#/$defs/item_key"}, {"type": "null"}]},
         "flow_id": {"description": "The flow the item started.", "type": "string"},
         "parent_flow_id": {"description": "The flow of the write that landed the item.", "type": ["string", "null"]},

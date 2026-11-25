@@ -23,7 +23,8 @@ package:
 | --- | --- |
 | `store` | the SQLite store: items, sightings, blobs, each stage's outputs and decisions, deliveries, task leases and connector cursors |
 | `itemkey` | the one component that derives an item's key from any form of its artifact |
-| `landing` | an artifact's bytes written under their SHA-256, and one sighting per connector |
+| `landing` | an artifact's bytes written under their SHA-256 or referenced under a named root, the item and one sighting per connector, and the report of blobs and rows that disagree |
+| `redditexport` | the Reddit bookmarklet's export, as a store keeps it, split into one save each |
 | `extract` | one extractor per media type, each writing versioned text and units |
 | `scan` | the scanner, run over parsed text and again over each suggestion, and its stored findings |
 | `qualitygate` | the model stage that reads an item's opening and answers its quality, genre, domains, themes, a one-line idea and a side guess |

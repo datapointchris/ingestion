@@ -2,12 +2,18 @@ package store
 
 import (
 	"context"
+	"encoding/base64"
+	"errors"
 	"fmt"
+	"strings"
 )
 
 // ItemRecords is one item with every stage record written about it.
 type ItemRecords struct {
-	Item       Item
+	Item Item
+	// Blob is the row of the item's bytes, and nil where it holds none.
+	Blob       *Blob
+	Homes      []Home
 	Sightings  []Sighting
 	Outputs    []Output
 	Decisions  []Decision
@@ -24,23 +30,161 @@ func (s *Store) Item(ctx context.Context, key string) (ItemRecords, error) {
 	if len(items) == 0 {
 		return ItemRecords{}, fmt.Errorf("%s: %w", key, ErrNoItem)
 	}
-	r := ItemRecords{Item: items[0]}
-	if r.Sightings, err = readInto[Sighting](ctx, s.read, table("sightings"), `item_key = ? ORDER BY first_seen_ts, rowid`, key); err != nil {
-		return r, err
+	records, err := s.recordsOf(ctx, items)
+	if err != nil {
+		return ItemRecords{}, err
 	}
-	if r.Outputs, err = readInto[Output](ctx, s.read, table("outputs"), `item_key = ? ORDER BY created_ts, rowid`, key); err != nil {
-		return r, err
+	return records[0], nil
+}
+
+// ItemRow reads the item row under key alone, and false where the store holds
+// none.
+func (s *Store) ItemRow(ctx context.Context, key string) (Item, bool, error) {
+	return first[Item](ctx, s.read, table("items"), `key = ?`, key)
+}
+
+// ItemPage asks for up to Limit items, newest first, after the item that the
+// cursor After names.
+type ItemPage struct {
+	Limit int
+	After string
+}
+
+// ErrBadCursor refuses a page cursor that Items did not write.
+var ErrBadCursor = errors.New("not a cursor this list wrote")
+
+// Items reads a page of items, newest first, each with its records, and the
+// cursor of the next page, which is "" where none is left.
+func (s *Store) Items(ctx context.Context, page ItemPage) ([]ItemRecords, string, error) {
+	where, args := `1`, []any{}
+	if page.After != "" {
+		raw, err := base64.RawURLEncoding.DecodeString(page.After)
+		created, key, ok := strings.Cut(string(raw), "\x00")
+		if err != nil || !ok {
+			return nil, "", ErrBadCursor
+		}
+		where, args = `(created_ts < ? OR (created_ts = ? AND key < ?))`, []any{created, created, key}
 	}
-	if r.Decisions, err = readInto[Decision](ctx, s.read, table("decisions"), `item_key = ? ORDER BY gate, sequence`, key); err != nil {
-		return r, err
+	items, err := readInto[Item](ctx, s.read, table("items"), where+` ORDER BY created_ts DESC, key DESC LIMIT ?`,
+		append(args, page.Limit+1)...)
+	if err != nil {
+		return nil, "", err
 	}
-	if r.Deliveries, err = readInto[Delivery](ctx, s.read, table("deliveries"), `item_key = ? ORDER BY destination`, key); err != nil {
-		return r, err
+	next := ""
+	if len(items) > page.Limit {
+		items = items[:page.Limit]
+		last := items[len(items)-1]
+		next = base64.RawURLEncoding.EncodeToString([]byte(last.CreatedTS + "\x00" + last.Key))
 	}
-	if r.Tasks, err = readInto[Task](ctx, s.read, table("tasks"), `item_key = ? ORDER BY created_ts, rowid`, key); err != nil {
-		return r, err
+	records, err := s.recordsOf(ctx, items)
+	return records, next, err
+}
+
+// recordsOf reads every record of items, one query per table.
+func (s *Store) recordsOf(ctx context.Context, items []Item) ([]ItemRecords, error) {
+	out := make([]ItemRecords, len(items))
+	if len(items) == 0 {
+		return out, nil
 	}
-	return r, nil
+	at := map[string]int{}
+	keys := make([]any, len(items))
+	var sums []any
+	for i, item := range items {
+		out[i].Item = item
+		at[item.Key] = i
+		keys[i] = item.Key
+		if item.BlobSHA256 != nil {
+			sums = append(sums, *item.BlobSHA256)
+		}
+	}
+	in := func(column string, n int) string {
+		return column + ` IN (?` + strings.Repeat(", ?", n-1) + `)`
+	}
+	sightings, err := readInto[Sighting](ctx, s.read, table("sightings"), in("item_key", len(keys))+` ORDER BY first_seen_ts, rowid`, keys...)
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range sightings {
+		out[at[r.ItemKey]].Sightings = append(out[at[r.ItemKey]].Sightings, r)
+	}
+	outputs, err := readInto[Output](ctx, s.read, table("outputs"), in("item_key", len(keys))+` ORDER BY created_ts, rowid`, keys...)
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range outputs {
+		out[at[r.ItemKey]].Outputs = append(out[at[r.ItemKey]].Outputs, r)
+	}
+	decisions, err := readInto[Decision](ctx, s.read, table("decisions"), in("item_key", len(keys))+` ORDER BY gate, sequence`, keys...)
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range decisions {
+		out[at[r.ItemKey]].Decisions = append(out[at[r.ItemKey]].Decisions, r)
+	}
+	deliveries, err := readInto[Delivery](ctx, s.read, table("deliveries"), in("item_key", len(keys))+` ORDER BY destination`, keys...)
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range deliveries {
+		out[at[r.ItemKey]].Deliveries = append(out[at[r.ItemKey]].Deliveries, r)
+	}
+	tasks, err := readInto[Task](ctx, s.read, table("tasks"), in("item_key", len(keys))+` ORDER BY created_ts, rowid`, keys...)
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range tasks {
+		out[at[r.ItemKey]].Tasks = append(out[at[r.ItemKey]].Tasks, r)
+	}
+	if len(sums) == 0 {
+		return out, nil
+	}
+	blobs, err := readInto[Blob](ctx, s.read, table("blobs"), in("sha256", len(sums)), sums...)
+	if err != nil {
+		return nil, err
+	}
+	homes, err := readInto[Home](ctx, s.read, table("homes"), in("blob_sha256", len(sums))+` ORDER BY found_ts, rowid`, sums...)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		sum := out[i].Item.BlobSHA256
+		if sum == nil {
+			continue
+		}
+		for _, b := range blobs {
+			if b.SHA256 == *sum {
+				out[i].Blob = &b
+			}
+		}
+		for _, h := range homes {
+			if h.BlobSHA256 == *sum {
+				out[i].Homes = append(out[i].Homes, h)
+			}
+		}
+	}
+	return out, nil
+}
+
+// Blob reads the blob row for sum, or ErrNoBlob.
+func (s *Store) Blob(ctx context.Context, sum string) (Blob, error) {
+	b, ok, err := first[Blob](ctx, s.read, table("blobs"), `sha256 = ?`, sum)
+	if err == nil && !ok {
+		err = fmt.Errorf("%s: %w", sum, ErrNoBlob)
+	}
+	return b, err
+}
+
+// ErrNoBlob is a read naming bytes with no blob row.
+var ErrNoBlob = errors.New("no such blob")
+
+// Blobs reads every blob row.
+func (s *Store) Blobs(ctx context.Context) ([]Blob, error) {
+	return readInto[Blob](ctx, s.read, table("blobs"), `1 ORDER BY sha256`)
+}
+
+// LiveHomes reads every home of the blob sum that is not gone.
+func (s *Store) LiveHomes(ctx context.Context, sum string) ([]Home, error) {
+	return readInto[Home](ctx, s.read, table("homes"), `blob_sha256 = ? AND gone_ts IS NULL ORDER BY found_ts, rowid`, sum)
 }
 
 // Condition statuses, as Kubernetes writes them.
@@ -115,6 +259,16 @@ func (r ItemRecords) Phase() string {
 		}
 	}
 	return phase
+}
+
+// Side is the newest side decision's verdict where it placed the item on a
+// side, and false where none has.
+func (r ItemRecords) Side() (string, bool) {
+	d, ok := r.newestDecision(GateSide)
+	if !ok || (d.Verdict != "personal" && d.Verdict != "fleet") {
+		return "", false
+	}
+	return d.Verdict, true
 }
 
 // WaitingAt is the model stage that holds the item, and "" where none does.

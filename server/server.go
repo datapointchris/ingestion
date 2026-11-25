@@ -128,6 +128,13 @@ const (
 	CodeStaleLease    = "stale_lease"
 	CodeInternal      = "internal"
 	CodeUnknownField  = "unknown_field"
+	CodeInvalidKey    = "invalid_key"
+	CodeInvalidBlob   = "invalid_blob"
+	CodeBlobNotFound  = "blob_not_found"
+	// CodeBlobBytesMissing is a blob whose row holds and whose bytes are gone,
+	// which the unpaired report also names.
+	CodeBlobBytesMissing = "blob_bytes_missing"
+	CodeDigestMismatch   = "digest_mismatch"
 )
 
 // refusal is the body of every answer that refuses a request, as goapiauth's
