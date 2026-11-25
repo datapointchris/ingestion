@@ -81,7 +81,8 @@ type modelConfig struct {
 		// Command is the claude binary, by path or by name on PATH.
 		Command string `toml:"command"`
 	} `toml:"claude-cli"`
-	Quality stageModel `toml:"quality"`
+	Quality   stageModel `toml:"quality"`
+	ModelRead stageModel `toml:"model-read"`
 }
 
 // stageModel is what one model stage asks its run for.

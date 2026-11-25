@@ -81,6 +81,11 @@ type LeasedTask struct {
 	// so a task whose run is already dispatched follows that run rather than
 	// starting another. Every other task carries none.
 	StageOutputs []StageOutput `json:"stage_outputs,omitempty"`
+	// Lens and Note are a model read's task's: the lens of the item's newest
+	// read decision, and the note that a person wrote, which the read
+	// answers. Every other task carries neither.
+	Lens *string `json:"lens,omitempty"`
+	Note *string `json:"note,omitempty"`
 }
 
 // StageOutput is one output that a model stage's task carries: which prompt
@@ -89,6 +94,7 @@ type LeasedTask struct {
 type StageOutput struct {
 	Producer        string  `json:"producer"`
 	ProducerVersion string  `json:"producer_version"`
+	NoteDigest      *string `json:"note_digest"`
 	State           string  `json:"state"`
 	DispatchID      *string `json:"dispatch_id"`
 	Model           *string `json:"model"`
@@ -140,24 +146,29 @@ type ReportDelivery struct {
 // item and stage from the task and stamps the row, so a column the store adds
 // for itself never changes what a worker sends.
 type ReportOutput struct {
-	Producer        string        `json:"producer"`
-	ProducerVersion string        `json:"producer_version"`
-	Lens            *string       `json:"lens,omitempty"`
-	LensVersion     *string       `json:"lens_version,omitempty"`
-	State           string        `json:"state"`
-	BlobSHA256      *string       `json:"blob_sha256,omitempty"`
-	DispatchID      *string       `json:"dispatch_id,omitempty"`
-	RunID           *string       `json:"run_id,omitempty"`
-	Model           *string       `json:"model,omitempty"`
-	Effort          *string       `json:"effort,omitempty"`
-	AnsweredModel   *string       `json:"answered_model,omitempty"`
-	Tokens          *store.Tokens `json:"tokens,omitempty"`
+	Producer        string  `json:"producer"`
+	ProducerVersion string  `json:"producer_version"`
+	Lens            *string `json:"lens,omitempty"`
+	LensVersion     *string `json:"lens_version,omitempty"`
+	// NoteDigest is store.NoteDigest of the note that a model read answered.
+	NoteDigest    *string       `json:"note_digest,omitempty"`
+	State         string        `json:"state"`
+	BlobSHA256    *string       `json:"blob_sha256,omitempty"`
+	DispatchID    *string       `json:"dispatch_id,omitempty"`
+	RunID         *string       `json:"run_id,omitempty"`
+	Model         *string       `json:"model,omitempty"`
+	Effort        *string       `json:"effort,omitempty"`
+	AnsweredModel *string       `json:"answered_model,omitempty"`
+	Tokens        *store.Tokens `json:"tokens,omitempty"`
 	// InputProducer and InputVersion name the parse that a later stage read.
 	InputProducer *string `json:"input_producer,omitempty"`
 	InputVersion  *string `json:"input_version,omitempty"`
-	// Findings and Spans are a scan's. A scan that found nothing sends an
-	// empty list, which reads apart from a stage that sends none.
+	// Findings and Spans are a scan's, and a model read's over its
+	// suggestion sentence. A scan that found nothing sends an empty list,
+	// which reads apart from a stage that sends none. RulesVersion is the
+	// version of the rules that made them.
 	Findings       []store.Finding `json:"findings"`
+	RulesVersion   *string         `json:"rules_version,omitempty"`
 	Quality        *int            `json:"quality,omitempty"`
 	SideGuess      *string         `json:"side_guess,omitempty"`
 	SideConfidence *float64        `json:"side_confidence,omitempty"`
@@ -173,10 +184,10 @@ type ReportOutput struct {
 func (o ReportOutput) output(task store.Task) store.Output {
 	return store.Output{
 		ItemKey: *task.ItemKey, Stage: task.Stage, Producer: o.Producer, ProducerVersion: o.ProducerVersion,
-		Lens: o.Lens, LensVersion: o.LensVersion, InputProducer: o.InputProducer, InputVersion: o.InputVersion,
+		Lens: o.Lens, LensVersion: o.LensVersion, NoteDigest: o.NoteDigest, InputProducer: o.InputProducer, InputVersion: o.InputVersion,
 		State: o.State, BlobSHA256: o.BlobSHA256,
 		DispatchID: o.DispatchID, RunID: o.RunID, Model: o.Model, Effort: o.Effort, AnsweredModel: o.AnsweredModel, Tokens: o.Tokens,
-		Findings: o.Findings, Quality: o.Quality,
+		Findings: o.Findings, RulesVersion: o.RulesVersion, Quality: o.Quality,
 		SideGuess: o.SideGuess, SideConfidence: o.SideConfidence, Spans: o.Spans, Answer: o.Answer, Error: o.Error,
 	}
 }
@@ -282,9 +293,12 @@ func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
 		if t.Delivery != nil {
 			leased.Title, leased.URL = t.Delivery.Title, t.Delivery.URL
 		}
+		if t.Read != nil {
+			leased.Lens, leased.Note = t.Read.Lens, t.Read.Note
+		}
 		for _, o := range t.Outputs {
 			leased.StageOutputs = append(leased.StageOutputs, StageOutput{
-				Producer: o.Producer, ProducerVersion: o.ProducerVersion, State: o.State, DispatchID: o.DispatchID,
+				Producer: o.Producer, ProducerVersion: o.ProducerVersion, NoteDigest: o.NoteDigest, State: o.State, DispatchID: o.DispatchID,
 				Model: o.Model, Effort: o.Effort, Error: o.Error,
 			})
 		}

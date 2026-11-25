@@ -28,9 +28,10 @@ package:
 | `extract` | one extractor per media type, each writing versioned text and units |
 | `isolatedprocess` | the one door that starts a program over outsider bytes, in a temporary directory of its own with an environment that holds no secret |
 | `scan` | the scanner, which runs YARA-X's `yr` over a parse's text or over one sentence, its stored findings, and `build-rules`, which converts Agent Threat Rules and tests each by its own examples |
-| `qualitygate` | the model stage that reads an item's opening and answers its quality, genre, domains, themes, a one-line idea and a side guess: the write after the scan that queues its task, the worker's handler that dispatches once and follows the stored dispatch, and the decision that its answer appends |
-| `route` | the side gate and the read gate, which serve runs in the write that ends each stage between the parse and them, once the item's newest parse is scanned, and in the write that applies a changed set: a sighting's tags, then a rule, then the quality gate's drop, review or guess at or above its confidence floor, else review, with a tag, rule or person withdrawing the item's queued quality task; a person's placement from review; and `Due`, the one predicate for where an item is due a delivery, which each decision's write reconciles, queueing a read as is and withdrawing what a drop or a move no longer reaches |
-| `modelread` | the model stage that answers an item's note with a summary, a suggestion sentence, or both |
+| `qualitygate` | the model stage that reads an item's opening and answers its quality, genre, domains, themes, a one-line idea and a side guess: the write after the scan that queues its task, its prompt's data and answer for `modelstage`'s handler, and the decision that its answer appends |
+| `route` | the side gate and the read gate, which serve runs in the write that ends each stage between the parse and them, once the item's newest parse is scanned, and in the write that applies a changed set: a sighting's tags, then a rule, then the quality gate's drop, review or guess at or above its confidence floor, else review, with a tag, rule or person withdrawing the item's queued quality task; a person's placement from review; `Due`, the one predicate for where an item is due a delivery, and `ModelReadDue`, the one for where it is due a model read under a lens whose prompt the build holds and that no read answering its note already holds, which each decision's write reconciles, queueing a delivery or a model read and withdrawing either where a drop or a move stops it |
+| `modelread` | the model stage that reads a fleet item whole under its read decision's lens and answers its note with a summary, a suggestion sentence, or both: its prompt's data and answer for `modelstage`'s handler, the scan of the suggestion before it is kept, and its replay |
+| `modelstage` | what every model stage's worker handler shares: the dispatch-once protocol, which starts a call once, stores its dispatch and follows it, and a replay's estimate |
 | `connectors` | the declaration set, checked against its schemas, and its apply, the scheduler that makes each connector due, the folder scan, the drop handler each source registers under its format, the deliverer each destination names, and the side default that takes an item placed with no destination |
 | `deliver` | each deliverer, registered with what it takes and how a worker opens it, which upserts an item into its destination through that destination's own API under the item's key, and how its answer maps to an outcome |
 | `modelport` | the one port that carries every model call, and its `queue` and `claude-cli` adapters |
@@ -133,11 +134,13 @@ the prompt's version, and gets back the structured answer.
   version beside it, so a better prompt replays over what is already landed. A schema's matched
   names, such as the side and the destinations, are enums that ingestion writes, never values
   taken from the text.
-- **A model stage dispatches once.** It sends under an idempotency key of item, stage and prompt
-  version. It stores the dispatch id in the same write that ends the worker's lease. A task whose
-  lease lapsed reads the run it already started, rather than paying for a second. A run that
-  failed dispatches again only once `tasks retry` queues its task, under a key that also names the
-  failed dispatch, because a dispatch service may answer the old key with the failed run.
+- **A model stage dispatches once, through `modelstage`.** It sends under an idempotency key of
+  item, stage, prompt version and, for a model read, the note's digest. It stores the dispatch id
+  in the same write that ends the worker's lease. A task whose lease lapsed reads the run it
+  already started, rather than paying for a second. So does a task whose answer a later step
+  could not keep yet, such as a failed scan of the suggestion. A run that failed dispatches again
+  only once `tasks retry` queues its task, under a key that also names the failed dispatch,
+  because a dispatch service may answer the old key with the failed run.
 
 ## The service is the one writer, and a worker does the heavy work
 

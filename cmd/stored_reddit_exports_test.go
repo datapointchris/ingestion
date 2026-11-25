@@ -21,9 +21,11 @@ import (
 // save parses and scans, and the set's rules place what they match. Each save
 // that no rule places gets one dispatch from the stand-in dispatch service,
 // whose answers cycle through a pass onto each side, a drop and an unsure
-// answer. The first fill holds every dispatch after the first until
-// the connector is released. Each save read as is on the personal side is
-// saved once in a stand-in life. Dropping the same files again lands nothing,
+// answer. Each save read by a model gets one model read, whose answers
+// alternate a suggestion and none, and the scanner reads each suggestion. The
+// first fill holds every dispatch after the first until the connector is
+// released. Each save read as is on the personal side is saved once in a
+// stand-in life. Dropping the same files again lands nothing,
 // and a copy of each under another name adds no item, task, dispatch or
 // article. The exports are outsider text kept out of this public repo, so the
 // test reads them only from redditExportsEnv, and it reports counts alone.
@@ -53,8 +55,17 @@ func TestTheStoredRedditExportsDropThroughTheirConnectorAndPassEveryStage(t *tes
 		answered++
 		return answers[answered%len(answers)]
 	}
+	read := 0
+	stand.read = func(string) map[string]any {
+		read++
+		if read%2 == 0 {
+			return readAnswered("A summary.", "")
+		}
+		return readAnswered("A summary.", "This item suggests a change.")
+	}
 	life := newStandInLife(t, p.provider)
-	workers := []worker.Handler{p.qualityGate(t, stand.models(t, "", "")), p.lifeDeliverer(t, life)}
+	models := stand.models(t, "", "")
+	workers := []worker.Handler{p.qualityGate(t, models), p.modelRead(t, models, sentenceScanner{}), p.lifeDeliverer(t, life)}
 
 	created := p.dropEach(t, files)
 	items := p.count(t, `SELECT count(*) FROM items`)
@@ -87,12 +98,16 @@ func TestTheStoredRedditExportsDropThroughTheirConnectorAndPassEveryStage(t *tes
 	for _, outcome := range []string{store.DeliveryDelivered, store.DeliveryDeliveredToExisting, store.DeliveryRefused, store.DeliveryPending} {
 		outcomes[outcome] = p.count(t, `SELECT count(*) FROM deliveries WHERE outcome = ?`, outcome)
 	}
+	reads := p.count(t, `SELECT count(*) FROM outputs WHERE stage = 'model-read' AND state = 'done'`)
+	suggestions := p.count(t, `SELECT count(*) FROM outputs WHERE stage = 'model-read' AND state = 'done' AND findings IS NOT NULL`)
 	dispatches := len(stand.starts())
 	articles, creates := life.counts()
-	if unscanned != 0 || c.byRule == 0 || c.waiting != 0 || dispatches != c.saves-c.byRule {
-		t.Errorf("%d saves: %d unscanned, %d placed by rule, %d waiting, %d dispatches; "+
-			"want every save scanned, a rule placing some, none waiting, and one dispatch for each save no rule placed",
-			c.saves, unscanned, c.byRule, c.waiting, dispatches)
+	if unscanned != 0 || c.byRule == 0 || c.waiting != 0 || dispatches != c.saves-c.byRule+modelRead || reads != modelRead ||
+		suggestions != (modelRead+1)/2 {
+		t.Errorf("%d saves: %d unscanned, %d placed by rule, %d waiting, %d dispatches, %d of %d model reads done with %d suggestions scanned; "+
+			"want every save scanned, a rule placing some, none waiting, one quality dispatch for each save no rule placed "+
+			"and one model read for each save read by a model, with every suggestion scanned",
+			c.saves, unscanned, c.byRule, c.waiting, dispatches, reads, modelRead, suggestions)
 	}
 	if outcomes[store.DeliveryDelivered] != articles || outcomes[store.DeliveryPending] != 0 {
 		t.Errorf("%d deliveries are delivered and %d pending, and the stand-in life holds %d articles; want one article each and none pending",
@@ -137,8 +152,9 @@ func TestTheStoredRedditExportsDropThroughTheirConnectorAndPassEveryStage(t *tes
 	t.Logf("%d exports dropped: %d items landed (%d created), %d saves; %d parse tasks and %d scan tasks run",
 		len(files), items, created, c.saves, parsed, scanned)
 	t.Logf("first fill held %d behind one dispatch of tokens %s", fill.Held, jsonOf(fill.Tokens[store.StageQuality]))
-	t.Logf("%d placed by rule, %d quality dispatches, %d placed on a side by the model's guess, %d dropped, review %v, %d waiting at the model read",
-		c.byRule, dispatches, byGuess, dropped, c.review, modelRead)
+	t.Logf("%d placed by rule, %d quality dispatches, %d placed on a side by the model's guess, %d dropped, review %v",
+		c.byRule, dispatches-reads, byGuess, dropped, c.review)
+	t.Logf("%d read by a model: %d model reads done, %d suggestions scanned", modelRead, reads, suggestions)
 	t.Logf("deliveries: %d delivered, %d delivered to an existing article, %d refused, %d pending; the stand-in life holds %d articles",
 		outcomes[store.DeliveryDelivered], outcomes[store.DeliveryDeliveredToExisting], outcomes[store.DeliveryRefused], outcomes[store.DeliveryPending], articles)
 	t.Logf("a second drop of the %d files replayed %d and landed nothing; a copy of each under another name created %d items and ran %d tasks",

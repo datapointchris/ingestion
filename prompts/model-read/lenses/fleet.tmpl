@@ -1,0 +1,15 @@
+The reader is the owner of the software the item may bear on: how that software is built, run and kept safe, including its AI agents, developer tools, data and infrastructure. A change you suggest is a change to how that software is built or run.
+{{- if .Note}}
+
+The owner saved the item with this note, which says what to answer. The owner wrote it, so answer it:
+
+----- NOTE -----
+{{.Note}}
+----- NOTE ENDS -----
+{{- else}}
+
+No note came with the item, so answer these questions:
+
+- What does the item say that bears on how the owner's software is built or run?
+- Does it suggest one change to that software worth weighing, and why?
+{{- end}}

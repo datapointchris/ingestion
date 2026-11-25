@@ -46,6 +46,9 @@ type Request struct {
 	ItemKey       string
 	Stage         string
 	PromptVersion string
+	// NoteDigest is the digest of the note that the call answers, where it
+	// answers one, so a new note is a dispatch of its own.
+	NoteDigest string
 	// Replaces is the dispatch whose run failed, where this call sends it
 	// again, so the retry is a dispatch of its own.
 	Replaces string
@@ -59,11 +62,16 @@ type Request struct {
 }
 
 // IdempotencyKey names r across every retry, by its item, stage, prompt
-// version and the failed dispatch it replaces. A dispatch service may match a
-// key only while its dispatch runs, so once a run ends, the dispatch id that
-// the stage stored is what keeps it from paying for a second.
+// version, the note it answers and the failed dispatch it replaces. A dispatch
+// service may match a key only while its dispatch runs, so once a run ends,
+// the dispatch id that the stage stored is what keeps it from paying for a
+// second.
 func (r Request) IdempotencyKey() string {
-	sum := sha256.Sum256([]byte(r.ItemKey + "\x00" + r.Stage + "\x00" + r.PromptVersion + "\x00" + r.Replaces))
+	named := r.ItemKey + "\x00" + r.Stage + "\x00" + r.PromptVersion + "\x00" + r.Replaces
+	if r.NoteDigest != "" {
+		named += "\x00" + r.NoteDigest
+	}
+	sum := sha256.Sum256([]byte(named))
 	return "ingestion-" + r.Stage + "-" + hex.EncodeToString(sum[:16])
 }
 

@@ -19,6 +19,7 @@ import (
 	"github.com/datapointchris/ingestion/connectors"
 	"github.com/datapointchris/ingestion/extract"
 	"github.com/datapointchris/ingestion/landing"
+	"github.com/datapointchris/ingestion/modelread"
 	"github.com/datapointchris/ingestion/outbox"
 	"github.com/datapointchris/ingestion/qualitygate"
 	"github.com/datapointchris/ingestion/route"
@@ -93,9 +94,10 @@ func afterStage(log *slog.Logger) server.AfterStage {
 // delivery is not settled.
 func replayableStages(st *store.Store, extractors *extract.Registry) map[string]server.Replayable {
 	return map[string]server.Replayable{
-		store.StageParse:   extractors.Replayable(),
-		store.StageScan:    scan.Replayable(extractors),
-		store.StageQuality: qualitygate.Replayable(st),
+		store.StageParse:     extractors.Replayable(),
+		store.StageScan:      scan.Replayable(extractors),
+		store.StageQuality:   qualitygate.Replayable(st),
+		store.StageModelRead: modelread.Replayable(st),
 		store.StageDeliver: {Queue: func(ctx context.Context, tx *store.Tx, item store.Item) (bool, error) {
 			return route.QueueDelivery(ctx, tx, item.Key)
 		}},

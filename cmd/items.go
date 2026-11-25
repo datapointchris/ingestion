@@ -19,6 +19,7 @@ import (
 	"github.com/datapointchris/goclikit"
 	"github.com/spf13/cobra"
 
+	"github.com/datapointchris/ingestion/modelread"
 	"github.com/datapointchris/ingestion/qualitygate"
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
@@ -355,6 +356,9 @@ func writeItem(w io.Writer, a server.ItemAnswer) {
 		if o.Stage == store.StageQuality && o.State == store.OutputDone {
 			writeQualityAnswer(row, o.Answer)
 		}
+		if o.Stage == store.StageModelRead && o.State == store.OutputDone {
+			writeModelReadAnswer(row, o)
+		}
 		for _, f := range o.Findings {
 			row("finding", "%s", findingLine(f))
 		}
@@ -411,8 +415,38 @@ func writeQualityAnswer(row func(label, format string, args ...any), raw json.Ra
 	}
 }
 
-// spanShown bounds the runes of a finding's span that items show prints.
-const spanShown = 120
+// writeModelReadAnswer prints a model read's lens, its summary and its
+// suggestion. A model wrote both from outsider text, so they print quoted, up
+// to answerShown. The findings that follow it are the scanner's over the
+// suggestion.
+func writeModelReadAnswer(row func(label, format string, args ...any), o server.OutputView) {
+	if o.Lens != nil {
+		lens := *o.Lens
+		if o.LensVersion != nil {
+			lens += " " + versionWords(*o.LensVersion)
+		}
+		row("", "lens %s", lens)
+	}
+	var a modelread.Answer
+	if json.Unmarshal(o.Answer, &a) != nil {
+		return
+	}
+	if a.Summary != nil {
+		row("", "summary %s", quotedUpTo(*a.Summary, answerShown))
+	}
+	if a.Suggestion != nil {
+		row("", "suggestion %s", quotedUpTo(*a.Suggestion, answerShown))
+	}
+}
+
+const (
+	// spanShown bounds the runes of a finding's span that items show prints.
+	spanShown = 120
+	// answerShown bounds the runes of a model read's summary or suggestion
+	// that items show prints. Keep it at or above summary's maxLength in
+	// prompts/model-read/answer.schema.json, so an answer prints whole.
+	answerShown = 3000
+)
 
 // versionWords is a producer version as a person reads it: v2 for a number,
 // and a version such as the rules' as it is.
@@ -438,10 +472,13 @@ func findingLine(f server.FindingView) string {
 
 // quoted is text that may carry outsider words, cut to spanShown runes and
 // quoted with every hidden or control character escaped.
-func quoted(text string) string {
+func quoted(text string) string { return quotedUpTo(text, spanShown) }
+
+// quotedUpTo is quoted with its cut at shown runes.
+func quotedUpTo(text string, shown int) string {
 	runes := []rune(text)
-	if len(runes) > spanShown {
-		runes = append(runes[:spanShown], '…')
+	if len(runes) > shown {
+		runes = append(runes[:shown], '…')
 	}
 	return strconv.Quote(string(runes))
 }

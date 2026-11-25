@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/datapointchris/ingestion/connectors"
 	"github.com/datapointchris/ingestion/itemkey"
@@ -65,6 +66,91 @@ type ItemAnswer struct {
 	// Waiting says why the item waits at a model stage, and is null where it
 	// waits at none.
 	Waiting *WaitingView `json:"waiting"`
+	// Suggestion is the item's latest suggestion, and null where no model
+	// read holds a sentence.
+	Suggestion *SuggestionView `json:"suggestion"`
+}
+
+// SuggestionView is an item's latest suggestion, as
+// schemas/suggestion.schema.json publishes it: its newest done model read
+// whose answer holds a sentence, with the scanner's findings first.
+type SuggestionView struct {
+	SchemaVersion int                     `json:"schema_version"`
+	ItemKey       string                  `json:"item_key"`
+	Sentence      string                  `json:"sentence"`
+	Title         *string                 `json:"title"`
+	URL           *string                 `json:"url"`
+	Zone          store.Zone              `json:"zone"`
+	Findings      []SuggestionFindingView `json:"findings"`
+	PromptVersion string                  `json:"prompt_version"`
+	// Lens names the read's lens and its version, as "fleet 1-9dcd3940".
+	Lens        *string `json:"lens"`
+	SuggestedTS string  `json:"suggested_ts"`
+}
+
+// SuggestionFindingView is one scanner finding beside a suggestion, in its
+// source or in its sentence.
+type SuggestionFindingView struct {
+	Rule     string  `json:"rule"`
+	Severity string  `json:"severity"`
+	In       string  `json:"in"`
+	Span     *string `json:"span"`
+}
+
+// Where a suggestion's finding was found.
+const (
+	FoundInSource   = "source"
+	FoundInSentence = "sentence"
+)
+
+// suggestion is rec's latest suggestion. Its findings are the newest done
+// scan's, in the source, then the read's own, in the sentence. It is nil where
+// no done model read holds a sentence.
+func suggestion(rec store.ItemRecords) *SuggestionView {
+	var read *store.Output
+	sentence := ""
+	for i := range rec.Outputs {
+		o := &rec.Outputs[i]
+		if o.Stage != store.StageModelRead || o.State != store.OutputDone || (read != nil && o.UpdatedTS < read.UpdatedTS) {
+			continue
+		}
+		var answer struct {
+			Suggestion *string `json:"suggestion"`
+		}
+		if json.Unmarshal(o.Answer, &answer) == nil && answer.Suggestion != nil && *answer.Suggestion != "" {
+			read, sentence = o, *answer.Suggestion
+		}
+	}
+	if read == nil {
+		return nil
+	}
+	s := &SuggestionView{
+		SchemaVersion: 1, ItemKey: rec.Item.Key, Sentence: sentence, Title: rec.Item.Title, URL: rec.Item.URL, Zone: rec.Item.Zone,
+		Findings: []SuggestionFindingView{}, PromptVersion: read.ProducerVersion, SuggestedTS: read.UpdatedTS,
+	}
+	if read.Lens != nil && *read.Lens != "" {
+		lens := strings.TrimSpace(*read.Lens + " " + text(read.LensVersion))
+		s.Lens = &lens
+	}
+	if scan := store.NewestDone(rec.Outputs, store.StageScan); scan != nil {
+		s.Findings = append(s.Findings, suggestionFindings(*scan, FoundInSource)...)
+	}
+	s.Findings = append(s.Findings, suggestionFindings(*read, FoundInSentence)...)
+	return s
+}
+
+// suggestionFindings are o's findings found in in, each with the span at its
+// own position where that span names its rule.
+func suggestionFindings(o store.Output, in string) []SuggestionFindingView {
+	views := make([]SuggestionFindingView, 0, len(o.Findings))
+	for i, f := range o.Findings {
+		view := SuggestionFindingView{Rule: f.Rule, Severity: f.Severity, In: in}
+		if i < len(o.Spans) && o.Spans[i].Rule == f.Rule {
+			view.Span = &o.Spans[i].Span
+		}
+		views = append(views, view)
+	}
+	return views
 }
 
 // Why an item waits at a model stage.
@@ -150,9 +236,11 @@ type OutputView struct {
 	ProducerVersion string          `json:"producer_version"`
 	Lens            *string         `json:"lens"`
 	LensVersion     *string         `json:"lens_version"`
+	NoteDigest      *string         `json:"note_digest"`
 	State           string          `json:"state"`
 	Units           *int            `json:"units"`
 	Findings        []FindingView   `json:"findings"`
+	RulesVersion    *string         `json:"rules_version"`
 	Answer          json.RawMessage `json:"answer"`
 	RunID           *string         `json:"run_id"`
 	DispatchID      *string         `json:"dispatch_id"`
@@ -491,8 +579,8 @@ func itemAnswer(rec store.ItemRecords) ItemAnswer {
 	for _, o := range rec.Outputs {
 		view := OutputView{
 			Stage: o.Stage, Producer: o.Producer, ProducerVersion: o.ProducerVersion, Lens: o.Lens, LensVersion: o.LensVersion,
-			State: o.State, Answer: o.Answer, RunID: o.RunID, DispatchID: o.DispatchID, Model: o.Model, Effort: o.Effort,
-			AnsweredModel: o.AnsweredModel, Tokens: o.Tokens, Error: o.Error,
+			NoteDigest: o.NoteDigest, State: o.State, Answer: o.Answer, RunID: o.RunID, DispatchID: o.DispatchID, Model: o.Model, Effort: o.Effort,
+			AnsweredModel: o.AnsweredModel, Tokens: o.Tokens, Error: o.Error, RulesVersion: o.RulesVersion,
 		}
 		if n, ok := rec.UnitCount(o); ok {
 			view.Units = &n
@@ -517,6 +605,7 @@ func itemAnswer(rec store.ItemRecords) ItemAnswer {
 			Destination: d.Destination, DestinationID: d.DestinationID, Outcome: d.Outcome, Attempts: d.Attempts, LastError: d.LastError,
 		})
 	}
+	a.Suggestion = suggestion(rec)
 	return a
 }
 

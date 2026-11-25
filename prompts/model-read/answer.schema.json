@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/datapointchris/ingestion/prompts/model-read/answer.schema.json",
+  "title": "The model read's answer",
+  "description": "What a model read answers from an item read whole under a lens and the item's note: a summary, a suggestion sentence, or both, with the other null. An answer holding neither fails. The store keeps the answer whole as the output's answer. The scanner reads the suggestion before the answer is kept, and its findings are the output's. A suggestion states a change in words, never a command to run.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["summary", "suggestion"],
+  "properties": {
+    "summary": {
+      "description": "What the item says, answering the note's questions. Null only where the note asks for a suggestion alone.",
+      "type": ["string", "null"],
+      "minLength": 1,
+      "maxLength": 3000
+    },
+    "suggestion": {
+      "description": "One sentence stating one change the item suggests, of the kind the lens names. Null where the item suggests none.",
+      "type": ["string", "null"],
+      "minLength": 1,
+      "maxLength": 400
+    }
+  }
+}

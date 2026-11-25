@@ -214,12 +214,14 @@ type Claim struct {
 // empty. A deliver task carries its delivery's row too, whose title and URL
 // every attempt sends. A model stage's task carries the item's outputs at its
 // stage, so a task whose run is already dispatched reads that run rather than
-// starting another.
+// starting another. A model read's task carries the item's newest read
+// decision, whose lens and note the read answers.
 type Leased struct {
 	Task
 	Item     Item
 	Delivery *Delivery
 	Outputs  []Output
+	Read     *Decision
 }
 
 // Claim records the worker's heartbeat and leases it up to c.Max tasks whose
@@ -290,6 +292,15 @@ func (s *Store) Claim(ctx context.Context, c Claim) ([]Leased, error) {
 				if leased.Outputs, err = readInto[Output](ctx, tx.tx, table("outputs"), `item_key = ? AND stage = ? ORDER BY created_ts, rowid`,
 					*task.ItemKey, task.Stage); err != nil {
 					return err
+				}
+			}
+			if task.Stage == StageModelRead && task.ItemKey != nil {
+				read, ok, err := tx.NewestDecision(ctx, *task.ItemKey, GateRead)
+				if err != nil {
+					return err
+				}
+				if ok {
+					leased.Read = &read
 				}
 			}
 			if task.Stage == StageDeliver && task.ItemKey != nil && task.Destination != nil {

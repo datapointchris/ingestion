@@ -40,7 +40,9 @@ const (
 // Idempotency-Key and answers the same dispatch to the key again. GET
 // /api/v1/dispatches/{id}/ reads it, and GET /api/v1/outside-text-answers/{id}
 // answers its run once it finished. While hold is set, every dispatch waits
-// with hold as its note. Once hold clears, a read finishes it.
+// with hold as its note. Once hold clears, a read finishes it. A dispatch
+// whose schema is the model read's is answered by read, and any other by
+// answer.
 type standInDispatch struct {
 	*httptest.Server
 	mu sync.Mutex
@@ -48,8 +50,10 @@ type standInDispatch struct {
 	hold string
 	// fail is the failure code that the next run to finish ends with.
 	fail string
-	// answer is the structured output of a run on prompt.
+	// answer is the structured output of a run on prompt, and read that of a
+	// model read's run.
 	answer     func(prompt string) map[string]any
+	read       func(prompt string) map[string]any
 	dispatches map[string]*standInRun
 	byKey      map[string]string
 	started    []dispatchStart
@@ -58,14 +62,15 @@ type standInDispatch struct {
 
 // standInRun is one dispatch and, once finished, its stored answer.
 type standInRun struct {
-	id, prompt, model, effort string
-	finished                  time.Time
-	answer                    map[string]any
+	id, prompt, schema, model, effort string
+	finished                          time.Time
+	answer                            map[string]any
 }
 
-// dispatchStart is what one new dispatch asked for.
+// dispatchStart is what one new dispatch asked for, and the $id of its
+// schema.
 type dispatchStart struct {
-	Key, Agent, Model, Effort string
+	Key, Agent, Model, Effort, Schema string
 }
 
 func newStandInDispatch(t *testing.T, provider *authtest.Provider) *standInDispatch {
@@ -107,9 +112,12 @@ func newStandInDispatch(t *testing.T, provider *authtest.Provider) *standInDispa
 			writeDispatch(w, http.StatusAccepted, d.view(d.dispatches[id]))
 			return
 		}
-		run := &standInRun{id: fmt.Sprintf("dispatch-%d", len(d.dispatches)+1), prompt: body.Inputs.Prompt, model: body.Model, effort: body.Effort}
+		schema, _ := body.Inputs.Schema["$id"].(string)
+		run := &standInRun{
+			id: fmt.Sprintf("dispatch-%d", len(d.dispatches)+1), prompt: body.Inputs.Prompt, schema: schema, model: body.Model, effort: body.Effort,
+		}
 		d.dispatches[run.id], d.byKey[key] = run, run.id
-		d.started = append(d.started, dispatchStart{Key: key, Agent: body.Agent, Model: body.Model, Effort: body.Effort})
+		d.started = append(d.started, dispatchStart{Key: key, Agent: body.Agent, Model: body.Model, Effort: body.Effort, Schema: schema})
 		d.settle(run)
 		writeDispatch(w, http.StatusAccepted, d.view(run))
 	})
@@ -162,7 +170,21 @@ func (d *standInDispatch) settle(run *standInRun) {
 		d.fail = ""
 		return
 	}
-	run.answer["state"], run.answer["structured_output"] = modelport.Succeeded, d.answer(run.prompt)
+	answer := d.answer
+	if strings.HasSuffix(run.schema, "/prompts/model-read/answer.schema.json") {
+		answer = d.read
+	}
+	run.answer["state"], run.answer["structured_output"] = modelport.Succeeded, answer(run.prompt)
+}
+
+// prompt is the prompt of the dispatch that started under key.
+func (d *standInDispatch) prompt(key string) string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if run, ok := d.dispatches[d.byKey[key]]; ok {
+		return run.prompt
+	}
+	return ""
 }
 
 // view is run as the service answers a dispatch.
@@ -216,7 +238,7 @@ func (d *standInDispatch) models(t *testing.T, model, effort string) modelConfig
 // where it opens none.
 func (p *pipeline) qualityGate(t *testing.T, models modelConfig) worker.Handler {
 	t.Helper()
-	handlers := workerHandlers(p.worker, nil, openModelPort(t.Context(), models, p.provider.URL, quiet), models, quiet)
+	handlers := workerHandlers(p.worker, nil, openModelPort(t.Context(), models, p.provider.URL, quiet), nil, models, quiet)
 	i := slices.IndexFunc(handlers, func(h worker.Handler) bool { return h.Capability() == qualitygate.Capability })
 	if i < 0 {
 		return nil

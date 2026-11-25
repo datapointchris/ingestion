@@ -2,6 +2,12 @@
 // holds its answer, one directory per stage. A stage's version is its number
 // and a digest of both files, so any change to either writes its outputs
 // beside the old ones, and a replay runs the new prompt over what is landed.
+//
+// The model read reads an item through a lens: what it reads the item for,
+// and what it answers where the item's note asks nothing. Each lens is a file
+// under the stage's lenses directory, which the prompt quotes as its "lens"
+// template. A lens has a version of its own, and the prompt under a lens
+// digests the lens's file too, so a better lens also writes beside the old.
 package prompts
 
 import (
@@ -11,6 +17,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"text/template"
 
@@ -18,25 +26,64 @@ import (
 )
 
 //go:embed quality/prompt.tmpl quality/answer.schema.json
+//go:embed model-read/prompt.tmpl model-read/answer.schema.json model-read/lenses/*.tmpl
 var files embed.FS
 
 // Prompt is one stage's prompt and answer schema at one version.
 type Prompt struct {
 	Stage string
 	// Version is the prompt's number and a digest of its files.
-	Version  string
+	Version string
+	// Lens names how the prompt reads an item, and is nil for a stage that
+	// reads through no lens.
+	Lens     *Lens
 	template *template.Template
 	// Schema is the answer's JSON Schema as the file holds it.
 	Schema json.RawMessage
 	schema *jsonschema.Schema
 }
 
-// Quality is the quality gate's prompt.
-var Quality = load("quality", "1")
+// Lens is one way a model read reads an item.
+type Lens struct {
+	Name string
+	// Version is the lens's number and a digest of its file.
+	Version string
+}
 
-// load reads stage's files under number, and panics where one does not parse,
-// because the binary carries them.
-func load(stage, number string) Prompt {
+// Quality is the quality gate's prompt.
+var Quality = load("quality", "1", nil)
+
+// ModelRead is the model read's prompt under each lens, by the lens's name.
+var ModelRead = loadLenses("model-read", "1", map[string]string{"fleet": "1"})
+
+// Lenses names each lens that ModelRead holds, in order.
+func Lenses() []string { return slices.Sorted(maps.Keys(ModelRead)) }
+
+// lensFile is a lens and the text of its file.
+type lensFile struct {
+	Lens
+	text []byte
+}
+
+// loadLenses loads stage's prompt under each lens in lenses, which maps the
+// lens's name to its number.
+func loadLenses(stage, number string, lenses map[string]string) map[string]Prompt {
+	out := make(map[string]Prompt, len(lenses))
+	for name, lensNumber := range lenses {
+		text, err := files.ReadFile(stage + "/lenses/" + name + ".tmpl")
+		if err != nil {
+			panic(err)
+		}
+		sum := sha256.Sum256(text)
+		out[name] = load(stage, number, &lensFile{Lens: Lens{Name: name, Version: lensNumber + "-" + hex.EncodeToString(sum[:4])}, text: text})
+	}
+	return out
+}
+
+// load reads stage's files under number, with lens's file as its "lens"
+// template where lens is set, and panics where one does not parse, because
+// the binary carries them.
+func load(stage, number string, lens *lensFile) Prompt {
 	text, err := files.ReadFile(stage + "/prompt.tmpl")
 	if err != nil {
 		panic(err)
@@ -45,10 +92,21 @@ func load(stage, number string) Prompt {
 	if err != nil {
 		panic(err)
 	}
-	sum := sha256.Sum256(append(append(append([]byte{}, text...), 0), schema...))
+	digested := append(append(append([]byte{}, text...), 0), schema...)
+	if lens != nil {
+		digested = append(append(digested, 0), lens.text...)
+	}
+	sum := sha256.Sum256(digested)
 	p := Prompt{Stage: stage, Version: number + "-" + hex.EncodeToString(sum[:4]), Schema: schema}
 	if p.template, err = template.New(stage).Option("missingkey=error").Parse(string(text)); err != nil {
 		panic(fmt.Sprintf("prompts/%s/prompt.tmpl: %v", stage, err))
+	}
+	if lens != nil {
+		l := lens.Lens
+		p.Lens = &l
+		if _, err := p.template.New("lens").Parse(string(lens.text)); err != nil {
+			panic(fmt.Sprintf("prompts/%s/lenses/%s.tmpl: %v", stage, l.Name, err))
+		}
 	}
 	document, err := jsonschema.UnmarshalJSON(bytes.NewReader(schema))
 	if err != nil {

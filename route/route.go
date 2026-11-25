@@ -18,9 +18,10 @@
 // itself sent to review, or a model's guess below the floor, so a guess or a
 // rule that arrives later reaches it. A person's placement from
 // review runs the read gate the same way. Each decision is appended, and the
-// newest at a gate decides. Each decision brings the item's delivery in line
-// in the same write: a read as is queues it, and a drop or a move withdraws
-// one that has not run.
+// newest at a gate decides. Each decision brings the item's delivery and its
+// model read in line in the same write: a read as is queues its delivery, a
+// read by a model queues its model read, and a drop or a move withdraws
+// either where it has not run.
 package route
 
 import (
@@ -32,6 +33,7 @@ import (
 	"strings"
 
 	"github.com/datapointchris/ingestion/connectors"
+	"github.com/datapointchris/ingestion/prompts"
 	"github.com/datapointchris/ingestion/store"
 )
 
@@ -420,7 +422,62 @@ func decide(ctx context.Context, tx *store.Tx, key string, side store.Decision, 
 	if _, err := reconcileDelivery(ctx, tx, set, item, side, read); err != nil {
 		return nil, err
 	}
+	if err := reconcileModelRead(ctx, tx, key, side, read); err != nil {
+		return nil, err
+	}
 	return out, nil
+}
+
+// ReadByModel says whether an item's newest side and read decisions send it
+// to a model read: the side decision places it on a side, and the read
+// decision reads it by a model.
+func ReadByModel(side, read store.Decision) bool {
+	return onASide(side.Verdict) && read.Verdict == connectors.ReadModel
+}
+
+// ModelReadDue says whether a replay runs the model read on an item: its
+// newest decisions read it by a model, under a lens whose prompt this build
+// holds, no model read's task of it is open, and no done read of that lens's
+// prompt in force answers the read decision's note.
+func ModelReadDue(side, read store.Decision, outputs []store.Output, open bool) bool {
+	return modelReadDue(side, read, outputs, open, true)
+}
+
+// modelReadDue is ModelReadDue, where currentPrompt false counts a done read
+// of any prompt version, as the read gate does. A new prompt then reads an
+// item again only through a replay, which estimates its tokens first.
+func modelReadDue(side, read store.Decision, outputs []store.Output, open, currentPrompt bool) bool {
+	if open || !ReadByModel(side, read) {
+		return false
+	}
+	p, ok := prompts.ModelRead[text(read.Lens)]
+	return ok && !slices.ContainsFunc(outputs, func(o store.Output) bool {
+		return o.Stage == store.StageModelRead && o.State == store.OutputDone && (!currentPrompt || o.ProducerVersion == p.Version) &&
+			store.NoteAnswered(o.NoteDigest, read.Note)
+	})
+}
+
+// reconcileModelRead queues the model read of the item under key where the
+// read gate finds it due, so a new note reads an item again. It withdraws a
+// queued one where the item's newest decisions read it otherwise.
+func reconcileModelRead(ctx context.Context, tx *store.Tx, key string, side, read store.Decision) error {
+	if !ReadByModel(side, read) {
+		by := side.DecidedBy
+		if onASide(side.Verdict) {
+			by = read.DecidedBy
+		}
+		return tx.WithdrawQueued(ctx, key, store.StageModelRead, "withdrawn: "+by+" decided the item is not read by a model")
+	}
+	_, open, err := tx.OpenTask(ctx, key, store.StageModelRead)
+	if err != nil {
+		return err
+	}
+	outputs, err := tx.Outputs(ctx, key)
+	if err != nil || !modelReadDue(side, read, outputs, open, false) {
+		return err
+	}
+	_, err = tx.Enqueue(ctx, store.Task{ItemKey: &key, Stage: store.StageModelRead, Capability: store.StageModelRead})
+	return err
 }
 
 // Due is where an item's newest side and read decisions send it for delivery
