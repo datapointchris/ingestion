@@ -356,7 +356,7 @@ func TestLandedSavesParseOnceEachAndAReplayWritesTheNextVersionBeside(t *testing
 		return `[{"data":{"children":[` + post(name) + `]}},{"data":{"children":[` +
 			`{"kind":"t1","data":{"name":"t1_c1","author":"alice","body":"A comment","replies":""}}]}}]`
 	}
-	export := `{"kind":"reddit-saved","exported_at":"2026-10-30T19:18:39Z","items":[` +
+	export := `{"kind":"reddit-saved","complete":true,"exported_at":"2026-10-30T19:18:39Z","items":[` +
 		`{"child":` + post("t3_aa1") + `,"thread":` + thread("t3_aa1") + `},` +
 		`{"child":` + post("t3_bb2") + `,"thread":null,"thread_error":"403"}]}`
 	saves, units := parsedThenReplayed(t, map[string][]byte{"first": []byte(export)})

@@ -218,7 +218,7 @@ for an editor to check against. A connector names these:
 | `freshness` | optional, for a poll or a folder: how long it may go without a delivery before it reads overdue |
 | `due_interval` | a drop's or a push's expected cadence |
 | `root`, `path` | a folder's `[serve.homes]` root, and the directory below it to scan |
-| `format` | optional, for a drop: the registered handler that reads its file, which otherwise lands as one item |
+| `format` | optional, for a drop: the registered handler that reads its file, which otherwise lands as one item. The connector's `zone` is the one the format lands |
 
 `freshness` and `due_interval` are a positive count of minutes, hours, days or weeks, such as
 `90m`, `12h`, `30d` or `2w`. A day is 24 hours.
@@ -297,7 +297,9 @@ newest task past its parse failed.
   The CLI derives the key from the connector, the file's name, its media type and its bytes, so
   dropping a file twice lands it once, and a copy under another name is one more sighting of the
   same item. A connector whose `format` names a registered handler gives the file to it, and any
-  other lands the file as one item.
+  other lands the file as one item. A file that the handler refuses answers 422 and lands nothing.
+  A drop that stops partway, such as on a full volume, answers 500, and dropping the file again
+  lands the rest.
 - **A connector's first fill runs the first of its items to reach a model stage, and holds the
   rest there.** `show` prints that item and its tokens by stage. `ingestion connectors release
   <name>` sends `PATCH /api/v1/connectors/<name>/first-fill` with `{"state": "released"}`, which
@@ -333,12 +335,15 @@ Dropped reddit-saved-2026-11-25.json into reddit-exports: it holds 51 items, 51 
 
 - **The file lands as one item, and each save as its child**, under `reddit/<fullname>`, such as
   `reddit/t3_aq7ggd`. The file's own item counts among those the command prints.
-- **Every item is `outside`**, because Reddit's users wrote it.
+- **Every item is `outside`**, because Reddit's users wrote it. A connector that names the format
+  declares `zone: outside`, or the set is refused.
 - **A save's sighting records its subreddit** under the field `subreddit`, for a routing rule to
   match.
 - **A save that an earlier export landed keeps its item, its parent and its bytes**, so it is
   parsed, gated and delivered once. Its sighting names the newest export that carried it.
-- **A file that is not a Reddit export is refused**, and nothing of it lands.
+- **A file that is not a whole export is refused**, and nothing of it lands. That covers a file of
+  another kind, and an export that the bookmarklet did not finish, such as one Reddit throttled
+  partway. The refusal carries the bookmarklet's own error. Export again, and drop the new file.
 
 ### Parsing an item, and running a stage again
 

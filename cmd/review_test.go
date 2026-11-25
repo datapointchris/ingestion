@@ -89,7 +89,7 @@ func (p *pipeline) scanFindingNothing(t *testing.T) int {
 
 // redditExport is a Reddit export holding saves, each from redditSave.
 func redditExport(saves ...string) []byte {
-	return []byte(`{"kind":"reddit-saved","exported_at":"2026-10-30T19:18:39Z","items":[` + strings.Join(saves, ",") + `]}`)
+	return []byte(`{"kind":"reddit-saved","complete":true,"exported_at":"2026-10-30T19:18:39Z","items":[` + strings.Join(saves, ",") + `]}`)
 }
 
 // redditSave is one self post saved from subreddit, as an export holds it.
