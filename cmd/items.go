@@ -50,9 +50,14 @@ var itemsShowCmd = &cobra.Command{
 	Use:   "show <key or url>",
 	Short: "Show one item and every record it holds",
 	Long: "Shows one item: its zone and phase, each sighting, where its bytes are kept,\n" +
-		"each stage's output, each gate's decision and each delivery. A URL resolves\n" +
-		"to the key of the artifact it names, so a Reddit or YouTube link reaches its\n" +
-		"post or video.",
+		"each stage's output, each gate's decision and each delivery. A delivery\n" +
+		"prints its outcome, the destination's id for the record that holds the item,\n" +
+		"its attempts and the destination's last answer. It names its task's\n" +
+		"capability where no worker heard from lately claims it. An item read as is\n" +
+		"that reaches no deliverer says why, such as a side with no default\n" +
+		"destination.\n" +
+		"A URL resolves to the key of the artifact it names, so a Reddit or YouTube\n" +
+		"link reaches its post or video.",
 	Example: "  ingestion items show reddit/t3_aq7ggd\n" +
 		"  ingestion items show https://www.reddit.com/r/golang/comments/aq7ggd/\n" +
 		"  ingestion items show url/0123456789abcdef --json",
@@ -89,7 +94,10 @@ var itemsReplayCmd = &cobra.Command{
 		"The service refuses a stage that it holds no replay for, a --key that names\n" +
 		"no item, and a --connector that sighted no item. A stage that calls a model\n" +
 		"first prints its count and an estimate of its tokens by kind, and queues only\n" +
-		"with --yes. A model-free stage, such as parse, queues at once.\n" +
+		"with --yes. A model-free stage, such as parse, queues at once. A deliver\n" +
+		"replay queues the delivery that each item's placement sends it to, where it\n" +
+		"is not settled: one pending, or one never queued. A delivery that a\n" +
+		"destination holds or refused is never written again.\n" +
 		"\n" +
 		"Each run sends one Idempotency-Key, and its retries send the same, so the\n" +
 		"service queues each replay once.",
@@ -343,7 +351,21 @@ func writeItem(w io.Writer, a server.ItemAnswer) {
 		row(d.Gate, "%s", decision)
 	}
 	for _, d := range a.Deliveries {
-		row("delivery", "%s  %s  attempts %d", d.Destination, d.Outcome, d.Attempts)
+		delivery := d.Destination + "  " + d.Outcome
+		if d.DestinationID != nil {
+			delivery += " as " + *d.DestinationID
+		}
+		delivery += fmt.Sprintf("  attempts %d", d.Attempts)
+		if d.LastError != nil {
+			delivery += "  " + *d.LastError
+		}
+		if d.UnclaimedCapability != nil {
+			delivery += "  no worker heard from lately claims " + *d.UnclaimedCapability
+		}
+		row("delivery", "%s", delivery)
+	}
+	if u := a.Undelivered; u != nil {
+		row("delivery", "none: %s", u.Message)
 	}
 	_ = table.Flush()
 }

@@ -84,9 +84,16 @@ func afterStage(log *slog.Logger) server.AfterStage {
 }
 
 // replayableStages is how a replay queues each stage again, keyed by the
-// stage.
+// stage. A deliver replay queues the delivery of each item read as is whose
+// delivery is not settled.
 func replayableStages(extractors *extract.Registry) map[string]server.Replayable {
-	return map[string]server.Replayable{store.StageParse: extractors.Replayable(), store.StageScan: scan.Replayable(extractors)}
+	return map[string]server.Replayable{
+		store.StageParse: extractors.Replayable(),
+		store.StageScan:  scan.Replayable(extractors),
+		store.StageDeliver: {Queue: func(ctx context.Context, tx *store.Tx, item store.Item) (bool, error) {
+			return route.QueueDelivery(ctx, tx, item.Key)
+		}},
+	}
 }
 
 func runServe(cmd *cobra.Command, _ []string) error {

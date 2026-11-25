@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -31,6 +32,14 @@ const clientSecretEnv = "INGESTION_CLIENT_SECRET"
 // workerScope is what the worker's service client asks for.
 const workerScope = "ingestion.tasks.claim"
 
+// deliverSecretEnv is the variable that holds the secret of the service
+// client that the [deliver.<name>] table names, such as
+// INGESTION_DELIVER_LIFE_ARTICLES_CLIENT_SECRET for life-articles. It is read
+// from the environment alone, as clientSecretEnv is.
+func deliverSecretEnv(name string) string {
+	return "INGESTION_DELIVER_" + strings.ToUpper(strings.ReplaceAll(name, "-", "_")) + "_CLIENT_SECRET"
+}
+
 // fileConfig is the config file. Its top-level api, issuer and client_id are
 // goclilogin's, read by every command that calls the service. serve reads
 // issuer and its own table, and worker run reads its own table.
@@ -50,6 +59,19 @@ type fileConfig struct {
 		Lease duration `toml:"lease"`
 		Poll  duration `toml:"poll"`
 	} `toml:"worker"`
+	// Deliver holds a table for each deliverer that a worker opens, under the
+	// name the deliverer registers, read by worker run.
+	Deliver map[string]serviceClient `toml:"deliver"`
+}
+
+// serviceClient is how a worker reaches a destination app: the app's API, and
+// the service client it writes as, by client_id or by the token that
+// token_command prints. An empty issuer takes the file's.
+type serviceClient struct {
+	API          string   `toml:"api"`
+	ClientID     string   `toml:"client_id"`
+	TokenCommand []string `toml:"token_command"`
+	Issuer       string   `toml:"issuer"`
 }
 
 // duration is a TOML string such as "5m".

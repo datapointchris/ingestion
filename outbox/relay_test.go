@@ -3,6 +3,7 @@ package outbox
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -139,7 +140,7 @@ func TestAnItemGainsEachStageRecordAndEachChangeReachesTheCollectorOnce(t *testi
 		t.Fatal(err)
 	}
 	if _, _, err := st.Replay(ctx, store.Replay{ID: strings.Repeat("d", 32), Stage: store.StageParse, RequestedBy: "person:test"},
-		func(store.Item) (string, bool) { return "", false }); err != nil {
+		func(context.Context, *store.Tx, store.Item) (bool, error) { return false, nil }); err != nil {
 		t.Fatal(err)
 	}
 	drain(t, relay)

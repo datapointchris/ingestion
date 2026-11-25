@@ -61,8 +61,13 @@ type ReplayAnswer struct {
 // Replayable is one stage that a replay runs again.
 type Replayable struct {
 	// Capability is the capability of the stage's task on item, and false
-	// where the stage does not run on item.
+	// where the stage does not run on item. A replay queues one task of that
+	// capability for each item it covers.
 	Capability func(item store.Item) (string, bool)
+	// Queue, where it is set, queues the stage's tasks for one item instead,
+	// and answers whether it queued any. A stage whose task names more than
+	// its item, such as a delivery's destination, sets it.
+	Queue store.ReplayQueue
 	// Estimate is a model stage's tokens by kind over items. Where it is set,
 	// a replay answers the estimate and queues nothing until a request
 	// confirms it. A model-free stage leaves it nil, and queues at once.
@@ -122,7 +127,7 @@ func (h replayHandlers) replay(w http.ResponseWriter, r *http.Request) {
 	caller, _ := goapiauth.IdentityFrom(r.Context())
 	replay, queued, err := h.store.Replay(r.Context(), store.Replay{
 		ID: replayID(caller, idempotencyKey), Stage: body.Stage, Connector: body.Connector, ItemKey: body.Key, RequestedBy: requester(caller),
-	}, stage.Capability)
+	}, stage.queue(body.Stage))
 	if errors.Is(err, store.ErrReplayDiffers) {
 		Refuse(w, http.StatusConflict, CodeIdempotencyKeyReused,
 			"this %s already named a replay of another stage or other items, so nothing was queued", IdempotencyKey)
@@ -149,7 +154,7 @@ func (h replayHandlers) replay(w http.ResponseWriter, r *http.Request) {
 // estimate answers a model stage's count and tokens by kind over the items
 // the replay selects, and queues nothing.
 func (h replayHandlers) estimate(w http.ResponseWriter, r *http.Request, stage Replayable, answer ReplayAnswer) {
-	items, err := h.store.ReplayItems(r.Context(), store.Replay{Stage: answer.Stage, Connector: answer.Connector, ItemKey: answer.Key}, stage.Capability)
+	items, err := h.store.ReplayItems(r.Context(), store.Replay{Stage: answer.Stage, Connector: answer.Connector, ItemKey: answer.Key}, stage.takes)
 	if selectionRefused(w, err) {
 		return
 	}
@@ -166,6 +171,31 @@ func (h replayHandlers) estimate(w http.ResponseWriter, r *http.Request, stage R
 	}
 	answer.Items, answer.Estimate = len(items), &tokens
 	JSON(w, http.StatusOK, answer)
+}
+
+// takes says whether the stage runs on item: whether Capability names a task
+// for it, and every item where the stage sets Queue alone.
+func (s Replayable) takes(item store.Item) bool {
+	if s.Capability == nil {
+		return true
+	}
+	_, ok := s.Capability(item)
+	return ok
+}
+
+// queue is s.Queue, else a task of s's capability for each item that it takes.
+func (s Replayable) queue(stage string) store.ReplayQueue {
+	if s.Queue != nil {
+		return s.Queue
+	}
+	return func(ctx context.Context, tx *store.Tx, item store.Item) (bool, error) {
+		capability, ok := s.Capability(item)
+		if !ok {
+			return false, nil
+		}
+		_, err := tx.Enqueue(ctx, store.Task{ItemKey: &item.Key, Stage: stage, Capability: capability})
+		return err == nil, err
+	}
 }
 
 // selectionRefused answers 404 where a replay's key names no item or its

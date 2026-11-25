@@ -1,10 +1,19 @@
 # Each place an item is delivered, the side it takes, and the tags that place
-# an item there. A destination with no side takes neither.
+# an item there. A destination with no side takes neither. A deliverer writes
+# each item placed on its destination through that app's API. A destination
+# with none, such as one whose reader pulls items itself, takes no delivery.
+# An item that the quality gate's guess places on a side, naming no
+# destination, goes to the side's default_for_side destination.
 destinations:
   - name: reading-list
     side: personal
     tags: [read-later]
+    # Saves each item as an article in life, where a worker's config holds a
+    # [deliver.life-articles] table.
+    # deliverer: life-articles
+    default_for_side: true
   - name: work-inbox
     side: fleet
     tags: [work]
+    default_for_side: true
   - name: dropped

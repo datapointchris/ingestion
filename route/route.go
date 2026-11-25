@@ -15,7 +15,9 @@
 // itself sent to review, or a model's guess below the floor, so a guess or a
 // rule that arrives later reaches it. A person's placement from
 // review runs the read gate the same way. Each decision is appended, and the
-// newest at a gate decides.
+// newest at a gate decides. Each decision brings the item's delivery in line
+// in the same write: a read as is queues it, and a drop or a move withdraws
+// one that has not run.
 package route
 
 import (
@@ -221,7 +223,10 @@ func AfterStage(log *slog.Logger) func(context.Context, *store.Tx, store.Task) e
 
 // AfterApply is the hook that serve runs in the write that applies a changed
 // set. It runs the gates again over each scanned item that no side decision
-// placed, so a rule the set adds places what it matches.
+// placed, so a rule the set adds places what it matches. It then reconciles
+// the delivery of each item read as is that holds no settled delivery, so a
+// side's default or a deliverer that the set adds reaches the items that
+// waited for one.
 func AfterApply(log *slog.Logger) connectors.AfterApply {
 	return func(ctx context.Context, tx *store.Tx) error {
 		keys, err := tx.UnplacedScannedKeys(ctx)
@@ -231,6 +236,14 @@ func AfterApply(log *slog.Logger) connectors.AfterApply {
 		for _, key := range keys {
 			if _, err := Gate(ctx, tx, key, log); err != nil {
 				return fmt.Errorf("the side gate on %s: %w", key, err)
+			}
+		}
+		if keys, err = tx.UnsettledKeysReadAs(ctx, connectors.ReadAsIs); err != nil {
+			return err
+		}
+		for _, key := range keys {
+			if _, err := QueueDelivery(ctx, tx, key); err != nil {
+				return fmt.Errorf("queue the delivery of %s: %w", key, err)
 			}
 		}
 		return nil
@@ -330,15 +343,75 @@ func decide(ctx context.Context, tx *store.Tx, key string, side store.Decision, 
 		return nil, err
 	}
 	out := []store.Decision{written}
-	if !onASide(side.Verdict) {
-		return out, nil
+	var read store.Decision
+	if onASide(side.Verdict) {
+		read = Read(set, sightings, side.Verdict, note)
+		read.ItemKey = key
+		if read, err = tx.AddDecision(ctx, read); err != nil {
+			return nil, err
+		}
+		out = append(out, read)
 	}
-	read := Read(set, sightings, side.Verdict, note)
-	read.ItemKey = key
-	if written, err = tx.AddDecision(ctx, read); err != nil {
+	item, _, err := tx.Item(ctx, key)
+	if err != nil {
 		return nil, err
 	}
-	return append(out, written), nil
+	if _, err := reconcileDelivery(ctx, tx, set, item, side, read); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// Due is where an item's newest side and read decisions send it for delivery
+// under set, and false where they send it nowhere: the side decision places
+// it on no side, or the read decision reads it other than as is. Where true,
+// it is the destination whose deliverer writes the item, or why none does.
+// The queue, a replay, an apply and items show each ask it.
+func Due(set connectors.Set, item store.Item, side, read store.Decision) (connectors.Destination, *connectors.Undelivered, bool) {
+	if !onASide(side.Verdict) || read.Verdict != connectors.ReadAsIs {
+		return connectors.Destination{}, nil, false
+	}
+	d, undelivered := set.DeliveryTo(side, item)
+	return d, undelivered, true
+}
+
+// QueueDelivery brings the item under key's deliveries in line with what Due
+// answers for its newest decisions under the set in force. It answers whether
+// it queued a delivery.
+func QueueDelivery(ctx context.Context, tx *store.Tx, key string) (bool, error) {
+	item, ok, err := tx.Item(ctx, key)
+	if err != nil || !ok {
+		return false, err
+	}
+	side, _, err := tx.NewestDecision(ctx, key, store.GateSide)
+	if err != nil {
+		return false, err
+	}
+	read, _, err := tx.NewestDecision(ctx, key, store.GateRead)
+	if err != nil {
+		return false, err
+	}
+	set, err := connectors.AppliedSet(ctx, tx)
+	if err != nil {
+		return false, err
+	}
+	return reconcileDelivery(ctx, tx, set, item, side, read)
+}
+
+// reconcileDelivery withdraws each queued delivery of item to a destination
+// that Due no longer answers, and queues the one it does answer, as a
+// Kubernetes controller moves what runs toward what is declared. So a person's
+// drop or move stops a delivery that has not run yet.
+func reconcileDelivery(ctx context.Context, tx *store.Tx, set connectors.Set, item store.Item, side, read store.Decision) (bool, error) {
+	d, undelivered, due := Due(set, item, side, read)
+	keep := ""
+	if due && undelivered == nil {
+		keep = d.Name
+	}
+	if err := tx.WithdrawDeliveries(ctx, item.Key, keep); err != nil || keep == "" {
+		return false, err
+	}
+	return tx.QueueDelivery(ctx, item, d.Name, d.Deliverer)
 }
 
 // Placement is a person's decision on an item.

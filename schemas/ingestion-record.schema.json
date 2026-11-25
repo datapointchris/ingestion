@@ -216,20 +216,19 @@
     },
     "deliveries": {
       "title": "deliveries, one row per item and destination",
-      "description": "ingestion.record.id is <item key>/<destination>.",
+      "description": "ingestion.record.id is <item key>/<destination>. A delivery is written pending when its task is queued. Its last error, title and URL ship as ingestion.text, because each can quote the item.",
       "type": "object",
       "additionalProperties": false,
       "required": ["item_key", "destination", "outcome", "attempts", "updated_ts"],
       "properties": {
         "item_key": {"$ref": "#/$defs/item_key"},
         "destination": {"description": "One the destinations file names.", "type": "string"},
-        "destination_id": {"description": "The record's id in the destination.", "type": ["string", "null"]},
+        "destination_id": {"description": "The id of the destination's record that holds the item, or that a refusal names.", "type": ["string", "null"]},
         "outcome": {
-          "description": "refused is a 409 naming an existing record, kept and never retried.",
+          "description": "delivered-to-existing is a record the destination held under no key, which took the item's key, as the destination's answer to that write said; a retry whose first answer was lost reads delivered. refused is a destination's answer naming an existing record that conflicts with the item, kept with that record's id and never retried.",
           "enum": ["pending", "delivered", "delivered-to-existing", "refused"]
         },
-        "attempts": {"type": "integer", "minimum": 0},
-        "last_error": {"description": "The destination's last error, as it answered it.", "type": ["string", "null"]},
+        "attempts": {"description": "How many writes of the item the destination answered or failed.", "type": "integer", "minimum": 0},
         "updated_ts": {"$ref": "#/$defs/timestamp"}
       }
     },
@@ -238,13 +237,14 @@
       "description": "ingestion.record.id is the task's id. A stage's task names its item, and a poll's task names its connector. A failed task's error ships as ingestion.text, because an extractor's stderr can quote the item.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "item_key", "connector", "stage", "capability", "state", "attempts", "created_ts", "updated_ts"],
+      "required": ["id", "item_key", "connector", "destination", "stage", "capability", "state", "attempts", "created_ts", "updated_ts"],
       "properties": {
         "id": {"type": "string"},
         "item_key": {"anyOf": [{"$ref": "#/$defs/item_key"}, {"type": "null"}]},
         "connector": {"description": "The connector a poll's task fetches for.", "type": ["string", "null"]},
+        "destination": {"description": "The destination a deliver task writes its item to, and null for every other task.", "type": ["string", "null"]},
         "stage": {"$ref": "#/$defs/stage"},
-        "capability": {"description": "What a worker needs to claim the task, such as pdf or whisper, and poll:<source> for a poll.", "type": "string"},
+        "capability": {"description": "What a worker needs to claim the task: poll:<source> for a poll, parse:<extractor> for a parse and deliver:<deliverer> for a delivery.", "type": "string"},
         "state": {"enum": ["queued", "leased", "done", "failed"]},
         "held_by": {"description": "The connector whose first fill holds this model stage's task. No claim takes it until a person releases the fill.", "type": ["string", "null"]},
         "lease_holder": {"description": "The worker holding the lease.", "type": ["string", "null"]},

@@ -250,7 +250,7 @@ var reached = map[string]string{
 // otherwise the furthest stage whose condition is True. A person can place an
 // item whose parse failed, which moves it on from its parse.
 func (r ItemRecords) Phase() string {
-	side, sided := r.newestDecision(GateSide)
+	side, sided := r.NewestDecision(GateSide)
 	if sided && side.Verdict == "drop" {
 		return "dropped"
 	}
@@ -266,7 +266,7 @@ func (r ItemRecords) Phase() string {
 			return "failed"
 		}
 	}
-	if quality, decided := r.newestDecision(GateQuality); decided && quality.Verdict == "drop" {
+	if quality, decided := r.NewestDecision(GateQuality); decided && quality.Verdict == "drop" {
 		return "dropped"
 	}
 	phase := ""
@@ -291,7 +291,7 @@ func (r ItemRecords) Phase() string {
 // Side is the newest side decision's verdict where it placed the item on a
 // side, and false where none has.
 func (r ItemRecords) Side() (string, bool) {
-	d, ok := r.newestDecision(GateSide)
+	d, ok := r.NewestDecision(GateSide)
 	if !ok || (d.Verdict != "personal" && d.Verdict != "fleet") {
 		return "", false
 	}
@@ -313,12 +313,12 @@ func (r ItemRecords) condition(step string) (Condition, bool) {
 	case StageLand:
 		return Condition{Type: step, Status: ConditionTrue, Reason: "landed"}, true
 	case StageQuality:
-		if d, ok := r.newestDecision(GateQuality); ok {
+		if d, ok := r.NewestDecision(GateQuality); ok {
 			return Condition{Type: step, Status: ConditionTrue, Reason: d.Verdict}, true
 		}
 		return r.outputCondition(step)
 	case GateSide, GateRead:
-		if d, ok := r.newestDecision(step); ok {
+		if d, ok := r.NewestDecision(step); ok {
 			return Condition{Type: step, Status: ConditionTrue, Reason: d.Verdict}, true
 		}
 		return Condition{}, false
@@ -329,7 +329,9 @@ func (r ItemRecords) condition(step string) (Condition, bool) {
 	}
 }
 
-func (r ItemRecords) newestDecision(gate string) (Decision, bool) {
+// NewestDecision is the item's newest decision at gate, and false where none
+// is.
+func (r ItemRecords) NewestDecision(gate string) (Decision, bool) {
 	var newest Decision
 	found := false
 	for _, d := range r.Decisions {

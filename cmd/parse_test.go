@@ -107,14 +107,15 @@ func (p *pipeline) parse(t *testing.T, extractors *extract.Registry) int {
 	return p.run(t, extractors.Handlers(p.worker, slog.New(slog.NewTextHandler(io.Discard, nil)))...)
 }
 
-// run runs every queued task that one of handlers claims, as a worker does,
-// and counts the tasks it ran.
-func (p *pipeline) run(t *testing.T, all ...worker.Handler) int {
+// run claims and runs every task that one of handlers holds the capability
+// of, until no claim answers one, and reports each as a worker does. It counts
+// the tasks it ran. A task sent back with backoff waits past this run.
+func (p *pipeline) run(t *testing.T, workers ...worker.Handler) int {
 	t.Helper()
 	ctx := t.Context()
 	handlers := map[string]worker.Handler{}
 	var capabilities []string
-	for _, h := range all {
+	for _, h := range workers {
 		handlers[h.Capability()] = h
 		capabilities = append(capabilities, h.Capability())
 	}
@@ -131,6 +132,7 @@ func (p *pipeline) run(t *testing.T, all ...worker.Handler) int {
 			result := handlers[task.Capability].Run(ctx, task)
 			if err := p.worker.Report(ctx, task.ID, server.ReportRequest{
 				Token: task.LeaseToken, Outcome: result.Outcome, Error: result.Error, Outputs: result.Outputs,
+				RetryAfterSeconds: int(result.RetryAfter.Seconds()), Delivery: result.Delivery,
 			}); err != nil {
 				t.Fatal(err)
 			}

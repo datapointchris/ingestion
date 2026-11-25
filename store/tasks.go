@@ -40,12 +40,15 @@ var (
 // worker holding its capability leases. A task names its item or its
 // connector, never both.
 type Task struct {
-	ID         string  `json:"id"`
-	ItemKey    *string `json:"item_key"`
-	Connector  *string `json:"connector"`
-	Stage      string  `json:"stage"`
-	Capability string  `json:"capability"`
-	State      string  `json:"state"`
+	ID        string  `json:"id"`
+	ItemKey   *string `json:"item_key"`
+	Connector *string `json:"connector"`
+	// Destination names the destination that a deliver task writes its item
+	// to, and is nil for every other task.
+	Destination *string `json:"destination"`
+	Stage       string  `json:"stage"`
+	Capability  string  `json:"capability"`
+	State       string  `json:"state"`
 	// HeldBy names the connector whose first fill holds this model stage's
 	// task. No claim takes it until a person releases the fill.
 	HeldBy *string `json:"held_by"`
@@ -77,6 +80,10 @@ func (t Task) Lapsed(now time.Time) bool {
 func PollTask(connector, source string) Task {
 	return Task{Connector: &connector, Stage: StagePoll, Capability: "poll:" + source}
 }
+
+// DeliverCapability is the capability of a deliver task that deliverer runs,
+// so a worker claims only the tasks of the deliverers it holds.
+func DeliverCapability(deliverer string) string { return StageDeliver + ":" + deliverer }
 
 // modelStages are the stages that read an item with a model, where a
 // connector's first fill holds every item after the first to reach one.
@@ -202,13 +209,14 @@ type Claim struct {
 	Lease time.Duration
 }
 
-// Leased is a leased task with the media type and bytes of its item, so a
-// worker runs the task holding no scope to read items. A poll task has no
-// item, so it carries neither.
+// Leased is a leased task with its item's row, so a worker runs the task
+// holding no scope to read items. A poll task has no item, so its Item is
+// empty. A deliver task carries its delivery's row too, whose title and URL
+// every attempt sends.
 type Leased struct {
 	Task
-	MediaType  string
-	BlobSHA256 *string
+	Item     Item
+	Delivery *Delivery
 }
 
 // Claim records the worker's heartbeat and leases it up to c.Max tasks whose
@@ -271,11 +279,18 @@ func (s *Store) Claim(ctx context.Context, c Claim) ([]Leased, error) {
 			}
 			leased := Leased{Task: task}
 			if task.ItemKey != nil {
-				item, _, err := tx.Item(ctx, *task.ItemKey)
+				if leased.Item, _, err = tx.Item(ctx, *task.ItemKey); err != nil {
+					return err
+				}
+			}
+			if task.Stage == StageDeliver && task.ItemKey != nil && task.Destination != nil {
+				d, ok, err := tx.Delivery(ctx, *task.ItemKey, *task.Destination)
 				if err != nil {
 					return err
 				}
-				leased.MediaType, leased.BlobSHA256 = item.MediaType, item.BlobSHA256
+				if ok {
+					leased.Delivery = &d
+				}
 			}
 			claimed = append(claimed, leased)
 		}
