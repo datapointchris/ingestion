@@ -1,17 +1,21 @@
 // Package qualitygate is the model stage that reads an item's title and
 // opening, before anyone reads it whole, and answers its genre, domains,
-// themes, a 1 to 10 quality estimate, a one-line idea, a verdict and a guess
-// at its side. Its prompt and answer schema are prompts.Quality.
+// themes, a 1 to 10 quality estimate, a one-line idea, a verdict, one
+// sentence on the verdict and a guess at its side. Its prompt and answer
+// schema are prompts.Quality.
 //
 // The service queues an item's quality task in the write that ends its scan,
-// where no tag or rule places it, so a rule placed before the model always
-// wins. A worker holding a model port runs the task. It stores the dispatch
-// in the write that ends its lease, and follows the dispatch on each later
-// claim until the run answers, so the task holds no worker slot while the run
-// waits. That dispatch-once protocol is modelstage's. When the task ends
-// done, the service appends the gate's decision: pass, drop where the model
-// dropped the item at or above DropFloor, or review. The side gate then reads
-// that decision and the side guess.
+// on every item that no person placed first. A tag or a rule places first,
+// and its placement stands whatever the gate answers. The gate answers such
+// an item too, because gatetrust earns each family's trust from the gate's
+// answers. A worker holding a model port runs the task. It stores the
+// dispatch in the write that ends its lease, and follows the dispatch on each
+// later claim until the run answers, so the task holds no worker slot while
+// the run waits. That dispatch-once protocol is modelstage's. When the task
+// ends done, the service appends the gate's decision: pass, drop where the
+// model dropped the item at or above DropFloor, or review. The side gate then
+// reads that decision and the side guess, and gatetrust decides whether a
+// drop shows.
 //
 // The arm asks the same prompt of another model, over items a person placed
 // from review, and keeps each answer at its own stage. It decides nothing, so
@@ -24,7 +28,7 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/datapointchris/ingestion/connectors"
+	"github.com/datapointchris/ingestion/gatetrust"
 	"github.com/datapointchris/ingestion/modelstage"
 	"github.com/datapointchris/ingestion/prompts"
 	"github.com/datapointchris/ingestion/route"
@@ -48,7 +52,7 @@ const (
 
 // VerdictPass is the gate's decision that an item earns a full read. Its drop
 // and review are the side gate's verdicts of the same names.
-const VerdictPass = "pass"
+const VerdictPass = store.VerdictPass
 
 // The verdicts the model answers.
 const (
@@ -66,7 +70,7 @@ const (
 )
 
 // Answer is the model's answer, as prompts/quality/answer.schema.json holds
-// it. ReadAnswer decodes it.
+// it. ReadAnswer reads one that arrives, and DecodeAnswer one that is stored.
 type Answer struct {
 	Genre             string   `json:"genre"`
 	Domains           []string `json:"domains"`
@@ -75,11 +79,14 @@ type Answer struct {
 	Idea              string   `json:"idea"`
 	Verdict           string   `json:"verdict"`
 	VerdictConfidence float64  `json:"verdict_confidence"`
-	Side              string   `json:"side"`
-	SideConfidence    float64  `json:"side_confidence"`
+	// Reason is one sentence on why the gate gave its verdict.
+	Reason         string  `json:"reason"`
+	Side           string  `json:"side"`
+	SideConfidence float64 `json:"side_confidence"`
 }
 
-// ReadAnswer checks raw against the answer's schema and decodes it.
+// ReadAnswer checks raw against the schema of the prompt in force and
+// decodes it. It reads an answer as it arrives from a run of that prompt.
 func ReadAnswer(raw json.RawMessage) (Answer, error) {
 	if err := prompts.Quality.Check(raw); err != nil {
 		return Answer{}, err
@@ -88,8 +95,11 @@ func ReadAnswer(raw json.RawMessage) (Answer, error) {
 }
 
 // DecodeAnswer decodes a stored answer without checking it against this
-// build's schema, so a CLI reads a service of another release. The schema
-// counts 7.0 as an integer, so quality decodes as a number and is kept whole.
+// build's schema. An answer kept under an earlier prompt holds that prompt's
+// fields, and a CLI reads a service of another release. Its run's schema
+// checked it when it arrived, and a field that its prompt did not ask for
+// decodes empty. The schema counts 7.0 as an integer, so quality decodes as a
+// number and is kept whole.
 func DecodeAnswer(raw json.RawMessage) (Answer, error) {
 	var a struct {
 		Answer
@@ -122,11 +132,11 @@ func Decision(a Answer, run string) store.Decision {
 }
 
 // QueueAfterScan queues the item's quality task in the write that ends its
-// scan done, where the scan read the newest parse, no tag or rule places the
-// item, and the item never held a quality task. A connector's first fill
-// holds it past the first item. A later scan queues none. The gate runs again
-// only through a replay that a person confirms, or through `tasks retry` on a
-// failed task.
+// scan done, where the scan read the newest parse, no person placed the item,
+// and the item never held a quality task. It queues one on an item that a tag
+// or a rule places. A connector's first fill holds it past the first item. A
+// later scan queues none. The gate runs again only through a replay that a
+// person confirms, or through `tasks retry` on a failed task.
 func QueueAfterScan(ctx context.Context, tx *store.Tx, task store.Task) error {
 	key := *task.ItemKey
 	outputs, err := tx.Outputs(ctx, key)
@@ -136,21 +146,8 @@ func QueueAfterScan(ctx context.Context, tx *store.Tx, task store.Task) error {
 	if held, err := tx.HasTask(ctx, key, store.StageQuality); err != nil || held {
 		return err
 	}
-	if side, sided, err := tx.NewestDecision(ctx, key, store.GateSide); err != nil || (sided && !route.Provisional(side)) {
+	if side, sided, err := tx.NewestDecision(ctx, key, store.GateSide); err != nil || (sided && side.ByPerson()) {
 		return err
-	}
-	set, err := connectors.AppliedSet(ctx, tx)
-	if err != nil {
-		// The side gate sends the item to review as gate-error. No quality
-		// task is queued, so after an apply the item waits as no-guess.
-		return nil
-	}
-	sightings, err := tx.Sightings(ctx, key)
-	if err != nil {
-		return err
-	}
-	if _, ruled := route.BeforeModel(set, sightings); ruled {
-		return nil
 	}
 	_, err = tx.Enqueue(ctx, store.Task{ItemKey: &key, Stage: store.StageQuality, Capability: Capability})
 	return err
@@ -158,7 +155,8 @@ func QueueAfterScan(ctx context.Context, tx *store.Tx, task store.Task) error {
 
 // DecideAfterAnswer appends the gate's decision in the write that ends the
 // item's quality task done, from the answer of its newest done output. It
-// appends nothing where the newest decision already came from that run.
+// appends nothing where the newest decision already came from that run. It
+// starts a standing at rung 0 for each family of the answer that holds none.
 func DecideAfterAnswer(ctx context.Context, tx *store.Tx, task store.Task) error {
 	key := *task.ItemKey
 	outputs, err := tx.Outputs(ctx, key)
@@ -169,9 +167,16 @@ func DecideAfterAnswer(ctx context.Context, tx *store.Tx, task store.Task) error
 	if newest == nil {
 		return nil
 	}
-	a, err := ReadAnswer(newest.Answer)
+	a, err := DecodeAnswer(newest.Answer)
 	if err != nil {
 		return fmt.Errorf("read the quality answer on %s: %w", key, err)
+	}
+	sightings, err := tx.Sightings(ctx, key)
+	if err != nil {
+		return err
+	}
+	if err := gatetrust.Ensure(ctx, tx, key, gatetrust.AnswererOf(*newest), gatetrust.Connectors(sightings)); err != nil {
+		return err
 	}
 	d := Decision(a, newest.Run())
 	if held, ok, err := tx.NewestDecision(ctx, key, store.GateQuality); err != nil {
@@ -185,10 +190,10 @@ func DecideAfterAnswer(ctx context.Context, tx *store.Tx, task store.Task) error
 }
 
 // due says whether a replay runs the gate on an item: the gate is unanswered,
-// and the item's side decision, where it has one, is provisional.
+// and no person placed the item.
 func due(r store.ItemRecords, open bool) bool {
 	side, sided := r.NewestDecision(store.GateSide)
-	return unanswered(r.Outputs, open) && (!sided || route.Provisional(side))
+	return unanswered(r.Outputs, open) && (!sided || !side.ByPerson())
 }
 
 // measurementDue says whether a measurement replay runs the gate on an item:

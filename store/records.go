@@ -318,13 +318,71 @@ type Decision struct {
 	DecidedTS string  `json:"decided_ts"`
 }
 
+// Each verdict beside a side: the quality gate's pass, and either gate's drop
+// and review. An item dropped on a destination that takes no side keeps its
+// row.
+const (
+	VerdictPass   = "pass"
+	VerdictDrop   = "drop"
+	VerdictReview = "review"
+)
+
+// Who decided, as decided_by spells it, beside the forms that the DecidedBy
+// functions write.
+const (
+	DecidedByTag = "tag"
+	// DecidedByGate is the side gate itself, where no rung placed the item.
+	DecidedByGate = "gate"
+)
+
+const (
+	personPrefix  = "person:"
+	servicePrefix = "service:"
+	rulePrefix    = "rule:"
+	modelPrefix   = "model:"
+	parentPrefix  = "parent:"
+)
+
+// DecidedByPerson is a person's decision, under their login.
+func DecidedByPerson(login string) string { return personPrefix + login }
+
+// DecidedByService is a service's word, under its client id, where the
+// service names no person.
+func DecidedByService(clientID string) string { return servicePrefix + clientID }
+
+// DecidedByRule is a routing rule's decision, under its name.
+func DecidedByRule(name string) string { return rulePrefix + name }
+
+// DecidedByModel is a model's decision, under the run that answered.
+func DecidedByModel(run string) string { return modelPrefix + run }
+
+// DecidedByParent is a decision that an item took from its parent, under the
+// parent's key.
+func DecidedByParent(key string) string { return parentPrefix + key }
+
 // ByPerson says whether a person made d, as its decided_by person:<login>
 // records.
-func (d Decision) ByPerson() bool { return strings.HasPrefix(d.DecidedBy, "person:") }
+func (d Decision) ByPerson() bool { return strings.HasPrefix(d.DecidedBy, personPrefix) }
 
 // ByParent says whether the item took d from its parent, as its decided_by
 // parent:<key> records.
-func (d Decision) ByParent() bool { return strings.HasPrefix(d.DecidedBy, "parent:") }
+func (d Decision) ByParent() bool { return strings.HasPrefix(d.DecidedBy, parentPrefix) }
+
+// ModelRun is the run that answered d, where a model made it, as its
+// decided_by model:<run> records.
+func (d Decision) ModelRun() (string, bool) { return strings.CutPrefix(d.DecidedBy, modelPrefix) }
+
+// Provisional says whether a side decision waits on a later input: a review
+// that the side gate wrote for want of a rule or a guess, or for an error,
+// and a model's review or drop. A rule that a later set adds, or a later
+// answer of the quality gate, then decides the item again. Every other side
+// decision, by a tag, a rule, a person, a parent or a model's confident
+// guess, is settled, and no later answer of the quality gate moves it.
+func (d Decision) Provisional() bool {
+	_, byModel := d.ModelRun()
+	return (d.Verdict == VerdictReview && d.DecidedBy == DecidedByGate) ||
+		((d.Verdict == VerdictReview || d.Verdict == VerdictDrop) && byModel)
+}
 
 // ReviewPlacement is the label among decisions, one item's at every gate: the
 // newest side decision, where a person made it after the gates sent the item
@@ -344,7 +402,7 @@ func ReviewPlacement(decisions []Decision) (Decision, bool) {
 		return Decision{}, false
 	}
 	for _, d := range decisions {
-		if d.Verdict != "review" {
+		if d.Verdict != VerdictReview {
 			continue
 		}
 		if (d.Gate == GateSide && d.Sequence < placement.Sequence) || (d.Gate == GateQuality && d.DecidedTS < placement.DecidedTS) {

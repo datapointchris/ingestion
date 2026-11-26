@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/datapointchris/ingestion/schemas/gate-trust-list.schema.json",
+  "title": "Each family of the quality gate and where it stands",
+  "description": "What GET /api/v1/gates/trust answers, and `ingestion gates trust list --json` prints: the ladder that every family climbs, and each family's standing, by connector and then prompt version.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "rule", "families"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "rule": {
+      "description": "The ladder. A straight run of run agreeing marks earns asking, a person's yes climbs to rung 1, and each further run of run lowers the share by lower, down to floor.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run", "first", "lower", "floor", "shares"],
+      "properties": {
+        "run": {"type": "integer", "minimum": 1},
+        "first": {"type": "number", "minimum": 0, "maximum": 1},
+        "lower": {"type": "number", "minimum": 0, "maximum": 1},
+        "floor": {"type": "number", "minimum": 0, "maximum": 1},
+        "shares": {"description": "The share of drops shown on each rung from 1 up.", "type": "array", "items": {"type": "number", "minimum": 0, "maximum": 1}}
+      }
+    },
+    "families": {"type": "array", "items": {"$ref": "ingestion-record.schema.json#/$defs/gate_trust"}}
+  }
+}

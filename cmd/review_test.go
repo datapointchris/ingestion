@@ -210,7 +210,9 @@ func TestASaveIsPlacedByItsRuleOrWaitsInReviewForAPersonToPlace(t *testing.T) {
 	if _, err := runCLI(t, place...); err != nil {
 		t.Fatalf("the same placement again failed: %v", err)
 	}
-	if slices.ContainsFunc(p.tasks(t), func(v server.TaskView) bool { return v.Stage == store.StageQuality }) {
+	if slices.ContainsFunc(p.tasks(t), func(v server.TaskView) bool {
+		return v.Stage == store.StageQuality && v.ItemKey != nil && *v.ItemKey == "reddit/t3_bb2"
+	}) {
 		t.Errorf("after a person placed the save its quality task is still open: %s", jsonOf(p.tasks(t)))
 	}
 	d, side, read := p.decisions(t, "reddit/t3_bb2")
@@ -270,9 +272,10 @@ func TestASaveIsPlacedByItsRuleOrWaitsInReviewForAPersonToPlace(t *testing.T) {
 // A save that waits on the gate for want of a rule is placed once a rule or
 // the quality gate's answer arrives after its parse: by the rule of a set
 // applied later, as on a first deploy that applies its set after the first
-// parses, which withdraws its quality task, or by the gate's confident
-// personal guess. An apply that changes nothing for a save appends nothing to
-// it. A save that the guess places on the personal side is read as is.
+// parses, whose placement stands once the gate answers it too, or by the
+// gate's confident personal guess. An apply that changes nothing for a save
+// appends nothing to it. A save that the guess places on the personal side is
+// read as is.
 func TestASaveWaitingOnTheGateIsPlacedByARuleOrGuessThatArrivesLater(t *testing.T) {
 	p := newGatedPipeline(t, "")
 	stand := newStandInDispatch(t, p.provider)
@@ -292,9 +295,15 @@ func TestASaveWaitingOnTheGateIsPlacedByARuleOrGuessThatArrivesLater(t *testing.
 		t.Errorf("the apply appended to the save that no rule names, which holds %+v", d)
 	}
 
+	if _, err := runCLI(t, "connectors", "release", "reddit-exports", "--config", p.config); err != nil {
+		t.Fatal(err)
+	}
 	p.run(t, p.qualityGate(t, stand.models(t, "", "")))
-	if n := len(stand.starts()); n != 1 {
-		t.Errorf("the gate sent %d dispatches, want one for the save no rule names and none for the save the apply placed", n)
+	if n := len(stand.starts()); n != 2 {
+		t.Errorf("the gate sent %d dispatches, want one for each save", n)
+	}
+	if _, side, _ := p.decisions(t, "reddit/t3_aa1"); side.DecidedBy != "rule:cooking-subreddits" {
+		t.Errorf("once the gate answered the Cooking save it is %s by %s, want its rule's placement standing", side.Verdict, side.DecidedBy)
 	}
 	if _, side, read := p.decisions(t, "reddit/t3_bb2"); side.Verdict != connectors.SidePersonal || !strings.HasPrefix(side.DecidedBy, "model:") ||
 		read.Verdict != connectors.ReadAsIs {

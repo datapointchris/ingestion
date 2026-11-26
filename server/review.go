@@ -36,7 +36,7 @@ const (
 	CodeChapterOfBook          = "chapter_of_book"
 )
 
-var errActingForAnother = errors.New("a person's token places only as that person")
+var errActingForAnother = errors.New("a person's token acts only as that person")
 
 // causeSpelling is how a decision's cause is spelled, as
 // schemas/ingestion-record.schema.json holds it.
@@ -264,19 +264,19 @@ func (h reviewHandlers) decide(w http.ResponseWriter, r *http.Request, p route.P
 	JSON(w, http.StatusOK, answer)
 }
 
-// decider answers who decides a placement, by login, and the client that sent
-// it. A person's token decides as the person, and refuses a body naming
-// another login. A service's token carries no person, so its body names the
-// login of the person it places for.
+// decider answers who decides a placement, a mark or a promotion, by login,
+// and the client that sent it. A person's token decides as the person, and
+// refuses a body naming another login. A service's token carries no person,
+// so its body names the login of the person it acts for.
 func decider(r *http.Request, login string) (string, string, error) {
 	caller, _ := goapiauth.IdentityFrom(r.Context())
 	if caller.Service {
 		if !loginSpelling(login) {
-			return "", "", fmt.Errorf("a service places an item for a person, so its body names that person's login, not %q", login)
+			return "", "", fmt.Errorf("a service acts for a person, so its body names that person's login, not %q", login)
 		}
 		return login, caller.ClientID, nil
 	}
-	own := strings.TrimPrefix(requester(caller), "person:")
+	own := strings.TrimPrefix(requester(caller), store.DecidedByPerson(""))
 	if login != "" && login != own {
 		return "", "", fmt.Errorf("%w: this token is %s's, so a body naming %s is refused", errActingForAnother, own, login)
 	}

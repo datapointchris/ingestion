@@ -1,13 +1,15 @@
 // Package route holds the side gate and the read gate. The side gate places
 // an item by the first rung that decides it: every sighting's tags, then a
 // routing rule, then the quality gate, else review. A rule placed before the
-// model always wins over it, so the model judges only what the rules leave.
-// The quality gate's rung drops the item where the gate dropped it, sends it
-// to review where the gate was unsure, and otherwise places it by the gate's
-// side guess at or above its floor. Where a connector that sighted the item
+// model always wins over it: the gate answers a ruled item too, and its
+// answer moves nothing. The quality gate's rung sends to review an item that
+// the gate dropped, marked gate-would-drop, unless every family of the item
+// has earned hiding it, where it drops the item. It sends to review an item
+// that the gate was unsure of, and otherwise places it by the gate's side
+// guess at or above its floor. Where a connector that sighted the item
 // declares person_sorts, a guess places nothing and the item waits in review
-// beside it. While the item's quality task is open,
-// the side gate decides nothing, and the item waits at the quality gate. The
+// beside it. While the item's quality task is open, an item that no tag or
+// rule placed waits at the quality gate, and the side gate decides nothing. The
 // read gate then chooses whether an item placed on a side is read as is or by
 // a model: by its connector's read rule, else its side's default.
 //
@@ -38,6 +40,7 @@ import (
 	"strings"
 
 	"github.com/datapointchris/ingestion/connectors"
+	"github.com/datapointchris/ingestion/gatetrust"
 	"github.com/datapointchris/ingestion/prompts"
 	"github.com/datapointchris/ingestion/store"
 )
@@ -45,8 +48,8 @@ import (
 // The side gate's verdicts beyond the two sides. An item placed on a
 // destination that takes no side is dropped, softly: it keeps its row.
 const (
-	VerdictReview = "review"
-	VerdictDrop   = "drop"
+	VerdictReview = store.VerdictReview
+	VerdictDrop   = store.VerdictDrop
 )
 
 // Causes that the gates write. A person's decision carries the aspect the
@@ -68,8 +71,11 @@ const (
 	// that a connector declaring person_sorts sighted, where the quality gate
 	// passed it with a side guess. The review queue shows the guess beside it.
 	CausePersonSorts = "person-sorts"
-	// CauseQualityDrop drops an item that the quality gate dropped, and
-	// CauseQualityReview sends to review one that it was unsure of.
+	// CauseGateWouldDrop sends to review an item that the quality gate
+	// dropped, where a family of the item has not earned hiding it.
+	// CauseQualityDrop drops one that every family's trust hides, and keeps its
+	// row. CauseQualityReview sends to review one that the gate was unsure of.
+	CauseGateWouldDrop = "gate-would-drop"
 	CauseQualityDrop   = "quality-drop"
 	CauseQualityReview = store.ReasonQualityReview
 	// CauseConnector and CauseSideDefault are the read gate's.
@@ -97,6 +103,10 @@ type ReviewReason struct {
 // decides them best. review-list.schema.json's reason enum holds these names.
 var ReviewReasons = []ReviewReason{
 	{store.ReasonQualityReview, "the quality gate sent it to review", "the gate asks"},
+	{
+		CauseGateWouldDrop, "the quality gate would drop it, and its family has not earned hiding it, or the family's draw showed it",
+		"the gate would drop it",
+	},
 	{CauseBelowFloor, "the quality gate guessed fleet, or its guess fell below its floor", "fleet guess, or below its floor"},
 	{
 		CausePersonSorts, "a connector that sighted it declares person_sorts, so its guess only shows",
@@ -117,22 +127,22 @@ const GuessFloor = 0.7
 // Who decided, as decided_by spells it, beside rule:<name>, model:<run> and
 // person:<login>.
 const (
-	ByTag = "tag"
+	ByTag = store.DecidedByTag
 	// ByGate is the side gate itself, where no rung placed the item.
-	ByGate = "gate"
+	ByGate = store.DecidedByGate
 )
 
 // ByPerson is a person's decision, under their login.
-func ByPerson(login string) string { return "person:" + login }
+func ByPerson(login string) string { return store.DecidedByPerson(login) }
 
 // ByParent is a decision that an item took from its parent, under the
 // parent's key.
-func ByParent(key string) string { return "parent:" + key }
+func ByParent(key string) string { return store.DecidedByParent(key) }
 
-func byRule(name string) string { return "rule:" + name }
+func byRule(name string) string { return store.DecidedByRule(name) }
 
 // ByModel is a model's decision, under the run that answered.
-func ByModel(run string) string { return "model:" + run }
+func ByModel(run string) string { return store.DecidedByModel(run) }
 
 // sideDefaults is how an item on each side is read where no connector's read
 // rule decides.
@@ -358,7 +368,7 @@ func AfterApply(log *slog.Logger) connectors.AfterApply {
 // next stage or apply runs the gate again.
 func Gate(ctx context.Context, tx *store.Tx, key string, log *slog.Logger) ([]store.Decision, error) {
 	newest, sided, err := tx.NewestDecision(ctx, key, store.GateSide)
-	if err != nil || (sided && !Provisional(newest)) {
+	if err != nil || (sided && !newest.Provisional()) {
 		return nil, err
 	}
 	outputs, err := tx.Outputs(ctx, key)
@@ -372,8 +382,13 @@ func Gate(ctx context.Context, tx *store.Tx, key string, log *slog.Logger) ([]st
 		log.ErrorContext(ctx, "the side gate could not read what it decides from, so the item waits in review", "item", key, "error", err)
 		side = store.Decision{Gate: store.GateSide, Verdict: VerdictReview, DecidedBy: ByGate, Cause: CauseGateError}
 	case !ruled:
+		var held *store.Decision
+		if sided {
+			held = &newest
+		}
 		var waits bool
-		if side, waits, err = byQuality(ctx, tx, key, byGuess(GuessOf(outputs), personSorts(set, sightings))); err != nil || waits {
+		guessed := byGuess(GuessOf(outputs), personSorts(set, sightings))
+		if side, waits, err = byQuality(ctx, tx, key, guessed, outputs, sightings, held); err != nil || waits {
 			return nil, err
 		}
 	}
@@ -384,12 +399,15 @@ func Gate(ctx context.Context, tx *store.Tx, key string, log *slog.Logger) ([]st
 }
 
 // byQuality is the side gate's decision on the item under key, which no tag
-// or rule placed, by the quality gate's newest decision: a drop where it
+// or rule placed, by the quality gate's newest decision: byTrust's where it
 // dropped the item, review where it was unsure, and side, the guess's
-// decision, where it passed the item. It is true where the gate has not
+// decision, where it passed the item. held is the item's newest side
+// decision, and nil where it has none. It is true where the gate has not
 // decided and the item's quality task is open, so the item waits at the
 // quality gate.
-func byQuality(ctx context.Context, tx *store.Tx, key string, side store.Decision) (store.Decision, bool, error) {
+func byQuality(ctx context.Context, tx *store.Tx, key string, side store.Decision, outputs []store.Output, sightings []store.Sighting,
+	held *store.Decision,
+) (store.Decision, bool, error) {
 	quality, judged, err := tx.NewestDecision(ctx, key, store.GateQuality)
 	if err != nil {
 		return side, false, err
@@ -400,10 +418,8 @@ func byQuality(ctx context.Context, tx *store.Tx, key string, side store.Decisio
 	}
 	switch quality.Verdict {
 	case VerdictDrop:
-		return store.Decision{
-			Gate: store.GateSide, Verdict: VerdictDrop, DecidedBy: quality.DecidedBy, Confidence: quality.Confidence,
-			Cause: CauseQualityDrop,
-		}, false, nil
+		d, err := byTrust(ctx, tx, key, quality, outputs, sightings, held)
+		return d, false, err
 	case VerdictReview:
 		return store.Decision{
 			Gate: store.GateSide, Verdict: VerdictReview, DecidedBy: quality.DecidedBy, Confidence: quality.Confidence,
@@ -411,6 +427,41 @@ func byQuality(ctx context.Context, tx *store.Tx, key string, side store.Decisio
 		}, false, nil
 	}
 	return side, false, nil
+}
+
+// byTrust is the side decision on an item that the quality gate dropped: a
+// review marked gate-would-drop where a family of the item shows the drop,
+// and a drop marked quality-drop where every family hides it. gatetrust.Shows
+// decides from the answer, under the families of the prompt version, model
+// and effort that gave it. It decides once for each answer of the gate, so a
+// family that climbs or falls later moves no item already shown or hidden. A sighting
+// that arrives after a hidden drop shows the item where its own family shows
+// it, so a connector whose family stands lower still reaches the person.
+func byTrust(ctx context.Context, tx *store.Tx, key string, quality store.Decision, outputs []store.Output, sightings []store.Sighting,
+	held *store.Decision,
+) (store.Decision, error) {
+	read := sightings
+	if held != nil && held.DecidedBy == quality.DecidedBy {
+		switch held.Cause {
+		case CauseGateWouldDrop:
+			return *held, nil
+		case CauseQualityDrop:
+			read = slices.DeleteFunc(slices.Clone(sightings), func(s store.Sighting) bool { return s.FirstSeenTS <= held.DecidedTS })
+			if len(read) == 0 {
+				return *held, nil
+			}
+		}
+	}
+	d := store.Decision{Gate: store.GateSide, DecidedBy: quality.DecidedBy, Confidence: quality.Confidence}
+	shows, err := gatetrust.Shows(ctx, tx, quality.DecidedBy, gatetrust.Answered(outputs, quality), gatetrust.Connectors(read))
+	if err != nil {
+		return d, err
+	}
+	d.Verdict, d.Cause = VerdictDrop, CauseQualityDrop
+	if shows {
+		d.Verdict, d.Cause = VerdictReview, CauseGateWouldDrop
+	}
+	return d, nil
 }
 
 // inputs reads the set in force and the item's sightings, which the side gate
@@ -422,17 +473,6 @@ func inputs(ctx context.Context, tx *store.Tx, key string) (connectors.Set, []st
 	}
 	sightings, err := tx.Sightings(ctx, key)
 	return set, sightings, err
-}
-
-// Provisional says whether a side decision waits on a later input: a review
-// that the gate wrote for want of a rule or a guess, or for an error, and a
-// model's review or drop. A rule that a later set adds, or a later answer of
-// the quality gate, then decides the item again. Every other side decision,
-// by a tag, a rule, a person or a model's confident guess, is final, and the
-// quality gate never runs on its item again.
-func Provisional(d store.Decision) bool {
-	return (d.Verdict == VerdictReview && d.DecidedBy == ByGate) ||
-		((d.Verdict == VerdictReview || d.Verdict == VerdictDrop) && strings.HasPrefix(d.DecidedBy, ByModel("")))
 }
 
 // sameDecision says whether b decides what a decides, by the same hand.
@@ -457,9 +497,11 @@ func GuessOf(outputs []store.Output) *Guess {
 }
 
 // decide appends side, and the read gate's decision where side places the
-// item on a side. Where a tag, a rule or a person decides the side for good,
-// it withdraws the item's queued quality task, so no model judges an item
-// already placed.
+// item on a side. Where a person decides the side, it withdraws the item's
+// queued quality task, so no model judges an item that a person placed before
+// the gate answered. A tag's or a rule's placement leaves the task queued,
+// because the gate's answer on every item it reads is what its trust is
+// earned from.
 func decide(ctx context.Context, tx *store.Tx, key string, side store.Decision, set connectors.Set, sightings []store.Sighting,
 	note *string,
 ) ([]store.Decision, error) {
@@ -468,7 +510,7 @@ func decide(ctx context.Context, tx *store.Tx, key string, side store.Decision, 
 	if err != nil {
 		return nil, err
 	}
-	if !Provisional(written) {
+	if written.ByPerson() {
 		why := "withdrawn: " + written.DecidedBy + " decided the item's side before the quality gate ran"
 		if err := tx.WithdrawQueued(ctx, key, store.StageQuality, why); err != nil {
 			return nil, err
@@ -885,7 +927,9 @@ func (e *ChapterError) Error() string {
 // or a drop where p names none. Where the destination takes a side, the read
 // gate's decision follows it. A person can place any item, including one that
 // a rule already placed. A placement that repeats the newest side decision
-// appends nothing, and answers the decisions it made. Place answers
+// appends nothing, and answers the decisions it made. A placement on a
+// destination of an item whose drop the gate showed or hid disagrees with the
+// gate, which returns each family of its answer to rung 0. Place answers
 // store.ErrNoItem where the store holds no such item, a NotDeclaredError
 // for a destination that the set in force does not declare, and a
 // ChapterError for a book's chapter.
@@ -926,7 +970,23 @@ func Place(ctx context.Context, tx *store.Tx, key string, p Placement) ([]store.
 	if err != nil {
 		return nil, err
 	}
-	return decide(ctx, tx, key, side, set, sightings, p.Note)
+	held, sided, err := tx.NewestDecision(ctx, key, store.GateSide)
+	if err != nil {
+		return nil, err
+	}
+	made, err := decide(ctx, tx, key, side, set, sightings, p.Note)
+	if err != nil || !sided || p.Destination == "" || !gateDropped(held) {
+		return made, err
+	}
+	_, err = gatetrust.Disagree(ctx, tx, key, side.DecidedBy, p.ClientID)
+	return made, err
+}
+
+// gateDropped says whether side is the side gate's decision on a drop of the
+// quality gate's, shown in review or hidden.
+func gateDropped(side store.Decision) bool {
+	_, byModel := side.ModelRun()
+	return byModel && (side.Cause == CauseGateWouldDrop || side.Cause == CauseQualityDrop)
 }
 
 // repeated answers the decisions that an earlier copy of side made, and is

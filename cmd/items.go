@@ -111,9 +111,8 @@ var itemsReplayCmd = &cobra.Command{
 		"page and title, and one that matches none makes no item.\n" +
 		"\n" +
 		"A quality replay runs on each scanned item that holds no answer of the prompt\n" +
-		"in force and whose side waits on a later input: no side decision, review for\n" +
-		"want of a rule or an answer, or a model's drop or review. It leaves out an\n" +
-		"item that a tag, a rule, a person or a confident guess placed.\n" +
+		"in force and that no person placed. An item that a tag, a rule or a\n" +
+		"confident guess placed keeps its placement whatever the answer says.\n" +
 		"--placed-by person runs it only over each labeled item, one that a person\n" +
 		"placed after the gates sent it to review, as a measurement against the\n" +
 		"placement. Its answer and its decision are kept, and the placement, its\n" +
@@ -493,8 +492,8 @@ func writeSections(row func(label, format string, args ...any), sections []serve
 	}
 }
 
-// writeQualityAnswer prints the quality gate's answer. Its idea and themes are
-// a model's words about outsider text, so they print quoted.
+// writeQualityAnswer prints the quality gate's answer. Its idea, reason and
+// themes are a model's words about outsider text, so they print quoted.
 func writeQualityAnswer(row func(label, format string, args ...any), raw json.RawMessage) {
 	a, err := qualitygate.DecodeAnswer(raw)
 	if err != nil {
@@ -502,6 +501,9 @@ func writeQualityAnswer(row func(label, format string, args ...any), raw json.Ra
 	}
 	row("", "quality %d  %s at %.2f  %s  side %s at %.2f", a.Quality, a.Verdict, a.VerdictConfidence, a.Genre, a.Side, a.SideConfidence)
 	row("", "idea %s", quoted(a.Idea))
+	if a.Reason != "" {
+		row("", "reason %s", quoted(a.Reason))
+	}
 	if len(a.Domains) > 0 {
 		row("", "domains %s", quoted(strings.Join(a.Domains, ", ")))
 	}
