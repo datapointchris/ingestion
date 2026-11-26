@@ -101,6 +101,10 @@ land → parse → scan → quality gate → side → read → model read → de
   copy. The `deliveries` row is that guard. It keeps the title, URL and source time that the item
   had when the delivery was first queued, and every attempt sends those, so a retry repeats the
   first request.
+- **A deliverer that writes an item by its file reads its root in serve.** Its registration sets
+  `FilePath`, and serve reads `root` from its `[deliver.<name>]` table, as one of `[serve.homes]`.
+  It takes only an item with a live home below that root. The `deliveries` row keeps that home's
+  path beside the title, because serve alone holds the homes and a worker reads none.
 - **An item's source time is when its artifact was made at its source**, such as a Reddit post's
   creation. A destination's own date, such as life's save date, takes it, and takes the landing
   time where the source gives none. Reddit's saved listing holds no time of the save, so a save is

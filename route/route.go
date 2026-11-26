@@ -489,12 +489,13 @@ func reconcileModelRead(ctx context.Context, tx *store.Tx, key string, side, rea
 // under set, and false where they send it nowhere: the side decision places
 // it on no side, or the read decision reads it other than as is. Where true,
 // it is the destination whose deliverer writes the item, or why none does.
-// The queue, a replay, an apply and items show each ask it.
-func Due(set connectors.Set, item store.Item, side, read store.Decision) (connectors.Destination, *connectors.Undelivered, bool) {
+// homes are the item's homes, whose live ones a deliverer writing by file
+// path reads. The queue, a replay, an apply and items show each ask it.
+func Due(set connectors.Set, item store.Item, homes []store.Home, side, read store.Decision) (connectors.Destination, *connectors.Undelivered, bool) {
 	if !onASide(side.Verdict) || read.Verdict != connectors.ReadAsIs {
 		return connectors.Destination{}, nil, false
 	}
-	d, undelivered := set.DeliveryTo(side, item)
+	d, undelivered := set.DeliveryTo(side, item, homes)
 	return d, undelivered, true
 }
 
@@ -526,7 +527,14 @@ func QueueDelivery(ctx context.Context, tx *store.Tx, key string) (bool, error) 
 // Kubernetes controller moves what runs toward what is declared. So a person's
 // drop or move stops a delivery that has not run yet.
 func reconcileDelivery(ctx context.Context, tx *store.Tx, set connectors.Set, item store.Item, side, read store.Decision) (bool, error) {
-	d, undelivered, due := Due(set, item, side, read)
+	var homes []store.Home
+	if item.BlobSHA256 != nil {
+		var err error
+		if homes, err = tx.LiveHomes(ctx, *item.BlobSHA256); err != nil {
+			return false, err
+		}
+	}
+	d, undelivered, due := Due(set, item, homes, side, read)
 	keep := ""
 	if due && undelivered == nil {
 		keep = d.Name
@@ -534,7 +542,11 @@ func reconcileDelivery(ctx context.Context, tx *store.Tx, set connectors.Set, it
 	if err := tx.WithdrawDeliveries(ctx, item.Key, keep); err != nil || keep == "" {
 		return false, err
 	}
-	return tx.QueueDelivery(ctx, item, d.Name, d.Deliverer)
+	path, err := connectors.FilePath(d.Deliverer, homes)
+	if err != nil {
+		return false, err
+	}
+	return tx.QueueDelivery(ctx, item, path, d.Name, d.Deliverer)
 }
 
 // Placement is a person's decision on an item.

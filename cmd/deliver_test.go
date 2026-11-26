@@ -189,7 +189,7 @@ func writeLife(w http.ResponseWriter, status int, body any) {
 func (p *pipeline) lifeDeliverer(t *testing.T, life *standInLife) worker.Handler {
 	t.Helper()
 	t.Setenv(deliverSecretEnv(deliver.LifeArticles), lifeSecret)
-	cfg := fileConfig{Deliver: map[string]serviceClient{deliver.LifeArticles: {API: life.URL, ClientID: lifeClient}}}
+	cfg := fileConfig{Deliver: map[string]deliverTable{deliver.LifeArticles: {serviceClient: serviceClient{API: life.URL, ClientID: lifeClient}}}}
 	handlers := workerHandlers(p.worker, openDeliverers(t.Context(), cfg, p.provider.URL, quiet), nil, nil, modelConfig{}, quiet)
 	i := slices.IndexFunc(handlers, func(h worker.Handler) bool { return h.Capability() == store.DeliverCapability(deliver.LifeArticles) })
 	if i < 0 {

@@ -2,10 +2,12 @@
 -- queued. refused is a destination's answer naming an existing record that
 -- conflicts with the item, kept with that record's id and never retried.
 -- title, url and source_ts are the item's when the delivery was first queued,
--- and every attempt sends them, so a retry repeats the first request.
--- last_error is the destination's answer, or why the delivery was withdrawn.
--- It, title and url can quote the item, so the outbox ships them as
--- ingestion.text.
+-- and every attempt sends them, so a retry repeats the first request. path is
+-- kept the same way, for a deliverer that writes an item by its file: the
+-- path of the item's live home below the root its config names, and null for
+-- every other deliverer. last_error is the destination's answer, or why the
+-- delivery was withdrawn. It, title, url and path can quote the item, so the
+-- outbox ships them as ingestion.text.
 
 CREATE TABLE IF NOT EXISTS deliveries (
     item_key       TEXT NOT NULL REFERENCES items (key),
@@ -17,6 +19,7 @@ CREATE TABLE IF NOT EXISTS deliveries (
     title          TEXT,
     url            TEXT,
     source_ts      TEXT,
+    path           TEXT,
     updated_ts     TEXT NOT NULL,
     PRIMARY KEY (item_key, destination)
 );

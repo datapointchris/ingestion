@@ -225,7 +225,7 @@
     },
     "deliveries": {
       "title": "deliveries, one row per item and destination",
-      "description": "ingestion.record.id is <item key>/<destination>. A delivery is written pending when its task is queued. Its last error, title and URL ship as ingestion.text, because each can quote the item.",
+      "description": "ingestion.record.id is <item key>/<destination>. A delivery is written pending when its task is queued. Its last error, title, URL and path ship as ingestion.text, because each can quote the item.",
       "type": "object",
       "additionalProperties": false,
       "required": ["item_key", "destination", "outcome", "attempts", "updated_ts"],
@@ -234,7 +234,7 @@
         "destination": {"description": "One the destinations file names.", "type": "string"},
         "destination_id": {"description": "The id of the destination's record that holds the item, or that a refusal names.", "type": ["string", "null"]},
         "outcome": {
-          "description": "delivered-to-existing is a record the destination held under no key, which took the item's key, as the destination's answer to that write said; a retry whose first answer was lost reads delivered. refused is a destination's answer naming an existing record that conflicts with the item, kept with that record's id and never retried.",
+          "description": "delivered-to-existing is a record that the destination held before the write, as its answer to that write said: one under no key that took the item's key, or, for learning-resources, one that the key already named. A retry whose first answer was lost reads delivered under life-articles, and delivered-to-existing under learning-resources. refused is a destination's answer naming an existing record that conflicts with the item, kept with that record's id and never retried.",
           "enum": ["pending", "delivered", "delivered-to-existing", "refused"]
         },
         "attempts": {"description": "How many writes of the item the destination answered or failed.", "type": "integer", "minimum": 0},

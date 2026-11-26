@@ -88,7 +88,8 @@
       "properties": {
         "last_error": {"description": "The destination's answer to the last write that failed, what a refusal names, or why the delivery was withdrawn.", "type": ["string", "null"]},
         "title": {"description": "The item's title when the delivery was first queued, which every attempt sends.", "type": ["string", "null"]},
-        "url": {"description": "The item's URL when the delivery was first queued, which every attempt sends.", "type": ["string", "null"]}
+        "url": {"description": "The item's URL when the delivery was first queued, which every attempt sends.", "type": ["string", "null"]},
+        "path": {"description": "For a deliverer that writes an item by its file, the path of the item's live home below the root that the deliverer's config names, when the delivery was first queued, which every attempt sends. Null for every other deliverer. Absent from a record shipped before the store kept it.", "type": ["string", "null"]}
       }
     },
     "tasks": {

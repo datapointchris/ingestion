@@ -137,7 +137,7 @@
         "properties": {
           "destination": {"description": "One the destinations file names.", "type": "string"},
           "destination_id": {"description": "The id of the destination's record that holds the item, or that a refusal names.", "type": ["string", "null"]},
-          "outcome": {"description": "delivered-to-existing is a record the destination held under no key, which took the item's key, as the destination's answer to that write said; a retry whose first answer was lost reads delivered. refused is a destination's answer naming an existing record that conflicts with the item, kept with that record's id and never retried. pending waits on its task, which tries again after a failure, or was withdrawn, as last_error then says.", "enum": ["pending", "delivered", "delivered-to-existing", "refused"]},
+          "outcome": {"description": "delivered-to-existing is a record that the destination held before the write, as its answer to that write said: one under no key that took the item's key, or, for learning-resources, one that the key already named. A retry whose first answer was lost reads delivered under life-articles, and delivered-to-existing under learning-resources. refused is a destination's answer naming an existing record that conflicts with the item, kept with that record's id and never retried. pending waits on its task, which tries again after a failure, or was withdrawn, as last_error then says.", "enum": ["pending", "delivered", "delivered-to-existing", "refused"]},
           "attempts": {"type": "integer"},
           "last_error": {"description": "The destination's answer to the last write that failed, what a refusal names, or why the delivery was withdrawn.", "type": ["string", "null"]},
           "unclaimed_capability": {"description": "The capability of the delivery's queued task where no worker heard from lately holds it, so nothing here writes to that destination yet, and null otherwise.", "type": ["string", "null"]}
@@ -152,7 +152,7 @@
           "additionalProperties": false,
           "required": ["reason", "side", "destination", "message"],
           "properties": {
-            "reason": {"description": "no-side-default: the placement named a side and no destination, and no destination in the set in force is that side's default, so the item waits for a set that names one. not-declared: the set in force does not declare the destination placed on. no-deliverer: the destination names no deliverer, as one whose reader pulls its items itself. not-taken: the destination's deliverer cannot write the item, as one that saves links cannot write an item with no URL.", "enum": ["no-side-default", "not-declared", "no-deliverer", "not-taken"]},
+            "reason": {"description": "no-side-default: the placement named a side and no destination, and no destination in the set in force is that side's default, so the item waits for a set that names one. not-declared: the set in force does not declare the destination placed on. no-deliverer: the destination names no deliverer, as one whose reader pulls its items itself. not-taken: the destination's deliverer cannot write the item, as one that saves links cannot write an item with no URL, and one that writes by file cannot write an item with no live home below its root.", "enum": ["no-side-default", "not-declared", "no-deliverer", "not-taken"]},
             "side": {"enum": ["personal", "fleet"]},
             "destination": {"type": ["string", "null"]},
             "message": {"type": "string"}

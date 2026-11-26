@@ -70,13 +70,16 @@ type LeasedTask struct {
 	// it holding no scope to read items. A deliver task's Title, URL and
 	// SourceTS are its delivery's, as they were when it was first queued, so
 	// a retry sends what the first attempt sent. SourceTS is when the item
-	// was made at its source, and null where its source gave no time. A poll
-	// carries none of them.
+	// was made at its source, and null where its source gave no time. Path
+	// is a deliver task's file below its deliverer's root, kept the same way,
+	// and absent for a deliverer that writes no file. A poll carries none of
+	// them.
 	Zone     store.Zone `json:"zone,omitempty"`
 	Title    *string    `json:"title"`
 	URL      *string    `json:"url"`
 	LandedTS string     `json:"landed_ts,omitempty"`
 	SourceTS *string    `json:"source_ts,omitempty"`
+	Path     *string    `json:"path,omitempty"`
 	// Destination names where a deliver task writes its item, and is null
 	// for every other task.
 	Destination *string `json:"destination"`
@@ -300,7 +303,7 @@ func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
 			Model: t.Model,
 		}
 		if t.Delivery != nil {
-			leased.Title, leased.URL, leased.SourceTS = t.Delivery.Title, t.Delivery.URL, t.Delivery.SourceTS
+			leased.Title, leased.URL, leased.SourceTS, leased.Path = t.Delivery.Title, t.Delivery.URL, t.Delivery.SourceTS, t.Delivery.Path
 		}
 		if t.Read != nil {
 			leased.Lens, leased.Note = t.Read.Lens, t.Read.Note

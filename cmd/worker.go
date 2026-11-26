@@ -110,7 +110,7 @@ func openDeliverers(ctx context.Context, cfg fileConfig, issuer string, log *slo
 				"registered", strings.Join(deliver.Names(), ", "))
 			continue
 		}
-		client, err := serviceHTTPClient(ctx, table, deliverSecretEnv(name), issuer, r.Scopes)
+		client, err := serviceHTTPClient(ctx, table.serviceClient, deliverSecretEnv(name), issuer, r.Scopes)
 		if err != nil {
 			log.Error("[deliver."+name+"] cannot open, so the worker claims no "+store.DeliverCapability(name)+" task", "error", err)
 			continue
@@ -185,8 +185,11 @@ var workerRunCmd = &cobra.Command{
 		"                 " + deliverSecretEnv(deliver.LifeArticles) + "\n" +
 		"  token_command  in place of client_id, a command that prints the client's token\n" +
 		"  issuer         the OIDC provider that signs its tokens (default the file's issuer)\n" +
+		"  root           for a deliverer that writes an item by its file, the\n" +
+		"                 [serve.homes] root its paths are below, which serve reads\n" +
 		"\n" +
-		"The " + deliver.LifeArticles + " client needs the scope " + strings.Join(deliver.LifeArticlesScopes, " ") + ". A table that\n" +
+		"The " + deliver.LifeArticles + " client needs the scope " + strings.Join(deliver.LifeArticlesScopes, " ") + ", and the\n" +
+		deliver.LearningResources + " client " + strings.Join(deliver.LearningResourcesScopes, " ") + ". A table that\n" +
 		"cannot open is logged and left out, and the worker's other stages run on.\n" +
 		"\n" +
 		"It runs the quality gate, its arm and the model read through the adapter that\n" +

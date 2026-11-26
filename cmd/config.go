@@ -60,8 +60,9 @@ type fileConfig struct {
 		Poll  duration `toml:"poll"`
 	} `toml:"worker"`
 	// Deliver holds a table for each deliverer that a worker opens, under the
-	// name the deliverer registers, read by worker run.
-	Deliver map[string]serviceClient `toml:"deliver"`
+	// name the deliverer registers. worker run reads each, and serve reads
+	// each one's root.
+	Deliver map[string]deliverTable `toml:"deliver"`
 	// Model names the adapter that carries every model call, its settings,
 	// and what each model stage asks its run for, read by worker run.
 	Model modelConfig `toml:"model"`
@@ -103,6 +104,14 @@ type serviceClient struct {
 	ClientID     string   `toml:"client_id"`
 	TokenCommand []string `toml:"token_command"`
 	Issuer       string   `toml:"issuer"`
+}
+
+// deliverTable is one [deliver.<name>] table: how a worker reaches the app,
+// and, for a deliverer that writes an item by its file, the [serve.homes]
+// root below which serve reads each item's path.
+type deliverTable struct {
+	serviceClient
+	Root string `toml:"root"`
 }
 
 // duration is a TOML string such as "5m".

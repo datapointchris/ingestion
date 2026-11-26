@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"sync"
 	"syscall"
 	"time"
@@ -18,6 +20,7 @@ import (
 
 	"github.com/datapointchris/ingestion/accuracy"
 	"github.com/datapointchris/ingestion/connectors"
+	"github.com/datapointchris/ingestion/deliver"
 	"github.com/datapointchris/ingestion/extract"
 	"github.com/datapointchris/ingestion/landing"
 	"github.com/datapointchris/ingestion/modelread"
@@ -55,7 +58,15 @@ var serveCmd = &cobra.Command{
 		"  public_url        where callers reach the API, served as RFC 9728 metadata\n" +
 		"  records_otlp_url  the OTLP/HTTP logs URL the outbox ships to (none ships nothing)\n" +
 		"  [serve.homes]     each named root's directory, such as books = \"/srv/books\",\n" +
-		"                    whose files land by reference rather than as copies (none)",
+		"                    whose files land by reference rather than as copies (none)\n" +
+		"\n" +
+		"It reads root from each [deliver.<name>] table, which a worker reads too. A\n" +
+		"deliverer that writes an item by its file, such as " + deliver.LearningResources + ", takes\n" +
+		"only an item with a live home below that [serve.homes] root, and each attempt\n" +
+		"sends that home's path as the delivery first kept it:\n" +
+		"\n" +
+		"  [deliver." + deliver.LearningResources + "]\n" +
+		"  root              the [serve.homes] root its file paths are below, such as books",
 	Example: "  # the service, reading $XDG_CONFIG_HOME/ingestion/config.toml\n" +
 		"  ingestion serve\n" +
 		"\n" +
@@ -138,6 +149,9 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("%s: %w", path, err)
 	}
+	if err := setDelivererRoots(cfg); err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
 	gate, err := goapiauth.NewConnecting(server.GateConfig(cfg.Issuer))
 	if err != nil {
 		return err
@@ -186,6 +200,24 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 	if err := <-served; !errors.Is(err, http.ErrServerClosed) {
 		return err
+	}
+	return nil
+}
+
+// setDelivererRoots names the root of each [deliver.<name>] table that names
+// one, refusing a root that [serve.homes] does not name.
+func setDelivererRoots(cfg fileConfig) error {
+	for _, name := range slices.Sorted(maps.Keys(cfg.Deliver)) {
+		root := cfg.Deliver[name].Root
+		if root == "" {
+			continue
+		}
+		if _, ok := cfg.Serve.Homes[root]; !ok {
+			return fmt.Errorf("[deliver.%s] names root %s, which [serve.homes] does not name", name, root)
+		}
+		if err := connectors.SetDelivererRoot(name, root); err != nil {
+			return err
+		}
 	}
 	return nil
 }

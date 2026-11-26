@@ -6,24 +6,72 @@ import (
 	"github.com/datapointchris/ingestion/store"
 )
 
-// deliverers holds, for each deliverer that this build registers, what it
-// can write.
-var deliverers = map[string]func(store.Item) error{}
+// deliverer is what this build knows of one deliverer: what it can write, and
+// whether it writes an item by its file's path below a root.
+type deliverer struct {
+	takes    func(store.Item) error
+	filePath bool
+}
+
+// deliverers holds each deliverer that this build registers, by name.
+var deliverers = map[string]deliverer{}
+
+// delivererRoots holds the [serve.homes] root that each deliverer writing by
+// file path reads, as serve's config names it.
+var delivererRoots = map[string]string{}
 
 // RegisterDeliverer records that this build carries the deliverer called
 // name, which a destination names as its deliverer. takes answers why the
 // deliverer cannot write an item, and nil where it can; a nil takes writes
-// every item. deliver.Register calls it beside the deliverer's constructor,
-// so a name that a set may give is one a worker can open. Registering a name
-// twice panics, as a duplicate is a build error.
-func RegisterDeliverer(name string, takes func(store.Item) error) {
+// every item. filePath says the deliverer writes an item by its file: it takes
+// only an item with a live home below the root that SetDelivererRoot names,
+// and its delivery keeps that home's path. deliver.Register calls it beside
+// the deliverer's constructor, so a name that a set may give is one a worker
+// can open. Registering a name twice panics, as a duplicate is a build error.
+func RegisterDeliverer(name string, takes func(store.Item) error, filePath bool) {
 	if _, ok := deliverers[name]; ok {
 		panic("connectors: deliverer " + name + " is registered twice")
 	}
 	if takes == nil {
 		takes = func(store.Item) error { return nil }
 	}
-	deliverers[name] = takes
+	deliverers[name] = deliverer{takes: takes, filePath: filePath}
+}
+
+// SetDelivererRoot names root as the [serve.homes] root below which the
+// deliverer called name reads each item's file. serve calls it for each
+// [deliver.<name>] table that names a root. It refuses a deliverer that this
+// build does not register, or that writes no file path.
+func SetDelivererRoot(name, root string) error {
+	d, ok := deliverers[name]
+	switch {
+	case !ok:
+		return fmt.Errorf("[deliver.%s] names a root, and %s is no deliverer this build registers", name, name)
+	case !d.filePath:
+		return fmt.Errorf("[deliver.%s] names a root, and %s writes no file path", name, name)
+	}
+	delivererRoots[name] = root
+	return nil
+}
+
+// FilePath is the path at which the deliverer called name writes an item
+// whose homes are homes: the first live one found below the deliverer's root.
+// It is nil for a deliverer that writes no file path. Its error says why the
+// deliverer cannot take the item.
+func FilePath(name string, homes []store.Home) (*string, error) {
+	if d, ok := deliverers[name]; !ok || !d.filePath {
+		return nil, nil
+	}
+	root, ok := delivererRoots[name]
+	if !ok {
+		return nil, fmt.Errorf("serve's config names no root in [deliver.%s]", name)
+	}
+	for _, h := range homes {
+		if h.Root == root && h.GoneTS == nil {
+			return &h.Path, nil
+		}
+	}
+	return nil, fmt.Errorf("it has no live home under root %s", root)
 }
 
 // Why an item placed on a side and read as is reaches no deliverer, in the
@@ -73,7 +121,9 @@ func (u *Undelivered) Error() string {
 // side names, else its side's default. It is an Undelivered where that
 // destination is not declared, names no deliverer, or has a deliverer that
 // cannot take item, and where side names none and its side has no default.
-func (s Set) DeliveryTo(side store.Decision, item store.Item) (Destination, *Undelivered) {
+// homes are the item's homes, whose live ones a deliverer writing by file
+// path reads.
+func (s Set) DeliveryTo(side store.Decision, item store.Item, homes []store.Home) (Destination, *Undelivered) {
 	var d Destination
 	var ok bool
 	if side.Destination != nil {
@@ -86,8 +136,12 @@ func (s Set) DeliveryTo(side store.Decision, item store.Item) (Destination, *Und
 	if d.Deliverer == "" {
 		return d, &Undelivered{Reason: UndeliveredNoDeliverer, Side: side.Verdict, Destination: d.Name}
 	}
-	if takes, ok := deliverers[d.Deliverer]; ok {
-		if err := takes(item); err != nil {
+	if r, ok := deliverers[d.Deliverer]; ok {
+		err := r.takes(item)
+		if err == nil {
+			_, err = FilePath(d.Deliverer, homes)
+		}
+		if err != nil {
 			return d, &Undelivered{Reason: UndeliveredNotTaken, Side: side.Verdict, Destination: d.Name, Deliverer: d.Deliverer, Why: err.Error()}
 		}
 	}

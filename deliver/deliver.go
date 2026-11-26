@@ -8,7 +8,7 @@
 // name, what it takes and how to open it, so a destination's declaration may
 // name it and a worker's config may open it. The service queues a deliver task
 // where the read gate reads an item as is, and records the delivery pending
-// with the title and URL that every attempt sends. A worker runs each
+// with the title, URL and file path that every attempt sends. A worker runs each
 // deliverer that its config opens through Handler, and claims only those
 // deliverers' tasks. The service then records how each write ended, and never
 // queues a settled delivery again, because a destination may forget a record
@@ -38,6 +38,11 @@ type Registration struct {
 	// can. The service asks it before queueing, so an item it cannot take
 	// waits with that reason rather than failing at the destination.
 	Takes func(store.Item) error
+	// FilePath says the deliverer writes an item by its file. It takes only
+	// an item with a live home below the root that serve's [deliver.<name>]
+	// table names, and each attempt sends that home's path as the delivery
+	// first kept it.
+	FilePath bool
 	// Open is the deliverer that writes to the app at api through client,
 	// which carries the service client's token.
 	Open func(api string, client *http.Client) Deliverer
@@ -45,11 +50,11 @@ type Registration struct {
 
 var registered = map[string]Registration{}
 
-// Register records r, and records its name and Takes with
+// Register records r, and records its name, Takes and FilePath with
 // connectors.RegisterDeliverer, so each name a set may give is one a worker
 // can open.
 func Register(r Registration) {
-	connectors.RegisterDeliverer(r.Name, r.Takes)
+	connectors.RegisterDeliverer(r.Name, r.Takes, r.FilePath)
 	registered[r.Name] = r
 }
 
@@ -82,6 +87,9 @@ type Item struct {
 	// SourceTS is when the item was made at its source, such as a Reddit
 	// post's creation, as a store stamp, and nil where its source gave none.
 	SourceTS *string
+	// Path is the item's file below its deliverer's root, as the delivery
+	// first kept it, and nil for a deliverer that writes no file.
+	Path *string
 }
 
 // Outcome is how one write of an item ended.
@@ -138,6 +146,7 @@ func (h handler) Run(ctx context.Context, task worker.Task) worker.Result {
 	}
 	o := h.deliverer.Deliver(ctx, Item{
 		Key: *task.ItemKey, Zone: task.Zone, Title: task.Title, URL: task.URL, LandedTS: task.LandedTS, SourceTS: task.SourceTS,
+		Path: task.Path,
 	})
 	delivery := &server.ReportDelivery{Outcome: o.Outcome, DestinationID: o.DestinationID, Error: o.Error}
 	switch {

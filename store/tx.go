@@ -102,6 +102,11 @@ func (t *Tx) LiveHomesAt(ctx context.Context, root, pathSHA256 string) ([]Home, 
 	return readInto[Home](ctx, t.tx, table("homes"), `root = ? AND path_sha256 = ? AND gone_ts IS NULL`, root, pathSHA256)
 }
 
+// LiveHomes reads every home of the blob sum that is not gone, oldest first.
+func (t *Tx) LiveHomes(ctx context.Context, sum string) ([]Home, error) {
+	return readInto[Home](ctx, t.tx, table("homes"), `blob_sha256 = ? AND gone_ts IS NULL ORDER BY found_ts, rowid`, sum)
+}
+
 // LiveHomesUnder reads every home at root that is not gone, in path order.
 func (t *Tx) LiveHomesUnder(ctx context.Context, root string) ([]Home, error) {
 	return readInto[Home](ctx, t.tx, table("homes"), `root = ? AND gone_ts IS NULL ORDER BY path, rowid`, root)

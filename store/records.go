@@ -334,10 +334,13 @@ type Delivery struct {
 	Attempts      int     `json:"attempts"`
 	LastError     *string `json:"last_error"`
 	// Title, URL and SourceTS are the item's when the delivery was first
-	// queued, which every attempt sends.
+	// queued, which every attempt sends. So is Path, for a deliverer that
+	// writes an item by its file: its live home's path below the root that
+	// the deliverer's config names. It is nil for every other deliverer.
 	Title     *string `json:"title"`
 	URL       *string `json:"url"`
 	SourceTS  *string `json:"source_ts"`
+	Path      *string `json:"path"`
 	UpdatedTS string  `json:"updated_ts"`
 }
 

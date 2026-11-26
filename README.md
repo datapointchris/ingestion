@@ -128,6 +128,14 @@ api = "https://life.example.com"
 client_id = "life-svc-ingestion"
 # token_command = ["my-token-helper", "life"]  # in place of client_id
 # issuer = "..."  # the OIDC provider that signs life's tokens, if not the one above
+
+# This one creates each PDF book as a resource in learning, as a client that
+# holds the scope learning.resources.write. It writes a book by its file, so
+# serve reads root too: the [serve.homes] root that each book's path is below.
+[deliver.learning-resources]
+api = "https://learning.example.com"
+client_id = "learning-svc-ingestion"
+root = "books"
 ```
 
 `ingestion serve --help` and `ingestion worker run --help` print each setting's default.
@@ -716,7 +724,10 @@ worker running that destination's deliverer leases the task, whose capability is
 `deliver:<deliverer>`. It writes the item through the app's own API, never its store, and the app
 keeps the item's key as the record's source key. `life-articles` posts the item to life's
 `/api/v1/articles`. It sends the item's title, or its URL where it has none, its URL, the time it
-first landed as the save date, and its key as `source_key`.
+first landed as the save date, and its key as `source_key`. `learning-resources` posts a PDF to
+learning's `/api/v1/resources` as a book whose copy is that PDF. It sends the item's title, the
+type `book`, the copy `pdf`, its key as `source_key`, and its file as `file_path`: the path of its
+live home below the `[serve.homes]` root that `[deliver.learning-resources]` names as `root`.
 
 Each delivery ends in one outcome, which `items show` prints with the app's id for the record:
 
@@ -729,19 +740,22 @@ delivery  reading-list  pending  attempts 0  no worker heard from lately claims 
 delivery  none: no destination in the set in force is default_for_side personal, so an item placed on that side with no destination named waits
 ```
 
-- **`delivered`**: the app saved the item under its key, or already held it there.
-- **`delivered-to-existing`**: the app held a record of the same URL under no key, and gave it
-  this key.
-- **`refused`**: the app holds a record that conflicts, such as one of the same URL under another
-  key. The delivery names that record, and is never tried again.
+- **`delivered`**: the app saved the item under its key. Under `life-articles`, a record that the
+  key already names reads `delivered` too.
+- **`delivered-to-existing`**: the app held a record of the same URL or file path under no key,
+  and gave it this key. Under `learning-resources`, a record that the key already names reads
+  `delivered-to-existing` too, because learning answers both the same way.
+- **`refused`**: the app holds a record that conflicts, such as one of the same URL or file path
+  under another key, or a directory that holds the file. The delivery names that record, and is
+  never tried again.
 - **`pending`**: the app failed, timed out or answered in part. The task tries again after a wait
   that doubles with each attempt, up to a cap that `deliver/deliver.go` sets. An answer that the
   same request cannot mend, such as a refused token or an invalid body, fails the task instead.
   The delivery then stays pending with that answer.
 - **`delivery  none:`** marks an item read as is that no deliverer takes. Its side has no default,
   its destination names no deliverer or is not declared, or the deliverer cannot take the item,
-  as `life-articles` cannot take one with no URL. An apply that changes any of these queues each
-  such item.
+  as `life-articles` cannot take one with no URL, and `learning-resources` one that is no PDF or
+  has no live home below its root. An apply that changes any of these queues each such item.
 
 Where no worker heard from lately claims a pending delivery's task, `items show` names the task's
 capability, as the sixth line shows. So a destination that failed reads apart from a deliverer
@@ -749,8 +763,8 @@ that no worker here opens.
 
 A person's drop or move withdraws a delivery that has not run. Its task ends, and its `last_error`
 says why. A settled delivery is never queued again, so a second sighting or a replay writes
-nothing to the app. Every attempt sends the title and URL that the item had when its delivery was
-first queued, so a retry repeats the first request. `ingestion items replay --stage deliver`
+nothing to the app. Every attempt sends the title, URL and file path that the item had when its
+delivery was first queued, so a retry repeats the first request. `ingestion items replay --stage deliver`
 queues each delivery that is still pending.
 
 ### Running it in a container
@@ -767,7 +781,8 @@ signed with cosign by the release workflow. The manifests leave two things for t
 supply: the ConfigMap `ingestion-config` holding `config.toml`, and the Secret
 `ingestion-worker-client` holding the worker's client secret under `secret`. Where the config
 sets `[deliver.life-articles]` with a `client_id`, the cluster also supplies the Secret
-`ingestion-deliver-life-articles`, holding that client's secret under `secret`. Where it sets
+`ingestion-deliver-life-articles`, holding that client's secret under `secret`, and likewise
+`ingestion-deliver-learning-resources` for `[deliver.learning-resources]`. Where it sets
 `[model] adapter = "queue"`, the cluster supplies the Secret `ingestion-model-queue-client`,
 holding `[model.queue]`'s client secret under `secret`.
 

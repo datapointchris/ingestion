@@ -11,6 +11,9 @@
 # - A Secret named ingestion-deliver-life-articles, where
 #   [deliver.life-articles] names a client_id. Its secret key holds that
 #   client's secret. Without it the worker runs on and opens no life-articles.
+# - A Secret named ingestion-deliver-learning-resources, where
+#   [deliver.learning-resources] names a client_id, holding that client's
+#   secret the same way. Without it the worker opens no learning-resources.
 # - A Secret named ingestion-model-queue-client, where [model] adapter is
 #   queue. Its secret key holds the secret of [model.queue]'s client_id.
 #   Without it the worker runs on and claims no model stage's task.
@@ -73,6 +76,12 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: ingestion-deliver-life-articles
+                  key: secret
+                  optional: true
+            - name: INGESTION_DELIVER_LEARNING_RESOURCES_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: ingestion-deliver-learning-resources
                   key: secret
                   optional: true
             - name: INGESTION_MODEL_QUEUE_CLIENT_SECRET

@@ -65,6 +65,12 @@ func (p *pipeline) advance(d time.Duration) { p.ahead.Add(int64(d)) }
 // item's task done, as serve runs the gates there.
 func newPipeline(t *testing.T, extractors *extract.Registry, after server.AfterStage) *pipeline {
 	t.Helper()
+	return newPipelineOver(t, extractors, after, nil)
+}
+
+// newPipelineOver is newPipeline whose lander reads homes as [serve.homes].
+func newPipelineOver(t *testing.T, extractors *extract.Registry, after server.AfterStage, homes map[string]string) *pipeline {
+	t.Helper()
 	ctx := t.Context()
 	dir := t.TempDir()
 	ahead := &atomic.Int64{}
@@ -78,7 +84,7 @@ func newPipeline(t *testing.T, extractors *extract.Registry, after server.AfterS
 	if err != nil {
 		t.Fatal(err)
 	}
-	lander, err := landing.New(landing.Config{Store: st, Blobs: blobs, QueueParse: extractors.QueueParse})
+	lander, err := landing.New(landing.Config{Store: st, Blobs: blobs, Homes: homes, QueueParse: extractors.QueueParse})
 	if err != nil {
 		t.Fatal(err)
 	}
