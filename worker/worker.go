@@ -54,17 +54,29 @@ type Config struct {
 	Version string
 	// Slots is how many tasks run at once.
 	Slots int
-	Lease time.Duration
+	// SlotLimits caps how many tasks of a capability run at once, within
+	// Slots, such as one slot for a long parse so that the rest stay free for
+	// every other stage. A capability that it does not name may take every
+	// slot.
+	SlotLimits map[string]int
+	Lease      time.Duration
 	// Poll is how often an idle worker claims again.
 	Poll time.Duration
 	Log  *slog.Logger
 }
 
 // Run claims and runs tasks for handlers until ctx ends. A worker with no
-// handler claims nothing, and its claims still record its heartbeat.
+// handler claims nothing, and its claims still record its heartbeat. Each
+// claim asks for no more of a capability than its slot limit leaves free. Run
+// refuses a slot limit under 1.
 func Run(ctx context.Context, client *Client, cfg Config, handlers ...Handler) error {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
+	}
+	for capability, limit := range cfg.SlotLimits {
+		if limit < 1 {
+			return fmt.Errorf("the slot limit of %s is %d, and a limit is 1 or more", capability, limit)
+		}
 	}
 	if err := MarkUndumpable(); err != nil {
 		return err
@@ -78,47 +90,66 @@ func Run(ctx context.Context, client *Client, cfg Config, handlers ...Handler) e
 		byCapability[h.Capability()] = h
 		capabilities = append(capabilities, h.Capability())
 	}
+	limits := map[string]int{}
+	for capability, limit := range cfg.SlotLimits {
+		if _, held := byCapability[capability]; !held {
+			cfg.Log.Warn("a slot limit names a capability that no handler here holds", "capability", capability)
+			continue
+		}
+		limits[capability] = limit
+	}
 	started := store.Stamp(time.Now())
-	cfg.Log.Info("the worker runs", "worker", cfg.ID, "capabilities", capabilities, "slots", cfg.Slots)
+	cfg.Log.Info("the worker runs", "worker", cfg.ID, "capabilities", capabilities, "slots", cfg.Slots, "slot_limits", limits)
 
 	var wg sync.WaitGroup
 	defer wg.Wait()
-	freed := make(chan struct{}, cfg.Slots)
-	running := 0
+	freed := make(chan string, cfg.Slots)
+	running := map[string]int{}
+	busy := 0
 	ticker := time.NewTicker(cfg.Poll)
 	defer ticker.Stop()
 	for {
-		free := cfg.Slots - running
+		free := cfg.Slots - busy
 		if len(capabilities) == 0 {
 			free = 0
 		}
+		var bounds map[string]int
+		if len(limits) > 0 {
+			bounds = map[string]int{}
+			for capability, limit := range limits {
+				bounds[capability] = max(limit-running[capability], 0)
+			}
+		}
 		answer, err := client.Claim(ctx, server.ClaimRequest{
 			WorkerID: cfg.ID, Capabilities: capabilities, Version: cfg.Version, StartedTS: started,
-			Max: free, LeaseSeconds: int(cfg.Lease.Seconds()),
+			Max: free, MaxByCapability: bounds, LeaseSeconds: int(cfg.Lease.Seconds()),
 		})
 		if err != nil && ctx.Err() == nil {
 			cfg.Log.Warn("claim tasks", "error", err)
 		}
 		for _, task := range answer.Tasks {
 			h := byCapability[task.Capability]
-			running++
+			busy++
+			running[task.Capability]++
 			wg.Go(func() {
-				defer func() { freed <- struct{}{} }()
+				defer func() { freed <- task.Capability }()
 				runTask(ctx, client, cfg, h, task)
 			})
 		}
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-freed:
-			running--
+		case capability := <-freed:
+			busy--
+			running[capability]--
 		case <-ticker.C:
 		}
 	drained:
 		for {
 			select {
-			case <-freed:
-				running--
+			case capability := <-freed:
+				busy--
+				running[capability]--
 			default:
 				break drained
 			}

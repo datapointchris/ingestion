@@ -126,6 +126,12 @@ slots = 4     # tasks leased at once
 lease = "10m" # how long a lease holds without a heartbeat
 poll = "10s"  # how often an idle worker asks for work
 
+# Optional: how many tasks of a capability run at once, within slots, so a long
+# Docling parse leaves the other slots to every other stage. A capability it
+# does not name may take every slot.
+[worker.slot_limits]
+"parse:docling" = 1
+
 # A table for each deliverer the worker opens, named for it. This one saves
 # items as life articles, as a client that holds the scope life.articles.write.
 [deliver.life-articles]

@@ -55,9 +55,12 @@ type fileConfig struct {
 		Homes map[string]string `toml:"homes"`
 	} `toml:"serve"`
 	Worker struct {
-		Slots int      `toml:"slots"`
-		Lease duration `toml:"lease"`
-		Poll  duration `toml:"poll"`
+		Slots int `toml:"slots"`
+		// SlotLimits caps how many tasks of each capability it names run at
+		// once, within Slots.
+		SlotLimits map[string]int `toml:"slot_limits"`
+		Lease      duration       `toml:"lease"`
+		Poll       duration       `toml:"poll"`
 	} `toml:"worker"`
 	// Deliver holds a table for each deliverer that a worker opens, under the
 	// name the deliverer registers. worker run reads each, and serve reads

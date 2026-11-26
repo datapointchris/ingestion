@@ -41,7 +41,7 @@ never ahead of it. A stage's code goes in its own package:
 | `prompts` | each model stage's prompt template and answer schema, one directory per stage, embedded and versioned by a digest of both |
 | `outbox` | the relay that ships each logged change past its mark, with outsider text on a channel of its own |
 | `server` | the HTTP API that `ingestion serve` answers, and its route table, whose rows name each route's scope and what a repeat does, read by the CLI's retry and the router's key check |
-| `worker` | `ingestion worker run`, which leases tasks by capability under a fencing token |
+| `worker` | `ingestion worker run`, which leases tasks by capability under a fencing token, no more of a capability at once than its slot limit |
 | `push` | `ingestion push`, which hands a URL or a key straight to a named destination |
 | `views/review` | the review tab of `ingestion tui`: a reader of the review queue and the parse under the cursor, a renderer of each into a gotermboard frame, and the keys that place or drop an item through a `Service` port, which `cmd/tui.go` fills with the CLI's own calls. Its keys' writes run through gotermboard's `keywrites` queue |
 
