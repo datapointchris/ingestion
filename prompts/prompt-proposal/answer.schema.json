@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/datapointchris/ingestion/prompts/misses/answer.schema.json",
+  "$id": "https://github.com/datapointchris/ingestion/prompts/prompt-proposal/answer.schema.json",
   "title": "A drafted change to a prompt, from the quality gate's misses",
-  "description": "What the misses stage answers from the quality gate's prompt and a projection of the times a person disagreed with it. The store keeps it whole as the prompt proposal's answer. Each edit's before occurs exactly once in the prompt that the proposal changes, so applying the edits in order gives the proposed prompt.",
+  "description": "What the prompt-proposal stage answers from the quality gate's prompt and a projection of the times a person disagreed with it. The store keeps it whole as the prompt proposal's answer. Each edit's before occurs exactly once in the prompt that the proposal changes, so applying the edits in order gives the proposed prompt.",
   "type": "object",
   "additionalProperties": false,
   "required": ["pattern", "change", "edits", "answers"],

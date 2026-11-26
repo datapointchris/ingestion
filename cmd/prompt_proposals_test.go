@@ -2,14 +2,16 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/datapointchris/goclikit"
 	"github.com/datapointchris/ingestion/connectors"
 	"github.com/datapointchris/ingestion/extract"
-	"github.com/datapointchris/ingestion/misses"
+	"github.com/datapointchris/ingestion/promptproposal"
 	"github.com/datapointchris/ingestion/prompts"
 	"github.com/datapointchris/ingestion/qualitygate"
 	"github.com/datapointchris/ingestion/server"
@@ -29,10 +31,9 @@ func plantedSave(name string) string {
 // word marker. A person keeps a save the gate would drop, places a fleet guess
 // on a personal destination, and marks a save the gate placed low-quality.
 // The schedule's first time drafts one owner proposal over those three misses
-// and queues one misses task. Its run reads none of the planted words, and
+// and queues one prompt-proposal task. Its run reads none of the planted words, and
 // gates proposals list prints its edit. In the second week the person places
-// an unsure save, which is no miss, so the next time drafts nothing. The
-// gate's prompt keeps its version throughout.
+// an unsure save, which is no miss, so the next time drafts nothing.
 func TestAWeekOfMissesDraftsOneOwnerProposalThatReadsNoOutsiderText(t *testing.T) {
 	p := newGatedPipeline(t, mustAbs(t, "../examples/declarations"))
 	version := prompts.Quality.Version
@@ -64,14 +65,14 @@ func TestAWeekOfMissesDraftsOneOwnerProposalThatReadsNoOutsiderText(t *testing.T
 	}
 	models := stand.models(t, "haiku", "medium")
 	gate := p.qualityGate(t, models)
-	drafts, err := misses.NewScheduler(p.st, misses.DefaultSchedule, quiet)
+	drafts, err := promptproposal.NewScheduler(p.st, promptproposal.DefaultSchedule, quiet)
 	if err != nil {
 		t.Fatal(err)
 	}
-	proposals := func() (misses.List, string) {
+	proposals := func() (promptproposal.List, string) {
 		t.Helper()
 		out, err := runCLI(t, "gates", "proposals", "list", "--json", "--config", p.config)
-		var list misses.List
+		var list promptproposal.List
 		if err != nil || json.Unmarshal([]byte(out), &list) != nil {
 			t.Fatalf("gates proposals list printed %q, %v", out, err)
 		}
@@ -107,20 +108,22 @@ func TestAWeekOfMissesDraftsOneOwnerProposalThatReadsNoOutsiderText(t *testing.T
 	if _, err := drafts.Pass(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	queued := slices.IndexFunc(p.tasks(t), func(v server.TaskView) bool { return v.Stage == store.StageMisses })
+	queued := slices.IndexFunc(p.tasks(t), func(v server.TaskView) bool { return v.Stage == store.StagePromptProposal })
 	if queued < 0 || p.tasks(t)[queued].ProposalID == nil || p.tasks(t)[queued].ItemKey != nil {
-		t.Fatalf("the schedule's first time queued %s, want one misses task naming its proposal", jsonOf(p.tasks(t)))
+		t.Fatalf("the schedule's first time queued %s, want one prompt-proposal task naming its proposal", jsonOf(p.tasks(t)))
 	}
 	if out, err := runCLI(t, "tasks", "list", "--config", p.config); err != nil || !strings.Contains(out, "proposal "+*p.tasks(t)[queued].ProposalID) {
-		t.Errorf("tasks list printed %q, %v, want the misses task's proposal", out, err)
+		t.Errorf("tasks list printed %q, %v, want the prompt-proposal task's proposal", out, err)
 	}
-	if ran := p.run(t, p.modelHandler(t, models, misses.Capability)); ran != 1 {
-		t.Fatalf("the worker ran %d misses tasks, want the one draft", ran)
+	if ran := p.run(t, p.modelHandler(t, models, promptproposal.Capability)); ran != 1 {
+		t.Fatalf("the worker ran %d prompt-proposal tasks, want the one draft", ran)
 	}
 	starts := stand.starts()
-	i := slices.IndexFunc(starts, func(s dispatchStart) bool { return strings.HasSuffix(s.Schema, "/prompts/misses/answer.schema.json") })
-	if i < 0 || starts[i].Model != misses.DefaultModel || starts[i].Effort != misses.DefaultEffort {
-		t.Fatalf("the stand-in started %s, want one draft on %s at %s", jsonOf(starts), misses.DefaultModel, misses.DefaultEffort)
+	i := slices.IndexFunc(starts, func(s dispatchStart) bool {
+		return strings.HasSuffix(s.Schema, "/prompts/prompt-proposal/answer.schema.json")
+	})
+	if i < 0 || starts[i].Model != promptproposal.DefaultModel || starts[i].Effort != promptproposal.DefaultEffort {
+		t.Fatalf("the stand-in started %s, want one draft on %s at %s", jsonOf(starts), promptproposal.DefaultModel, promptproposal.DefaultEffort)
 	}
 	sent := stand.prompt(starts[i].Key)
 	if strings.Contains(strings.ToLower(sent), "marker") {
@@ -139,7 +142,7 @@ func TestAWeekOfMissesDraftsOneOwnerProposalThatReadsNoOutsiderText(t *testing.T
 		got.LabeledAfter != nil || strings.Contains(strings.ToLower(raw), "marker") {
 		t.Errorf("gates proposals list printed %s, want one done owner proposal on the quality prompt over 3 misses and no planted word", raw)
 	}
-	var projected []misses.Miss
+	var projected []promptproposal.Miss
 	if err := json.Unmarshal(got.Misses, &projected); err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +152,7 @@ func TestAWeekOfMissesDraftsOneOwnerProposalThatReadsNoOutsiderText(t *testing.T
 			t.Errorf("the proposal holds miss %s, want %s", jsonOf(m), want[m.ItemKey])
 		}
 	}
-	if out, err := runCLI(t, "gates", "proposals", "list", "--config", p.config); err != nil || !strings.Contains(out, "from 3 misses labeled through") ||
+	if out, err := runCLI(t, "gates", "proposals", "list", "--config", p.config); err != nil ||
 		!strings.Contains(out, "- "+themes) || !strings.Contains(out, "+ "+themes+" Name what the item adds.") {
 		t.Errorf("gates proposals list printed %q, %v, want the draft's edit", out, err)
 	}
@@ -161,16 +164,76 @@ func TestAWeekOfMissesDraftsOneOwnerProposalThatReadsNoOutsiderText(t *testing.T
 	if _, err := drafts.Pass(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if list, raw := proposals(); len(list.Proposals) != 1 || slices.ContainsFunc(p.tasks(t), func(v server.TaskView) bool { return v.Stage == store.StageMisses }) {
-		t.Errorf("a week whose only label agreed left %s and tasks %s, want no new proposal or misses task", raw, jsonOf(p.tasks(t)))
+	if list, raw := proposals(); len(list.Proposals) != 1 || slices.ContainsFunc(p.tasks(t), func(v server.TaskView) bool { return v.Stage == store.StagePromptProposal }) {
+		t.Errorf("a week whose only label agreed left %s and tasks %s, want no new proposal or prompt-proposal task", raw, jsonOf(p.tasks(t)))
 	}
+}
 
-	p.landExports(t, map[string][]byte{"later": redditExport(redditSave("t3_ee5", "misc"))})
+// A draft whose edit does not apply to the prompt ends failed, and so does
+// its proposal. The next week's draft reads that week's miss again beside its
+// own, from the first label on. tasks retry then refuses the failed draft,
+// because the later proposal reads its misses.
+func TestADraftWhoseEditDoesNotApplyRollsItsMissesIntoTheNextWeek(t *testing.T) {
+	p := newGatedPipeline(t, mustAbs(t, "../examples/declarations"))
+	stand := newStandInDispatch(t, p.provider)
+	stand.answer = func(string) map[string]any { return judged(qualitygate.AnswerDrop, 0.95, connectors.SidePersonal, 0.9) }
+	stand.draft = func(string) map[string]any {
+		return map[string]any{
+			"pattern": "The gate dropped kept posts.", "change": "Weigh depth.", "answers": []int{1},
+			"edits": []map[string]string{{"before": "a passage that the prompt does not hold", "after": "anything"}},
+		}
+	}
+	models := stand.models(t, "haiku", "medium")
+	gate := p.qualityGate(t, models)
+	drafts, err := promptproposal.NewScheduler(p.st, promptproposal.DefaultSchedule, quiet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.landExports(t, map[string][]byte{"saves": redditExport(redditSave("t3_aa1", "misc"), redditSave("t3_bb2", "misc"))})
 	p.parse(t, extract.Builtin())
 	p.scanFindingNothing(t)
 	p.run(t, gate)
-	outputs := p.shown(t, "reddit/t3_ee5").Outputs
-	if j := slices.IndexFunc(outputs, func(o server.OutputView) bool { return o.Stage == store.StageQuality }); j < 0 || outputs[j].ProducerVersion != version {
-		t.Errorf("after the proposal the gate answered %s, want its prompt still at %s", jsonOf(outputs), version)
+	if _, err := runCLI(t, "connectors", "release", "reddit-exports", "--config", p.config); err != nil {
+		t.Fatal(err)
+	}
+	p.run(t, gate)
+	week := func(save, before string) server.TaskView {
+		t.Helper()
+		if out, err := runCLI(t, "review", "place", save, "reading-list", "--config", p.config); err != nil {
+			t.Fatalf("review place %s printed %q, %v", save, out, err)
+		}
+		p.advance(7 * 24 * time.Hour)
+		if _, err := drafts.Pass(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		p.run(t, p.modelHandler(t, models, promptproposal.Capability))
+		tasks := p.tasks(t)
+		i := slices.IndexFunc(tasks, func(v server.TaskView) bool {
+			return v.Stage == store.StagePromptProposal && v.State == store.TaskFailed && v.ID != before
+		})
+		if i < 0 {
+			t.Fatalf("after the week of %s the tasks are %s, want its draft failed", save, jsonOf(tasks))
+		}
+		return tasks[i]
+	}
+
+	first := week("reddit/t3_aa1", "")
+	if _, err := runCLI(t, "tasks", "retry", first.ID, "--config", p.config); err != nil {
+		t.Fatalf("tasks retry on the only failed draft answered %v, want it queued", err)
+	}
+	p.run(t, p.modelHandler(t, models, promptproposal.Capability))
+	second := week("reddit/t3_bb2", first.ID)
+	out, err := runCLI(t, "gates", "proposals", "list", "--json", "--config", p.config)
+	var list promptproposal.List
+	if err != nil || json.Unmarshal([]byte(out), &list) != nil {
+		t.Fatalf("gates proposals list printed %q, %v", out, err)
+	}
+	i := slices.IndexFunc(list.Proposals, func(pp store.PromptProposal) bool { return pp.ID == *second.ProposalID })
+	if len(list.Proposals) != 2 || i < 0 || list.Proposals[i].MissCount != 2 || list.Proposals[i].LabeledAfter != nil ||
+		slices.ContainsFunc(list.Proposals, func(pp store.PromptProposal) bool { return pp.State != store.OutputFailed }) {
+		t.Errorf("gates proposals list printed %s, want two failed proposals, the second over both misses from the first label", out)
+	}
+	if _, err := runCLI(t, "tasks", "retry", first.ID, "--config", p.config); !errors.Is(err, goclikit.ErrUsage) {
+		t.Errorf("tasks retry on a draft that a later proposal supersedes answered %v, want it refused as a usage error", err)
 	}
 }

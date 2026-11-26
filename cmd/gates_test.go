@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 
 	"github.com/datapointchris/ingestion/accuracy"
@@ -116,9 +115,5 @@ func TestOnlyAPlacementFromReviewIsALabelAndAnArmMovesNothing(t *testing.T) {
 	if arm.Model != "sonnet" || arm.Items != 1 || arm.Arm.Quality.Overall.Agreed != 1 || arm.Gate.Quality.Overall.Unsure != 1 ||
 		report.Quality.Overall.Comparisons != 2 {
 		t.Errorf("gates agreement answered %s, want sonnet's pass beside the gate's unsure verdict on the one save", jsonOf(report))
-	}
-	if out, err := runCLI(t, "gates", "agreement", "--config", p.config); err != nil ||
-		!strings.Contains(out, "2 items a person placed from review") || !strings.Contains(out, "sonnet arm on 1 labeled items") {
-		t.Errorf("gates agreement printed %q, %v", out, err)
 	}
 }

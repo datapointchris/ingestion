@@ -5,7 +5,7 @@
 //
 // A task's call is started once, under an idempotency key of its subject, the
 // stage and the prompt's version. The subject is the task's item, or the
-// prompt proposal that a misses task drafts. The dispatch is stored on the output in the
+// prompt proposal that a prompt-proposal task drafts. The dispatch is stored on the output in the
 // write that ends the worker's lease, and each later claim follows it until
 // the run answers. So a waiting task holds no worker slot, and a lease that
 // lapsed never pays for a second run. A run that failed is started again only

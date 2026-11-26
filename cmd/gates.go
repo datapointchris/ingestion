@@ -15,7 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/datapointchris/ingestion/accuracy"
-	"github.com/datapointchris/ingestion/misses"
+	"github.com/datapointchris/ingestion/promptproposal"
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
 )
@@ -115,9 +115,9 @@ var gatesProposalsCmd = &cobra.Command{
 	Long: "A miss is an answer of the quality gate that a person's word went against:\n" +
 		"a placement from review that disagrees with its verdict or side guess, low-quality\n" +
 		"on an item that it passed, or read on one that it dropped. At each time of\n" +
-		"serve's [gates.misses] schedule, serve projects the misses labeled since the\n" +
+		"serve's [gates.proposals] schedule, serve projects the misses labeled since the\n" +
 		"last proposal. Where it finds any, it writes a proposal holding them and\n" +
-		"queues one misses task. A time that finds none drafts nothing.\n" +
+		"queues one prompt-proposal task. A time that finds none drafts nothing.\n" +
 		"\n" +
 		"Each miss holds keys, enums, numbers and the person's own words, and never an\n" +
 		"item's title, URL or text, or the gate's domains, themes, idea or reason. So\n" +
@@ -160,7 +160,7 @@ func init() {
 func runGatesProposalsList(cmd *cobra.Command, _ []string) error {
 	asJSON, _ := cmd.Flags().GetBool("json")
 	api, _ := cmd.Flags().GetString("api")
-	var answer misses.List
+	var answer promptproposal.List
 	raw, err := getJSON(cmd.Context(), configPath(cmd), api, server.RouteGateProposals, "/api/v1/gates/proposals", &answer)
 	if err != nil {
 		return err
@@ -171,7 +171,7 @@ func runGatesProposalsList(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	if len(answer.Proposals) == 0 {
-		_, err := fmt.Fprintln(w, "No prompt proposal yet. serve drafts one at the first time of [gates.misses] schedule that finds a miss.")
+		_, err := fmt.Fprintln(w, "No prompt proposal yet. serve drafts one at the first time of [gates.proposals] schedule that finds a miss.")
 		return err
 	}
 	for i, p := range answer.Proposals {
@@ -199,7 +199,7 @@ func writeProposal(w io.Writer, p store.PromptProposal) {
 		_, _ = fmt.Fprintf(w, "  Its draft failed: %s\n", orDash(p.Error))
 		return
 	}
-	var draft misses.Answer
+	var draft promptproposal.Answer
 	if err := json.Unmarshal(p.Answer, &draft); err != nil {
 		_, _ = fmt.Fprintf(w, "  Its draft does not read as a draft: %v\n", err)
 		return

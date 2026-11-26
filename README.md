@@ -61,7 +61,7 @@ model = "haiku"
 effort = "medium"
 
 # What a prompt proposal's weekly draft asks its run for.
-[model.misses]
+[model.prompt-proposal]
 model = "sonnet"
 effort = "medium"
 ```
@@ -983,13 +983,14 @@ placement from review that `gates agreement` counts as disagreeing with the verd
 guess. It is also a `low-quality` mark on an item that the gate passed, or a `read` mark on one
 that it dropped.
 
-At each time of its `[gates.misses]` schedule, `serve` projects the misses labeled since the last
-proposal. Where it finds any, it writes one `prompt_proposals` row that holds them and queues one
-`misses` task. A worker with a `[model]` adapter drafts it, and `serve` keeps the draft on the row.
-A time that finds no miss drafts nothing, and so does a time whose last draft has not ended.
+At each time of its `[gates.proposals]` schedule, `serve` projects the misses labeled since the
+last done proposal. Where it finds any, it writes one `prompt_proposals` row. The row holds the
+misses and the text of the prompt that the draft changes. `serve` queues one `prompt-proposal`
+task, which a worker with a `[model]` adapter drafts, and keeps the draft on the row. A time that
+finds no miss drafts nothing, and so does a time whose last draft has not ended.
 
 ```toml
-[gates.misses]
+[gates.proposals]
 schedule = "0 6 * * 1"  # cron, in UTC unless a CRON_TZ=<zone> prefix names another; the default
 ```
 
@@ -1003,9 +1004,12 @@ schedule = "0 6 * * 1"  # cron, in UTC unless a CRON_TZ=<zone> prefix names anot
   to occur once, and gives its `after`. A draft whose edits do not apply, or that answers a miss
   the proposal does not hold, fails. A draft may name no edit, where the misses show no change
   worth making.
+- **A failed draft's misses roll into the next.** The next time's proposal reads them again beside
+  its own. `tasks retry` runs a failed draft again until then, and afterward refuses it as
+  `task_superseded`.
 - **Nothing here changes a prompt.** A person who accepts a proposal edits the prompt's file, and
-  the build that carries it answers under a new prompt version. A worker refuses a draft whose
-  prompt version differs from the one its build holds.
+  the build that carries it answers under a new prompt version. A draft reads the prompt's text
+  from its row, so a worker of another build drafts against the same text.
 
 `ingestion gates proposals list` reads `GET /api/v1/gates/proposals`, the newest first. `--json`
 prints `schemas/prompt-proposals-list.schema.json`.

@@ -28,7 +28,7 @@ import (
 //go:embed quality/prompt.tmpl quality/answer.schema.json
 //go:embed contents/prompt.tmpl contents/answer.schema.json
 //go:embed model-read/prompt.tmpl model-read/answer.schema.json model-read/lenses/*.tmpl
-//go:embed misses/prompt.tmpl misses/answer.schema.json
+//go:embed prompt-proposal/prompt.tmpl prompt-proposal/answer.schema.json
 var files embed.FS
 
 // Prompt is one stage's prompt and answer schema at one version.
@@ -59,12 +59,9 @@ var Quality = load("quality", "1", nil)
 // Contents is the contents stage's prompt.
 var Contents = load("contents", "1", nil)
 
-// Misses is the prompt that drafts a change to another stage's prompt from
-// the quality gate's misses.
-var Misses = load("misses", "1", nil)
-
-// Changeable is each prompt that a misses draft may change, by its stage.
-var Changeable = map[string]Prompt{Quality.Stage: Quality}
+// PromptProposal is the prompt that drafts a change to another stage's
+// prompt from the quality gate's misses.
+var PromptProposal = load("prompt-proposal", "1", nil)
 
 // ModelRead is the model read's prompt under each lens, by the lens's name.
 var ModelRead = loadLenses("model-read", "1", map[string]string{"fleet": "1"})

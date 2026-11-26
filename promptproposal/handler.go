@@ -1,4 +1,4 @@
-package misses
+package promptproposal
 
 import (
 	"bytes"
@@ -23,12 +23,13 @@ import (
 const (
 	// DefaultModel and DefaultEffort are what a draft's run is asked for
 	// where config names neither. A draft weighs a whole prompt against a
-	// week's misses, once a week, so it asks for more than the gate does.
+	// week's misses, and runs once a week, so it asks for a stronger model
+	// than a stage that runs once per item.
 	DefaultModel  = "sonnet"
 	DefaultEffort = "medium"
 )
 
-// Answer is a draft, as prompts/misses/answer.schema.json holds it.
+// Answer is a draft, as prompts/prompt-proposal/answer.schema.json holds it.
 type Answer struct {
 	Pattern string `json:"pattern"`
 	Change  string `json:"change"`
@@ -48,13 +49,13 @@ func NewHandler(port modelport.Port, settings modelstage.Settings, log *slog.Log
 	settings.Model, settings.Effort = cmp.Or(settings.Model, DefaultModel), cmp.Or(settings.Effort, DefaultEffort)
 	return modelstage.NewHandler(port, modelstage.Stage{
 		Name: Capability, Producer: Producer,
-		Prompt: func(worker.Task) (prompts.Prompt, error) { return prompts.Misses, nil },
+		Prompt: func(worker.Task) (prompts.Prompt, error) { return prompts.PromptProposal, nil },
 		Data:   data,
 		Keep:   keep,
 	}, settings, log)
 }
 
-// promptData is what the misses prompt quotes.
+// promptData is what the prompt-proposal prompt quotes.
 type promptData struct {
 	Prompt, PromptVersion, Template string
 	DropFloor, GuessFloor           string
@@ -62,31 +63,21 @@ type promptData struct {
 	Window, Misses                  string
 }
 
-// target is the prompt that the task's proposal changes, as this build holds
-// it. Where this build's version of the prompt differs from the proposal's,
-// the draft would quote a prompt that did not answer the misses, so target
-// refuses it.
-func target(task worker.Task) (prompts.Prompt, *server.LeasedProposal, error) {
+// proposal is the task's prompt proposal. It holds the text of the prompt
+// that it changes, as serve's build held it, so a worker of another build
+// drafts against the same text.
+func proposal(task worker.Task) (*server.LeasedProposal, error) {
 	p := task.Proposal
-	if p == nil {
-		return prompts.Prompt{}, nil, fmt.Errorf("%w: task %s carries no prompt proposal", modelport.ErrRefused, task.ID)
+	if p == nil || p.PromptText == "" {
+		return nil, fmt.Errorf("%w: task %s carries no prompt proposal with its prompt's text", modelport.ErrRefused, task.ID)
 	}
-	changed, ok := prompts.Changeable[p.Prompt]
-	if !ok {
-		return prompts.Prompt{}, nil, fmt.Errorf("%w: proposal %s changes the %s prompt, which no draft changes", modelport.ErrRefused,
-			deref(task.ProposalID), p.Prompt)
-	}
-	if changed.Version != p.PromptVersion {
-		return prompts.Prompt{}, nil, fmt.Errorf("%w: proposal %s changes the %s prompt at %s, and this build holds it at %s",
-			modelport.ErrRefused, deref(task.ProposalID), p.Prompt, p.PromptVersion, changed.Version)
-	}
-	return changed, p, nil
+	return p, nil
 }
 
 // data is what the prompt quotes of the task's proposal: the prompt that it
 // changes, and its misses, one JSON object a line.
 func data(_ context.Context, task worker.Task) (any, error) {
-	changed, p, err := target(task)
+	p, err := proposal(task)
 	if err != nil {
 		return nil, err
 	}
@@ -107,7 +98,7 @@ func data(_ context.Context, task worker.Task) (any, error) {
 		window = "after " + *p.LabeledAfter + " and " + window
 	}
 	return promptData{
-		Prompt: p.Prompt, PromptVersion: p.PromptVersion, Template: changed.Text(),
+		Prompt: p.Prompt, PromptVersion: p.PromptVersion, Template: p.PromptText,
 		DropFloor: fmt.Sprintf("%.2f", qualitygate.DropFloor), GuessFloor: fmt.Sprintf("%.2f", route.GuessFloor),
 		Count: len(lines), Window: window, Misses: strings.Join(lines, "\n"),
 	}, nil
@@ -125,11 +116,11 @@ func keep(_ context.Context, task worker.Task, prompt prompts.Prompt, raw json.R
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return nil, fmt.Errorf("decode the draft: %w", err)
 	}
-	changed, p, err := target(task)
+	p, err := proposal(task)
 	if err != nil {
 		return nil, err
 	}
-	if err := applies(changed.Text(), a.Edits); err != nil {
+	if err := applies(p.PromptText, a.Edits); err != nil {
 		return nil, fmt.Errorf("the draft's edits do not apply to the %s prompt at %s: %w", p.Prompt, p.PromptVersion, err)
 	}
 	for _, n := range a.Answers {

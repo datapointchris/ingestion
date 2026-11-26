@@ -2,8 +2,8 @@ Propose one change to a prompt, from the times a person disagreed with how a mod
 
 The prompt is the {{.Prompt}} gate's, at version {{.PromptVersion}}. A model reads it with one saved item's title and opening, before anyone reads the item whole, and answers the item's genre, quality, verdict and a guess at its side. The service acts on the answer:
 
-- verdict pass sends the item on to be read, and verdict drop at a confidence of {{.DropFloor}} or more drops it. Every other verdict waits for a person.
-- side personal at a confidence of {{.GuessFloor}} or more places the item on the personal side. A fleet guess places nothing, and waits for a person.
+- verdict pass lets the item go on to be placed. verdict drop at a confidence of {{.DropFloor}} or more drops the item, or shows it to a person until the gate has earned trust on the item's sources. Every other verdict waits for a person.
+- Where no tag or rule placed the item, side personal at a confidence of {{.GuessFloor}} or more places it on the personal side, unless its source asks a person to sort it. A fleet guess places nothing, and waits for a person.
 
 The prompt is quoted whole between the two PROMPT lines. Its fields in double braces are filled for each item, so keep each one as it is.
 

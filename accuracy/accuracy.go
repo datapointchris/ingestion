@@ -247,19 +247,31 @@ func answerOf(o store.Output) (qualitygate.Answer, error) {
 func compare(o store.Output, label string, connectorNames []string) (comparison, []comparison) {
 	a, _ := answerOf(o)
 	base := comparison{label: label, connectors: connectorNames, model: modelOf(o), promptVersion: o.ProducerVersion}
+	verdict, side := Outcomes(a, label)
 	q := base
-	q.answer, q.confidence, q.outcome = a.Verdict, a.VerdictConfidence, QualityOutcome(a.Verdict, label)
-	if label != connectors.SidePersonal && label != connectors.SideFleet {
+	q.answer, q.confidence, q.outcome = a.Verdict, a.VerdictConfidence, verdict
+	if side == "" {
 		return q, nil
 	}
 	s := base
-	s.answer, s.confidence, s.outcome = a.Side, a.SideConfidence, SideOutcome(a.Side, label)
+	s.answer, s.confidence, s.outcome = a.Side, a.SideConfidence, side
 	return q, []comparison{s}
 }
 
-// QualityOutcome compares the quality gate's verdict with a person's
+// Outcomes compares the quality gate's answer a with a person's label: its
+// verdict always, and its side guess only where the label is a side. side is
+// "" where it compares nothing.
+func Outcomes(a qualitygate.Answer, label string) (verdict, side string) {
+	verdict = qualityOutcome(a.Verdict, label)
+	if label == connectors.SidePersonal || label == connectors.SideFleet {
+		side = sideOutcome(a.Side, label)
+	}
+	return verdict, side
+}
+
+// qualityOutcome compares the quality gate's verdict with a person's
 // placement: a pass agrees with a side, and a drop with a drop.
-func QualityOutcome(verdict, label string) string {
+func qualityOutcome(verdict, label string) string {
 	onASide := label == connectors.SidePersonal || label == connectors.SideFleet
 	switch {
 	case verdict == qualitygate.AnswerPass && onASide, verdict == qualitygate.AnswerDrop && label == route.VerdictDrop:
@@ -270,8 +282,8 @@ func QualityOutcome(verdict, label string) string {
 	return Unsure
 }
 
-// SideOutcome compares the side guess with the person's side.
-func SideOutcome(guess, label string) string {
+// sideOutcome compares the side guess with the person's side.
+func sideOutcome(guess, label string) string {
 	switch guess {
 	case label:
 		return Agreed

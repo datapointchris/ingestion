@@ -118,11 +118,14 @@ const (
 	CodeParseNotFound = "parse_not_found"
 	CodeStaleLease    = "stale_lease"
 	CodeTaskDone      = "task_done"
-	CodeInternal      = "internal"
-	CodeUnknownField  = "unknown_field"
-	CodeInvalidKey    = "invalid_key"
-	CodeInvalidBlob   = "invalid_blob"
-	CodeBlobNotFound  = "blob_not_found"
+	// CodeTaskSuperseded is a retry of a draft whose misses a later prompt
+	// proposal holds.
+	CodeTaskSuperseded = "task_superseded"
+	CodeInternal       = "internal"
+	CodeUnknownField   = "unknown_field"
+	CodeInvalidKey     = "invalid_key"
+	CodeInvalidBlob    = "invalid_blob"
+	CodeBlobNotFound   = "blob_not_found"
 	// CodeBlobBytesMissing is a blob whose row holds and whose bytes are gone,
 	// which the unpaired report also names.
 	CodeBlobBytesMissing = "blob_bytes_missing"

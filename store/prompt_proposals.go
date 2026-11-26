@@ -3,47 +3,38 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 )
 
-// StageMisses drafts a change to a model stage's prompt from the quality
-// gate's misses against a person's word. Its task names a prompt proposal and
-// no item, so it sits on no item's line.
-const StageMisses = "misses"
+// StagePromptProposal drafts a change to a model stage's prompt from the
+// quality gate's misses against a person's word. Its task names a prompt
+// proposal and no item, so it sits on no item's line.
+const StagePromptProposal = "prompt-proposal"
 
 // PromptProposal is one draft of a change to a model stage's prompt, as
-// prompt_proposals holds it. Serve writes the projection the draft reads, and
-// the misses task's run writes the rest, as a model stage writes its output.
+// prompt_proposals holds it. Serve writes the prompt and the projection that
+// the draft reads, and the task's run writes its StageRun, as a model stage
+// writes an item's output.
 type PromptProposal struct {
 	ID string `json:"id"`
-	// Prompt names the stage whose prompt the draft changes, and
-	// PromptVersion the version it changes.
+	// Prompt names the stage whose prompt the draft changes, PromptVersion
+	// the version it changes, and PromptText that version's template, so a
+	// worker of another build drafts against the same text.
 	Prompt        string `json:"prompt"`
 	PromptVersion string `json:"prompt_version"`
+	PromptText    string `json:"prompt_text"`
 	// LabeledAfter and LabeledThrough bound when each miss was labeled: after
-	// the first, which is nil for the first proposal, and at or before the
-	// second.
+	// the first, which is nil where no earlier draft is done, and at or before
+	// the second.
 	LabeledAfter   *string `json:"labeled_after"`
 	LabeledThrough string  `json:"labeled_through"`
 	MissCount      int     `json:"miss_count"`
 	// Misses is the projection that the draft reads, one object per miss.
 	Misses json.RawMessage `json:"misses"`
 	Zone   Zone            `json:"zone"`
-	// Producer and ProducerVersion name the drafting prompt, and are nil
-	// until a run is sent.
-	Producer        *string `json:"producer"`
-	ProducerVersion *string `json:"producer_version"`
-	// State is waiting, done or failed, as an output's is.
-	State         string          `json:"state"`
-	DispatchID    *string         `json:"dispatch_id"`
-	RunID         *string         `json:"run_id"`
-	Model         *string         `json:"model"`
-	Effort        *string         `json:"effort"`
-	AnsweredModel *string         `json:"answered_model"`
-	Tokens        *Tokens         `json:"tokens"`
-	Answer        json.RawMessage `json:"answer"`
-	Error         *string         `json:"error"`
-	CreatedTS     string          `json:"created_ts"`
-	UpdatedTS     string          `json:"updated_ts"`
+	StageRun
+	CreatedTS string `json:"created_ts"`
+	UpdatedTS string `json:"updated_ts"`
 }
 
 // AddPromptProposal writes p as a new proposal waiting on its draft, under a
@@ -52,6 +43,31 @@ func (t *Tx) AddPromptProposal(ctx context.Context, p PromptProposal) (PromptPro
 	p.ID, p.State = randomHex(16), OutputWaiting
 	p.CreatedTS, p.UpdatedTS = t.stamp(), t.stamp()
 	return p, t.put(ctx, table("prompt_proposals"), p)
+}
+
+// keepProposalRun writes run onto the proposal under id that a task drafts.
+func (t *Tx) keepProposalRun(ctx context.Context, id string, run StageRun) error {
+	p, ok, err := t.PromptProposal(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("a task drafts prompt proposal %s, which the store does not hold", id)
+	}
+	p.StageRun = run
+	return t.PutPromptProposal(ctx, p)
+}
+
+// failProposalRun fails the run of the proposal under id for reason, where
+// the task that drafts it ended without a report, and keeps the dispatch that
+// a retry replaces.
+func (t *Tx) failProposalRun(ctx context.Context, id, reason string) error {
+	p, ok, err := t.PromptProposal(ctx, id)
+	if err != nil || !ok || p.State == OutputDone {
+		return err
+	}
+	p.State, p.Error = OutputFailed, &reason
+	return t.PutPromptProposal(ctx, p)
 }
 
 // PutPromptProposal writes p again in place, keeping when it was created.
@@ -78,16 +94,23 @@ func (s *Store) NewestPromptProposal(ctx context.Context) (PromptProposal, bool,
 	return first[PromptProposal](ctx, s.read, table("prompt_proposals"), `1 ORDER BY labeled_through DESC, created_ts DESC`)
 }
 
+// NewestDonePromptProposal reads the done proposal whose misses were labeled
+// latest, and false where no draft is done. Its labeled_through is where the
+// next draft's misses start, so a failed draft's misses roll into the next.
+func (s *Store) NewestDonePromptProposal(ctx context.Context) (PromptProposal, bool, error) {
+	return first[PromptProposal](ctx, s.read, table("prompt_proposals"), `state = ? ORDER BY labeled_through DESC, created_ts DESC`, OutputDone)
+}
+
 // PromptProposals reads every proposal, the one whose misses were labeled
 // latest first.
 func (s *Store) PromptProposals(ctx context.Context) ([]PromptProposal, error) {
 	return readInto[PromptProposal](ctx, s.read, table("prompt_proposals"), `1 ORDER BY labeled_through DESC, created_ts DESC`)
 }
 
-// DraftOutstanding reads the misses task that is queued or leased, and false
-// where none is.
+// DraftOutstanding reads the prompt-proposal task that is queued or leased,
+// and false where none is.
 func (t *Tx) DraftOutstanding(ctx context.Context) (Task, bool, error) {
-	return first[Task](ctx, t.tx, table("tasks"), `stage = ? AND state IN ('queued', 'leased') ORDER BY created_ts`, StageMisses)
+	return first[Task](ctx, t.tx, table("tasks"), `stage = ? AND state IN ('queued', 'leased') ORDER BY created_ts`, StagePromptProposal)
 }
 
 // MarksBetween reads every mark made after after, through through, the

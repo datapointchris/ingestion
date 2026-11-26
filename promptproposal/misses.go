@@ -1,6 +1,6 @@
-// Package misses drafts a change to the quality gate's prompt wherever a
-// person disagreed with the gate. A miss is one done answer of the gate on an
-// item that a person's word went against. The word is a placement from review that
+// Package promptproposal drafts a change to the quality gate's prompt from
+// the gate's misses. A miss is one done answer of the gate on an item that a
+// person's word went against. The word is a placement from review that
 // accuracy counts as disagreeing with the gate's verdict or side. It is also
 // a mark of low-quality on an item that the gate passed, or of read on one
 // that it dropped.
@@ -11,13 +11,15 @@
 // text. Its proposal is therefore owner.
 //
 // serve's Scheduler drafts at each time of its schedule. It projects the
-// misses labeled since the newest proposal. Where it finds any, it writes a
-// prompt_proposals row that holds them, and queues one misses task. A time
-// that finds none drafts nothing. A worker holding a model port runs the task
-// under modelstage's dispatch-once protocol, and serve keeps the run's answer
-// on the row. Nothing here changes a prompt. A person who accepts a proposal
-// changes the prompt's file, and the build that carries it is a new version.
-package misses
+// misses labeled since the newest done proposal, so a failed draft's misses
+// roll into the next. Where it finds any, it writes a prompt_proposals row
+// that holds them and the prompt's text, and queues one prompt-proposal task.
+// Where it finds none, it drafts nothing. A worker holding a model port runs
+// the task under modelstage's dispatch-once protocol, and serve keeps the
+// run's answer on the row. Nothing here changes a prompt. A person who
+// accepts a proposal changes the prompt's file, and the build that carries it
+// is a new version.
+package promptproposal
 
 import (
 	"cmp"
@@ -41,13 +43,12 @@ import (
 )
 
 const (
-	// Capability is the capability of every misses task.
-	Capability = store.StageMisses
-	// Producer names a proposal's drafts, whose version is the misses
-	// prompt's.
-	Producer = "misses"
-	// DefaultSchedule drafts at 06:00 UTC each Monday, where config names no
-	// schedule.
+	// Capability is the capability of every prompt-proposal task.
+	Capability = store.StagePromptProposal
+	// Producer names a proposal's drafts, whose version is the
+	// prompt-proposal prompt's.
+	Producer = "prompt-proposal"
+	// DefaultSchedule is the schedule where config names none.
 	DefaultSchedule = "0 6 * * 1"
 )
 
@@ -154,7 +155,6 @@ func placementMisses(r store.ItemRecords, after, through string) []Miss {
 		return nil
 	}
 	label := placement.Verdict
-	onASide := label == connectors.SidePersonal || label == connectors.SideFleet
 	var out []Miss
 	for _, o := range accuracy.AnswersAt(r.Outputs, store.StageQuality) {
 		a, err := qualitygate.DecodeAnswer(o.Answer)
@@ -162,17 +162,21 @@ func placementMisses(r store.ItemRecords, after, through string) []Miss {
 			continue
 		}
 		var missed []string
-		if accuracy.QualityOutcome(a.Verdict, label) == accuracy.Disagreed {
+		verdict, side := accuracy.Outcomes(a, label)
+		if verdict == accuracy.Disagreed {
 			missed = append(missed, MissedVerdict)
 		}
-		if onASide && accuracy.SideOutcome(a.Side, label) == accuracy.Disagreed {
+		if side == accuracy.Disagreed {
 			missed = append(missed, MissedSide)
 		}
 		if len(missed) == 0 {
 			continue
 		}
 		miss := missOf(r, o, a, LabelPlacement, label, placement.DecidedTS, missed)
-		miss.Destination, miss.Note, miss.ReviewCause = placement.Destination, placement.Note, reviewCause(r.Decisions, placement)
+		miss.Destination, miss.Note = placement.Destination, placement.Note
+		if review, ok := store.ReviewBefore(r.Decisions, placement); ok {
+			miss.ReviewCause = &review.Cause
+		}
 		if placement.Cause != "" {
 			miss.Cause = &placement.Cause
 		}
@@ -209,41 +213,23 @@ func missOf(r store.ItemRecords, o store.Output, a qualitygate.Answer, kind, lab
 	}
 }
 
-// reviewCause is the cause of the newest review that came before placement:
-// the side gate's, else the quality gate's.
-func reviewCause(decisions []store.Decision, placement store.Decision) *string {
-	var side, quality *store.Decision
-	for i, d := range decisions {
-		switch {
-		case d.Verdict != store.VerdictReview:
-		case d.Gate == store.GateSide && d.Sequence < placement.Sequence && (side == nil || d.Sequence > side.Sequence):
-			side = &decisions[i]
-		case d.Gate == store.GateQuality && d.DecidedTS < placement.DecidedTS && (quality == nil || d.Sequence > quality.Sequence):
-			quality = &decisions[i]
-		}
-	}
-	for _, d := range []*store.Decision{side, quality} {
-		if d != nil {
-			return &d.Cause
-		}
-	}
-	return nil
-}
-
-// Draft writes a proposal over the misses labeled since the newest proposal,
-// through through, and queues the task that drafts it. It answers the
+// Draft writes a proposal over the misses labeled since the newest done
+// proposal, through through, and queues the task that drafts it. A failed or
+// unfinished draft's misses therefore roll into the next. It answers the
 // proposal, or why it wrote none: a draft is outstanding, a proposal already
 // covers through, or no miss was labeled.
 func Draft(ctx context.Context, st *store.Store, through time.Time) (store.PromptProposal, string, error) {
 	end := store.Stamp(through)
-	after := ""
 	if newest, ok, err := st.NewestPromptProposal(ctx); err != nil {
 		return store.PromptProposal{}, "", err
-	} else if ok {
-		after = newest.LabeledThrough
-	}
-	if after >= end {
+	} else if ok && newest.LabeledThrough >= end {
 		return store.PromptProposal{}, "a proposal already covers the misses labeled through " + end, nil
+	}
+	after := ""
+	if done, ok, err := st.NewestDonePromptProposal(ctx); err != nil {
+		return store.PromptProposal{}, "", err
+	} else if ok {
+		after = done.LabeledThrough
 	}
 	found, err := Project(ctx, st, after, end)
 	if err != nil {
@@ -267,13 +253,14 @@ func Draft(ctx context.Context, st *store.Store, through time.Time) (store.Promp
 		}
 		if newest, ok, err := tx.NewestPromptProposal(ctx); err != nil {
 			return err
-		} else if ok && newest.LabeledThrough != after {
+		} else if ok && newest.LabeledThrough >= end {
 			why = "another write drafted the misses labeled through " + newest.LabeledThrough
 			return nil
 		}
 		p := store.PromptProposal{
-			Prompt: store.StageQuality, PromptVersion: prompts.Quality.Version, LabeledThrough: end, MissCount: len(found), Misses: misses,
-			Zone: store.Owner,
+			Prompt: store.StageQuality, PromptVersion: prompts.Quality.Version, PromptText: prompts.Quality.Text(),
+			LabeledThrough: end, MissCount: len(found), Misses: misses, Zone: store.Owner,
+			StageRun: store.StageRun{Producer: Producer, ProducerVersion: prompts.PromptProposal.Version},
 		}
 		if after != "" {
 			p.LabeledAfter = &after
@@ -281,7 +268,7 @@ func Draft(ctx context.Context, st *store.Store, through time.Time) (store.Promp
 		if written, err = tx.AddPromptProposal(ctx, p); err != nil {
 			return err
 		}
-		_, err = tx.Enqueue(ctx, store.Task{ProposalID: &written.ID, Stage: store.StageMisses, Capability: Capability})
+		_, err = tx.Enqueue(ctx, store.Task{ProposalID: &written.ID, Stage: store.StagePromptProposal, Capability: Capability})
 		return err
 	})
 	if err != nil || why != "" {
@@ -329,7 +316,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 	for {
 		next, err := s.Pass(ctx)
 		if err != nil && ctx.Err() == nil {
-			s.log.ErrorContext(ctx, "a misses draft's pass failed", "error", err)
+			s.log.ErrorContext(ctx, "a prompt proposal's pass failed", "error", err)
 		}
 		timer := time.NewTimer(min(max(next.Sub(s.store.Now()), time.Second), maxWait))
 		select {
@@ -342,8 +329,10 @@ func (s *Scheduler) Run(ctx context.Context) {
 }
 
 // Pass drafts for the latest time of the schedule that has come since the
-// newest proposal, once, and answers when to pass again. A time that came
-// while the service was down is drafted for on the first pass after.
+// newest proposal, once, and answers when to pass again. Once the store holds
+// a proposal, a time that came while the service was down is drafted for on
+// the first pass after. Before the first proposal, the first time after serve
+// started is the first that drafts, and its window holds every earlier label.
 func (s *Scheduler) Pass(ctx context.Context) (time.Time, error) {
 	now := s.store.Now()
 	next := s.schedule.Next(now)

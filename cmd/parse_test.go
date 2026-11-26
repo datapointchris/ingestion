@@ -29,7 +29,7 @@ import (
 	"github.com/datapointchris/ingestion/connectors"
 	"github.com/datapointchris/ingestion/extract"
 	"github.com/datapointchris/ingestion/landing"
-	"github.com/datapointchris/ingestion/misses"
+	"github.com/datapointchris/ingestion/promptproposal"
 	"github.com/datapointchris/ingestion/redditexport"
 	"github.com/datapointchris/ingestion/route"
 	"github.com/datapointchris/ingestion/schemas"
@@ -102,7 +102,7 @@ func newPipelineOver(t *testing.T, extractors *extract.Registry, after server.Af
 			Store: st, Lander: lander, Scheduler: connectors.NewScheduler(st, lander, log),
 			AfterApply: route.AfterApply(log), Log: log,
 		}),
-		server.ReplayRoutes(st, replayableStages(st, extractors), log), accuracy.Routes(st, log), misses.Routes(st, log)))
+		server.ReplayRoutes(st, replayableStages(st, extractors), log), accuracy.Routes(st, log), promptproposal.Routes(st, log)))
 	t.Cleanup(api.Close)
 	person := provider.Person(t, "ingestion-cli-test", "person")
 	tokenFile, config := filepath.Join(dir, "token.json"), filepath.Join(dir, "config.toml")

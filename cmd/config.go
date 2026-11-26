@@ -83,10 +83,10 @@ type fileConfig struct {
 	// Gates holds what serve schedules for the gates, such as when it drafts
 	// a change to the quality gate's prompt from its misses.
 	Gates struct {
-		Misses struct {
+		Proposals struct {
 			// Schedule is a cron expression, as a connector's schedule reads it.
 			Schedule string `toml:"schedule"`
-		} `toml:"misses"`
+		} `toml:"proposals"`
 	} `toml:"gates"`
 }
 
@@ -104,10 +104,10 @@ type modelConfig struct {
 		// Command is the claude binary, by path or by name on PATH.
 		Command string `toml:"command"`
 	} `toml:"claude-cli"`
-	Contents  stageModel `toml:"contents"`
-	Quality   stageModel `toml:"quality"`
-	ModelRead stageModel `toml:"model-read"`
-	Misses    stageModel `toml:"misses"`
+	Contents       stageModel `toml:"contents"`
+	Quality        stageModel `toml:"quality"`
+	ModelRead      stageModel `toml:"model-read"`
+	PromptProposal stageModel `toml:"prompt-proposal"`
 }
 
 // stageModel is what one model stage asks its run for.

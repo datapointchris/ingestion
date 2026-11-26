@@ -26,10 +26,10 @@ import (
 	"github.com/datapointchris/ingestion/contents"
 	"github.com/datapointchris/ingestion/deliver"
 	"github.com/datapointchris/ingestion/extract"
-	"github.com/datapointchris/ingestion/misses"
 	"github.com/datapointchris/ingestion/modelport"
 	"github.com/datapointchris/ingestion/modelread"
 	"github.com/datapointchris/ingestion/modelstage"
+	"github.com/datapointchris/ingestion/promptproposal"
 	"github.com/datapointchris/ingestion/qualitygate"
 	"github.com/datapointchris/ingestion/scan"
 	"github.com/datapointchris/ingestion/sections"
@@ -47,7 +47,7 @@ const (
 // workerHandlers lists the stage handlers for a worker to run: each
 // extractor's, the structure's where pdf-structure is installed, the scan's
 // where scanner is installed, the contents stage's, the quality gate's, its
-// arm's and the misses draft's where port is open, the model read's where
+// arm's and the prompt proposal's draft where port is open, the model read's where
 // both are, each of
 // deliverers by its name, and each of sourceHandlers, which openSources
 // answers. A stage whose work runs in a worker adds its handler here.
@@ -66,7 +66,7 @@ func workerHandlers(client *worker.Client, deliverers map[string]deliver.Deliver
 		handlers = append(handlers,
 			contents.NewHandler(port, client, modelstage.Settings{Model: models.Contents.Model, Effort: models.Contents.Effort}, log),
 			qualitygate.NewHandler(port, client, quality, log), qualitygate.NewArmHandler(port, client, quality, log),
-			misses.NewHandler(port, modelstage.Settings{Model: models.Misses.Model, Effort: models.Misses.Effort}, log))
+			promptproposal.NewHandler(port, modelstage.Settings{Model: models.PromptProposal.Model, Effort: models.PromptProposal.Effort}, log))
 	}
 	if port != nil && scanner != nil {
 		handlers = append(handlers, modelread.NewHandler(port, client, scanner,
@@ -285,9 +285,9 @@ var workerRunCmd = &cobra.Command{
 		"  [model.model-read] what the model read asks its run for\n" +
 		"  model              the model (default " + modelread.DefaultModel + ")\n" +
 		"  effort             the effort (default " + modelread.DefaultEffort + ")\n" +
-		"  [model.misses]     what a prompt proposal's draft asks its run for\n" +
-		"  model              the model (default " + misses.DefaultModel + ")\n" +
-		"  effort             the effort (default " + misses.DefaultEffort + ")\n" +
+		"  [model.prompt-proposal]  what a prompt proposal's draft asks its run for\n" +
+		"  model              the model (default " + promptproposal.DefaultModel + ")\n" +
+		"  effort             the effort (default " + promptproposal.DefaultEffort + ")\n" +
 		"\n" +
 		"The [model.queue] client needs the scopes " + strings.Join(modelport.QueueScopes, " ") + ".",
 	Example: "  # a worker, as a service client\n" +

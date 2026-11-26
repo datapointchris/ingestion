@@ -74,8 +74,9 @@ var tasksRetryCmd = &cobra.Command{
 		"it. A model stage's task whose run failed then dispatches a new run, under a\n" +
 		"key that names the failed one. A task that is queued or leased is printed as\n" +
 		"it stands, so its run is never sent twice. A task that ended done is refused,\n" +
-		"and `items replay` runs its stage again. tasks list --state failed lists the\n" +
-		"failed tasks, and items show prints why each failed.",
+		"and `items replay` runs its stage again. A failed prompt-proposal task is\n" +
+		"refused once a later proposal reads its misses. tasks list --state failed\n" +
+		"lists the failed tasks, and items show prints why each failed.",
 	Example: "  ingestion tasks list --state failed\n" +
 		"  ingestion tasks retry 3f9a1c0d7e2b48a65c1e09d3b7f2a614",
 	Args: cobra.ExactArgs(1),
@@ -144,7 +145,7 @@ func runTasksRetry(cmd *cobra.Command, args []string) error {
 	var answer server.TaskRetryAnswer
 	raw, err := sendJSON(cmd.Context(), configPath(cmd), api, server.RouteTaskRetries,
 		"/api/v1/tasks/"+url.PathEscape(id)+"/retries", []byte("{}"), &answer)
-	if err := argumentRefusal(err, server.CodeTaskNotFound, server.CodeTaskDone); err != nil {
+	if err := argumentRefusal(err, server.CodeTaskNotFound, server.CodeTaskDone, server.CodeTaskSuperseded); err != nil {
 		return err
 	}
 	w := cmd.OutOrStdout()
