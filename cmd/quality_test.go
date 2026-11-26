@@ -271,19 +271,21 @@ func judged(verdict string, sure float64, side string, sideSure float64) map[str
 	return map[string]any{
 		"genre": "exploratory", "domains": []string{"software"}, "themes": []string{"a theme"}, "quality": 7,
 		"idea": "The " + verdict + " idea in one line.", "verdict": verdict, "verdict_confidence": sure,
-		"side": side, "side_confidence": sideSure,
+		"reason": "The opening decided " + verdict + ".", "side": side, "side_confidence": sideSure,
 	}
 }
 
 // A save that no rule names waits at the quality gate. A worker whose config
 // names no model adapter claims no quality task and starts no call, and the
 // save names the setting it lacks. A worker with the queue adapter sends one
-// dispatch per save under the config's model and effort, and none for the
-// save its rule placed. The connector's first fill holds the rest until it is
-// released, and shows the first run's tokens. The gate holds a good save's
-// confident fleet guess in review, drops a confident junk one softly with its
-// idea, and sends an unsure one to review.
-func TestTheQualityGateJudgesOnlyTheSavesNoRulePlaces(t *testing.T) {
+// dispatch per save under the config's model and effort, the save its rule
+// placed first included, whose placement stands and waits on nothing. The
+// connector's first fill holds the rest until it is released, and shows the
+// first run's tokens. The gate holds a good save's confident fleet guess in
+// review, sends a confident junk one to review as gate-would-drop with its
+// idea and reason, because its family has earned no trust, and sends an
+// unsure one to review.
+func TestTheQualityGateJudgesEverySaveAfterItsRule(t *testing.T) {
 	p := newGatedPipeline(t, mustAbs(t, "../examples/declarations"))
 	stand := newStandInDispatch(t, p.provider)
 	stand.answer = answerBy(map[string]map[string]any{
@@ -308,8 +310,11 @@ func TestTheQualityGateJudgesOnlyTheSavesNoRulePlaces(t *testing.T) {
 		}
 		reasons[w.Reason]++
 	}
-	if !maps.Equal(reasons, map[string]int{server.WaitingUnclaimed: 1, server.WaitingFirstFill: 2}) {
-		t.Errorf("the saves waiting at the gate show %v, want the first unclaimed and the 2 behind it held by the first fill", reasons)
+	if !maps.Equal(reasons, map[string]int{server.WaitingFirstFill: 3}) {
+		t.Errorf("the saves waiting at the gate show %v, want the 3 behind the ruled save held by the first fill", reasons)
+	}
+	if shown := p.shown(t, "reddit/t3_aa1"); shown.Waiting != nil || shown.Item.Phase == "waiting" {
+		t.Errorf("the ruled save is %s and shows waiting %s, want its placement waiting on nothing", shown.Item.Phase, jsonOf(shown.Waiting))
 	}
 
 	gate := p.qualityGate(t, stand.models(t, "sonnet", "high"))
@@ -321,48 +326,53 @@ func TestTheQualityGateJudgesOnlyTheSavesNoRulePlaces(t *testing.T) {
 	if err != nil || json.Unmarshal([]byte(out), &shown) != nil || shown.FirstFill == nil {
 		t.Fatalf("connectors show printed %q, %v", out, err)
 	}
-	if f := shown.FirstFill; f.State != store.FirstFillHeld || f.Held != 2 || f.Tokens[store.StageQuality].CacheWrite != 3400 {
-		t.Errorf("the held first fill shows %s, want 2 held and the first run's tokens at quality", jsonOf(f))
+	if f := shown.FirstFill; f.State != store.FirstFillHeld || f.Held != 3 || f.Tokens[store.StageQuality].CacheWrite != 3400 {
+		t.Errorf("the held first fill shows %s, want 3 held and the first run's tokens at quality", jsonOf(f))
 	}
 	if _, err := runCLI(t, "connectors", "release", "reddit-exports", "--config", p.config); err != nil {
 		t.Fatal(err)
 	}
-	if ran := p.run(t, gate); ran != 2 {
-		t.Fatalf("after the release the gate ran %d tasks, want the 2 it held", ran)
+	if ran := p.run(t, gate); ran != 3 {
+		t.Fatalf("after the release the gate ran %d tasks, want the 3 it held", ran)
 	}
 
 	starts := stand.starts()
-	if len(starts) != 3 || slices.ContainsFunc(starts, func(s dispatchStart) bool {
+	if len(starts) != 4 || slices.ContainsFunc(starts, func(s dispatchStart) bool {
 		return s.Agent != modelport.DefaultAgent || s.Model != "sonnet" || s.Effort != "high"
 	}) {
-		t.Errorf("the stand-in started %s, want 3 %s dispatches on sonnet at high, none for the save its rule placed", jsonOf(starts), modelport.DefaultAgent)
+		t.Errorf("the stand-in started %s, want 4 %s dispatches on sonnet at high, one per save", jsonOf(starts), modelport.DefaultAgent)
 	}
-	if _, side, _ := p.decisions(t, "reddit/t3_aa1"); side.DecidedBy != "rule:cooking-subreddits" {
-		t.Errorf("the Cooking save is %s by %s, want placed by its rule", side.Verdict, side.DecidedBy)
+	if d, side, _ := p.decisions(t, "reddit/t3_aa1"); side.DecidedBy != "rule:cooking-subreddits" ||
+		!slices.ContainsFunc(d, func(v server.DecisionView) bool { return v.Gate == store.GateQuality }) {
+		t.Errorf("the Cooking save holds %s, want its rule's placement beside the gate's answer", jsonOf(d))
 	}
 	if _, side, _ := p.decisions(t, "reddit/t3_bb2"); side.Verdict != route.VerdictReview || !strings.HasPrefix(side.DecidedBy, "model:") ||
 		side.Cause != route.CauseBelowFloor {
 		t.Errorf("the passed save's fleet guess is %s by %s for %s, want review by the model's run for %s", side.Verdict, side.DecidedBy, side.Cause, route.CauseBelowFloor)
 	}
-	if phase := p.phase(t, "reddit/t3_cc3"); phase != "dropped" {
-		t.Errorf("the junk save's phase is %s, want dropped", phase)
+	if phase := p.phase(t, "reddit/t3_cc3"); phase != "review" {
+		t.Errorf("the junk save's phase is %s, want review", phase)
 	}
-	if _, side, _ := p.decisions(t, "reddit/t3_cc3"); side.Cause != route.CauseQualityDrop {
-		t.Errorf("the junk save is %s for %s, want dropped for %s", side.Verdict, side.Cause, route.CauseQualityDrop)
+	if _, side, _ := p.decisions(t, "reddit/t3_cc3"); side.Verdict != route.VerdictReview || side.Cause != route.CauseGateWouldDrop {
+		t.Errorf("the junk save is %s for %s, want review for %s", side.Verdict, side.Cause, route.CauseGateWouldDrop)
 	}
 	if out, err := runCLI(t, "items", "show", "reddit/t3_cc3", "--config", p.config); err != nil ||
-		!strings.Contains(out, `idea "The drop idea in one line."`) {
-		t.Errorf("items show on the dropped save printed %q, %v, want its idea quoted", out, err)
+		!strings.Contains(out, `idea "The drop idea in one line."`) || !strings.Contains(out, `reason "The opening decided drop."`) {
+		t.Errorf("items show on the junk save printed %q, %v, want its idea and reason quoted", out, err)
 	}
-	if c := p.gated(t); !maps.Equal(c.review, map[string]int{store.ReasonQualityReview: 1, string(route.CauseBelowFloor): 1}) {
-		t.Errorf("the review queue holds %v, want the unsure save as quality-review and the fleet guess below-floor", c.review)
+	want := map[string]int{store.ReasonQualityReview: 1, route.CauseBelowFloor: 1, route.CauseGateWouldDrop: 1}
+	if c := p.gated(t); !maps.Equal(c.review, want) {
+		t.Errorf("the review queue holds %v, want the unsure save, the fleet guess and the junk save", c.review)
 	}
 }
 
 // With every dispatch held, a save that a rule places is still parsed,
-// scanned, placed and delivered, while the save that waits on the gate holds
-// no worker slot. connectors list counts it waiting, and items show names the
-// dispatch and the service's note.
+// scanned, placed and delivered while its own dispatch waits, and the save
+// that waits on the gate holds no worker slot. connectors list counts it
+// waiting, and items show names the dispatch and the service's note. A rule
+// that a later set adds places the held save, which is delivered while its
+// dispatch still waits. Once the runs answer, each gate's answer stands beside
+// its rule's placement.
 func TestAHeldDispatchHoldsUpOnlyItsOwnSave(t *testing.T) {
 	p := newGatedPipeline(t, lifeSet(t, withLife))
 	stand := newStandInDispatch(t, p.provider)
@@ -372,11 +382,18 @@ func TestAHeldDispatchHoldsUpOnlyItsOwnSave(t *testing.T) {
 	p.landExports(t, map[string][]byte{"first": redditExport(redditSave("t3_aa1", "Cooking"), redditSave("t3_bb2", "golang"))})
 	p.parse(t, extract.Builtin())
 	p.scanFindingNothing(t)
-	if ran := p.run(t, p.qualityGate(t, stand.models(t, "", "")), p.lifeDeliverer(t, life)); ran != 2 {
-		t.Fatalf("the worker ran %d tasks, want the save's one dispatch and the other's delivery", ran)
+	gate := p.qualityGate(t, stand.models(t, "", ""))
+	if ran := p.run(t, gate, p.lifeDeliverer(t, life)); ran != 2 {
+		t.Fatalf("the worker ran %d tasks, want the ruled save's dispatch and its delivery", ran)
 	}
 	if articles, _ := life.counts(); articles != 1 {
 		t.Errorf("the stand-in life holds %d articles, want the ruled save's", articles)
+	}
+	if _, err := runCLI(t, "connectors", "release", "reddit-exports", "--config", p.config); err != nil {
+		t.Fatal(err)
+	}
+	if ran := p.run(t, gate); ran != 1 {
+		t.Fatalf("after the release the worker ran %d tasks, want the other save's dispatch", ran)
 	}
 	shown := p.shown(t, "reddit/t3_bb2")
 	if w := shown.Waiting; shown.Item.Phase != "waiting" || w == nil || w.Reason != server.WaitingDispatched ||
@@ -391,12 +408,14 @@ func TestAHeldDispatchHoldsUpOnlyItsOwnSave(t *testing.T) {
 	if i := slices.IndexFunc(listed.Connectors, func(c server.ConnectorView) bool { return c.Name == "reddit-exports" }); i < 0 || listed.Connectors[i].Waiting != 1 {
 		t.Errorf("connectors list shows %s, want reddit-exports with 1 waiting", out)
 	}
-	if s := stand.starts(); len(s) != 1 || s[0].Model != qualitygate.DefaultModel || s[0].Effort != qualitygate.DefaultEffort {
-		t.Errorf("the stand-in started %s, want one dispatch on %s at %s", jsonOf(s), qualitygate.DefaultModel, qualitygate.DefaultEffort)
+	if s := stand.starts(); len(s) != 2 || slices.ContainsFunc(s, func(d dispatchStart) bool {
+		return d.Model != qualitygate.DefaultModel || d.Effort != qualitygate.DefaultEffort
+	}) {
+		t.Errorf("the stand-in started %s, want one dispatch per save on %s at %s", jsonOf(s), qualitygate.DefaultModel, qualitygate.DefaultEffort)
 	}
 
-	// A rule that a later set adds places the held save. That withdraws its
-	// quality task, so the save stops waiting at the gate and is delivered.
+	// A rule that a later set adds places the held save, which stops waiting
+	// at the gate and is delivered while its dispatch waits.
 	ruled := lifeSet(t, withLife)
 	rules, err := os.ReadFile(filepath.Join(ruled, connectors.RoutingRulesFile))
 	if err != nil {
@@ -417,6 +436,19 @@ func TestAHeldDispatchHoldsUpOnlyItsOwnSave(t *testing.T) {
 	p.run(t, p.lifeDeliverer(t, life))
 	if shown := p.shown(t, "reddit/t3_bb2"); shown.Item.Phase != "delivered" || shown.Waiting != nil {
 		t.Errorf("once a rule placed the held save it is %s and shows waiting %s, want delivered", shown.Item.Phase, jsonOf(shown.Waiting))
+	}
+
+	stand.set(func(d *standInDispatch) { d.hold = "" })
+	p.advance(time.Minute)
+	if ran := p.run(t, gate); ran != 2 {
+		t.Fatalf("once the runs answered the worker ran %d tasks, want both saves' dispatches followed", ran)
+	}
+	for _, key := range []string{"reddit/t3_aa1", "reddit/t3_bb2"} {
+		d, side, _ := p.decisions(t, key)
+		if !strings.HasPrefix(side.DecidedBy, "rule:") || p.phase(t, key) != "delivered" ||
+			!slices.ContainsFunc(d, func(v server.DecisionView) bool { return v.Gate == store.GateQuality }) {
+			t.Errorf("after the gate answered %s it holds %s, want its rule's placement delivered beside the gate's answer", key, jsonOf(d))
+		}
 	}
 }
 

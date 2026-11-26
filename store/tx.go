@@ -366,6 +366,9 @@ func ReadRows(ctx context.Context, db querier, tab Table, where string, args ...
 			if text, ok := v.(string); ok && tab.IsJSON(name) && json.Valid([]byte(text)) {
 				v = json.RawMessage(text)
 			}
+			if n, ok := v.(int64); ok && tab.IsBool(name) {
+				v = n != 0
+			}
 			row.Values[name] = v
 		}
 		out = append(out, row)

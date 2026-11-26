@@ -18,7 +18,10 @@
     {"$ref": "#/$defs/workers"},
     {"$ref": "#/$defs/cursors"},
     {"$ref": "#/$defs/declarations"},
-    {"$ref": "#/$defs/keyed_requests"}
+    {"$ref": "#/$defs/keyed_requests"},
+    {"$ref": "#/$defs/marks"},
+    {"$ref": "#/$defs/gate_trust"},
+    {"$ref": "#/$defs/gate_trust_decisions"}
   ],
   "$defs": {
     "item_key": {
@@ -237,7 +240,7 @@
         },
         "confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
         "cause": {
-          "description": "What decided. The quality gate writes pass, drop, unsure, or below-drop-floor where it would drop the item below its confidence floor. The side gate writes tags, tags-disagree, rule, guess, below-floor, person-sorts, no-guess, gate-error, quality-drop or quality-review, and the read gate connector or side-default. A person's decision names an aspect, such as subreddit, channel, theme or title, or unstated.",
+          "description": "What decided. The quality gate writes pass, drop, unsure, or below-drop-floor where it would drop the item below its confidence floor. The side gate writes tags, tags-disagree, rule, guess, below-floor, person-sorts, no-guess, gate-error, gate-would-drop where the quality gate dropped the item and a family of it has not earned hiding it, quality-drop where every family hides it, or quality-review, and the read gate connector or side-default. A person's decision names an aspect, such as subreddit, channel, theme or title, or unstated.",
           "type": "string",
           "pattern": "^[a-z][a-z-]{0,63}$"
         },
@@ -364,6 +367,96 @@
         "status": {"description": "The HTTP status the request answered.", "type": "integer"},
         "answer": {"description": "The body the request answered, such as schemas/push.schema.json for a drop."},
         "created_ts": {"$ref": "#/$defs/timestamp"}
+      }
+    },
+    "family": {
+      "description": "A family of the quality gate: one connector under one version of the gate's prompt, answered by one model at one effort, as <connector>@<prompt version>@<model>@<effort>.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*@[^@]+@[^@]+@[^@]+$"
+    },
+    "family_model": {
+      "description": "The model of a family of the quality gate: the model that its runs report answering on, else the model that they asked for, and default where they named none. A new one starts a new family at rung 0.",
+      "type": "string",
+      "minLength": 1
+    },
+    "family_effort": {
+      "description": "The effort that a family's runs asked for, and default where they named none. A new one starts a new family at rung 0.",
+      "type": "string",
+      "minLength": 1
+    },
+    "marks": {
+      "title": "marks, one row per mark a person gave an item, appended",
+      "description": "ingestion.record.id is <item key>/<sequence>. low-quality says the item held nothing worth keeping, and read that it was read and gave what was wanted. Each row keeps the quality gate's newest decision on the item when it was made, and whether the mark agreed with it. A mark holds no outsider text.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["item_key", "sequence", "mark", "decided_by", "agreement", "families", "marked_ts"],
+      "properties": {
+        "item_key": {"$ref": "#/$defs/item_key"},
+        "sequence": {"description": "The mark's place among the item's marks. The newest is the person's word now.", "type": "integer", "minimum": 1},
+        "mark": {"enum": ["low-quality", "read"]},
+        "decided_by": {"description": "person:<login>, whether the person's own token sent it or a service sent it naming them, and service:<client id> where a service holding ingestion.marks.write named nobody. Each counts as a person's word.", "type": "string", "pattern": "^(person|service):.+$"},
+        "client_id": {"description": "The client that sent the mark, such as a service sending it for a person.", "type": ["string", "null"]},
+        "gate_verdict": {"description": "The verdict of the quality gate's newest decision on the item when it was marked, and null where the gate had decided nothing. A book's chapter reads its book's.", "enum": ["pass", "drop", "review", null]},
+        "gate_decided_by": {"description": "model:<run id> of that decision.", "type": ["string", "null"]},
+        "prompt_version": {"description": "The version of the gate's prompt that answered that decision.", "type": ["string", "null"]},
+        "agreement": {"description": "low-quality agrees with a drop and disagrees with a pass, and read the other way round. A review, or no decision, is neither.", "enum": ["agreed", "disagreed", "neither"]},
+        "families": {"description": "Each family that the mark counted on: one per connector that sighted the item, under the decision's prompt version. Empty where the mark was neither, or agreed with a pass, which shows its item whatever a family's standing.", "type": "array", "items": {"$ref": "#/$defs/family"}},
+        "marked_ts": {"$ref": "#/$defs/timestamp"}
+      }
+    },
+    "gate_trust": {
+      "title": "gate_trust, one row per family of the quality gate",
+      "description": "ingestion.record.id is the family. The row caches the standing that earnedtrust reads from the family's gate_trust_decisions and its promotion. Each write ships a version, so the rows folded on version are the family's climb. A promoted family shows share of the gate's drops, picked by a seeded draw over the family and the gate's answer, and drops the rest with cause gate. A family on rung 0 shows every drop as gate-would-drop.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "family", "connector", "prompt_version", "model", "effort", "rung", "run", "straight_run", "share", "threshold", "first_share", "asks_promotion",
+        "last_change", "created_ts", "updated_ts"
+      ],
+      "properties": {
+        "family": {"$ref": "#/$defs/family"},
+        "connector": {"type": "string"},
+        "prompt_version": {"description": "The version of the quality gate's prompt. A new one starts a new family at rung 0.", "type": "string"},
+        "model": {"$ref": "#/$defs/family_model"},
+        "effort": {"$ref": "#/$defs/family_effort"},
+        "rung": {"description": "0 while every drop shows, 1 once promoted and earned, and higher as straight runs lower the share.", "type": "integer", "minimum": 0},
+        "run": {"description": "The run of a person's agreements with the gate's drops on this rung.", "type": "integer", "minimum": 0},
+        "straight_run": {"description": "The run of a person's agreements with the gate's drops since the last disagreement, across rungs.", "type": "integer", "minimum": 0},
+        "share": {"description": "The share of the gate's drops that the family shows, 1 on rung 0.", "type": "number", "minimum": 0, "maximum": 1},
+        "threshold": {"description": "The straight run that earns asking for a promotion, and that climbs each rung above 1.", "type": "integer", "minimum": 1},
+        "first_share": {"description": "The share of drops that rung 1 shows, where a promotion starts the family.", "type": "number", "minimum": 0, "maximum": 1},
+        "asks_promotion": {"description": "True on a family that nobody promoted whose straight run reached threshold, which earns asking a person to promote it.", "type": "boolean"},
+        "promoted_by": {"description": "person:<login> who promoted the family, and null before.", "type": ["string", "null"]},
+        "promoted_client_id": {"description": "The client that sent the promotion, such as a service sending it under the person's login.", "type": ["string", "null"]},
+        "promoted_ts": {"anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
+        "last_change": {
+          "description": "What moved the row last: the gate's first answer under the family, a mark, a person's placement on a destination of an item whose drop the gate showed or hid, a promotion, or a release whose rule reads the family's decisions to another standing.",
+          "enum": ["gate-answer", "mark", "placement", "promotion", "rule"]
+        },
+        "last_item_key": {"description": "The item that the last change moved on, and null for a promotion or a rule.", "anyOf": [{"$ref": "#/$defs/item_key"}, {"type": "null"}]},
+        "created_ts": {"$ref": "#/$defs/timestamp"},
+        "updated_ts": {"$ref": "#/$defs/timestamp"}
+      }
+    },
+    "gate_trust_decisions": {
+      "title": "gate_trust_decisions, one row per person's word that counts on a family's ladder, appended",
+      "description": "ingestion.record.id is <family>/<sequence>. A family's rows, in sequence, are what earnedtrust reads its standing from: a mark that agrees with the gate's drop, a mark that disagrees with its answer, and a placement on a destination of an item whose drop the gate showed or hid. A mark that agrees with a pass writes none. A row holds no outsider text.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["family", "model", "effort", "sequence", "item_key", "kind", "agreement", "promoted", "decided_by", "gate_decided_by", "decided_ts"],
+      "properties": {
+        "family": {"$ref": "#/$defs/family"},
+        "model": {"$ref": "#/$defs/family_model"},
+        "effort": {"$ref": "#/$defs/family_effort"},
+        "sequence": {"description": "The row's place among the family's decisions.", "type": "integer", "minimum": 1},
+        "item_key": {"$ref": "#/$defs/item_key"},
+        "kind": {"description": "mark, or placement where a person placed on a destination an item whose drop the gate showed or hid.", "enum": ["mark", "placement"]},
+        "agreement": {"enum": ["agreed", "disagreed"]},
+        "promoted": {"description": "True where the family was promoted when the gate answered the item, so an agreement climbs past the promotion. An agreement on a drop answered before it counts toward the promotion alone.", "type": "boolean"},
+        "decided_by": {"description": "person:<login>, or service:<client id> for a service's mark that named nobody.", "type": "string", "pattern": "^(person|service):.+$"},
+        "client_id": {"description": "The client that sent the word.", "type": ["string", "null"]},
+        "gate_decided_by": {"description": "model:<run id> of the gate's decision that the word judged.", "type": "string"},
+        "decided_ts": {"$ref": "#/$defs/timestamp"}
       }
     }
   }

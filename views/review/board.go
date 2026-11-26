@@ -133,7 +133,7 @@ func (b *Board) readQueue(ctx context.Context) (held, string, error) {
 	for i, it := range answer.Items {
 		decoded := item{ReviewItem: it}
 		if len(it.QualityAnswer) > 0 && string(it.QualityAnswer) != "null" {
-			if a, err := qualitygate.ReadAnswer(it.QualityAnswer); err != nil {
+			if a, err := qualitygate.DecodeAnswer(it.QualityAnswer); err != nil {
 				decoded.answerFault = err.Error()
 			} else {
 				decoded.answer = &a

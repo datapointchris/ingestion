@@ -37,6 +37,8 @@ github.com/clipperhouse/uax29/v2 v2.7.0/go.mod h1:EFJ2TJMRUaplDxHKj1qAEhCtQPW2tJ
 github.com/cpuguy83/go-md2man/v2 v2.0.6/go.mod h1:oOW0eioCTA6cOiMLiUPZOpcVxMig6NIQQ7OS05n1F4g=
 github.com/danieljoos/wincred v1.2.3 h1:v7dZC2x32Ut3nEfRH+vhoZGvN72+dQ/snVXo/vMFLdQ=
 github.com/danieljoos/wincred v1.2.3/go.mod h1:6qqX0WNrS4RzPZ1tnroDzq9kY3fu1KwE7MRLQK4X0bs=
+github.com/datapointchris/earnedtrust v0.1.0 h1:6Z/YIIsHwK8qCAzqo6cdhPnZ1SARQk5F1nWn/7l8yZg=
+github.com/datapointchris/earnedtrust v0.1.0/go.mod h1:ScMb0hQsY94pYQjhtjF45+cY6qqDFT9RPkVAUPxKors=
 github.com/datapointchris/goapiauth v0.3.0 h1:tmwh73fwdm7rSrcMfwKK5K9BbRAwuLBkucIcg+AzOTw=
 github.com/datapointchris/goapiauth v0.3.0/go.mod h1:BS/rlRrW5c/j0N6GEV1vyD43E7JoHXbXgH4wZhaEryc=
 github.com/datapointchris/goclikit v0.7.0 h1:xpgw5ti3LiT1/aQOC3RCTCCmnwwecIIo145LzUPYrdM=

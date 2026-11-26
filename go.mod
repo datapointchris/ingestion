@@ -7,6 +7,7 @@ toolchain go1.26.11
 require (
 	charm.land/bubbletea/v2 v2.1.3
 	github.com/BurntSushi/toml v1.6.0
+	github.com/datapointchris/earnedtrust v0.1.0
 	github.com/datapointchris/goapiauth v0.3.0
 	github.com/datapointchris/goclikit v0.7.0
 	github.com/datapointchris/goclilogin v0.9.2

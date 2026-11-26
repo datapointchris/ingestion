@@ -67,6 +67,10 @@ var (
 	RouteReviewPlace    = Route{"POST /api/v1/review/{key}/place", ScopeReviewPlace, RepeatByContent}
 	RouteReviewDrop     = Route{"POST /api/v1/review/{key}/drop", ScopeReviewPlace, RepeatByContent}
 	RouteGateAgreement  = Route{"GET /api/v1/gates/agreement", ScopeItemsRead, RepeatRead}
+	RouteItemMarks      = Route{"POST /api/v1/items/{key}/marks", ScopeMarksWrite, RepeatByContent}
+	RouteGateTrust      = Route{"GET /api/v1/gates/trust", ScopeItemsRead, RepeatRead}
+	// RouteGateTrustPromote's family is <connector>@<prompt version>@<model>@<effort>.
+	RouteGateTrustPromote = Route{"POST /api/v1/gates/trust/{family}/promote", ScopeTrustPromote, RepeatByContent}
 )
 
 // Handle serves route with h. A service reaches it only while its token

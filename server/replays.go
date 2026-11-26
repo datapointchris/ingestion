@@ -285,11 +285,11 @@ func replayID(caller goapiauth.Identity, idempotencyKey string) string {
 func requester(caller goapiauth.Identity) string {
 	switch {
 	case caller.Service:
-		return "service:" + caller.ClientID
+		return store.DecidedByService(caller.ClientID)
 	case caller.Username != "":
-		return "person:" + caller.Username
+		return store.DecidedByPerson(caller.Username)
 	case caller.Subject != "":
-		return "person:" + caller.Subject
+		return store.DecidedByPerson(caller.Subject)
 	}
-	return "person:" + caller.ClientID
+	return store.DecidedByPerson(caller.ClientID)
 }
