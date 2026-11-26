@@ -35,7 +35,8 @@ ARTIFACTS = "/usr/local/share/ingestion/docling-models"
 
 # Each convert reads this many pages, and each span's lines are written once it
 # ends. Docling's memory grows with a span's pages. A 145 MB, 620-page PDF
-# peaked at 3.5 GiB in spans of 10 pages, and at 6.3 GiB in spans of 50. A
+# peaked at 3.5 GiB in spans of 10 pages, and at 6.3 GiB in spans of 50, under
+# `/usr/bin/time -v pdf-docling < <the PDF>`. A
 # paragraph or a hyphenated word across a span's last page break stays split
 # there, as pdf-text splits it at every page break.
 SPAN_PAGES = 10
@@ -77,8 +78,18 @@ def main() -> int:
         except Exception as error:  # Docling raises several types for a page it cannot read.
             print(f"pdf-docling: Docling could not convert pages {first} to {last} ({type(error).__name__})", file=sys.stderr)
             return 1
-        if result.status not in (ConversionStatus.SUCCESS, ConversionStatus.PARTIAL_SUCCESS):
-            print(f"pdf-docling: Docling's convert of pages {first} to {last} ended {result.status.value}", file=sys.stderr)
+        # A partial convert writes each page it lost as an empty one, which reads
+        # as a blank page, so only a whole convert is kept. An error's message
+        # may quote the document, so only its page and category are named.
+        if result.status != ConversionStatus.SUCCESS:
+            lost = "; ".join(
+                f"page {e.page_no if e.page_no is not None else '?'} in {e.component_type.value} ({e.category.value})"
+                for e in result.errors
+            )
+            print(
+                f"pdf-docling: Docling's convert of pages {first} to {last} ended {result.status.value}: {lost or 'no error named'}",
+                file=sys.stderr,
+            )
             return 1
         for number in range(first, last + 1):
             text = result.document.export_to_markdown(page_no=number, escape_underscores=False, escape_html=False)

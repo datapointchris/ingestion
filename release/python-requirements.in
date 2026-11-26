@@ -7,9 +7,10 @@
 # uses, so it stays on 1.x.
 pymupdf<2
 
-# pdf-docling's Docling: the PDF pipeline with its layout and table models and
-# no OCR, which the full docling package adds with office formats. The table
-# model imports OpenCV without declaring it, so its extra names it.
+# pdf-docling's Docling: the slim package's PDF pipeline with its layout and
+# table models. The full docling package adds an OCR engine and office formats,
+# which pdf-docling never runs. The table model imports OpenCV without
+# declaring it, so its extra names it.
 docling-slim[convert-core,format-pdf,models-local]
 docling-ibm-models[opencv-python-headless]
 
