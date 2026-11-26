@@ -2,14 +2,16 @@
 // after_landing delete has serve queue a delete task in the write that lands
 // each item, so the source lets go of what ingestion now holds, as a message
 // queue's consumer acknowledges a message once it is stored. A source that
-// removes items registers its source's name from its own init, so a set may
-// declare after_landing delete on its connectors. A worker runs the source's
-// deleter through Handler, and a failed delete tries again with backoff until
-// it succeeds.
+// removes items registers its deleter from its own init, so a set may declare
+// after_landing delete on its connectors, and a worker opens the deleter from
+// its [source.<name>] table. A worker runs the deleter through Handler, and a
+// failed delete tries again with backoff.
 package deletion
 
 import (
 	"context"
+	"net/http"
+	"slices"
 	"time"
 
 	"github.com/datapointchris/ingestion/connectors"
@@ -18,13 +20,44 @@ import (
 	"github.com/datapointchris/ingestion/worker"
 )
 
-// Register records that this build carries a deleter for source, so a poll
-// connector of the source may declare after_landing delete.
-func Register(source string) { connectors.RegisterDeleter(source) }
+// Registration is one source's deleter as this build carries it.
+type Registration struct {
+	// Source names where the deleter removes items. It is the suffix of the
+	// delete tasks' capability, and the table's name under [source] in a
+	// worker's config.
+	Source string
+	// Scopes is what the source's service client asks its token for.
+	Scopes []string
+	// Open is the deleter that reaches the source at api through client,
+	// which carries the service client's token.
+	Open func(api string, client *http.Client) Deleter
+}
 
-// Capability is the capability of source's delete tasks, which a worker
-// running its deleter claims.
-func Capability(source string) string { return store.StageDelete + ":" + source }
+var registered = map[string]Registration{}
+
+// Register records r, and records its source with
+// connectors.RegisterDeleter, so each source whose connectors a set lets
+// delete is one whose deleter a worker can open.
+func Register(r Registration) {
+	connectors.RegisterDeleter(r.Source)
+	registered[r.Source] = r
+}
+
+// Lookup is the deleter registered for source, and false where none is.
+func Lookup(source string) (Registration, bool) {
+	r, ok := registered[source]
+	return r, ok
+}
+
+// Sources names, in order, each source whose deleter this build registers.
+func Sources() []string {
+	sources := make([]string, 0, len(registered))
+	for source := range registered {
+		sources = append(sources, source)
+	}
+	slices.Sort(sources)
+	return sources
+}
 
 // Sighting is one connector's sighting of a landed item, which a deleter
 // removes from that connector's source.
@@ -72,7 +105,7 @@ type handler struct {
 	deleter Deleter
 }
 
-func (h handler) Capability() string { return Capability(h.source) }
+func (h handler) Capability() string { return store.DeleteCapability(h.source) }
 
 // Run removes the task's item from its sighting's source. A delete that
 // leaves the item at the source tries again, after the wait the source asked

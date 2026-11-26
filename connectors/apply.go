@@ -45,7 +45,10 @@ func commitOrNone(c *string) string {
 // answers Unchanged whatever it replaces, so a retry lands nothing twice. Any
 // other apply whose replaces is not the commit in force is a MovedError. An
 // invalid set is an InvalidError. Either writes nothing. A connector the set
-// drops keeps its cursor, and the scheduler no longer runs it. roots names the
+// drops keeps its cursor, and the scheduler does not run it. A connector that
+// the set declares other than once loses its cursor's finished time, so a
+// backfill declared again on a schedule reads stale and overdue as any poll
+// does. roots names the
 // [serve.homes] roots a folder may read. after, where it is not nil, runs in
 // the same write once the set is kept, and its error writes nothing.
 func Apply(ctx context.Context, st *store.Store, set Set, commit string, replaces *string, by string, roots []string,
@@ -90,11 +93,15 @@ func Apply(ctx context.Context, st *store.Store, set Set, commit string, replace
 			if !held {
 				cur = store.Cursor{Connector: c.Name, FirstFill: store.FirstFillNone, CreatedTS: store.Stamp(tx.Now())}
 			}
+			unfinished := cur.FinishedTS != nil && !c.Once()
+			if unfinished {
+				cur.FinishedTS = nil
+			}
 			due, err := NextDue(c, cur)
 			if err != nil {
 				return err
 			}
-			if held && cur.DueAt == store.Stamp(due) && sameStamp(cur.StaleAt, StaleAt(c, cur)) {
+			if held && !unfinished && cur.DueAt == store.Stamp(due) && sameStamp(cur.StaleAt, StaleAt(c, cur)) {
 				continue
 			}
 			cur.DueAt = store.Stamp(due)

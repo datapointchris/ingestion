@@ -1,6 +1,7 @@
 package server
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -277,8 +278,10 @@ func (o ReportOutput) output(task store.Task) store.Output {
 // and the task's error, which can quote outsider text, and says in has_error
 // whether one is kept.
 type TaskView struct {
-	ID             string  `json:"id"`
-	ItemKey        *string `json:"item_key"`
+	ID      string  `json:"id"`
+	ItemKey *string `json:"item_key"`
+	// Connector names a poll's connector, and the connector whose sighting a
+	// delete removes from its source.
 	Connector      *string `json:"connector"`
 	Destination    *string `json:"destination"`
 	Model          *string `json:"model"`
@@ -365,16 +368,35 @@ func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	var applied *connectors.Set
 	tasks, err := h.store.Claim(r.Context(), store.Claim{
 		Worker: store.Worker{ID: body.WorkerID, Capabilities: body.Capabilities, Version: body.Version, StartedTS: body.StartedTS},
 		Max:    body.Max, MaxByCapability: body.MaxByCapability, Lease: lease,
+		Admit: func(ctx context.Context, tx *store.Tx, task store.Task) (string, error) {
+			if task.Stage != store.StagePoll && task.Stage != store.StageDelete {
+				return "", nil
+			}
+			if applied == nil {
+				set, err := connectors.AppliedSet(ctx, tx)
+				if err != nil {
+					return "", err
+				}
+				applied = &set
+			}
+			return connectors.Unwanted(*applied, task), nil
+		},
+		Lapsed: func(ctx context.Context, tx *store.Tx, task store.Task, reason string) error {
+			if task.Stage != store.StagePoll || task.Connector == nil {
+				return nil
+			}
+			return connectors.PollFailed(ctx, tx, *task.Connector, "the poll failed: "+reason)
+		},
 	})
 	if err != nil {
 		h.internal(w, r, "claim tasks", err)
 		return
 	}
 	answer := ClaimAnswer{Tasks: []LeasedTask{}}
-	var set *connectors.Set
 	for _, t := range tasks {
 		leased := LeasedTask{
 			ID: t.ID, ItemKey: t.ItemKey, Connector: t.Connector, Stage: t.Stage, Capability: t.Capability, Attempts: t.Attempts,
@@ -401,15 +423,7 @@ func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
 			if t.Cursor != nil {
 				leased.Cursor = t.Cursor.Position
 			}
-			if set == nil {
-				applied, err := connectors.AppliedSet(r.Context(), h.store)
-				if err != nil {
-					h.internal(w, r, "read the set in force", err)
-					return
-				}
-				set = &applied
-			}
-			if c, ok := set.Connector(*t.Connector); ok {
+			if c, ok := applied.Connector(*t.Connector); ok {
 				if leased.Declaration, err = json.Marshal(c); err != nil {
 					h.internal(w, r, "write a connector's declaration", err)
 					return
@@ -460,7 +474,7 @@ func (h taskHandlers) report(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var polled connectors.PollLanded
-	task, err := h.store.Report(r.Context(), r.PathValue("id"), body.Token, outcome, func(tx *store.Tx, task store.Task) error {
+	task, err := h.store.Report(r.Context(), r.PathValue("id"), body.Token, outcome, func(tx *store.Tx, task store.Task, ended *store.Outcome) error {
 		if task.ItemKey == nil && len(body.Outputs) > 0 {
 			return errOutputsWithoutItem
 		}
@@ -471,6 +485,9 @@ func (h taskHandlers) report(w http.ResponseWriter, r *http.Request) {
 			var err error
 			if polled, err = h.endPoll(r.Context(), tx, *task.Connector, outcome, body); err != nil {
 				return err
+			}
+			if polled.Failure != "" {
+				ended.State, ended.Error = store.TaskFailed, &polled.Failure
 			}
 		}
 		for _, o := range body.Outputs {
@@ -498,14 +515,16 @@ func (h taskHandlers) report(w http.ResponseWriter, r *http.Request) {
 	}
 	h.log.Info("a task ended", "task", task.ID, "item", text(task.ItemKey), "connector", text(task.Connector), "stage", task.Stage,
 		"state", task.State, "outputs", len(body.Outputs), "arrivals", polled.Arrivals, "items_added", polled.Items,
-		"sightings_added", polled.Sightings, "deletes_queued", polled.Deletes)
+		"sightings_added", polled.Sightings, "deletes_queued", polled.Deletes, "arrivals_refused", polled.Refused)
 	JSON(w, http.StatusOK, viewOf(task, h.store.Now()))
 }
 
 // endPoll writes what a poll's report carries to its connector in tx: each
-// arrival landed and its cursor moved where the poll ended done, and the
-// failure kept where it ended failed. A poll sent back to try again changes
-// nothing.
+// arrival that can land landed, and the cursor moved where every one did,
+// where the poll ended done, and the failure kept where it ended failed. A
+// poll sent back to try again changes nothing. Where any arrival could not
+// land, or the set in force dropped the connector, it answers why the poll
+// fails in Failure.
 func (h taskHandlers) endPoll(ctx context.Context, tx *store.Tx, connector string, outcome store.Outcome, body ReportRequest) (connectors.PollLanded, error) {
 	switch outcome.State {
 	case store.TaskFailed:
@@ -515,18 +534,21 @@ func (h taskHandlers) endPoll(ctx context.Context, tx *store.Tx, connector strin
 		}
 		return connectors.PollLanded{}, connectors.PollFailed(ctx, tx, connector, reason)
 	case store.TaskDone:
-		arrivals := make([]landing.Arrival, 0, len(body.Arrivals))
+		arrivals := make([]connectors.PollArrival, len(body.Arrivals))
 		for i, a := range body.Arrivals {
-			arrival, err := a.arrival()
-			if err != nil {
-				return connectors.PollLanded{}, fmt.Errorf("arrival %d: %w", i, err)
-			}
-			arrivals = append(arrivals, arrival)
+			arrivals[i].Arrival, arrivals[i].Refused = a.arrival()
 		}
 		if h.lander == nil && len(arrivals) > 0 {
 			return connectors.PollLanded{}, errors.New("these routes hold no lander, so a poll's arrivals cannot land")
 		}
-		return connectors.LandPoll(ctx, tx, h.lander, connector, arrivals, body.Cursor)
+		landed, err := connectors.LandPoll(ctx, tx, h.lander, connector, arrivals, body.Cursor)
+		if errors.Is(err, connectors.ErrNotDeclared) {
+			return connectors.PollLanded{
+				Arrivals: len(arrivals), Refused: len(arrivals),
+				Failure: fmt.Sprintf("%v, so nothing its poll found landed", err),
+			}, nil
+		}
+		return landed, err
 	}
 	return connectors.PollLanded{}, nil
 }
@@ -655,7 +677,8 @@ func (h taskHandlers) list(w http.ResponseWriter, r *http.Request) {
 
 func viewOf(t store.Task, now time.Time) TaskView {
 	return TaskView{
-		ID: t.ID, ItemKey: t.ItemKey, Connector: t.Connector, Destination: t.Destination, Model: t.Model, Stage: t.Stage, Capability: t.Capability,
+		ID: t.ID, ItemKey: t.ItemKey, Connector: cmp.Or(t.Connector, t.SightingConnector), Destination: t.Destination, Model: t.Model,
+		Stage: t.Stage, Capability: t.Capability,
 		State: t.State, HeldBy: t.HeldBy, Lapsed: t.Lapsed(now),
 		LeaseHolder: t.LeaseHolder, LeaseExpiresTS: t.LeaseExpiresTS, Attempts: t.Attempts, HasError: t.Error != nil,
 		NotBeforeTS: t.NotBeforeTS, CreatedTS: t.CreatedTS, UpdatedTS: t.UpdatedTS,
@@ -681,10 +704,8 @@ func (h taskHandlers) leaseRefused(w http.ResponseWriter, r *http.Request, err e
 		Refuse(w, http.StatusUnprocessableEntity, CodeInvalidBody, "task %s delivers nothing, so it reports no delivery", r.PathValue("id"))
 	case errors.Is(err, errBadDelivery):
 		Refuse(w, http.StatusUnprocessableEntity, CodeInvalidBody, "%v", err)
-	case errors.Is(err, errArrivalsOutsideDonePoll), errors.Is(err, landing.ErrInvalidArrival):
+	case errors.Is(err, errArrivalsOutsideDonePoll):
 		Refuse(w, http.StatusUnprocessableEntity, CodeInvalidBody, "task %s: %v", r.PathValue("id"), err)
-	case errors.Is(err, connectors.ErrNotDeclared):
-		Refuse(w, http.StatusConflict, CodeConnectorNotFound, "%v, so what its poll found has no zone or tags to land under", err)
 	case errors.Is(err, store.ErrUnitsOutsideParse), errors.Is(err, store.ErrUnitsOutOfOrder):
 		Refuse(w, http.StatusUnprocessableEntity, CodeInvalidBody, "%v", err)
 	default:

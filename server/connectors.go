@@ -387,15 +387,23 @@ func (h connectorHandlers) view(w http.ResponseWriter, r *http.Request, c connec
 	if tags == nil {
 		tags = []string{}
 	}
-	since, overdue := connectors.OverdueSince(cur, h.cfg.Store.Now())
+	since, overdue := connectors.OverdueSince(c, cur, h.cfg.Store.Now())
 	return ConnectorView{
 		Name: c.Name, Mode: c.Mode, Zone: c.Zone, Source: c.Source, Tags: tags, AppliedCommit: commit,
 		LastRunTS: cur.LastRunTS, LastDeliveryTS: cur.LastDeliveryTS,
 		LastError: cur.LastError, LastErrorTS: cur.LastErrorTS, Failures: cur.Failures,
 		Items: n.Items, Waiting: n.Waiting, Review: n.Review, Failed: n.Failed,
 		Schedule: optional(c.Schedule), DueInterval: optional(c.DueInterval), Freshness: optional(c.Freshness),
-		DueAt: cur.DueAt, Overdue: overdue, OverdueSince: optional(since), FinishedTS: cur.FinishedTS,
+		DueAt: cur.DueAt, Overdue: overdue, OverdueSince: optional(since), FinishedTS: finishedTS(c, cur),
 	}, true
+}
+
+// finishedTS is when c finished, and nil where it has not.
+func finishedTS(c connectors.Connector, cur store.Cursor) *string {
+	if !connectors.Finished(c, cur) {
+		return nil
+	}
+	return cur.FinishedTS
 }
 
 // run makes a poll connector's task now, or makes a folder connector due now

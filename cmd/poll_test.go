@@ -28,7 +28,7 @@ const (
 	videoMediaType = "application/x-youtube-video"
 )
 
-func init() { deletion.Register(videoSource) }
+func init() { deletion.Register(deletion.Registration{Source: videoSource}) }
 
 // videoSet is a declaration set of three connectors of videoSource: a capture
 // that deletes each landed video from its source, a backfill polled once, and
@@ -217,7 +217,7 @@ func TestAPollLandsEachVideoOnceUnderItsConnectorAndDeletesItFromTheSource(t *te
 		}
 		return out
 	}
-	if d := deletes(); len(d) != 2 || d[0].Capability != deletion.Capability(videoSource) {
+	if d := deletes(); len(d) != 2 || d[0].Capability != store.DeleteCapability(videoSource) {
 		t.Fatalf("two polls of two videos queued deletes %s, want one per video", jsonOf(d))
 	}
 
@@ -236,18 +236,19 @@ func TestAPollLandsEachVideoOnceUnderItsConnectorAndDeletesItFromTheSource(t *te
 	}
 }
 
-// A connector scheduled once polls at once on its first apply. A poll that
-// fails is kept on its cursor and runs again after the backoff, and the first
-// poll that ends done finishes the connector, which the scheduler never polls
-// again. connectors list reads when it finished.
-func TestAOnceConnectorPollsUntilAPollEndsDone(t *testing.T) {
+// A connector scheduled once polls at once on its first apply. A done poll
+// whose report holds an arrival that cannot land lands the rest, fails, and
+// keeps its cursor and its failure. A poll whose worker fails counts one more
+// failure, and each waits out a longer backoff. The first poll that lands
+// everything it found finishes the connector, which the scheduler never polls
+// again, and which connectors list reads as finished and not overdue.
+func TestAOnceConnectorPollsUntilAPollLandsAllItFound(t *testing.T) {
 	ctx := t.Context()
 	p := newVideoPipeline(t)
 	scheduler := connectors.NewScheduler(p.st, p.lander, quiet)
-	poller := &videoPoller{
-		finds: map[string][]server.ReportArrival{"video-backfill": {video("testvideo03", 5)}},
-		fail:  map[string]string{"video-backfill": "the source did not answer"},
-	}
+	misnamed := video("testvideo04", 9)
+	misnamed.Metrics = map[string]int64{"viewCount": 9}
+	poller := &videoPoller{finds: map[string][]server.ReportArrival{"video-backfill": {video("testvideo03", 5), misnamed}}}
 	pass := func() {
 		t.Helper()
 		if _, err := scheduler.Pass(ctx); err != nil {
@@ -260,26 +261,50 @@ func TestAOnceConnectorPollsUntilAPollEndsDone(t *testing.T) {
 	}
 
 	pass()
-	if cur, _, _ := p.st.Cursor(ctx, "video-backfill"); backfills() != 1 || cur.Failures != 1 || cur.FinishedTS != nil {
-		t.Fatalf("after a failed poll the backfill made %d polls and its cursor is %s, want 1 poll and its failure kept", backfills(), jsonOf(cur))
+	cur, _, _ := p.st.Cursor(ctx, "video-backfill")
+	if backfills() != 1 || cur.Failures != 1 || cur.LastError == nil || !strings.HasPrefix(*cur.LastError, "1 of 2 arrivals could not land") ||
+		cur.FinishedTS != nil || p.count(t, `SELECT count(*) FROM items WHERE key = 'youtube/testvideo03'`) != 1 {
+		t.Fatalf("after a report with one bad arrival the backfill made %d polls and its cursor is %s, want the good video landed and one failure kept",
+			backfills(), jsonOf(cur))
 	}
+	if tasks := p.tasks(t); tasks[len(tasks)-1].State != store.TaskFailed {
+		t.Errorf("the poll with one bad arrival ended %s, want failed", tasks[len(tasks)-1].State)
+	}
+	poller.finds["video-backfill"] = []server.ReportArrival{video("testvideo03", 6)}
+	poller.fail = map[string]string{"video-backfill": "the source did not answer"}
 	pass()
 	if backfills() != 1 {
 		t.Errorf("the backfill polled again before its backoff, %d polls", backfills())
 	}
 	p.advance(6 * time.Minute)
 	pass()
-	if cur, _, _ := p.st.Cursor(ctx, "video-backfill"); backfills() != 2 || cur.Failures != 0 || cur.FinishedTS == nil {
-		t.Fatalf("after its backoff the backfill made %d polls and its cursor is %s, want a second poll that finished it", backfills(), jsonOf(cur))
+	p.advance(6 * time.Minute)
+	pass()
+	if cur, _, _ := p.st.Cursor(ctx, "video-backfill"); backfills() != 2 || cur.Failures != 2 {
+		t.Fatalf("a failed poll after the first made %d polls in all and left the cursor %s, want 2 polls, 2 failures and a longer backoff",
+			backfills(), jsonOf(cur))
+	}
+	p.advance(5 * time.Minute)
+	pass()
+	if cur, _, _ := p.st.Cursor(ctx, "video-backfill"); backfills() != 3 || cur.Failures != 0 || cur.FinishedTS == nil {
+		t.Fatalf("after its backoff the backfill made %d polls and its cursor is %s, want a third poll that finished it", backfills(), jsonOf(cur))
 	}
 	p.advance(3 * time.Hour)
 	pass()
-	if backfills() != 2 {
+	if backfills() != 3 {
 		t.Errorf("a finished backfill polled again, %d polls", backfills())
 	}
-	out, err := runCLI(t, "connectors", "list", "--config", p.config)
-	if line := lineWith(out, "video-backfill"); err != nil || !strings.Contains(line, "once · finished") || strings.Contains(line, "overdue") {
-		t.Errorf("connectors list printed %q, %v, want the backfill finished", line, err)
+	out, err := runCLI(t, "connectors", "list", "--json", "--config", p.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	holdsTo(t, []byte(out), "connectors-list.schema.json")
+	var listed server.ConnectorsAnswer
+	_ = json.Unmarshal([]byte(out), &listed)
+	for _, c := range listed.Connectors {
+		if c.Name == "video-backfill" && (c.FinishedTS == nil || c.Overdue || c.OverdueSince != nil) {
+			t.Errorf("connectors list --json gives the finished backfill %s, want its finished time and not overdue", jsonOf(c))
+		}
 	}
 }
 
@@ -333,14 +358,4 @@ func TestAPersonSortsVideoWaitsWithItsGuessAndASecondSightingGatesItAgain(t *tes
 	if _, side, _ := p.decisions(t, "youtube/testvideo02"); side.DecidedBy != route.ByPerson("person") || *side.Destination != "watch-later" {
 		t.Errorf("after the channel's sighting the placed video is on %v by %s, want it left on watch-later by the person", side.Destination, side.DecidedBy)
 	}
-}
-
-// lineWith is the line of out that holds s, and "" where none does.
-func lineWith(out, s string) string {
-	for line := range strings.SplitSeq(out, "\n") {
-		if strings.Contains(line, s) {
-			return line
-		}
-	}
-	return ""
 }

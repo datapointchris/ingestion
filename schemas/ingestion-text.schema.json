@@ -115,7 +115,8 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "last_error": {"description": "Why the connector's newest run failed, such as a folder scan's error naming the files it could not land.", "type": ["string", "null"]}
+        "position": {"description": "Where the connector's next poll reads from, as its source wrote it, such as a page token or a feed entry's id. It moves only once a poll lands everything it found. Absent from a record shipped before it left on this channel.", "type": ["string", "null"]},
+        "last_error": {"description": "Why the connector's newest run failed, such as a folder scan's error naming the files it could not land, or a poll's refusal of an arrival.", "type": ["string", "null"]}
       }
     }
   }

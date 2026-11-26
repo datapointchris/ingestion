@@ -56,7 +56,7 @@
           "external_key": {"type": "string"},
           "tags": {"type": "array", "items": {"type": "string"}},
           "fields": {"description": "Values the connector read from the source's payload, by name, such as a Reddit save's subreddit. A routing rule matches them. Outsider text where the zone is outside.", "type": "object", "additionalProperties": {"type": "string"}},
-          "metrics": {"description": "The source's counts by name, such as a video's duration_s, views, likes and comments, as the connector's newest arrival gave them.", "type": "object", "additionalProperties": {"type": "integer"}},
+          "metrics": {"description": "The source's counts by name, such as a video's duration_s, views, likes and comments. Each name holds the value from the newest of the connector's arrivals that carried it.", "type": "object", "additionalProperties": {"type": "integer"}},
           "zone": {"enum": ["outside", "owner"]},
           "cursor_position": {"description": "The connector's cursor where it last delivered the item.", "type": ["string", "null"]},
           "first_seen_ts": {"type": "string", "format": "date-time"},

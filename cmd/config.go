@@ -40,6 +40,14 @@ func deliverSecretEnv(name string) string {
 	return "INGESTION_DELIVER_" + strings.ToUpper(strings.ReplaceAll(name, "-", "_")) + "_CLIENT_SECRET"
 }
 
+// sourceSecretEnv is the variable that holds the secret of the service client
+// that the [source.<name>] table names, such as
+// INGESTION_SOURCE_VIDEO_PLAYLISTS_CLIENT_SECRET for video-playlists. It is
+// read from the environment alone, as clientSecretEnv is.
+func sourceSecretEnv(name string) string {
+	return "INGESTION_SOURCE_" + strings.ToUpper(strings.ReplaceAll(name, "-", "_")) + "_CLIENT_SECRET"
+}
+
 // fileConfig is the config file. Its top-level api, issuer and client_id are
 // goclilogin's, read by every command that calls the service. serve reads
 // issuer and its own table, and worker run reads its own table.
@@ -66,6 +74,9 @@ type fileConfig struct {
 	// name the deliverer registers. worker run reads each, and serve reads
 	// each one's root.
 	Deliver map[string]deliverTable `toml:"deliver"`
+	// Sources holds a table for each source that a worker reaches, under the
+	// source's name, such as for the deleter that its source registers.
+	Sources map[string]serviceClient `toml:"source"`
 	// Model names the adapter that carries every model call, its settings,
 	// and what each model stage asks its run for, read by worker run.
 	Model modelConfig `toml:"model"`

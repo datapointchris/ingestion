@@ -24,6 +24,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/datapointchris/ingestion/contents"
+	"github.com/datapointchris/ingestion/deletion"
 	"github.com/datapointchris/ingestion/deliver"
 	"github.com/datapointchris/ingestion/extract"
 	"github.com/datapointchris/ingestion/modelport"
@@ -45,11 +46,11 @@ const (
 // workerHandlers lists the stage handlers for a worker to run: each
 // extractor's, the structure's where pdf-structure is installed, the scan's
 // where scanner is installed, the contents stage's, the quality gate's and
-// its arm's where port is open, the model read's where both are, and each of
-// deliverers by its name. A stage whose work runs in a worker adds its
-// handler here.
-func workerHandlers(client *worker.Client, deliverers map[string]deliver.Deliverer, port modelport.Port, scanner *scan.Scanner,
-	models modelConfig, log *slog.Logger,
+// its arm's where port is open, the model read's where both are, each of
+// deliverers by its name, and each of deleters by its source. A stage whose
+// work runs in a worker adds its handler here.
+func workerHandlers(client *worker.Client, deliverers map[string]deliver.Deliverer, deleters map[string]deletion.Deleter,
+	port modelport.Port, scanner *scan.Scanner, models modelConfig, log *slog.Logger,
 ) []worker.Handler {
 	handlers := extract.Builtin().Handlers(client, log)
 	if structure := sections.NewHandler(sections.Program, client, log); structure != nil {
@@ -71,7 +72,35 @@ func workerHandlers(client *worker.Client, deliverers map[string]deliver.Deliver
 	for _, name := range slices.Sorted(maps.Keys(deliverers)) {
 		handlers = append(handlers, deliver.Handler(name, deliverers[name]))
 	}
+	for _, source := range slices.Sorted(maps.Keys(deleters)) {
+		handlers = append(handlers, deletion.Handler(source, deleters[source]))
+	}
 	return handlers
+}
+
+// openDeleters opens the deleter that this build registers for each source
+// whose [source.<name>] table cfg holds, by source. issuer is the file's,
+// which a table takes where it names none. A registered source with no table,
+// or whose table cannot open, is logged and left out, so the worker's other
+// stages run on and its deletes wait queued for a worker that opens it.
+func openDeleters(ctx context.Context, cfg fileConfig, issuer string, log *slog.Logger) map[string]deletion.Deleter {
+	out := map[string]deletion.Deleter{}
+	for _, source := range deletion.Sources() {
+		r, _ := deletion.Lookup(source)
+		capability := store.DeleteCapability(source)
+		table, ok := cfg.Sources[source]
+		if !ok {
+			log.Warn("the config holds no [source."+source+"] table, so the worker claims no "+capability+" task", "source", source)
+			continue
+		}
+		client, err := serviceHTTPClient(ctx, table, sourceSecretEnv(source), issuer, r.Scopes)
+		if err != nil {
+			log.Error("[source."+source+"] cannot open, so the worker claims no "+capability+" task", "error", err)
+			continue
+		}
+		out[source] = r.Open(table.API, client)
+	}
+	return out
 }
 
 // openModelPort opens the adapter that cfg's [model] table names. With none
@@ -209,6 +238,11 @@ var workerRunCmd = &cobra.Command{
 		deliver.LearningResources + " client " + strings.Join(deliver.LearningResourcesScopes, " ") + ". A table that\n" +
 		"cannot open is logged and left out, and the worker's other stages run on.\n" +
 		"\n" +
+		"It runs the deleter that a source registers where a [source.<name>] table\n" +
+		"names how to reach that source. The table takes api, client_id, token_command\n" +
+		"and issuer as a [deliver.<name>] table does, with the client's secret in\n" +
+		"INGESTION_SOURCE_<NAME>_CLIENT_SECRET.\n" +
+		"\n" +
 		"It runs each model stage through the adapter that the [model] table names.\n" +
 		"An arm's task asks for the model that its replay named, at the quality\n" +
 		"gate's effort. It runs the model read only where it also runs the scan,\n" +
@@ -289,5 +323,6 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 	deliverers := openDeliverers(ctx, cfg, d.Issuer.Value, run.Log)
 	port := openModelPort(ctx, cfg.Model, d.Issuer.Value, run.Log)
 	client := worker.NewClient(d.API.Value, oauth2.NewClient(ctx, source))
-	return worker.Run(ctx, client, run, workerHandlers(client, deliverers, port, scan.Installed(run.Log), cfg.Model, run.Log)...)
+	deleters := openDeleters(ctx, cfg, d.Issuer.Value, run.Log)
+	return worker.Run(ctx, client, run, workerHandlers(client, deliverers, deleters, port, scan.Installed(run.Log), cfg.Model, run.Log)...)
 }

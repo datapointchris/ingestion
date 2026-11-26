@@ -112,7 +112,7 @@ func (s *Scheduler) Pass(ctx context.Context) (time.Time, error) {
 				failed = append(failed, fmt.Errorf("keep connector %s's stale time: %w", c.Name, err))
 			}
 		}
-		if !c.Scheduled() || (c.Once() && cur.FinishedTS != nil) {
+		if !c.Scheduled() || Finished(c, cur) {
 			continue
 		}
 		due, err := time.Parse(store.StampLayout, cur.DueAt)

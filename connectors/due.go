@@ -65,7 +65,7 @@ func NextDue(c Connector, cur store.Cursor) (time.Time, error) {
 		return at
 	}
 	switch {
-	case c.Once() && cur.FinishedTS != nil:
+	case Finished(c, cur):
 		return since(cur.FinishedTS), nil
 	case c.Once() && cur.LastRunTS == nil:
 		return created, nil
@@ -86,11 +86,16 @@ func NextDue(c Connector, cur store.Cursor) (time.Time, error) {
 	return since(cur.LastDeliveryTS).Add(interval).UTC(), nil
 }
 
+// Finished says whether c is a connector scheduled once whose poll ended done.
+// A cursor keeps its finished time only while its connector is scheduled once,
+// and this is the one test of it.
+func Finished(c Connector, cur store.Cursor) bool { return c.Once() && cur.FinishedTS != nil }
+
 // StaleAt is when c goes stale from its cursor: its last delivery plus its
 // freshness. It is nil where c declares no freshness, has delivered nothing,
 // or finished.
 func StaleAt(c Connector, cur store.Cursor) *string {
-	if c.Freshness == "" || cur.LastDeliveryTS == nil || cur.FinishedTS != nil {
+	if c.Freshness == "" || cur.LastDeliveryTS == nil || Finished(c, cur) {
 		return nil
 	}
 	freshness, err := ParseInterval(c.Freshness)
@@ -105,12 +110,12 @@ func StaleAt(c Connector, cur store.Cursor) *string {
 	return &at
 }
 
-// OverdueSince is when the connector whose cursor is cur went overdue, and
-// false where it is not overdue at now. It goes overdue once its due time
-// passes with no delivery since, or once its stale time passes, whichever
-// comes first. A connector that finished is never overdue.
-func OverdueSince(cur store.Cursor, now time.Time) (string, bool) {
-	if cur.FinishedTS != nil {
+// OverdueSince is when c, whose cursor is cur, went overdue, and false where
+// it is not overdue at now. It goes overdue once its due time passes with no
+// delivery since, or once its stale time passes, whichever comes first. A
+// connector that finished is never overdue.
+func OverdueSince(c Connector, cur store.Cursor, now time.Time) (string, bool) {
+	if Finished(c, cur) {
 		return "", false
 	}
 	var delivered time.Time

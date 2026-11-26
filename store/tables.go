@@ -83,7 +83,7 @@ var Tables = []Table{
 		Kept: []string{"started_ts"}, Writes: Upserts,
 	},
 	{
-		Name: "cursors", Key: []string{"connector"}, Stamp: []string{"updated_ts"}, Text: []string{"last_error"},
+		Name: "cursors", Key: []string{"connector"}, Stamp: []string{"updated_ts"}, Text: []string{"position", "last_error"},
 		Kept: []string{"created_ts"}, Writes: Upserts,
 	},
 	{

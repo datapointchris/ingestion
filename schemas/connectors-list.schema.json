@@ -46,10 +46,10 @@
         "schedule": {"description": "A poll's or a folder's schedule.", "type": ["string", "null"]},
         "due_interval": {"description": "How often a drop or push is expected.", "type": ["string", "null"]},
         "freshness": {"description": "How long a poll or a folder may go without a delivery before it reads overdue.", "type": ["string", "null"]},
-        "due_at": {"description": "When the scheduler next makes the connector due.", "type": "string", "format": "date-time"},
-        "overdue": {"description": "True once due_at has passed with no delivery since, or for a poll or a folder declaring a freshness, once its last delivery is older than that.", "type": "boolean"},
+        "due_at": {"description": "When the scheduler next makes the connector due. A finished connector keeps its finished time here, and the scheduler never makes it due again.", "type": "string", "format": "date-time"},
+        "overdue": {"description": "True once due_at has passed with no delivery since, or for a poll or a folder declaring a freshness, once its last delivery is older than that. Always false for a connector whose finished_ts is set.", "type": "boolean"},
         "overdue_since": {"description": "When the connector went overdue, the earlier of the two instants that overdue rests on, and null while it is not overdue. Absent from a server older than this field.", "type": ["string", "null"], "format": "date-time"},
-        "finished_ts": {"description": "When a connector scheduled once ran a poll that ended done, after which the scheduler never runs it. Null until then and for every other connector, and absent from a server older than this field.", "type": ["string", "null"], "format": "date-time"},
+        "finished_ts": {"description": "When a connector scheduled once ran a poll that landed everything it found, after which the scheduler never runs it. Null until then and for every other connector, and absent from a server older than this field.", "type": ["string", "null"], "format": "date-time"},
         "first_fill": {
           "description": "Answered on one connector alone.",
           "type": "object",

@@ -24,7 +24,7 @@
             "enum": ["tags-disagree", "below-floor", "person-sorts", "no-guess", "gate-error", "no-parse", "quality-review"]
           },
           "guess": {
-            "description": "The quality gate's side guess, where it gave one.",
+            "description": "The quality gate's side guess, where it gave one. It is present under any reason, and a reader shows it wherever it is present rather than by the reason.",
             "type": ["object", "null"],
             "additionalProperties": false,
             "required": ["side", "confidence"],
