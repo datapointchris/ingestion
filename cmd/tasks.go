@@ -153,11 +153,7 @@ func runTasksRetry(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	t := answer.Task
-	subject := "—"
-	if t.ItemKey != nil {
-		subject = *t.ItemKey
-	}
-	_, err = fmt.Fprintf(w, "Task %s, %s on %s, is %s.\n", t.ID, t.Stage, subject, t.State)
+	_, err = fmt.Fprintf(w, "Task %s, %s on %s, is %s.\n", t.ID, t.Stage, taskSubject(t), t.State)
 	return err
 }
 
@@ -182,15 +178,8 @@ func writeTasks(w io.Writer, answer server.TasksAnswer) {
 		if t.HeldBy != nil {
 			state += " (held by " + *t.HeldBy + "'s first fill)"
 		}
-		subject := "—"
-		switch {
-		case t.ItemKey != nil:
-			subject = *t.ItemKey
-		case t.Connector != nil:
-			subject = "connector " + *t.Connector
-		}
 		_, _ = fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n",
-			t.ID, subject, t.Stage, t.Capability, state, t.Attempts, lease, localTime(t.UpdatedTS))
+			t.ID, taskSubject(t), t.Stage, t.Capability, state, t.Attempts, lease, localTime(t.UpdatedTS))
 	}
 	if len(answer.Tasks) == 0 {
 		_, _ = fmt.Fprintln(table, "(none)")
@@ -208,6 +197,20 @@ func writeTasks(w io.Writer, answer server.TasksAnswer) {
 		_, _ = fmt.Fprintln(table, "(none)")
 	}
 	_ = table.Flush()
+}
+
+// taskSubject is what a task works on: its item, its connector, or the
+// prompt proposal that it drafts.
+func taskSubject(t server.TaskView) string {
+	switch {
+	case t.ItemKey != nil:
+		return *t.ItemKey
+	case t.Connector != nil:
+		return "connector " + *t.Connector
+	case t.ProposalID != nil:
+		return "proposal " + *t.ProposalID
+	}
+	return "—"
 }
 
 // localTime is a stored instant in this machine's zone.

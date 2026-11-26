@@ -117,6 +117,24 @@ type LeasedTask struct {
 	// Sighting is a delete task's: the sighting whose source the task removes
 	// the item from. Every other task carries none.
 	Sighting *LeasedSighting `json:"sighting,omitempty"`
+	// ProposalID and Proposal are a misses task's: the prompt proposal that
+	// it drafts, and the misses that the draft reads. Its StageOutputs hold
+	// the proposal's run, once one was sent. Every other task carries
+	// neither.
+	ProposalID *string         `json:"proposal_id,omitempty"`
+	Proposal   *LeasedProposal `json:"proposal,omitempty"`
+}
+
+// LeasedProposal is the prompt proposal that a misses task drafts: the
+// prompt it changes, at the version it changes, and the misses labeled after
+// LabeledAfter, through LabeledThrough, as one JSON array.
+type LeasedProposal struct {
+	Prompt         string          `json:"prompt"`
+	PromptVersion  string          `json:"prompt_version"`
+	LabeledAfter   *string         `json:"labeled_after"`
+	LabeledThrough string          `json:"labeled_through"`
+	MissCount      int             `json:"miss_count"`
+	Misses         json.RawMessage `json:"misses"`
 }
 
 // LeasedSighting is one connector's sighting of a delete task's item, which
@@ -274,6 +292,22 @@ func (o ReportOutput) output(task store.Task) store.Output {
 	}
 }
 
+// keepDraft writes o, the output of a misses task's run, onto the prompt
+// proposal under id that the task drafts.
+func keepDraft(ctx context.Context, tx *store.Tx, id string, o ReportOutput) error {
+	p, ok, err := tx.PromptProposal(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("the misses task drafts prompt proposal %s, which the store does not hold", id)
+	}
+	p.Producer, p.ProducerVersion, p.State = &o.Producer, &o.ProducerVersion, o.State
+	p.DispatchID, p.RunID, p.Model, p.Effort, p.AnsweredModel, p.Tokens = o.DispatchID, o.RunID, o.Model, o.Effort, o.AnsweredModel, o.Tokens
+	p.Answer, p.Error = o.Answer, o.Error
+	return tx.PutPromptProposal(ctx, p)
+}
+
 // TaskView is one task as the list shows it. It leaves out the lease token
 // and the task's error, which can quote outsider text, and says in has_error
 // whether one is kept.
@@ -282,9 +316,11 @@ type TaskView struct {
 	ItemKey *string `json:"item_key"`
 	// Connector names a poll's connector, and the connector whose sighting a
 	// delete removes from its source.
-	Connector      *string `json:"connector"`
-	Destination    *string `json:"destination"`
-	Model          *string `json:"model"`
+	Connector   *string `json:"connector"`
+	Destination *string `json:"destination"`
+	Model       *string `json:"model"`
+	// ProposalID names the prompt proposal that a misses task drafts.
+	ProposalID     *string `json:"proposal_id"`
 	Stage          string  `json:"stage"`
 	Capability     string  `json:"capability"`
 	State          string  `json:"state"`
@@ -402,7 +438,7 @@ func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
 			ID: t.ID, ItemKey: t.ItemKey, Connector: t.Connector, Stage: t.Stage, Capability: t.Capability, Attempts: t.Attempts,
 			LeaseToken: *t.LeaseToken, LeaseExpiresTS: *t.LeaseExpiresTS, MediaType: t.Item.MediaType, BlobSHA256: t.Item.BlobSHA256,
 			Zone: t.Item.Zone, Title: t.Item.Title, URL: t.Item.URL, LandedTS: t.Item.CreatedTS, Destination: t.Destination,
-			Model: t.Model,
+			Model: t.Model, ProposalID: t.ProposalID,
 		}
 		if d := t.Delivery; d != nil {
 			leased.Title, leased.URL, leased.SourceTS, leased.Path, leased.Chapter = d.Title, d.URL, d.SourceTS, d.Path, d.Chapter()
@@ -418,6 +454,18 @@ func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
 		}
 		if s := t.Sighting; s != nil {
 			leased.Sighting = &LeasedSighting{Connector: s.Connector, ExternalKey: s.ExternalKey, Fields: s.Fields}
+		}
+		if p := t.Proposal; p != nil {
+			leased.Proposal = &LeasedProposal{
+				Prompt: p.Prompt, PromptVersion: p.PromptVersion, LabeledAfter: p.LabeledAfter, LabeledThrough: p.LabeledThrough,
+				MissCount: p.MissCount, Misses: p.Misses,
+			}
+			if p.Producer != nil && p.ProducerVersion != nil {
+				leased.StageOutputs = append(leased.StageOutputs, StageOutput{
+					Producer: *p.Producer, ProducerVersion: *p.ProducerVersion, State: p.State, DispatchID: p.DispatchID,
+					Model: p.Model, Effort: p.Effort, Error: p.Error,
+				})
+			}
 		}
 		if t.Stage == store.StagePoll && t.Connector != nil {
 			if t.Cursor != nil {
@@ -475,7 +523,7 @@ func (h taskHandlers) report(w http.ResponseWriter, r *http.Request) {
 	}
 	var polled connectors.PollLanded
 	task, err := h.store.Report(r.Context(), r.PathValue("id"), body.Token, outcome, func(tx *store.Tx, task store.Task, ended *store.Outcome) error {
-		if task.ItemKey == nil && len(body.Outputs) > 0 {
+		if task.ItemKey == nil && task.ProposalID == nil && len(body.Outputs) > 0 {
 			return errOutputsWithoutItem
 		}
 		if (len(body.Arrivals) > 0 || body.Cursor != nil) && (task.Stage != store.StagePoll || outcome.State != store.TaskDone) {
@@ -491,6 +539,12 @@ func (h taskHandlers) report(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		for _, o := range body.Outputs {
+			if task.ProposalID != nil {
+				if err := keepDraft(r.Context(), tx, *task.ProposalID, o); err != nil {
+					return err
+				}
+				continue
+			}
 			if err := tx.PutOutputWithUnits(r.Context(), o.output(task), o.Units); err != nil {
 				return err
 			}
@@ -677,8 +731,8 @@ func (h taskHandlers) list(w http.ResponseWriter, r *http.Request) {
 
 func viewOf(t store.Task, now time.Time) TaskView {
 	return TaskView{
-		ID: t.ID, ItemKey: t.ItemKey, Connector: cmp.Or(t.Connector, t.SightingConnector), Destination: t.Destination, Model: t.Model,
-		Stage: t.Stage, Capability: t.Capability,
+		ID: t.ID, ItemKey: t.ItemKey, Connector: cmp.Or(t.Connector, t.SightingConnector), ProposalID: t.ProposalID,
+		Destination: t.Destination, Model: t.Model, Stage: t.Stage, Capability: t.Capability,
 		State: t.State, HeldBy: t.HeldBy, Lapsed: t.Lapsed(now),
 		LeaseHolder: t.LeaseHolder, LeaseExpiresTS: t.LeaseExpiresTS, Attempts: t.Attempts, HasError: t.Error != nil,
 		NotBeforeTS: t.NotBeforeTS, CreatedTS: t.CreatedTS, UpdatedTS: t.UpdatedTS,

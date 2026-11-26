@@ -18,7 +18,8 @@ import (
 // that a CRON_TZ=<zone> prefix names.
 var scheduleParser = cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor)
 
-func parseSchedule(expr string) (cron.Schedule, error) {
+// ParseSchedule reads a cron expression as a connector's schedule reads it.
+func ParseSchedule(expr string) (cron.Schedule, error) {
 	if !strings.HasPrefix(expr, "CRON_TZ=") && !strings.HasPrefix(expr, "TZ=") {
 		expr = "CRON_TZ=UTC " + expr
 	}
@@ -73,7 +74,7 @@ func NextDue(c Connector, cur store.Cursor) (time.Time, error) {
 		return since(cur.LastRunTS).Add(onceRecheck), nil
 	}
 	if c.Scheduled() {
-		schedule, err := parseSchedule(c.Schedule)
+		schedule, err := ParseSchedule(c.Schedule)
 		if err != nil {
 			return time.Time{}, err
 		}

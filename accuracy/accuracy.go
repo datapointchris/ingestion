@@ -135,9 +135,9 @@ const bands = 10
 
 // Outcomes of one comparison.
 const (
-	agreed    = "agreed"
-	disagreed = "disagreed"
-	unsure    = "unsure"
+	Agreed    = "agreed"
+	Disagreed = "disagreed"
+	Unsure    = "unsure"
 )
 
 // comparison is one answer set beside one placement.
@@ -182,7 +182,7 @@ func Measure(records []store.ItemRecords) Report {
 		}
 		gateAnswers := map[string][2][]comparison{}
 		answered := false
-		for _, o := range answersAt(r.Outputs, store.StageQuality) {
+		for _, o := range AnswersAt(r.Outputs, store.StageQuality) {
 			q, s := compare(o, label, names)
 			answered = true
 			quality, side = append(quality, q), append(side, s...)
@@ -191,7 +191,7 @@ func Measure(records []store.ItemRecords) Report {
 		if !answered {
 			report.Unanswered++
 		}
-		for _, o := range answersAt(r.Outputs, store.StageQualityArm) {
+		for _, o := range AnswersAt(r.Outputs, store.StageQualityArm) {
 			theGate, ok := gateAnswers[o.ProducerVersion]
 			if !ok {
 				continue
@@ -221,9 +221,9 @@ func Measure(records []store.ItemRecords) Report {
 	return report
 }
 
-// answersAt is each done answer of the gate's prompt among outputs at stage,
+// AnswersAt is each done answer of the gate's prompt among outputs at stage,
 // the quality gate's own or an arm's, that decodes.
-func answersAt(outputs []store.Output, stage string) []store.Output {
+func AnswersAt(outputs []store.Output, stage string) []store.Output {
 	var out []store.Output
 	for _, o := range outputs {
 		if o.Stage != stage || o.Producer != qualitygate.Producer || o.State != store.OutputDone {
@@ -248,37 +248,37 @@ func compare(o store.Output, label string, connectorNames []string) (comparison,
 	a, _ := answerOf(o)
 	base := comparison{label: label, connectors: connectorNames, model: modelOf(o), promptVersion: o.ProducerVersion}
 	q := base
-	q.answer, q.confidence, q.outcome = a.Verdict, a.VerdictConfidence, qualityOutcome(a.Verdict, label)
+	q.answer, q.confidence, q.outcome = a.Verdict, a.VerdictConfidence, QualityOutcome(a.Verdict, label)
 	if label != connectors.SidePersonal && label != connectors.SideFleet {
 		return q, nil
 	}
 	s := base
-	s.answer, s.confidence, s.outcome = a.Side, a.SideConfidence, sideOutcome(a.Side, label)
+	s.answer, s.confidence, s.outcome = a.Side, a.SideConfidence, SideOutcome(a.Side, label)
 	return q, []comparison{s}
 }
 
-// qualityOutcome compares the quality gate's verdict with a person's
+// QualityOutcome compares the quality gate's verdict with a person's
 // placement: a pass agrees with a side, and a drop with a drop.
-func qualityOutcome(verdict, label string) string {
+func QualityOutcome(verdict, label string) string {
 	onASide := label == connectors.SidePersonal || label == connectors.SideFleet
 	switch {
 	case verdict == qualitygate.AnswerPass && onASide, verdict == qualitygate.AnswerDrop && label == route.VerdictDrop:
-		return agreed
+		return Agreed
 	case verdict == qualitygate.AnswerPass, verdict == qualitygate.AnswerDrop:
-		return disagreed
+		return Disagreed
 	}
-	return unsure
+	return Unsure
 }
 
-// sideOutcome compares the side guess with the person's side.
-func sideOutcome(guess, label string) string {
+// SideOutcome compares the side guess with the person's side.
+func SideOutcome(guess, label string) string {
 	switch guess {
 	case label:
-		return agreed
+		return Agreed
 	case connectors.SidePersonal, connectors.SideFleet:
-		return disagreed
+		return Disagreed
 	}
-	return unsure
+	return Unsure
 }
 
 // modelOf is the model that answered o, else the one it asked for.
@@ -333,9 +333,9 @@ func count(comparisons []comparison) Counts {
 	pairs := map[[2]string]int{}
 	for _, one := range comparisons {
 		switch one.outcome {
-		case agreed:
+		case Agreed:
 			c.Agreed++
-		case disagreed:
+		case Disagreed:
 			c.Disagreed++
 		default:
 			c.Unsure++

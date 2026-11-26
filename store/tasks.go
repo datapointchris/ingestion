@@ -39,9 +39,9 @@ var (
 	ErrStaleLease = errors.New("the task's lease is not held under this token")
 )
 
-// Task is one stage's work on one item, or one poll of a connector, which a
-// worker holding its capability leases. A task names its item or its
-// connector, never both.
+// Task is one stage's work on one item, one poll of a connector, or the draft
+// of one prompt proposal, which a worker holding its capability leases. A
+// task names exactly one of its item, its connector and its proposal.
 type Task struct {
 	ID        string  `json:"id"`
 	ItemKey   *string `json:"item_key"`
@@ -55,9 +55,12 @@ type Task struct {
 	// SightingConnector names the connector whose sighting a delete task
 	// removes from that connector's source, and is nil for every other task.
 	SightingConnector *string `json:"sighting_connector"`
-	Stage             string  `json:"stage"`
-	Capability        string  `json:"capability"`
-	State             string  `json:"state"`
+	// ProposalID names the prompt proposal that a misses task drafts, and is
+	// nil for every other task.
+	ProposalID *string `json:"proposal_id"`
+	Stage      string  `json:"stage"`
+	Capability string  `json:"capability"`
+	State      string  `json:"state"`
 	// HeldBy names the connector whose first fill holds this model stage's
 	// task. No claim takes it until a person releases the fill.
 	HeldBy *string `json:"held_by"`
@@ -126,12 +129,18 @@ var modelStages = []string{StageContents, StageQuality, StageQualityArm, StageMo
 // ModelStages are the stages that read an item with a model.
 func ModelStages() []string { return slices.Clone(modelStages) }
 
-// Enqueue adds a queued task for task's item or connector, stage and
-// capability, and answers it as written. A model stage's task for an item that
-// a connector's first fill holds is held by that connector.
+// Enqueue adds a queued task for task's item, connector or proposal, stage
+// and capability, and answers it as written. A model stage's task for an item
+// that a connector's first fill holds is held by that connector.
 func (t *Tx) Enqueue(ctx context.Context, task Task) (Task, error) {
-	if (task.ItemKey == nil) == (task.Connector == nil) {
-		return task, fmt.Errorf("a %s task names its item or its connector, and not both", task.Stage)
+	named := 0
+	for _, subject := range []*string{task.ItemKey, task.Connector, task.ProposalID} {
+		if subject != nil {
+			named++
+		}
+	}
+	if named != 1 {
+		return task, fmt.Errorf("a %s task names one of its item, its connector and its proposal", task.Stage)
 	}
 	task.ID = randomHex(16)
 	task.State, task.Attempts = TaskQueued, 0
@@ -270,7 +279,8 @@ type Claim struct {
 // run rather than starting another. A model read's task carries the item's
 // newest read decision, whose lens and note the read answers. A poll carries
 // its connector's cursor, whose position it reads on from. A delete task
-// carries the sighting whose source it removes the item from.
+// carries the sighting whose source it removes the item from. A misses task
+// carries the prompt proposal that it drafts, which holds its run's dispatch.
 type Leased struct {
 	Task
 	Item     Item
@@ -279,6 +289,7 @@ type Leased struct {
 	Read     *Decision
 	Cursor   *Cursor
 	Sighting *Sighting
+	Proposal *PromptProposal
 }
 
 // Claim records the worker's heartbeat and leases it up to c.Max tasks whose
@@ -423,6 +434,15 @@ func (s *Store) Claim(ctx context.Context, c Claim) ([]Leased, error) {
 				}
 				if ok {
 					leased.Sighting = &s
+				}
+			}
+			if task.ProposalID != nil {
+				p, ok, err := tx.PromptProposal(ctx, *task.ProposalID)
+				if err != nil {
+					return err
+				}
+				if ok {
+					leased.Proposal = &p
 				}
 			}
 			claimed = append(claimed, leased)

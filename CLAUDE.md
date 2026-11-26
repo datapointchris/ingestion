@@ -21,7 +21,7 @@ never ahead of it. A stage's code goes in its own package:
 
 | Package | Holds |
 | --- | --- |
-| `store` | the SQLite store: items, sightings, blobs, each stage's outputs and decisions, each book's sections, deliveries, task leases, connector cursors, the declaration sets applied, each keyed request's answer, each person's mark on an item, and each gate family's decisions and the trust read from them |
+| `store` | the SQLite store: items, sightings, blobs, each stage's outputs and decisions, each book's sections, deliveries, task leases, connector cursors, the declaration sets applied, each keyed request's answer, each person's mark on an item, each gate family's decisions and the trust read from them, and each drafted change to a gate's prompt |
 | `itemkey` | the one component that derives an item's key from any form of its artifact |
 | `landing` | an artifact's bytes written under their SHA-256 or referenced under a named root, the item and one sighting per connector, in a write of its own or in a caller's, with the hook that a new sighting of a held item runs, each item's source time and the fill that reads it from bytes already landed, and the report of blobs and rows that disagree |
 | `redditexport` | the Reddit bookmarklet's export, as a store keeps it, split into one save each and landed as an item with a child per save, registered as the drop format `reddit-export`; and in `bookmarklet/`, the bookmarklet and the command that writes the page installing it |
@@ -34,8 +34,9 @@ never ahead of it. A stage's code goes in its own package:
 | `gatetrust` | each connector's family under one version of the quality gate's prompt, answered by one model at one effort, declared as an `earnedtrust.Family` at its cautious pace, and the trust it earns: a person's `low-quality` or `read` mark and whether it agrees with the gate's answer, a placement on a destination of a drop the gate showed or hid, which disagrees, a person's promote, the standing that earnedtrust reads from each family's decisions, which `Settle` reads again once serve listens, and `Shows`, which `route` asks whether a drop shows in review or is hidden |
 | `route` | the side gate and the read gate, which serve runs in the write that ends each stage between the parse and them, once the item's reading parse is scanned, in the write that applies a changed set, and in the write that lands another connector's sighting: a sighting's tags, then a rule, then the quality gate's drop, shown in review as `gate-would-drop` or hidden as `quality-drop` as `gatetrust` decides once per answer, its review, or its guess at or above its confidence floor where no connector declares that a person sorts its side, else review, with a person's placement withdrawing the item's queued quality task; `ReviewReasons`, the one table of why an item waits in review, which the CLI's help and the TUI read; a person's placement from review; `Due`, the one predicate for where an item is due a delivery, which holds a chapter until its book's delivery settles, and `ModelReadDue`, the one for where it is due a model read under a lens whose prompt the build holds and that no read answering its note already holds, which each decision's write reconciles, queueing a delivery or a model read and withdrawing either where a drop or a move stops it; and each chapter's copy of its book's newest side and read decisions, which every decision on the book passes on |
 | `modelread` | the model stage that reads a fleet item whole under its read decision's lens and answers its note with a summary, a suggestion sentence, or both: its prompt's data and answer for `modelstage`'s handler, the scan of the suggestion before it is kept, and its replay |
-| `modelstage` | what every model stage's worker handler shares: the dispatch-once protocol, which starts a call once, stores its dispatch and follows it, and a replay's estimate |
-| `accuracy` | how often the quality gate's verdict and side guess agree with each label, a person's placement of an item that the gates sent to review first, overall and by confidence band, connector, model and prompt version; each arm by model beside the gate's answers on the same items; and the route that answers it |
+| `modelstage` | what every model stage's worker handler shares: the dispatch-once protocol, which starts a call once for an item or a prompt proposal, stores its dispatch and follows it, and a replay's estimate |
+| `misses` | the weekly draft of a change to the quality gate's prompt: the projection of each miss, an answer of the gate that a person's placement from review or mark went against, as keys, enums, numbers and the person's words alone; the scheduler that serve runs on `[gates.misses] schedule`, which writes an owner `prompt_proposals` row over the misses labeled since the last and queues its one `misses` task; the worker's handler, whose run's exact edits must each apply once to the prompt; and the route that lists the proposals |
+| `accuracy` | how often the quality gate's verdict and side guess agree with each label, a person's placement of an item that the gates sent to review first, overall and by confidence band, connector, model and prompt version; each arm by model beside the gate's answers on the same items; the route that answers it; and the comparisons of one answer with one label, which `misses` reads too |
 | `connectors` | the declaration set, checked against its schemas and against what `sources` registers of each source: whether a worker polls it, whether it deletes, and its rules for its connectors and their `source_parameters`; and its apply, the scheduler that makes each connector due, the folder scan, the landing of what a poll's worker reports in the write that ends its lease, which lands each arrival that can land and fails the poll on any other, with a delete queued per item where the connector declares one, `Finished`, the one test of a once connector that finished, `Unwanted`, which a claim asks before it leases a poll or a delete, the drop handler each source registers under its format, the deliverer each destination names, and the side default that takes an item placed with no destination |
 | `deliver` | each deliverer, registered with what it takes and how a worker opens it, which upserts an item into its destination through that destination's own API under the item's key, and how its answer maps to an outcome |
 | `deletion` | the worker's handler for a `delete` task, which hands one connector's sighting to its source's deleter, retries a failed delete with backoff, and fails one that the source refused for good, which then holds off a later poll's delete of the item; and the deleter's interface. A delete sits on no item's line |
@@ -69,11 +70,13 @@ each file against its schema.
 A new table or index converges through its `CREATE … IF NOT EXISTS`. A file's `CREATE TABLE` never
 changes a table that exists, so a column added to one converges through the `ALTER TABLE … ADD
 COLUMN` that `converge` runs where the table lacks it, carrying the column's type, `NOT NULL` and
-default and no other constraint. A stage declares each table it adds in `store/tables.go`, naming
-its key, its stamp, its text columns, and whether it appends or upserts. `Open` refuses a table
-that is neither declared there nor listed as unlogged, and the outbox ships every declared table.
-Every write runs through `Store.Update`, and each logged table's triggers refuse a row stamped
-other than by that write.
+default and no other constraint. SQLite can neither make a column nullable nor change a table
+constraint, such as a `CHECK`, in place. So a table whose file does either is rebuilt with every
+row kept, after `converge` copies the store's file beside it. A stage declares each table it adds
+in `store/tables.go`, naming its key, its stamp, its text columns, and whether it appends or
+upserts. `Open` refuses a table that is neither declared there nor listed as unlogged, and the
+outbox ships every declared table. Every write runs through `Store.Update`, and each logged
+table's triggers refuse a row stamped other than by that write.
 
 `deploy/` holds the Kubernetes manifests, and `release/` the scripts that the release job runs to
 pin and publish them. The `Dockerfile` builds the one image that `serve` and `worker run` share.
@@ -186,7 +189,8 @@ the prompt's version, and gets back the structured answer.
   names, such as the side and the destinations, are enums that ingestion writes, never values
   taken from the text.
 - **A model stage dispatches once, through `modelstage`.** It sends under an idempotency key of
-  item, stage, prompt version and, for a model read, the note's digest. It stores the dispatch id
+  its item or prompt proposal, stage, prompt version and, for a model read, the note's digest. A
+  weekly draft has no item, so its task names its proposal. It stores the dispatch id
   in the same write that ends the worker's lease. A task whose lease lapsed reads the run it
   already started, rather than paying for a second. So does a task whose answer a later step
   could not keep yet, such as a failed scan of the suggestion. A run that failed dispatches again

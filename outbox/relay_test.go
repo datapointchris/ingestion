@@ -171,6 +171,22 @@ func TestAnItemGainsEachStageRecordAndEachChangeReachesTheCollectorOnce(t *testi
 		}); err != nil {
 			return err
 		}
+		proposal, err := tx.AddPromptProposal(ctx, store.PromptProposal{
+			Prompt: store.StageQuality, PromptVersion: version, LabeledThrough: "2026-03-02T06:00:00.000000000Z", MissCount: 1, Zone: store.Owner,
+			Misses: json.RawMessage(`[{"n":1,"item_key":"` + key + `","media_type":"application/pdf","connectors":["reddit-exports"],` +
+				`"label_kind":"mark","label":"low-quality","destination":null,"cause":null,"note":null,"review_cause":null,` +
+				`"labeled_ts":"2026-03-01T09:00:00.000000000Z","missed":["verdict"],"prompt_version":"` + version + `","model":"claude-haiku",` +
+				`"effort":"medium","verdict":"pass","verdict_confidence":0.7,"side":"fleet","side_confidence":0.8,"quality":6,"genre":"tutorial"}]`),
+		})
+		if err != nil {
+			return err
+		}
+		producer, producerVersion, drafted := "misses", "1-0c4d2e1a", "drafted"
+		proposal.Producer, proposal.ProducerVersion, proposal.State, proposal.RunID = &producer, &producerVersion, "done", &drafted
+		proposal.Answer = json.RawMessage(`{"pattern":"Kept thin tutorials.","change":"Weigh depth.","edits":[{"before":"a","after":"b"}],"answers":[1]}`)
+		if err := tx.PutPromptProposal(ctx, proposal); err != nil {
+			return err
+		}
 		if err := tx.AddKeyedRequest(ctx, store.KeyedRequest{
 			Caller: "ingestion-cli-desk person", IdempotencyKey: "drop-1", Route: "drops", Connector: &connector,
 			Fingerprint: strings.Repeat("d", 64), Status: 201, Answer: json.RawMessage(`{"schema_version":1,"items":[]}`),

@@ -1,5 +1,6 @@
--- A task is one stage's work on one item, or one poll of a connector, leased
--- by a worker holding its capability. lease_token rises with every claim, so a
+-- A task is one stage's work on one item, one poll of a connector, or the
+-- draft of one prompt proposal, leased by a worker holding its capability. It
+-- names exactly one of the three. lease_token rises with every claim, so a
 -- report under an older token is refused. held_by names the connector whose
 -- first fill holds a model stage's task, which no claim takes until a person
 -- releases the fill. destination names the destination a deliver task writes
@@ -18,6 +19,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     destination      TEXT,
     model            TEXT,
     sighting_connector TEXT,
+    proposal_id      TEXT REFERENCES prompt_proposals (id),
     stage            TEXT NOT NULL,
     capability       TEXT NOT NULL,
     state            TEXT NOT NULL CHECK (state IN ('queued', 'leased', 'done', 'failed')),
@@ -31,7 +33,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     error            TEXT,
     created_ts       TEXT NOT NULL,
     updated_ts       TEXT NOT NULL,
-    CHECK ((item_key IS NULL) != (connector IS NULL))
+    CHECK ((item_key IS NOT NULL) + (connector IS NOT NULL) + (proposal_id IS NOT NULL) = 1)
 );
 CREATE INDEX IF NOT EXISTS tasks_by_stamp ON tasks (updated_ts);
 CREATE INDEX IF NOT EXISTS tasks_claimable ON tasks (capability, state, created_ts);

@@ -41,8 +41,8 @@ const (
 // /api/v1/dispatches/{id}/ reads it, and GET /api/v1/outside-text-answers/{id}
 // answers its run once it finished. While hold is set, every dispatch waits
 // with hold as its note. Once hold clears, a read finishes it. A dispatch
-// whose schema is the model read's is answered by read, and any other by
-// answer.
+// whose schema is the model read's is answered by read, one whose schema is
+// the misses draft's by draft, and any other by answer.
 type standInDispatch struct {
 	*httptest.Server
 	mu sync.Mutex
@@ -50,10 +50,11 @@ type standInDispatch struct {
 	hold string
 	// fail is the failure code that the next run to finish ends with.
 	fail string
-	// answer is the structured output of a run on prompt, and read that of a
-	// model read's run.
+	// answer is the structured output of a run on prompt, read that of a
+	// model read's run, and draft that of a misses draft's run.
 	answer     func(prompt string) map[string]any
 	read       func(prompt string) map[string]any
+	draft      func(prompt string) map[string]any
 	dispatches map[string]*standInRun
 	byKey      map[string]string
 	started    []dispatchStart
@@ -171,8 +172,11 @@ func (d *standInDispatch) settle(run *standInRun) {
 		return
 	}
 	answer := d.answer
-	if strings.HasSuffix(run.schema, "/prompts/model-read/answer.schema.json") {
+	switch {
+	case strings.HasSuffix(run.schema, "/prompts/model-read/answer.schema.json"):
 		answer = d.read
+	case strings.HasSuffix(run.schema, "/prompts/misses/answer.schema.json"):
+		answer = d.draft
 	}
 	run.answer["state"], run.answer["structured_output"] = modelport.Succeeded, answer(run.prompt)
 }

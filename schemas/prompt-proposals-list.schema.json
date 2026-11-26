@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/datapointchris/ingestion/schemas/prompt-proposals-list.schema.json",
+  "title": "Each drafted change to a gate's prompt",
+  "description": "What GET /api/v1/gates/proposals answers, and `ingestion gates proposals list --json` prints: every prompt proposal, the latest labeled_through first.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "proposals"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "proposals": {"type": "array", "items": {"$ref": "ingestion-record.schema.json#/$defs/prompt_proposals"}}
+  }
+}

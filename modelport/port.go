@@ -41,9 +41,11 @@ var ErrRefused = errors.New("refused")
 
 // Request is one model call.
 type Request struct {
-	// ItemKey, Stage and PromptVersion name the call, so a call sent again
-	// for one item, stage and prompt is one dispatch.
-	ItemKey       string
+	// Subject, Stage and PromptVersion name the call, so a call sent again
+	// for one subject, stage and prompt is one dispatch. The subject is the
+	// item's key, or what else the stage answers, such as the id of the
+	// prompt proposal that a misses run drafts.
+	Subject       string
 	Stage         string
 	PromptVersion string
 	// NoteDigest is the digest of the note that the call answers, where it
@@ -61,13 +63,13 @@ type Request struct {
 	Effort string
 }
 
-// IdempotencyKey names r across every retry, by its item, stage, prompt
+// IdempotencyKey names r across every retry, by its subject, stage, prompt
 // version, the note it answers and the failed dispatch it replaces. A dispatch
 // service may match a key only while its dispatch runs, so once a run ends,
 // the dispatch id that the stage stored is what keeps it from paying for a
 // second.
 func (r Request) IdempotencyKey() string {
-	named := r.ItemKey + "\x00" + r.Stage + "\x00" + r.PromptVersion + "\x00" + r.Replaces
+	named := r.Subject + "\x00" + r.Stage + "\x00" + r.PromptVersion + "\x00" + r.Replaces
 	if r.NoteDigest != "" {
 		named += "\x00" + r.NoteDigest
 	}

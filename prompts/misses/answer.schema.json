@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/datapointchris/ingestion/prompts/misses/answer.schema.json",
+  "title": "A drafted change to a prompt, from the quality gate's misses",
+  "description": "What the misses stage answers from the quality gate's prompt and a projection of the times a person disagreed with it. The store keeps it whole as the prompt proposal's answer. Each edit's before occurs exactly once in the prompt that the proposal changes, so applying the edits in order gives the proposed prompt.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["pattern", "change", "edits", "answers"],
+  "properties": {
+    "pattern": {"description": "What the misses share, in at most three sentences.", "type": "string", "minLength": 1, "maxLength": 1200},
+    "change": {"description": "What the change does and why it answers the pattern, in one or two sentences.", "type": "string", "minLength": 1, "maxLength": 800},
+    "edits": {
+      "description": "The change as passages to replace, in the order they occur in the prompt. Empty where no change to the wording would answer the misses.",
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["before", "after"],
+        "properties": {
+          "before": {"description": "A passage of the prompt exactly as it stands, occurring once.", "type": "string", "minLength": 1, "maxLength": 4000},
+          "after": {"description": "The passage that replaces it.", "type": "string", "maxLength": 4000}
+        }
+      }
+    },
+    "answers": {
+      "description": "The n of each miss that the change would have answered.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "integer", "minimum": 1}
+    }
+  }
+}

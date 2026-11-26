@@ -80,6 +80,14 @@ type fileConfig struct {
 	// Model names the adapter that carries every model call, its settings,
 	// and what each model stage asks its run for, read by worker run.
 	Model modelConfig `toml:"model"`
+	// Gates holds what serve schedules for the gates, such as when it drafts
+	// a change to the quality gate's prompt from its misses.
+	Gates struct {
+		Misses struct {
+			// Schedule is a cron expression, as a connector's schedule reads it.
+			Schedule string `toml:"schedule"`
+		} `toml:"misses"`
+	} `toml:"gates"`
 }
 
 // modelConfig is the [model] table.
@@ -99,6 +107,7 @@ type modelConfig struct {
 	Contents  stageModel `toml:"contents"`
 	Quality   stageModel `toml:"quality"`
 	ModelRead stageModel `toml:"model-read"`
+	Misses    stageModel `toml:"misses"`
 }
 
 // stageModel is what one model stage asks its run for.

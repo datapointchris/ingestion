@@ -418,7 +418,7 @@ func (c Connector) problems(compiled declarationSchemas, roots []string) []strin
 		out = append(out, problem)
 	}
 	if c.Scheduled() && c.Schedule != "" && c.Schedule != ScheduleOnce {
-		if _, err := parseSchedule(c.Schedule); err != nil {
+		if _, err := ParseSchedule(c.Schedule); err != nil {
 			out = append(out, fmt.Sprintf("schedule %q is not a cron expression or once: %v", c.Schedule, err))
 		}
 	}

@@ -1,9 +1,12 @@
 package cmd
 
 import (
+	"cmp"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/url"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 
@@ -12,7 +15,9 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/datapointchris/ingestion/accuracy"
+	"github.com/datapointchris/ingestion/misses"
 	"github.com/datapointchris/ingestion/server"
+	"github.com/datapointchris/ingestion/store"
 )
 
 var gatesCmd = &cobra.Command{
@@ -21,7 +26,9 @@ var gatesCmd = &cobra.Command{
 	Example: "  # how often each gate's answer agrees with a person's placement\n" +
 		"  ingestion gates agreement\n" +
 		"  # where each family of the quality gate stands on its trust ladder\n" +
-		"  ingestion gates trust list",
+		"  ingestion gates trust list\n" +
+		"  # each change to the quality gate's prompt that its misses drafted\n" +
+		"  ingestion gates proposals list",
 }
 
 var gatesAgreementCmd = &cobra.Command{
@@ -102,17 +109,121 @@ var gatesTrustPromoteCmd = &cobra.Command{
 	RunE:    runGatesTrustPromote,
 }
 
+var gatesProposalsCmd = &cobra.Command{
+	Use:   "proposals",
+	Short: "Read each change to the quality gate's prompt that its misses drafted",
+	Long: "A miss is an answer of the quality gate that a person's word went against:\n" +
+		"a placement from review that disagrees with its verdict or side guess, low-quality\n" +
+		"on an item that it passed, or read on one that it dropped. At each time of\n" +
+		"serve's [gates.misses] schedule, serve projects the misses labeled since the\n" +
+		"last proposal. Where it finds any, it writes a proposal holding them and\n" +
+		"queues one misses task. A time that finds none drafts nothing.\n" +
+		"\n" +
+		"Each miss holds keys, enums, numbers and the person's own words, and never an\n" +
+		"item's title, URL or text, or the gate's domains, themes, idea or reason. So\n" +
+		"the draft reads no outsider's text, and the proposal is owner. A worker with a\n" +
+		"[model] adapter drafts it once: what the misses share, the change, its edits to\n" +
+		"the prompt, and the misses it answers. Each edit's passage occurs once in the\n" +
+		"prompt, so applying the edits gives the proposed prompt. A proposal changes\n" +
+		"no prompt. A new prompt reaches the gate only as a new build's version.",
+	Example: "  ingestion gates proposals list",
+}
+
+var gatesProposalsListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "Print each prompt proposal and its draft, the latest misses first",
+	Long: "Prints each proposal: the prompt it changes at the version it changes, how\n" +
+		"many misses it read and when they were labeled, and its draft once its run\n" +
+		"answered. Each edit prints its passage on lines marked - and its replacement\n" +
+		"on lines marked +.",
+	Example: "  ingestion gates proposals list\n" +
+		"  ingestion gates proposals list --json",
+	Args: cobra.NoArgs,
+	RunE: runGatesProposalsList,
+}
+
 func init() {
 	goclikit.AsNamespace(gatesCmd)
 	goclikit.AsNamespace(gatesTrustCmd)
-	for _, c := range []*cobra.Command{gatesAgreementCmd, gatesTrustListCmd, gatesTrustPromoteCmd} {
+	goclikit.AsNamespace(gatesProposalsCmd)
+	for _, c := range []*cobra.Command{gatesAgreementCmd, gatesTrustListCmd, gatesTrustPromoteCmd, gatesProposalsListCmd} {
 		c.Flags().Bool("json", false, "Print the service's answer as JSON")
 		c.Flags().String("api", "", "Call this server rather than the config file's api")
 		addConfigFlag(c)
 	}
 	gatesTrustCmd.AddCommand(gatesTrustListCmd, gatesTrustPromoteCmd)
-	gatesCmd.AddCommand(gatesAgreementCmd, gatesTrustCmd)
+	gatesProposalsCmd.AddCommand(gatesProposalsListCmd)
+	gatesCmd.AddCommand(gatesAgreementCmd, gatesTrustCmd, gatesProposalsCmd)
 	rootCmd.AddCommand(gatesCmd)
+}
+
+func runGatesProposalsList(cmd *cobra.Command, _ []string) error {
+	asJSON, _ := cmd.Flags().GetBool("json")
+	api, _ := cmd.Flags().GetString("api")
+	var answer misses.List
+	raw, err := getJSON(cmd.Context(), configPath(cmd), api, server.RouteGateProposals, "/api/v1/gates/proposals", &answer)
+	if err != nil {
+		return err
+	}
+	w := cmd.OutOrStdout()
+	if asJSON {
+		_, err := w.Write(raw)
+		return err
+	}
+	if len(answer.Proposals) == 0 {
+		_, err := fmt.Fprintln(w, "No prompt proposal yet. serve drafts one at the first time of [gates.misses] schedule that finds a miss.")
+		return err
+	}
+	for i, p := range answer.Proposals {
+		if i > 0 {
+			_, _ = fmt.Fprintln(w)
+		}
+		writeProposal(w, p)
+	}
+	return nil
+}
+
+// writeProposal prints one proposal and its draft.
+func writeProposal(w io.Writer, p store.PromptProposal) {
+	window := "through " + localTime(p.LabeledThrough)
+	if p.LabeledAfter != nil {
+		window = "after " + localTime(*p.LabeledAfter) + ", " + window
+	}
+	_, _ = fmt.Fprintf(w, "Proposal %s changes the %s prompt at %s, from %d misses labeled %s.\n",
+		p.ID, p.Prompt, versionWords(p.PromptVersion), p.MissCount, window)
+	switch p.State {
+	case store.OutputWaiting:
+		_, _ = fmt.Fprintln(w, "  Its draft waits on its run.")
+		return
+	case store.OutputFailed:
+		_, _ = fmt.Fprintf(w, "  Its draft failed: %s\n", orDash(p.Error))
+		return
+	}
+	var draft misses.Answer
+	if err := json.Unmarshal(p.Answer, &draft); err != nil {
+		_, _ = fmt.Fprintf(w, "  Its draft does not read as a draft: %v\n", err)
+		return
+	}
+	_, _ = fmt.Fprintf(w, "  drafted by %s at %s\n", orDash(cmp.Or(p.AnsweredModel, p.Model)), orDash(p.Effort))
+	_, _ = fmt.Fprintf(w, "  pattern  %s\n", draft.Pattern)
+	_, _ = fmt.Fprintf(w, "  change   %s\n", draft.Change)
+	for n, e := range draft.Edits {
+		_, _ = fmt.Fprintf(w, "  edit %d\n", n+1)
+		for line := range strings.SplitSeq(e.Before, "\n") {
+			_, _ = fmt.Fprintf(w, "    - %s\n", line)
+		}
+		for line := range strings.SplitSeq(e.After, "\n") {
+			_, _ = fmt.Fprintf(w, "    + %s\n", line)
+		}
+	}
+	if len(draft.Edits) == 0 {
+		_, _ = fmt.Fprintln(w, "  edits    none")
+	}
+	answered := make([]string, len(draft.Answers))
+	for i, n := range draft.Answers {
+		answered[i] = strconv.Itoa(n)
+	}
+	_, _ = fmt.Fprintf(w, "  answers  %d of %d misses: %s\n", len(draft.Answers), p.MissCount, strings.Join(answered, ", "))
 }
 
 func runGatesTrustList(cmd *cobra.Command, _ []string) error {

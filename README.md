@@ -59,6 +59,11 @@ effort = "medium"
 [model.model-read]
 model = "haiku"
 effort = "medium"
+
+# What a prompt proposal's weekly draft asks its run for.
+[model.misses]
+model = "sonnet"
+effort = "medium"
 ```
 
 With no adapter named, ingestion still lands, parses, scans and routes every item by its rules.
@@ -969,6 +974,52 @@ prompt v1-<digest>        2         1       1          0       50%        drop/p
 
 side guess, floor 0.70
 ...
+```
+
+### Each week's misses draft one proposed change to the quality gate's prompt
+
+A miss is one done answer of the quality gate that a person's word went against. The word is a
+placement from review that `gates agreement` counts as disagreeing with the verdict or the side
+guess. It is also a `low-quality` mark on an item that the gate passed, or a `read` mark on one
+that it dropped.
+
+At each time of its `[gates.misses]` schedule, `serve` projects the misses labeled since the last
+proposal. Where it finds any, it writes one `prompt_proposals` row that holds them and queues one
+`misses` task. A worker with a `[model]` adapter drafts it, and `serve` keeps the draft on the row.
+A time that finds no miss drafts nothing, and so does a time whose last draft has not ended.
+
+```toml
+[gates.misses]
+schedule = "0 6 * * 1"  # cron, in UTC unless a CRON_TZ=<zone> prefix names another; the default
+```
+
+- **A projected miss reads no outsider's text.** It holds keys, enums, numbers and the person's
+  own words: the connector, media type, the gate's verdict and side with their confidences, its
+  quality and genre, the prompt version, model and effort that answered, and the person's label,
+  destination, cause and note. It never holds a title, URL, the item's text, the gate's domains,
+  themes, idea or reason, or a sighting's fields. So the proposal is in the `owner` zone, and the
+  outbox ships it whole as `ingestion.record`.
+- **The draft names exact edits.** Each edit quotes a passage of the prompt as `before`, which has
+  to occur once, and gives its `after`. A draft whose edits do not apply, or that answers a miss
+  the proposal does not hold, fails. A draft may name no edit, where the misses show no change
+  worth making.
+- **Nothing here changes a prompt.** A person who accepts a proposal edits the prompt's file, and
+  the build that carries it answers under a new prompt version. A worker refuses a draft whose
+  prompt version differs from the one its build holds.
+
+`ingestion gates proposals list` reads `GET /api/v1/gates/proposals`, the newest first. `--json`
+prints `schemas/prompt-proposals-list.schema.json`.
+
+```text
+$ ingestion gates proposals list
+Proposal 3f0c9a2e41b7d8c5e6f1a0b9c8d7e6f5 changes the quality prompt at v1-<digest>, from 3 misses labeled through 2026-03-02 01:00:00 EST.
+  drafted by sonnet at medium
+  pattern  The gate passed thin posts and guessed fleet for personal ones.
+  change   Ask what an item adds before a pass.
+  edit 1
+    - - themes: two to four short phrases naming what the item argues or explores.
+    + - themes: two to four short phrases naming what the item argues or explores. Name what the item adds.
+  answers  3 of 3 misses: 1, 2, 3
 ```
 
 ### A model read answers a fleet item's note with a summary and a suggestion

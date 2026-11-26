@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -25,6 +26,7 @@ import (
 	"github.com/datapointchris/ingestion/extract"
 	"github.com/datapointchris/ingestion/gatetrust"
 	"github.com/datapointchris/ingestion/landing"
+	"github.com/datapointchris/ingestion/misses"
 	"github.com/datapointchris/ingestion/modelread"
 	"github.com/datapointchris/ingestion/outbox"
 	"github.com/datapointchris/ingestion/qualitygate"
@@ -69,7 +71,17 @@ var serveCmd = &cobra.Command{
 		"sends that home's path as the delivery first kept it:\n" +
 		"\n" +
 		"  [deliver." + deliver.LearningResources + "]\n" +
-		"  root              the [serve.homes] root its file paths are below, such as books",
+		"  root              the [serve.homes] root its file paths are below, such as books\n" +
+		"\n" +
+		"At each time of its [gates.misses] schedule, it projects the quality gate's\n" +
+		"misses that a person labeled since the last proposal. Where it finds any, it\n" +
+		"writes a prompt proposal holding them and queues one misses task, which a\n" +
+		"worker with a [model] adapter drafts. `ingestion gates proposals list` prints\n" +
+		"each proposal:\n" +
+		"\n" +
+		"  [gates.misses]\n" +
+		"  schedule          a cron expression in UTC, or in the zone a CRON_TZ=<zone>\n" +
+		"                    prefix names (default \"" + misses.DefaultSchedule + "\", 06:00 each Monday)",
 	Example: "  # the service, reading $XDG_CONFIG_HOME/ingestion/config.toml\n" +
 		"  ingestion serve\n" +
 		"\n" +
@@ -171,6 +183,10 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	scheduler := connectors.NewScheduler(st, lander, log)
+	drafts, err := misses.NewScheduler(st, cmp.Or(cfg.Gates.Misses.Schedule, misses.DefaultSchedule), log)
+	if err != nil {
+		return fmt.Errorf("%s: [gates.misses] %w", path, err)
+	}
 	roots := make([]string, 0, len(cfg.Serve.Homes))
 	for root := range cfg.Serve.Homes {
 		roots = append(roots, root)
@@ -182,7 +198,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 			Store: st, Lander: lander, Scheduler: scheduler, Roots: roots, AfterApply: route.AfterApply(log), Log: log,
 		}),
 		server.ReplayRoutes(st, replayableStages(st, extractors), log),
-		server.ReviewRoutes(st, log), server.TrustRoutes(st, log), accuracy.Routes(st, log))
+		server.ReviewRoutes(st, log), server.TrustRoutes(st, log), accuracy.Routes(st, log), misses.Routes(st, log))
 	srv := &http.Server{Addr: listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 
 	var wg sync.WaitGroup
@@ -192,6 +208,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	wg.Go(func() { gate.Run(background, log) })
 	wg.Go(func() { relay.Run(background) })
 	wg.Go(func() { scheduler.Run(background) })
+	wg.Go(func() { drafts.Run(background) })
 
 	served := make(chan error, 1)
 	go func() { served <- srv.ListenAndServe() }()
