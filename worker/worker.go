@@ -37,6 +37,11 @@ type Result struct {
 	Outcome    string
 	Error      *string
 	RetryAfter time.Duration
+	// Wait marks a retry that waits on the far end, or on a stopping worker,
+	// rather than one that a fault in the run caused. Such a retry spends no
+	// attempt, and the service counts how long the task has waited since the
+	// first, as Task.WaitedSeconds.
+	Wait bool
 	// Outputs are the stage's records for the task's item, and Delivery is how
 	// a deliver task's write ended. Arrivals are what a poll that ends done
 	// found at its source, and Cursor its connector's next position. The
@@ -285,14 +290,14 @@ func runTask(ctx context.Context, client *Client, cfg Config, h Handler, task Ta
 		// claims it at once. Its lease never lapses, and a lapse counts toward
 		// failing a task whose runs end their worker.
 		if result.Outcome != server.OutcomeDone {
-			result = Result{Outcome: server.OutcomeRetry}
+			result = Result{Outcome: server.OutcomeRetry, Wait: true}
 		}
 		stopCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), stopReportTimeout)
 		defer stop()
 		ctx, runCtx = stopCtx, stopCtx
 	}
 	err := report(ctx, runCtx, client, cfg, log, task, server.ReportRequest{
-		Token: task.LeaseToken, Outcome: result.Outcome, Error: result.Error,
+		Token: task.LeaseToken, Outcome: result.Outcome, Error: result.Error, Wait: result.Wait,
 		RetryAfterSeconds: int(result.RetryAfter.Seconds()), Outputs: result.Outputs, Delivery: result.Delivery,
 		Arrivals: result.Arrivals, Cursor: result.Cursor,
 	})

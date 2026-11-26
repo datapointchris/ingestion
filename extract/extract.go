@@ -79,8 +79,8 @@ type Read struct {
 // RetryError is a read that may succeed if made again, and its parse queues
 // again after After. A bounded one fails once its task's claims reach
 // ReadAttempts, such as when the source gave no answer. Where the source
-// asked the read to wait, as while it is busy, the parse queues again
-// whatever its count.
+// asked the read to wait, as while it is busy, the parse waits: it spends no
+// claim, and fails once it has waited ReadWaitCeiling.
 type RetryError struct {
 	Err     error
 	After   time.Duration
@@ -91,8 +91,14 @@ func (e *RetryError) Error() string { return e.Err.Error() }
 func (e *RetryError) Unwrap() error { return e.Err }
 
 // ReadAttempts is how many claims a parse makes of a read that fails boundedly
-// before it fails.
+// before it fails. A claim that ended waiting is not among them.
 const ReadAttempts = 4
+
+// ReadWaitCeiling is how long a parse waits on its source in all before it
+// fails, counted from the source's first answer to wait. It outlasts the
+// longest pause that ypl declares, a day, so only a source that never frees
+// fails a parse this way.
+const ReadWaitCeiling = 48 * time.Hour
 
 // Extractor turns the bytes of one media type into a parse's units.
 type Extractor struct {

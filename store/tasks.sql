@@ -5,9 +5,11 @@
 -- releases the fill. destination names the destination a deliver task writes
 -- its item to. model names the model that a measurement arm's task asks its
 -- run for. sighting_connector names the connector whose sighting a delete
--- task removes from that connector's source. attempts counts every claim, and
--- lapses the leases in a row that lapsed with no report accepted, which any
--- accepted report resets. error is outsider-written,
+-- task removes from that connector's source. attempts counts every claim but
+-- one that ended waiting, and lapses the leases in a row that lapsed with no
+-- report accepted, which any accepted report resets. waiting_since_ts is when
+-- a report first said the task waits on its far end or a stopping worker, and
+-- null where none has. error is outsider-written,
 -- because an extractor's stderr can quote the item, so the outbox ships it as
 -- ingestion.text.
 
@@ -27,6 +29,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     lease_expires_ts TEXT,
     attempts         INTEGER NOT NULL DEFAULT 0,
     lapses           INTEGER NOT NULL DEFAULT 0,
+    waiting_since_ts TEXT,
     not_before_ts    TEXT,
     error            TEXT,
     created_ts       TEXT NOT NULL,

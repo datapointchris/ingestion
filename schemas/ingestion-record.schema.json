@@ -295,8 +295,9 @@
         "lease_holder": {"description": "The worker holding the lease.", "type": ["string", "null"]},
         "lease_token": {"description": "The fencing token. A report under an older token is refused.", "type": ["integer", "null"]},
         "lease_expires_ts": {"anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
-        "attempts": {"description": "How many claims leased the task.", "type": "integer", "minimum": 0},
+        "attempts": {"description": "How many claims leased the task, but each that ended waiting on the task's far end or on a stopping worker.", "type": "integer", "minimum": 0},
         "lapses": {"description": "How many leases in a row lapsed with no report accepted. Any accepted report sets it to 0, and the claim that finds a third fails the task. Absent from a record shipped before the store kept it.", "type": "integer", "minimum": 0},
+        "waiting_since_ts": {"description": "When a report first said the task waits on its far end or on a stopping worker, and null where none has. A retry of a failed task clears it. Absent from a record shipped before the store kept it.", "anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
         "not_before_ts": {"description": "The backoff's end.", "anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
         "created_ts": {"$ref": "#/$defs/timestamp"},
         "updated_ts": {"$ref": "#/$defs/timestamp"}

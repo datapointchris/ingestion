@@ -67,13 +67,18 @@ type Task struct {
 	// higher, so a report under an older token is refused.
 	LeaseToken     *int64  `json:"lease_token"`
 	LeaseExpiresTS *string `json:"lease_expires_ts"`
-	Attempts       int     `json:"attempts"`
+	// Attempts counts the claims that leased the task, but each that ended
+	// waiting.
+	Attempts int `json:"attempts"`
 	// Lapses counts the leases in a row that lapsed with no report accepted.
-	Lapses      int     `json:"lapses"`
-	NotBeforeTS *string `json:"not_before_ts"`
-	Error       *string `json:"error"`
-	CreatedTS   string  `json:"created_ts"`
-	UpdatedTS   string  `json:"updated_ts"`
+	Lapses int `json:"lapses"`
+	// WaitingSinceTS is when a report first said the task waits, and nil where
+	// none has.
+	WaitingSinceTS *string `json:"waiting_since_ts"`
+	NotBeforeTS    *string `json:"not_before_ts"`
+	Error          *string `json:"error"`
+	CreatedTS      string  `json:"created_ts"`
+	UpdatedTS      string  `json:"updated_ts"`
 }
 
 // Lapsed says whether t is leased and its lease ran out by now, which returns
@@ -521,6 +526,9 @@ type Outcome struct {
 	State      string
 	Error      *string
 	RetryAfter time.Duration
+	// Wait marks a task queued again because its far end asked it to wait, or
+	// its worker stopped, so the claim spends none of its attempts.
+	Wait bool
 }
 
 // Report ends the lease that token holds on task id, with outcome. write runs
@@ -561,6 +569,12 @@ func (s *Store) Report(ctx context.Context, id string, token int64, outcome Outc
 			outcome.State, outcome.Error, notBefore, tx.stamp(), id); err != nil {
 			return fmt.Errorf("end task %s: %w", id, err)
 		}
+		if outcome.State == TaskQueued && outcome.Wait {
+			if _, err := tx.tx.ExecContext(ctx, `UPDATE tasks SET attempts = max(attempts - 1, 0),
+				waiting_since_ts = coalesce(waiting_since_ts, ?) WHERE id = ?`, tx.stamp(), id); err != nil {
+				return fmt.Errorf("end task %s waiting: %w", id, err)
+			}
+		}
 		task, err = tx.task(ctx, id)
 		return err
 	})
@@ -599,8 +613,8 @@ func (s *Store) RetryTask(ctx context.Context, id string) (Task, error) {
 		case TaskQueued, TaskLeased:
 			return nil
 		}
-		if _, err := tx.tx.ExecContext(ctx, `UPDATE tasks SET state = 'queued', attempts = 0, lapses = 0, error = NULL, not_before_ts = NULL,
-			updated_ts = ? WHERE id = ?`, tx.stamp(), id); err != nil {
+		if _, err := tx.tx.ExecContext(ctx, `UPDATE tasks SET state = 'queued', attempts = 0, lapses = 0, waiting_since_ts = NULL, error = NULL,
+			not_before_ts = NULL, updated_ts = ? WHERE id = ?`, tx.stamp(), id); err != nil {
 			return fmt.Errorf("queue task %s again: %w", id, err)
 		}
 		task, err = tx.task(ctx, id)

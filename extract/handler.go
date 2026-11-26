@@ -121,10 +121,11 @@ func (h readHandler) SlotLimit() int { return h.extractor.SlotLimit }
 func (h readHandler) SlotGroup() string { return h.extractor.SlotGroup }
 
 // Run reads the task's item at its source. A read that its source asked to
-// wait for queues again after that wait. One that failed in a way a later
-// read may not queues again until the task's claims reach ReadAttempts. Any
-// other failure, such as the source refusing the item for good, fails the
-// task with the source's refusal kept, so the item waits in review.
+// wait for queues again after that wait, spending no claim, until the task has
+// waited ReadWaitCeiling. One that failed in a way a later read may not
+// queues again until the task's claims reach ReadAttempts. Any other failure,
+// such as the source refusing the item for good, fails the task with the
+// source's refusal kept, so the item waits in review.
 func (h readHandler) Run(ctx context.Context, task worker.Task) worker.Result {
 	if task.ItemKey == nil {
 		return failed(h.extractor, "the task names no item to read")
@@ -136,9 +137,17 @@ func (h readHandler) Run(ctx context.Context, task worker.Task) worker.Result {
 		return failed(h.extractor, fmt.Sprintf("%s ran past its %s limit", h.extractor.Name, h.extractor.Timeout))
 	}
 	var retry *RetryError
-	if errors.As(err, &retry) && (!retry.Bounded || task.Attempts < ReadAttempts) {
+	if errors.As(err, &retry) {
 		reason := retry.Error()
-		return worker.Result{Outcome: server.OutcomeRetry, Error: &reason, RetryAfter: retry.After}
+		waited := time.Duration(task.WaitedSeconds) * time.Second
+		switch {
+		case !retry.Bounded && waited < ReadWaitCeiling:
+			return worker.Result{Outcome: server.OutcomeRetry, Error: &reason, RetryAfter: retry.After, Wait: true}
+		case !retry.Bounded:
+			return failed(h.extractor, fmt.Sprintf("%s, after waiting %s on the source in all", reason, waited.Round(time.Minute)))
+		case task.Attempts < ReadAttempts:
+			return worker.Result{Outcome: server.OutcomeRetry, Error: &reason, RetryAfter: retry.After}
+		}
 	}
 	if err != nil {
 		return failed(h.extractor, err.Error())
