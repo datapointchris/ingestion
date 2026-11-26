@@ -104,6 +104,12 @@ func (c *Client) TaskParse(ctx context.Context, id string, token int64, pick sto
 	if err := json.NewDecoder(resp.Body).Decode(&answer); err != nil {
 		return answer, fmt.Errorf("read the answer to GET %s: %w", path, err)
 	}
+	// A service that predates the pick answers its newest parse, which reads
+	// like the one asked for.
+	if (pick.Extractor != "" && answer.Extractor != pick.Extractor) || (pick.Version != "" && answer.ExtractorVersion != pick.Version) {
+		return server.TaskParseAnswer{}, fmt.Errorf("GET %s answered the parse by %s %s rather than the one it asked for, so the service may predate the pick",
+			path, answer.Extractor, answer.ExtractorVersion)
+	}
 	return answer, nil
 }
 
