@@ -116,10 +116,13 @@ Docling, and the newest done parse otherwise.
   It takes only an item with a live home below that root. The `deliveries` row keeps that home's
   path beside the title, because serve alone holds the homes and a worker reads none.
 - **A book's chapter is delivered only once its book's delivery has settled.** The chapter is
-  written as part of its book's record, so it waits until a record holds the book. The write that
-  settles the book's delivery queues its chapters' deliveries. A refused book queues none. A
-  chapter holds no file, so a deliverer that writes by file writes it by its book's record instead.
-  The `deliveries` row keeps that record's id and the chapter's pages from its newest sections, so
+  written as part of its book's record, so it waits until a record holds the book. Only a
+  deliverer whose registration sets `Chapters` takes a chapter, and its `Takes` and `FilePath`
+  never read one, because a chapter holds no bytes or home. The write that settles the book's
+  delivery queues its chapters' deliveries, in their order, and so does a replay over the book. A
+  refused book queues none. `serve` queues each undelivered chapter of a delivered book once it
+  listens, so a book delivered before its deliverer wrote chapters needs no replay. The
+  `deliveries` row keeps the book's record id and the chapter's pages from its newest sections, so
   a retry sends what the first attempt sent.
 - **An item's source time is when its artifact was made at its source**, such as a Reddit post's
   creation. A destination's own date, such as life's save date, takes it, and takes the landing

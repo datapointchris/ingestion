@@ -29,18 +29,19 @@ var LearningResourcesScopes = []string{"learning.resources.write"}
 
 func init() {
 	Register(Registration{
-		Name: LearningResources, Scopes: LearningResourcesScopes, Takes: learningTakes, FilePath: true, Open: NewLearningResources,
+		Name: LearningResources, Scopes: LearningResourcesScopes, Takes: learningTakes, FilePath: true, Chapters: true,
+		Open: NewLearningResources,
 	})
 }
 
-// pdfMediaType is the media type that learning-resources writes as a book
-// whose copy is a PDF. It writes a book's chapter beside it.
+// pdfMediaType is the one media type that learning-resources writes as a
+// book, whose copy is a PDF.
 const pdfMediaType = "application/pdf"
 
-var errNotPDF = errors.New("it is not a PDF or a book's chapter, and learning holds a book's file only as its pdf copy")
+var errNotPDF = errors.New("it is not a PDF, and learning holds a book's file only as its pdf copy")
 
 func learningTakes(item store.Item) error {
-	if item.MediaType != pdfMediaType && !item.PlacedThroughParent() {
+	if item.MediaType != pdfMediaType {
 		return errNotPDF
 	}
 	return nil

@@ -1,41 +1,46 @@
 package connectors
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/datapointchris/ingestion/store"
 )
 
-// deliverer is what this build knows of one deliverer: what it can write, and
-// whether it writes an item by its file's path below a root.
-type deliverer struct {
-	takes    func(store.Item) error
-	filePath bool
+// Writes is what one deliverer can write. Takes answers why it cannot write
+// an item, and nil where it can, and a nil Takes writes every item. FilePath
+// says it writes an item by its file: it takes only an item with a live home
+// below the root that SetDelivererRoot names, and its delivery keeps that
+// home's path. Chapters says it writes a book's chapter as part of its book's
+// record, so a chapter waits for its book's delivery and keeps that record's
+// id. Takes and FilePath read no chapter, which holds no bytes or home.
+type Writes struct {
+	Takes    func(store.Item) error
+	FilePath bool
+	Chapters bool
 }
 
-// deliverers holds each deliverer that this build registers, by name.
-var deliverers = map[string]deliverer{}
+// deliverers holds what each deliverer that this build registers writes, by
+// name.
+var deliverers = map[string]Writes{}
 
 // delivererRoots holds the [serve.homes] root that each deliverer writing by
 // file path reads, as serve's config names it.
 var delivererRoots = map[string]string{}
 
 // RegisterDeliverer records that this build carries the deliverer called
-// name, which a destination names as its deliverer. takes answers why the
-// deliverer cannot write an item, and nil where it can; a nil takes writes
-// every item. filePath says the deliverer writes an item by its file: it takes
-// only an item with a live home below the root that SetDelivererRoot names,
-// and its delivery keeps that home's path. deliver.Register calls it beside
-// the deliverer's constructor, so a name that a set may give is one a worker
-// can open. Registering a name twice panics, as a duplicate is a build error.
-func RegisterDeliverer(name string, takes func(store.Item) error, filePath bool) {
+// name, which a destination names as its deliverer, and what it writes.
+// deliver.Register calls it beside the deliverer's constructor, so a name that
+// a set may give is one a worker can open. Registering a name twice panics,
+// as a duplicate is a build error.
+func RegisterDeliverer(name string, w Writes) {
 	if _, ok := deliverers[name]; ok {
 		panic("connectors: deliverer " + name + " is registered twice")
 	}
-	if takes == nil {
-		takes = func(store.Item) error { return nil }
+	if w.Takes == nil {
+		w.Takes = func(store.Item) error { return nil }
 	}
-	deliverers[name] = deliverer{takes: takes, filePath: filePath}
+	deliverers[name] = w
 }
 
 // SetDelivererRoot names root as the [serve.homes] root below which the
@@ -47,7 +52,7 @@ func SetDelivererRoot(name, root string) error {
 	switch {
 	case !ok:
 		return fmt.Errorf("[deliver.%s] names a root, and %s is no deliverer this build registers", name, name)
-	case !d.filePath:
+	case !d.FilePath:
 		return fmt.Errorf("[deliver.%s] names a root, and %s writes no file path", name, name)
 	}
 	delivererRoots[name] = root
@@ -59,7 +64,7 @@ func SetDelivererRoot(name, root string) error {
 // It is nil for a deliverer that writes no file path. Its error says why the
 // deliverer cannot take the item.
 func FilePath(name string, homes []store.Home) (*string, error) {
-	if d, ok := deliverers[name]; !ok || !d.filePath {
+	if d, ok := deliverers[name]; !ok || !d.FilePath {
 		return nil, nil
 	}
 	root, ok := delivererRoots[name]
@@ -73,6 +78,8 @@ func FilePath(name string, homes []store.Home) (*string, error) {
 	}
 	return nil, fmt.Errorf("it has no live home under root %s", root)
 }
+
+var errNoChapters = errors.New("it is a book's chapter, and the deliverer writes no chapters")
 
 // Why an item placed on a side and read as is reaches no deliverer, in the
 // words of schemas/item.schema.json.
@@ -133,8 +140,8 @@ func (u *Undelivered) Error() string {
 // destination is not declared, names no deliverer, or has a deliverer that
 // cannot take item, and where side names none and its side has no default.
 // homes are the item's homes, whose live ones a deliverer writing by file
-// path reads. A book's chapter holds no file, so a deliverer writing by file
-// path writes it as part of its book's record instead.
+// path reads. It takes a book's chapter only where the deliverer writes
+// chapters.
 func (s Set) DeliveryTo(side store.Decision, item store.Item, homes []store.Home) (Destination, *Undelivered) {
 	var d Destination
 	var ok bool
@@ -148,10 +155,15 @@ func (s Set) DeliveryTo(side store.Decision, item store.Item, homes []store.Home
 	if d.Deliverer == "" {
 		return d, &Undelivered{Reason: UndeliveredNoDeliverer, Side: side.Verdict, Destination: d.Name}
 	}
-	if r, ok := deliverers[d.Deliverer]; ok {
-		err := r.takes(item)
-		if err == nil && !item.PlacedThroughParent() {
-			_, err = FilePath(d.Deliverer, homes)
+	if w, ok := deliverers[d.Deliverer]; ok {
+		var err error
+		switch {
+		case item.PlacedThroughParent() && !w.Chapters:
+			err = errNoChapters
+		case !item.PlacedThroughParent():
+			if err = w.Takes(item); err == nil {
+				_, err = FilePath(d.Deliverer, homes)
+			}
 		}
 		if err != nil {
 			return d, &Undelivered{Reason: UndeliveredNotTaken, Side: side.Verdict, Destination: d.Name, Deliverer: d.Deliverer, Why: err.Error()}

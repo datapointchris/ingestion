@@ -234,6 +234,11 @@ func (s *Store) LiveHomes(ctx context.Context, sum string) ([]Home, error) {
 	return readInto[Home](ctx, s.read, table("homes"), `blob_sha256 = ? AND gone_ts IS NULL ORDER BY found_ts, rowid`, sum)
 }
 
+// Deliveries reads each of the item's deliveries, one per destination.
+func (s *Store) Deliveries(ctx context.Context, key string) ([]Delivery, error) {
+	return readInto[Delivery](ctx, s.read, table("deliveries"), `item_key = ? ORDER BY destination`, key)
+}
+
 // Condition statuses, as Kubernetes writes them.
 const (
 	ConditionTrue    = "True"

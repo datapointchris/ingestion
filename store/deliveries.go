@@ -126,15 +126,41 @@ func (t *Tx) RecordDelivery(ctx context.Context, task Task, a DeliveryAttempt) e
 
 // UnsettledKeysReadAs reads the key of each item whose newest read decision
 // has verdict and that holds no settled delivery: each item that a changed set
-// may now send to a destination.
+// may now send to a destination. A book's chapters follow each other in their
+// order, so #2 comes before #10.
 func (t *Tx) UnsettledKeysReadAs(ctx context.Context, verdict string) ([]string, error) {
 	rows, err := t.tx.QueryContext(ctx, `
 SELECT i.key FROM items i
 WHERE (SELECT d.verdict FROM decisions d WHERE d.item_key = i.key AND d.gate = ? ORDER BY d.sequence DESC LIMIT 1) = ?
 	AND NOT EXISTS (SELECT 1 FROM deliveries x WHERE x.item_key = i.key AND x.outcome != ?)
-ORDER BY i.key`, GateRead, verdict, DeliveryPending)
+ORDER BY coalesce(i.parent_key, i.key), length(i.key), i.key`, GateRead, verdict, DeliveryPending)
 	if err != nil {
 		return nil, fmt.Errorf("select the items read %s that hold no settled delivery: %w", verdict, err)
+	}
+	defer func() { _ = rows.Close() }()
+	var keys []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		keys = append(keys, key)
+	}
+	return keys, rows.Err()
+}
+
+// UndeliveredChapterKeys reads the key of each book's chapter that holds no
+// delivery while its book holds one delivered or delivered to existing, each
+// book's chapters in their order.
+func (t *Tx) UndeliveredChapterKeys(ctx context.Context) ([]string, error) {
+	rows, err := t.tx.QueryContext(ctx, `
+SELECT c.key FROM items c
+WHERE c.media_type = ? AND c.parent_key IS NOT NULL
+	AND NOT EXISTS (SELECT 1 FROM deliveries x WHERE x.item_key = c.key)
+	AND EXISTS (SELECT 1 FROM deliveries b WHERE b.item_key = c.parent_key AND b.outcome IN (?, ?))
+ORDER BY c.parent_key, length(c.key), c.key`, MediaTypeChapter, DeliveryDelivered, DeliveryDeliveredToExisting)
+	if err != nil {
+		return nil, fmt.Errorf("select the chapters of delivered books that hold no delivery: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 	var keys []string
