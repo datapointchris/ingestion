@@ -60,6 +60,8 @@ type ItemAnswer struct {
 	Outputs       []OutputView   `json:"outputs"`
 	Decisions     []DecisionView `json:"decisions"`
 	Deliveries    []DeliveryView `json:"deliveries"`
+	// Sections are the item's sections, each producer version's in order.
+	Sections []SectionView `json:"sections"`
 	// Undelivered says why an item placed on a side and read as is reaches
 	// no deliverer, and is null where it does.
 	Undelivered *UndeliveredView `json:"undelivered"`
@@ -564,6 +566,7 @@ func itemAnswer(rec store.ItemRecords) ItemAnswer {
 			ParentKey: it.ParentKey, FlowID: it.FlowID, Phase: rec.Phase(), WaitingAt: optional(rec.WaitingAt()), CreatedTS: it.CreatedTS,
 		},
 		Homes: []HomeView{}, Sightings: []SightingView{}, Outputs: []OutputView{}, Decisions: []DecisionView{}, Deliveries: []DeliveryView{},
+		Sections: []SectionView{},
 	}
 	if rec.Blob != nil {
 		a.Item.SizeBytes, a.Item.MD5 = &rec.Blob.SizeBytes, &rec.Blob.MD5
@@ -606,8 +609,33 @@ func itemAnswer(rec store.ItemRecords) ItemAnswer {
 			Destination: d.Destination, DestinationID: d.DestinationID, Outcome: d.Outcome, Attempts: d.Attempts, LastError: d.LastError,
 		})
 	}
+	for _, s := range rec.Sections {
+		a.Sections = append(a.Sections, SectionView{
+			Producer: s.Producer, ProducerVersion: s.ProducerVersion, N: s.N, ParentN: s.ParentN, Level: s.Level, Kind: s.Kind, Title: s.Title,
+			PDFPageStart: s.PDFPageStart, PDFPageEnd: s.PDFPageEnd, PrintedPageStart: s.PrintedPageStart, PrintedPageEnd: s.PrintedPageEnd,
+			StartPlacedBy: s.StartPlacedBy, ChildKey: s.ChildKey,
+		})
+	}
 	a.Suggestion = suggestion(rec)
 	return a
+}
+
+// SectionView is one entry of an item's sections, as the sections table holds
+// it.
+type SectionView struct {
+	Producer         string  `json:"producer"`
+	ProducerVersion  string  `json:"producer_version"`
+	N                int     `json:"n"`
+	ParentN          *int    `json:"parent_n"`
+	Level            int     `json:"level"`
+	Kind             string  `json:"kind"`
+	Title            *string `json:"title"`
+	PDFPageStart     int     `json:"pdf_page_start"`
+	PDFPageEnd       int     `json:"pdf_page_end"`
+	PrintedPageStart *string `json:"printed_page_start"`
+	PrintedPageEnd   *string `json:"printed_page_end"`
+	StartPlacedBy    string  `json:"start_placed_by"`
+	ChildKey         *string `json:"child_key"`
 }
 
 func decisionView(d store.Decision) DecisionView {

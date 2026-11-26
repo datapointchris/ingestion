@@ -21,15 +21,16 @@ never ahead of it. A stage's code goes in its own package:
 
 | Package | Holds |
 | --- | --- |
-| `store` | the SQLite store: items, sightings, blobs, each stage's outputs and decisions, deliveries, task leases, connector cursors, the declaration sets applied, and each keyed request's answer |
+| `store` | the SQLite store: items, sightings, blobs, each stage's outputs and decisions, each book's sections, deliveries, task leases, connector cursors, the declaration sets applied, and each keyed request's answer |
 | `itemkey` | the one component that derives an item's key from any form of its artifact |
 | `landing` | an artifact's bytes written under their SHA-256 or referenced under a named root, the item and one sighting per connector, each item's source time and the fill that reads it from bytes already landed, and the report of blobs and rows that disagree |
 | `redditexport` | the Reddit bookmarklet's export, as a store keeps it, split into one save each and landed as an item with a child per save, registered as the drop format `reddit-export`; and in `bookmarklet/`, the bookmarklet and the command that writes the page installing it |
-| `extract` | one extractor per media type, each writing versioned text and units, a positional one keeping each blank unit in place; and in `programs/`, the Python extractors that the image installs at `ProgramDir`, such as `pdf-text`, which writes one unit per PDF page |
+| `extract` | one extractor per media type, each writing versioned text and units, a positional one keeping each blank unit in place; and in `programs/`, the Python programs that the image installs at `ProgramDir`: `pdf-text`, which writes one unit per PDF page, and `pdf-structure`, which writes a PDF's profile for `sections` |
+| `sections` | the structure stage and the sections that serve writes from it: the worker's handler that runs `pdf-structure` over a PDF's bytes, the outline rule and the printed-page offset, and the write that ends the structure task, which writes one `sections` row per outline entry, a chapter item per body chapter that takes its book's decisions through `route.PassToChapters`, and the book's source time from its creation date |
 | `isolatedprocess` | the one door that starts a program over outsider bytes, in a temporary directory of its own with an environment that holds no secret |
 | `scan` | the scanner, which runs YARA-X's `yr` over a parse's text or over one sentence, its stored findings, and `build-rules`, which converts Agent Threat Rules and tests each by its own examples |
 | `qualitygate` | the model stage that reads an item's opening and answers its quality, genre, domains, themes, a one-line idea and a side guess: the write after the scan that queues its task, its prompt's data and answer for `modelstage`'s handler, and the decision that its answer appends; and its arm, the same prompt asked of the model that a replay names, over labeled items, kept at the `quality-arm` stage off the item's line, which decides nothing |
-| `route` | the side gate and the read gate, which serve runs in the write that ends each stage between the parse and them, once the item's newest parse is scanned, and in the write that applies a changed set: a sighting's tags, then a rule, then the quality gate's drop, review or guess at or above its confidence floor, else review, with a tag, rule or person withdrawing the item's queued quality task; a person's placement from review; `Due`, the one predicate for where an item is due a delivery, and `ModelReadDue`, the one for where it is due a model read under a lens whose prompt the build holds and that no read answering its note already holds, which each decision's write reconciles, queueing a delivery or a model read and withdrawing either where a drop or a move stops it |
+| `route` | the side gate and the read gate, which serve runs in the write that ends each stage between the parse and them, once the item's newest parse is scanned, and in the write that applies a changed set: a sighting's tags, then a rule, then the quality gate's drop, review or guess at or above its confidence floor, else review, with a tag, rule or person withdrawing the item's queued quality task; a person's placement from review; `Due`, the one predicate for where an item is due a delivery, and `ModelReadDue`, the one for where it is due a model read under a lens whose prompt the build holds and that no read answering its note already holds, which each decision's write reconciles, queueing a delivery or a model read and withdrawing either where a drop or a move stops it; and each chapter's copy of its book's newest side and read decisions, which every decision on the book passes on |
 | `modelread` | the model stage that reads a fleet item whole under its read decision's lens and answers its note with a summary, a suggestion sentence, or both: its prompt's data and answer for `modelstage`'s handler, the scan of the suggestion before it is kept, and its replay |
 | `modelstage` | what every model stage's worker handler shares: the dispatch-once protocol, which starts a call once, stores its dispatch and follows it, and a replay's estimate |
 | `accuracy` | how often the quality gate's verdict and side guess agree with each label, a person's placement of an item that the gates sent to review first, overall and by confidence band, connector, model and prompt version; each arm by model beside the gate's answers on the same items; and the route that answers it |
@@ -74,8 +75,10 @@ pin and publish them. The `Dockerfile` builds the one image that `serve` and `wo
 ## Every item passes one line of stages
 
 ```text
-land → parse → scan → quality gate → side → read → model read → deliver
+land → parse → structure → sections → scan → quality gate → side → read → model read → deliver
 ```
+
+A PDF's structure and sections run beside its scan, and only a PDF passes them.
 
 - **Each stage writes its own record, and an item's phase is derived from which records exist.** A
   push skips stages, and a model stage can wait while later model-free work runs elsewhere. A

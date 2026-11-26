@@ -30,6 +30,7 @@ import (
 	"github.com/datapointchris/ingestion/modelstage"
 	"github.com/datapointchris/ingestion/qualitygate"
 	"github.com/datapointchris/ingestion/scan"
+	"github.com/datapointchris/ingestion/sections"
 	"github.com/datapointchris/ingestion/store"
 	"github.com/datapointchris/ingestion/worker"
 )
@@ -48,6 +49,9 @@ func workerHandlers(client *worker.Client, deliverers map[string]deliver.Deliver
 	models modelConfig, log *slog.Logger,
 ) []worker.Handler {
 	handlers := extract.Builtin().Handlers(client, log)
+	if structure := sections.NewHandler(sections.Program, client, log); structure != nil {
+		handlers = append(handlers, structure)
+	}
 	if scanner != nil {
 		handlers = append(handlers, scan.NewHandler(scanner, client, log))
 	}

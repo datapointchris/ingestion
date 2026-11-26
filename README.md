@@ -390,6 +390,44 @@ holds no replay for with `stage_not_replayable`. It refuses a `--key` that names
 replay at an unchanged extractor version retries the items whose parse failed. An item whose
 parse is done keeps it, even where the rerun fails.
 
+### Profiling a PDF, and finding its chapters
+
+A PDF's `pdf-text` parse queues its structure in the same write. A worker runs `pdf-structure`,
+which reads the PDF with PyMuPDF and writes one profile:
+
+- its page count, and each outline entry's level, title and page
+- its page-label rules, and its metadata's creation date
+- the share of every fifth page set in a monospace font, which marks code, and in a TeX or math
+  font, which marks formulas
+
+The service writes the book's sections in the write that reports the profile, one row of the
+`sections` table per outline entry:
+
+- **An outline is usable** with 3 or more entries on 3 or more pages, spanning at least half the
+  book.
+- **The chapter level is the shallowest usable one.** A level whose entries are mostly `Part N`
+  is skipped, and its entries become parts. A deeper entry is a section of its chapter.
+- **Front and back matter keep their kind and are no chapter.** Contents, a preface, an appendix,
+  an index or a bibliography is found by its title.
+- **A section ends where the next entry at its level or above begins.** A printed page comes from
+  the page's label, else from the book's offset, else stays empty. The offset is the most common
+  difference between a PDF page and a number standing alone on its first or last three lines,
+  where it holds on 30% of the pages.
+- **A PDF with no usable outline and under 50 pages is one section over the whole file.** A
+  longer one has none until its printed contents are read.
+
+Each chapter becomes a child item, `<book key>#<n>` from 1, which holds no bytes. It carries its
+own title and the book's zone and source time. It takes the book's side and read decisions,
+decided by `parent:<book key>`, and each later decision on the book moves every chapter with it.
+So placing a book from review places its chapters. A chapter waits in no review queue, and no
+model read runs on it, because it holds no parse of its own. A book with no source time takes
+its PDF's creation date.
+
+`ingestion items show` prints each version of the sections, counting its entries and chapters,
+and a line for each chapter. `ingestion items replay --stage structure` profiles each PDF again,
+such as with a new `pdf-structure`. Its sections write beside the old, and a book that already
+holds chapters makes none again.
+
 ### Scanning an item for what it suggests and what it hides
 
 A parse that is done queues the item's scan in the same write that reports it. A worker runs

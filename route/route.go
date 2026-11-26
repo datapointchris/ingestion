@@ -21,7 +21,8 @@
 // newest at a gate decides. Each decision brings the item's delivery and its
 // model read in line in the same write: a read as is queues its delivery, a
 // read by a model queues its model read, and a drop or a move withdraws
-// either where it has not run.
+// either where it has not run. The same write passes the item's decisions to
+// each of its chapters, which no gate decides.
 package route
 
 import (
@@ -89,6 +90,10 @@ const (
 
 // ByPerson is a person's decision, under their login.
 func ByPerson(login string) string { return "person:" + login }
+
+// ByParent is a decision that an item took from its parent, under the
+// parent's key.
+func ByParent(key string) string { return "parent:" + key }
 
 func byRule(name string) string { return "rule:" + name }
 
@@ -430,7 +435,76 @@ func decide(ctx context.Context, tx *store.Tx, key string, side store.Decision, 
 	if err := reconcileModelRead(ctx, tx, key, side, read); err != nil {
 		return nil, err
 	}
+	if err := PassToChapters(ctx, tx, key); err != nil {
+		return nil, err
+	}
 	return out, nil
+}
+
+// PassToChapters gives each chapter of the item under key the item's newest
+// side decision and, where it places the item on a side, its newest read
+// decision, each decided by ByParent. It appends nothing to a chapter whose
+// newest decisions already say the same. It then brings each chapter's
+// delivery and model read in line, as decide does for the item. A chapter
+// takes its decisions only from its parent, so the gates never run on it.
+func PassToChapters(ctx context.Context, tx *store.Tx, key string) error {
+	children, err := tx.Children(ctx, key)
+	if err != nil {
+		return err
+	}
+	chapters := slices.DeleteFunc(children, func(c store.Item) bool { return c.MediaType != store.MediaTypeChapter })
+	if len(chapters) == 0 {
+		return nil
+	}
+	side, sided, err := tx.NewestDecision(ctx, key, store.GateSide)
+	if err != nil || !sided {
+		return err
+	}
+	read, hasRead, err := tx.NewestDecision(ctx, key, store.GateRead)
+	if err != nil {
+		return err
+	}
+	set, err := connectors.AppliedSet(ctx, tx)
+	if err != nil {
+		return err
+	}
+	for _, chapter := range chapters {
+		taken, err := take(ctx, tx, chapter.Key, ByParent(key), side)
+		if err != nil {
+			return err
+		}
+		var takenRead store.Decision
+		if onASide(side.Verdict) && hasRead {
+			if takenRead, err = take(ctx, tx, chapter.Key, ByParent(key), read); err != nil {
+				return err
+			}
+		}
+		if _, err := reconcileDelivery(ctx, tx, set, chapter, taken, takenRead); err != nil {
+			return err
+		}
+		if err := reconcileModelRead(ctx, tx, chapter.Key, taken, takenRead); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// take appends to the item under key a copy of d decided by by, and answers
+// the item's newest decision at d's gate, which is the copy, or an earlier
+// decision that already says the same.
+func take(ctx context.Context, tx *store.Tx, key, by string, d store.Decision) (store.Decision, error) {
+	copied := store.Decision{
+		ItemKey: key, Gate: d.Gate, Verdict: d.Verdict, DecidedBy: by, Confidence: d.Confidence, Cause: d.Cause,
+		Destination: d.Destination, Note: d.Note, Lens: d.Lens,
+	}
+	newest, ok, err := tx.NewestDecision(ctx, key, d.Gate)
+	if err != nil {
+		return store.Decision{}, err
+	}
+	if ok && sameDecision(newest, copied) && text(newest.Note) == text(copied.Note) && text(newest.Lens) == text(copied.Lens) {
+		return newest, nil
+	}
+	return tx.AddDecision(ctx, copied)
 }
 
 // ReadByModel says whether an item's newest side and read decisions send it
@@ -443,7 +517,9 @@ func ReadByModel(side, read store.Decision) bool {
 // ModelReadDue says whether a replay runs the model read on an item: its
 // newest decisions read it by a model, under a lens whose prompt this build
 // holds, no model read's task of it is open, and no done read of that lens's
-// prompt in force answers the read decision's note.
+// prompt in force answers the read decision's note. A read decision that the
+// item took from its parent is never due, because a model read reads the
+// item's own parse, and a book's chapter holds none.
 func ModelReadDue(side, read store.Decision, outputs []store.Output, open bool) bool {
 	return modelReadDue(side, read, outputs, open, true)
 }
@@ -452,7 +528,7 @@ func ModelReadDue(side, read store.Decision, outputs []store.Output, open bool) 
 // of any prompt version, as the read gate does. A new prompt then reads an
 // item again only through a replay, which estimates its tokens first.
 func modelReadDue(side, read store.Decision, outputs []store.Output, open, currentPrompt bool) bool {
-	if open || !ReadByModel(side, read) {
+	if open || !ReadByModel(side, read) || read.ByParent() {
 		return false
 	}
 	p, ok := prompts.ModelRead[text(read.Lens)]

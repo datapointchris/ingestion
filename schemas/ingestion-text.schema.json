@@ -9,6 +9,7 @@
     {"$ref": "#/$defs/homes"},
     {"$ref": "#/$defs/outputs"},
     {"$ref": "#/$defs/parse_units"},
+    {"$ref": "#/$defs/sections"},
     {"$ref": "#/$defs/deliveries"},
     {"$ref": "#/$defs/tasks"},
     {"$ref": "#/$defs/cursors"}
@@ -44,7 +45,7 @@
     },
     "outputs": {
       "title": "outputs",
-      "description": "A scan holds each finding's span. A model stage holds its answer. A failed output holds its error. A parse's text is in parse_units.",
+      "description": "A scan holds each finding's span. A model stage holds its answer, and the structure stage its profile. A failed output holds its error. A parse's text is in parse_units.",
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -64,7 +65,7 @@
           }
         },
         "answer": {
-          "description": "A model stage's structured answer, whole, as the stage's schema holds it. The quality gate answers prompts/quality/answer.schema.json: genre, domains, themes, quality, a one-line idea, a verdict and a side, each with its confidence. A model read answers a summary, a suggestion sentence, or both.",
+          "description": "A model stage's structured answer, whole, as the stage's schema holds it. The quality gate answers prompts/quality/answer.schema.json: genre, domains, themes, quality, a one-line idea, a verdict and a side, each with its confidence. A model read answers a summary, a suggestion sentence, or both. The structure stage answers a PDF's profile: its pages, each outline entry's level, title and page, its page-label rules, its metadata's creationDate, and the shares of every fifth page set in monospace and in TeX or math fonts.",
           "type": ["object", "null"]
         },
         "error": {"description": "Why the output failed, such as an extractor's stderr or the run's failure, or why a waiting model stage's dispatch has not started, in the dispatch service's words.", "type": ["string", "null"]}
@@ -79,6 +80,15 @@
       "properties": {
         "label": {"description": "The unit's own heading, such as a comment's author or a chapter's title.", "type": ["string", "null"]},
         "text": {"type": "string"}
+      }
+    },
+    "sections": {
+      "title": "sections",
+      "description": "One entry of an item's sections. Its title is the outline entry's as the PDF writes it, trimmed.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "title": {"type": ["string", "null"]}
       }
     },
     "deliveries": {

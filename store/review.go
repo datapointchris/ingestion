@@ -52,11 +52,14 @@ func (r ItemRecords) WaitsOnPerson() (reason, since string, ok bool) {
 
 // reviewCandidates selects every item that may wait on a person, as a superset
 // that WaitsOnPerson narrows: each one that a side decision sent to review, and
-// each one that holds no side decision.
+// each one that holds no side decision. It leaves out a book's chapter, which
+// takes its parent's decisions, so placing the book places it.
 const reviewCandidates = `
 SELECT DISTINCT d.item_key FROM decisions d WHERE d.gate = 'side' AND d.verdict = 'review'
+	AND d.item_key NOT IN (SELECT c.key FROM items c WHERE c.media_type = '` + MediaTypeChapter + `')
 UNION
-SELECT i.key FROM items i WHERE NOT EXISTS (SELECT 1 FROM decisions x WHERE x.item_key = i.key AND x.gate = 'side')`
+SELECT i.key FROM items i WHERE i.media_type != '` + MediaTypeChapter + `'
+	AND NOT EXISTS (SELECT 1 FROM decisions x WHERE x.item_key = i.key AND x.gate = 'side')`
 
 // ReviewQueue reads every item that waits on a person's placement, the
 // longest waiting first.

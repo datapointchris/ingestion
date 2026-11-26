@@ -150,8 +150,15 @@ func (s *Store) Parse(ctx context.Context, key string, pick ParsePick) (Parse, e
 		return Parse{}, fmt.Errorf("begin a read: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	return parseOf(ctx, tx, key, pick)
+}
+
+// parseOf reads the done parse of the item under key that pick names, with
+// its units, through tx.
+func parseOf(ctx context.Context, tx querier, key string, pick ParsePick) (Parse, error) {
 	var p Parse
 	var found bool
+	var err error
 	if p.Item, found, err = first[Item](ctx, tx, table("items"), `key = ?`, key); err != nil {
 		return p, err
 	} else if !found {

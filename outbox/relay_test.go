@@ -126,6 +126,14 @@ func TestAnItemGainsEachStageRecordAndEachChangeReachesTheCollectorOnce(t *testi
 		if err := tx.PutCursor(ctx, store.Cursor{Connector: "reddit-exports", DueAt: store.Stamp(time.Now()), FirstFill: "held", FirstFillItemKey: &key}); err != nil {
 			return err
 		}
+		chapter, printed := "Chapter 1", "1"
+		if _, err := tx.PutSections(ctx, []store.Section{{
+			ItemKey: key, Producer: store.SectionsFromOutline, ProducerVersion: "1/pdf-structure@1/pdf-text@1", N: 1, Level: 1,
+			Kind: store.SectionChapter, Title: &chapter, PDFPageStart: 1, PDFPageEnd: 1, PrintedPageStart: &printed, PrintedPageEnd: &printed,
+			StartPlacedBy: "outline", ChildKey: &[]string{key + "#1"}[0],
+		}}); err != nil {
+			return err
+		}
 		connector := "reddit-exports"
 		if err := tx.AddKeyedRequest(ctx, store.KeyedRequest{
 			Caller: "ingestion-cli-desk person", IdempotencyKey: "drop-1", Route: "drops", Connector: &connector,
