@@ -64,8 +64,8 @@ type fileConfig struct {
 	} `toml:"serve"`
 	Worker struct {
 		Slots int `toml:"slots"`
-		// SlotLimits caps how many tasks of each capability it names run at
-		// once, within Slots.
+		// SlotLimits caps how many tasks of each slot group or ungrouped
+		// capability it names run at once, within Slots.
 		SlotLimits map[string]int `toml:"slot_limits"`
 		Lease      duration       `toml:"lease"`
 		Poll       duration       `toml:"poll"`

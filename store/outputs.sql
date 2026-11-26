@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS outputs (
     note_digest      TEXT,
     input_producer   TEXT,
     input_version    TEXT,
-    state            TEXT NOT NULL CHECK (state IN ('waiting', 'done', 'failed')),
+    state            TEXT NOT NULL CHECK (state IN ('waiting', 'done', 'failed', 'deferred')),
     blob_sha256      TEXT,
     dispatch_id      TEXT,
     run_id           TEXT,

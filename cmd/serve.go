@@ -101,7 +101,9 @@ func init() {
 // queues, then runs the gates.
 func afterStage(log *slog.Logger) server.AfterStage {
 	next := map[string][]server.AfterStage{
-		store.StageParse:     {scan.QueueAfterParse, sections.QueueAfterParse},
+		store.StageParse: {extract.AfterParse(
+			[]server.AfterStage{scan.QueueAfterParse, sections.QueueAfterParse}, []server.AfterStage{extract.QueueDeferredParse},
+		)},
 		store.StageStructure: {sections.AfterStructure, contents.AfterStructure(log), sections.QueueDoclingParse},
 		store.StageContents:  {contents.AfterAnswer(log)},
 		store.StageScan:      {qualitygate.QueueAfterScan},

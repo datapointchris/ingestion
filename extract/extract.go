@@ -5,25 +5,104 @@
 //
 // An extractor registers by joining builtin. One written in Go sets Extract.
 // One whose library is not Go is a Program from the worker image, run through
-// isolatedprocess. Each output is keyed by item, extractor
-// and version, so a changed extractor takes a new version and its outputs
-// write beside the old. A media type holds one primary extractor, which
-// landing queues, and may hold secondary ones, whose parse another stage's
-// write queues and writes beside the primary's.
+// isolatedprocess. One whose item holds no bytes, such as a video, reads the
+// item at its source, and the source registers it through Register. Each
+// output is keyed by item, extractor and version, so a changed extractor
+// takes a new version and its outputs write beside the old. A media type
+// holds one primary extractor, which landing queues, and may hold secondary
+// ones, whose parse another stage's write queues and writes beside the
+// primary's.
 package extract
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"slices"
 	"time"
 
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
 )
 
-// builtin is every extractor that ingestion holds.
+// builtin is every extractor that ingestion holds of its own.
 var builtin = []Extractor{ThreadText, PDFText, PDFDocling}
+
+// registered is every extractor that a source registered.
+var registered []Extractor
+
+// Register adds extractors to the builtin registry, as a source registers the
+// ones that read its items, from its own init.
+func Register(extractors ...Extractor) { registered = append(registered, extractors...) }
+
+// Named is the builtin or registered extractor called name, and false where
+// none is.
+func Named(name string) (Extractor, bool) {
+	for _, e := range append(slices.Clone(builtin), registered...) {
+		if e.Name == name {
+			return e, true
+		}
+	}
+	return Extractor{}, false
+}
+
+// SlotGroupHeavy is the slot group of each parse whose run holds gigabytes,
+// such as Docling's and Whisper's.
+const SlotGroupHeavy = "heavy"
+
+// SlotGroups holds each slot group's default limit, which a
+// [worker.slot_limits] key naming the group overrides. heavy runs one parse
+// at a time, because a worker's memory holds one.
+var SlotGroups = map[string]int{SlotGroupHeavy: 1}
+
+// Item is what an extractor that ReadsURL reads: the item's key, its URL and
+// its media type.
+type Item struct {
+	Key       string
+	URL       *string
+	MediaType string
+}
+
+// Reader reads one item at its source, as an extractor that ReadsURL does.
+type Reader func(ctx context.Context, item Item) (Read, error)
+
+// Read is what a Reader found.
+type Read struct {
+	Units []Unit
+	// Deferred says the source holds no text of its own for the item, so its
+	// parse hands the item to the extractor that DefersTo names, such as a
+	// video with no caption track.
+	Deferred bool
+	// Answer is kept as the output's answer, such as the caption track that
+	// a read used.
+	Answer json.RawMessage
+}
+
+// RetryError is a read that may succeed if made again, and its parse queues
+// again after After. A bounded one fails once its task's claims reach
+// ReadAttempts, such as when the source gave no answer. Where the source
+// asked the read to wait, as while it is busy, the parse waits: it spends no
+// claim, and fails once it has waited ReadWaitCeiling.
+type RetryError struct {
+	Err     error
+	After   time.Duration
+	Bounded bool
+}
+
+func (e *RetryError) Error() string { return e.Err.Error() }
+func (e *RetryError) Unwrap() error { return e.Err }
+
+// ReadAttempts is how many claims a parse makes of a read that fails boundedly
+// before it fails. A claim that ended waiting is not among them.
+const ReadAttempts = 4
+
+// ReadWaitCeiling is how long a parse waits on its source in all before it
+// fails, counted from the source's first answer to wait. It outlasts the
+// longest pause that ypl declares, a day, so only a source that never frees
+// fails a parse this way.
+const ReadWaitCeiling = 48 * time.Hour
 
 // Extractor turns the bytes of one media type into a parse's units.
 type Extractor struct {
@@ -52,9 +131,24 @@ type Extractor struct {
 	Secondary bool
 	// SlotLimit caps the extractor's parses that one worker runs at once,
 	// where [worker.slot_limits] names no limit for it. Zero leaves them
-	// uncapped. A program whose run holds gigabytes sets it, so the worker's
-	// memory holds its runs.
+	// uncapped. An extractor in a slot group sets none.
 	SlotLimit int
+	// SlotGroup names the slot group whose limit the extractor's parses share
+	// with every other extractor in it, such as SlotGroupHeavy. SlotGroups
+	// holds the group's limit.
+	SlotGroup string
+	// ReadsURL marks an extractor whose item holds no bytes, so it reads the
+	// item at its source through the reader that Open opens on that source's
+	// client. A source registers it, and a worker runs its parses only where
+	// it opened that source. It sets no Extract.
+	ReadsURL bool
+	// Open opens the reader of an extractor that ReadsURL, which reaches its
+	// source at api through client, carrying the source client's token.
+	Open func(api string, client *http.Client) Reader
+	// DefersTo names the secondary extractor whose parse the write that ends a
+	// deferred parse of this one queues, such as Whisper for a video whose
+	// captions hold no track.
+	DefersTo string
 }
 
 // Unit is one part of a parse, as an extractor writes it. The parse numbers
@@ -78,8 +172,10 @@ type Registry struct {
 }
 
 // NewRegistry registers extractors. It refuses one with no name, version,
-// media type or way to run, two of one name, and two primary ones of one
-// media type.
+// media type or way to run, two of one name, two primary ones of one media
+// type, and one that defers to an extractor it does not hold as secondary. It
+// refuses a slot group that SlotGroups does not hold, and a SlotLimit beside
+// a slot group, whose limit is the group's.
 func NewRegistry(extractors ...Extractor) (*Registry, error) {
 	r := &Registry{byType: map[string]Extractor{}}
 	names := map[string]bool{}
@@ -87,10 +183,16 @@ func NewRegistry(extractors ...Extractor) (*Registry, error) {
 		switch {
 		case e.Name == "" || e.Version == "" || e.MediaType == "":
 			return nil, fmt.Errorf("an extractor names its name, version and media type, not %q, %q and %q", e.Name, e.Version, e.MediaType)
-		case e.Extract == nil:
+		case e.ReadsURL && (e.Open == nil || e.Extract != nil):
+			return nil, fmt.Errorf("extractor %s reads its item at its source, so it sets Open and no Extract", e.Name)
+		case !e.ReadsURL && e.Extract == nil:
 			return nil, fmt.Errorf("extractor %s sets no Extract", e.Name)
 		case names[e.Name]:
 			return nil, fmt.Errorf("two extractors are named %s", e.Name)
+		case e.SlotGroup != "" && SlotGroups[e.SlotGroup] < 1:
+			return nil, fmt.Errorf("extractor %s runs in slot group %s, which SlotGroups gives no limit", e.Name, e.SlotGroup)
+		case e.SlotGroup != "" && e.SlotLimit != 0:
+			return nil, fmt.Errorf("extractor %s runs in slot group %s, so it sets no SlotLimit of its own", e.Name, e.SlotGroup)
 		}
 		names[e.Name] = true
 		r.all = append(r.all, e)
@@ -102,12 +204,18 @@ func NewRegistry(extractors ...Extractor) (*Registry, error) {
 		}
 		r.byType[e.MediaType] = e
 	}
+	for _, e := range r.all {
+		if e.DefersTo != "" && !slices.ContainsFunc(r.all, func(o Extractor) bool { return o.Name == e.DefersTo && o.Secondary }) {
+			return nil, fmt.Errorf("extractor %s defers to %s, which the registry holds as no secondary extractor", e.Name, e.DefersTo)
+		}
+	}
 	return r, nil
 }
 
-// Builtin is the registry of every extractor that ingestion holds.
+// Builtin is the registry of every extractor that ingestion holds, and every
+// one that a source registered.
 func Builtin() *Registry {
-	r, err := NewRegistry(builtin...)
+	r, err := NewRegistry(append(slices.Clone(builtin), registered...)...)
 	if err != nil {
 		panic("extract: " + err.Error())
 	}

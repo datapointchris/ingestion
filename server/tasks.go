@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -41,14 +43,25 @@ const MaxListed = 1000
 // holds, each leased for LeaseSeconds. MaxByCapability bounds how many of
 // each capability it names the claim leases, such as a worker whose slot
 // limit for one capability holds one of its slots free for the rest.
+// Each of SlotGroups bounds the tasks of its capabilities together, such as
+// two heavy parses where the worker's memory holds one. A capability sits in
+// one group at most, and MaxByCapability names no grouped one.
 type ClaimRequest struct {
-	WorkerID        string         `json:"worker_id"`
-	Capabilities    []string       `json:"capabilities"`
-	Version         string         `json:"version"`
-	StartedTS       string         `json:"started_ts"`
-	Max             int            `json:"max"`
-	MaxByCapability map[string]int `json:"max_by_capability,omitempty"`
-	LeaseSeconds    int            `json:"lease_seconds"`
+	WorkerID        string               `json:"worker_id"`
+	Capabilities    []string             `json:"capabilities"`
+	Version         string               `json:"version"`
+	StartedTS       string               `json:"started_ts"`
+	Max             int                  `json:"max"`
+	MaxByCapability map[string]int       `json:"max_by_capability,omitempty"`
+	SlotGroups      map[string]SlotGroup `json:"slot_groups,omitempty"`
+	LeaseSeconds    int                  `json:"lease_seconds"`
+}
+
+// SlotGroup is the capabilities of one slot group in a claim, and the most of
+// them together that the claim leases.
+type SlotGroup struct {
+	Capabilities []string `json:"capabilities"`
+	Max          int      `json:"max"`
 }
 
 // LeasedTask is one leased task, with the token for every heartbeat and
@@ -64,6 +77,9 @@ type LeasedTask struct {
 	Attempts       int     `json:"attempts"`
 	LeaseToken     int64   `json:"lease_token"`
 	LeaseExpiresTS string  `json:"lease_expires_ts"`
+	// WaitedSeconds is how long before this claim a report first said the
+	// task waits, and 0 where none has.
+	WaitedSeconds int64 `json:"waited_seconds,omitempty"`
 	// MediaType and BlobSHA256 are the item's, so a worker reads its bytes
 	// holding no scope to read items. A poll carries neither, and BlobSHA256
 	// is null where the item holds no bytes.
@@ -185,14 +201,17 @@ const (
 // every item its source holds past its cursor, so a connector scheduled once
 // never polls after it.
 type ReportRequest struct {
-	Token             int64           `json:"token"`
-	Outcome           string          `json:"outcome"`
-	Error             *string         `json:"error,omitempty"`
-	RetryAfterSeconds int             `json:"retry_after_seconds,omitempty"`
-	Outputs           []ReportOutput  `json:"outputs,omitempty"`
-	Delivery          *ReportDelivery `json:"delivery,omitempty"`
-	Arrivals          []ReportArrival `json:"arrivals,omitempty"`
-	Cursor            *string         `json:"cursor,omitempty"`
+	Token             int64   `json:"token"`
+	Outcome           string  `json:"outcome"`
+	Error             *string `json:"error,omitempty"`
+	RetryAfterSeconds int     `json:"retry_after_seconds,omitempty"`
+	// Wait marks a retry that its far end asked for, or that a stopping
+	// worker hands back, so the claim spends none of the task's attempts.
+	Wait     bool            `json:"wait,omitempty"`
+	Outputs  []ReportOutput  `json:"outputs,omitempty"`
+	Delivery *ReportDelivery `json:"delivery,omitempty"`
+	Arrivals []ReportArrival `json:"arrivals,omitempty"`
+	Cursor   *string         `json:"cursor,omitempty"`
 }
 
 // ReportArrival is one item that a poll found at its source. serve lands it
@@ -330,6 +349,7 @@ type TaskView struct {
 	Attempts       int     `json:"attempts"`
 	HasError       bool    `json:"has_error"`
 	NotBeforeTS    *string `json:"not_before_ts"`
+	WaitingSinceTS *string `json:"waiting_since_ts"`
 	CreatedTS      string  `json:"created_ts"`
 	UpdatedTS      string  `json:"updated_ts"`
 }
@@ -399,6 +419,10 @@ func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	groups, ok := slotGroupsOf(w, body)
+	if !ok {
+		return
+	}
 	lease, ok := leaseOf(w, body.LeaseSeconds)
 	if !ok {
 		return
@@ -406,7 +430,7 @@ func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
 	var applied *connectors.Set
 	tasks, err := h.store.Claim(r.Context(), store.Claim{
 		Worker: store.Worker{ID: body.WorkerID, Capabilities: body.Capabilities, Version: body.Version, StartedTS: body.StartedTS},
-		Max:    body.Max, MaxByCapability: body.MaxByCapability, Lease: lease,
+		Max:    body.Max, MaxByCapability: body.MaxByCapability, SlotGroups: groups, Lease: lease,
 		Admit: func(ctx context.Context, tx *store.Tx, task store.Task) (string, error) {
 			if task.Stage != store.StagePoll && task.Stage != store.StageDelete {
 				return "", nil
@@ -437,7 +461,7 @@ func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
 			ID: t.ID, ItemKey: t.ItemKey, Connector: t.Connector, Stage: t.Stage, Capability: t.Capability, Attempts: t.Attempts,
 			LeaseToken: *t.LeaseToken, LeaseExpiresTS: *t.LeaseExpiresTS, MediaType: t.Item.MediaType, BlobSHA256: t.Item.BlobSHA256,
 			Zone: t.Item.Zone, Title: t.Item.Title, URL: t.Item.URL, LandedTS: t.Item.CreatedTS, Destination: t.Destination,
-			Model: t.Model, ProposalID: t.ProposalID,
+			Model: t.Model, ProposalID: t.ProposalID, WaitedSeconds: waited(t.Task),
 		}
 		if d := t.Delivery; d != nil {
 			leased.Title, leased.URL, leased.SourceTS, leased.Path, leased.Chapter = d.Title, d.URL, d.SourceTS, d.Path, d.Chapter()
@@ -478,6 +502,38 @@ func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
 	JSON(w, http.StatusOK, answer)
 }
 
+// slotGroupsOf is body's slot groups as the store bounds a claim by them. It
+// refuses a group's bound outside 0 to maxClaim, a capability in two groups,
+// and a grouped capability that max_by_capability bounds too. ok is false once
+// it has answered.
+func slotGroupsOf(w http.ResponseWriter, body ClaimRequest) (map[string]store.SlotGroup, bool) {
+	if len(body.SlotGroups) == 0 {
+		return nil, true
+	}
+	groups := map[string]store.SlotGroup{}
+	grouped := map[string]string{}
+	for _, name := range slices.Sorted(maps.Keys(body.SlotGroups)) {
+		g := body.SlotGroups[name]
+		if name == "" || g.Max < 0 || g.Max > maxClaim {
+			Refuse(w, http.StatusBadRequest, CodeInvalidBody, "a slot group has a name and a max from 0 to %d, not %q and %d", maxClaim, name, g.Max)
+			return nil, false
+		}
+		for _, capability := range g.Capabilities {
+			if other, taken := grouped[capability]; taken {
+				Refuse(w, http.StatusBadRequest, CodeInvalidBody, "capability %s sits in slot groups %s and %s, and one holds it at most", capability, other, name)
+				return nil, false
+			}
+			if _, bound := body.MaxByCapability[capability]; bound {
+				Refuse(w, http.StatusBadRequest, CodeInvalidBody, "capability %s sits in slot group %s, so max_by_capability may not name it", capability, name)
+				return nil, false
+			}
+			grouped[capability] = name
+		}
+		groups[name] = store.SlotGroup{Capabilities: g.Capabilities, Max: g.Max}
+	}
+	return groups, true
+}
+
 func (h taskHandlers) heartbeat(w http.ResponseWriter, r *http.Request) {
 	var body HeartbeatRequest
 	if !decode(w, r, &body) {
@@ -494,6 +550,23 @@ func (h taskHandlers) heartbeat(w http.ResponseWriter, r *http.Request) {
 	JSON(w, http.StatusOK, viewOf(task, h.store.Now()))
 }
 
+// waited is how long before t's claim, which stamped it, a report first said
+// t waits, in whole seconds, and 0 where none has.
+func waited(t store.Task) int64 {
+	if t.WaitingSinceTS == nil {
+		return 0
+	}
+	since, err := time.Parse(store.StampLayout, *t.WaitingSinceTS)
+	if err != nil {
+		return 0
+	}
+	claimed, err := time.Parse(store.StampLayout, t.UpdatedTS)
+	if err != nil {
+		return 0
+	}
+	return int64(max(claimed.Sub(since), 0) / time.Second)
+}
+
 func (h taskHandlers) report(w http.ResponseWriter, r *http.Request) {
 	var body ReportRequest
 	if !decode(w, r, &body) {
@@ -508,6 +581,7 @@ func (h taskHandlers) report(w http.ResponseWriter, r *http.Request) {
 	case OutcomeRetry:
 		outcome.State = store.TaskQueued
 		outcome.RetryAfter = time.Duration(body.RetryAfterSeconds) * time.Second
+		outcome.Wait = body.Wait
 	default:
 		Refuse(w, http.StatusBadRequest, CodeInvalidBody, "outcome is done, failed or retry, not %q", body.Outcome)
 		return
@@ -720,7 +794,7 @@ func viewOf(t store.Task, now time.Time) TaskView {
 		Destination: t.Destination, Model: t.Model, Stage: t.Stage, Capability: t.Capability,
 		State: t.State, HeldBy: t.HeldBy, Lapsed: t.Lapsed(now),
 		LeaseHolder: t.LeaseHolder, LeaseExpiresTS: t.LeaseExpiresTS, Attempts: t.Attempts, HasError: t.Error != nil,
-		NotBeforeTS: t.NotBeforeTS, CreatedTS: t.CreatedTS, UpdatedTS: t.UpdatedTS,
+		NotBeforeTS: t.NotBeforeTS, WaitingSinceTS: t.WaitingSinceTS, CreatedTS: t.CreatedTS, UpdatedTS: t.UpdatedTS,
 	}
 }
 

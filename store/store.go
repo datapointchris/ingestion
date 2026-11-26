@@ -111,22 +111,24 @@ func dsn(path string, readOnly bool) string {
 }
 
 // SchemaGeneration is the generation of the schema files. Raise it with any
-// change to them that rebuilds a table: a column made nullable, or a table
-// constraint changed. A store keeps the highest generation that converged it
-// in PRAGMA user_version. A build whose generation is older rebuilds none of
-// its tables, so a release reverted after a later one converged the store
-// keeps that release's columns and constraints.
-const SchemaGeneration = 1
+// change to them that rebuilds a table: a column made nullable, a CHECK
+// changed, or a table constraint changed. A store keeps the highest
+// generation that converged it in PRAGMA user_version. A build whose
+// generation is older rebuilds none of its tables, so a release reverted
+// after a later one converged the store keeps that release's columns and
+// constraints.
+const SchemaGeneration = 2
 
 // converge brings the store to what the schema files declare, reading that
 // from a scratch database the files are applied to. Where the store already
 // holds tables and the files change one, it first copies the store beside
 // itself, so an earlier release has a store to return to. It rebuilds each
-// table whose column the files make nullable or whose table constraints they
-// change, unless a later generation converged the store. It adds each column
-// a table lacks, applies each file in name order, checks that Tables declares
-// every table the files create, guards each logged table, stamps the store's
-// generation, and starts the stamp clock past the newest stamp in any table.
+// table whose column the files make nullable, or whose CHECK or table
+// constraints they change, unless a later generation converged the store. It
+// adds each column a table lacks, applies each file in name order, checks
+// that Tables declares every table the files create, guards each logged
+// table, stamps the store's generation, and starts the stamp clock past the
+// newest stamp in any table.
 func (s *Store) converge(ctx context.Context) error {
 	names, err := fs.Glob(schemaFiles, "*.sql")
 	if err != nil {
@@ -222,8 +224,8 @@ func (s *Store) converge(ctx context.Context) error {
 // schemaChanges is what converging the files changes in a store. A CREATE
 // TABLE in a file never changes a table that exists, so a column the table
 // lacks is added with its type, NOT NULL and default and no other constraint.
-// A table whose column the files make nullable, or whose table constraints
-// the files change, is rebuilt whole.
+// A table whose column the files make nullable, or whose CHECK or table
+// constraints the files change, is rebuilt whole.
 type schemaChanges struct {
 	// held says the store held tables before this open.
 	held    bool
@@ -276,7 +278,10 @@ func planChanges(ctx context.Context, declared, live *sql.DB) (schemaChanges, er
 		for _, c := range have {
 			notNull[c.name] = c.notNull
 		}
-		loosened := false
+		loosened, err := checksChanged(ctx, declared, live, name)
+		if err != nil {
+			return changes, err
+		}
 		var missing []columnAdd
 		for _, c := range want {
 			was, ok := notNull[c.name]
@@ -294,6 +299,90 @@ func planChanges(ctx context.Context, declared, live *sql.DB) (schemaChanges, er
 		}
 	}
 	return changes, nil
+}
+
+// checksChanged says whether live holds a CHECK on table that declared does
+// not, such as one the files widen to take a new state. SQLite cannot change a
+// CHECK in place, so such a table is rebuilt. A CHECK the files declare and
+// live lacks is on a column added later, which converge adds with no other
+// constraint, so it changes nothing.
+func checksChanged(ctx context.Context, declared, live *sql.DB, table string) (bool, error) {
+	want, err := tableChecks(ctx, declared, table)
+	if err != nil {
+		return false, err
+	}
+	have, err := tableChecks(ctx, live, table)
+	if err != nil {
+		return false, err
+	}
+	for _, check := range have {
+		if !slices.Contains(want, check) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// tableChecks reads the expression of each CHECK in table's CREATE TABLE, with
+// its runs of whitespace made one space.
+func tableChecks(ctx context.Context, db *sql.DB, table string) ([]string, error) {
+	var create string
+	if err := db.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&create); err != nil {
+		return nil, fmt.Errorf("read how %s is created: %w", table, err)
+	}
+	var checks []string
+	upper := strings.ToUpper(create)
+	for at := 0; ; {
+		found := strings.Index(upper[at:], "CHECK")
+		if found < 0 {
+			return checks, nil
+		}
+		start := at + found
+		at = start + len("CHECK")
+		if start > 0 && isWordByte(upper[start-1]) || at < len(upper) && isWordByte(upper[at]) {
+			continue
+		}
+		open := at + len(upper[at:]) - len(strings.TrimLeft(upper[at:], " \t\r\n"))
+		if open >= len(create) || create[open] != '(' {
+			continue
+		}
+		end, ok := closingParen(create, open)
+		if !ok {
+			return nil, fmt.Errorf("%s's CHECK at byte %d never closes", table, start)
+		}
+		checks = append(checks, strings.Join(strings.Fields(create[open+1:end]), " "))
+		at = end + 1
+	}
+}
+
+// closingParen is the index of the parenthesis that closes the one at open in
+// s, skipping any inside a quoted string or name.
+func closingParen(s string, open int) (int, bool) {
+	depth := 0
+	var quote byte
+	for i := open; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+		case c == '\'' || c == '"' || c == '`':
+			quote = c
+		case c == '(':
+			depth++
+		case c == ')':
+			depth--
+			if depth == 0 {
+				return i, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func isWordByte(c byte) bool {
+	return c == '_' || c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9'
 }
 
 // copyBeside writes a copy of the store beside it, named for the instant it
@@ -374,11 +463,12 @@ func tableConstraints(create string) []string {
 }
 
 // rebuild remakes table as the files declare it and keeps every row, because
-// SQLite can neither make a column nullable nor change a table constraint in
-// place. It follows SQLite's documented procedure: foreign keys off, a new
-// table, the rows copied, the old table dropped and the new one renamed, then
-// a foreign key check, in one transaction. Applying the files and guarding the
-// tables afterwards puts the table's indexes and triggers back.
+// SQLite can neither make a column nullable nor change a CHECK or a table
+// constraint in place. It follows SQLite's documented procedure: foreign keys
+// off, a new table, the rows copied, the old table dropped and the new one
+// renamed, then a foreign key check, in one transaction. Applying the files
+// and guarding the tables afterwards puts the table's indexes and triggers
+// back.
 func (s *Store) rebuild(ctx context.Context, declared *sql.DB, table string) error {
 	var create string
 	if err := declared.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&create); err != nil {

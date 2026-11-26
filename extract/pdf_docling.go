@@ -25,21 +25,27 @@ const DoclingTimeout = 3 * time.Hour
 // sections.FontShares.CodeHeavyMathLight picks.
 //
 // It is secondary, so landing never queues it. The write that ends such a
-// book's structure task queues it, and its parse writes beside PDFText's. A
-// worker runs one at a time unless [worker.slot_limits] says otherwise. Its
-// version names Docling's and DoclingPins, so a parse by other libraries or
-// weights writes beside the old one. A change to the program's own reading
-// raises the leading number.
+// book's structure task queues it, and its parse writes beside PDFText's. It
+// runs in SlotGroupHeavy, whose limit bounds its parses and Whisper's
+// together. Its version names Docling's and DoclingPins, so a parse by other
+// libraries or weights writes beside the old one. A change to the program's
+// own reading raises the leading number.
 var PDFDocling = func() Extractor {
 	e := Program("docling", "1+docling-"+DoclingVersion+"-"+DoclingPins, MediaTypePDF, ProgramDir+"/pdf-docling")
-	e.Positional, e.Secondary, e.Timeout, e.SlotLimit = true, true, DoclingTimeout, 1
+	e.Positional, e.Secondary, e.Timeout, e.SlotGroup = true, true, DoclingTimeout, SlotGroupHeavy
 	return e
 }()
 
-// DoclingPins is the first 12 hex digits of the SHA-256 of every pin in
-// release/python-requirements.txt, then every model pin in
-// release/download-docling-models, one a line. Each shapes Docling's
+// DoclingPins is the first 12 hex digits of the SHA-256 of the pin of each
+// library in doclingLibraries' closure in release/python-requirements.txt, in
+// the lock's order, then every model pin in release/download-docling-models,
+// one a line. The closure is each of those libraries and every library that
+// the lock's via lines say one in the closure needs. Each shapes Docling's
 // markdown, and a test fails until this equals them.
 const DoclingPins = "e919138066e6"
+
+// doclingLibraries are the libraries that pdf-docling imports, or that
+// Docling runs without importing by name.
+var doclingLibraries = []string{"docling-slim", "docling-ibm-models", "pymupdf", "torch", "torchvision"}
 
 func init() { store.PreferParse(PDFDocling.Name) }

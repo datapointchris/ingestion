@@ -12,7 +12,7 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "item_key", "connector", "proposal_id", "destination", "model", "stage", "capability", "state", "held_by", "lapsed", "lease_holder", "lease_expires_ts", "attempts", "has_error", "not_before_ts", "created_ts", "updated_ts"],
+        "required": ["id", "item_key", "connector", "proposal_id", "destination", "model", "stage", "capability", "state", "held_by", "lapsed", "lease_holder", "lease_expires_ts", "attempts", "has_error", "not_before_ts", "waiting_since_ts", "created_ts", "updated_ts"],
         "properties": {
           "id": {"type": "string"},
           "item_key": {"description": "The item a stage's task works on, and null for a poll or a prompt-proposal task.", "type": ["string", "null"]},
@@ -27,9 +27,10 @@
           "lapsed": {"description": "The task is leased and its lease ran out, so the next claim takes it.", "type": "boolean"},
           "lease_holder": {"description": "The worker that claimed the task last.", "type": ["string", "null"]},
           "lease_expires_ts": {"type": ["string", "null"], "format": "date-time"},
-          "attempts": {"type": "integer", "minimum": 0},
+          "attempts": {"description": "The claims that leased the task, but each that ended waiting on its far end or on a stopping worker.", "type": "integer", "minimum": 0},
           "has_error": {"description": "The task keeps the error of its last failure.", "type": "boolean"},
           "not_before_ts": {"description": "A retried task's backoff ends here.", "type": ["string", "null"], "format": "date-time"},
+          "waiting_since_ts": {"description": "When a report first said the task waits on its far end or on a stopping worker, and null where none has.", "type": ["string", "null"], "format": "date-time"},
           "created_ts": {"type": "string", "format": "date-time"},
           "updated_ts": {"type": "string", "format": "date-time"}
         }

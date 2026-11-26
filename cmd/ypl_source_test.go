@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -48,12 +47,19 @@ type standInItem struct {
 
 // standInYPL answers ypl's Data API routes with the shapes its handlers
 // write: a playlist's live items, a channel's uploads a page of 50 at a time,
-// the details of videos, and a playlist item's delete. It refuses a request
+// the details of videos, and a playlist item's delete. It answers a video's
+// captions and audio from captions and audio. It refuses a request
 // without yplToken, and a read of more video details than ypl reads at once.
 // refuseDelete answers an item's first delete with a 503 and a Retry-After,
 // as a spent day's quota does. refuseDeleteForGood answers every delete of
 // an item as ypl answers YouTube's refusal of the write. emptyReads answers
-// that many reads of uploads with an empty page.
+// that many reads of uploads with an empty page. busy answers that many of a
+// video's next caption or audio reads as ypl does while its yt-dlp stays busy,
+// gatewayDown that many after them as a gateway before a restarting ypl does,
+// and failing that many after those as ypl answers a failed read of YouTube.
+// ypl refuses each read of an unreadable video, as it refuses a members-only
+// one, and every video read where it holds no yt-dlp. cutAudio sends that
+// many of a video's audio answers with half the bytes that it promised.
 type standInYPL struct {
 	mu                  sync.Mutex
 	playlistIDs         map[string]string
@@ -64,6 +70,14 @@ type standInYPL struct {
 	refuseDeleteForGood map[string]bool
 	emptyReads          int
 	deletes             []string
+	captions            map[string]map[string]any
+	audio               map[string][]byte
+	busy                map[string]int
+	gatewayDown         map[string]int
+	failing             map[string]int
+	unreadable          map[string]bool
+	noYTDLP             bool
+	cutAudio            map[string]int
 }
 
 func newStandInYPL(t *testing.T) (*standInYPL, *httptest.Server) {
@@ -71,12 +85,16 @@ func newStandInYPL(t *testing.T) (*standInYPL, *httptest.Server) {
 	s := &standInYPL{
 		playlistIDs: map[string]string{}, playlists: map[string][]standInItem{}, uploads: map[string][]standInItem{},
 		videos: map[string]standInVideo{}, refuseDelete: map[string]time.Duration{}, refuseDeleteForGood: map[string]bool{},
+		captions: map[string]map[string]any{}, audio: map[string][]byte{}, busy: map[string]int{}, gatewayDown: map[string]int{}, failing: map[string]int{},
+		unreadable: map[string]bool{}, cutAudio: map[string]int{},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/youtube/playlists/{id}/items", s.playlistItems)
 	mux.HandleFunc("DELETE /api/v1/youtube/playlists/{id}/items/{item}", s.deleteItem)
 	mux.HandleFunc("GET /api/v1/youtube/channels/{id}/uploads", s.channelUploads)
 	mux.HandleFunc("GET /api/v1/youtube/videos", s.videoDetails)
+	mux.HandleFunc("GET /api/v1/youtube/videos/{id}/captions", s.videoCaptions)
+	mux.HandleFunc("GET /api/v1/youtube/videos/{id}/audio", s.videoAudio)
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer "+yplToken {
 			refuse(w, http.StatusUnauthorized, "unauthorized", "the request carries no token this server takes", 0)
@@ -177,6 +195,69 @@ func (s *standInYPL) videoDetails(w http.ResponseWriter, r *http.Request) {
 	answer(w, out)
 }
 
+// readable answers a read of a busy, unreachable, failing or unreadable video
+// as ypl, or a gateway before it, does, and says whether the read goes on.
+func (s *standInYPL) readable(w http.ResponseWriter, id string) bool {
+	if s.noYTDLP {
+		refuse(w, http.StatusServiceUnavailable, "youtube_reads_unavailable", "this server reads no video through yt-dlp: it has no yt-dlp", 0)
+		return false
+	}
+	if s.busy[id] > 0 {
+		s.busy[id]--
+		refuse(w, http.StatusServiceUnavailable, "youtube_reads_busy", "the server's yt-dlp stayed busy with other reads; send the request again", 90*time.Second)
+		return false
+	}
+	if s.gatewayDown[id] > 0 {
+		s.gatewayDown[id]--
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte("<html><body>502 Bad Gateway</body></html>"))
+		return false
+	}
+	if s.failing[id] > 0 {
+		s.failing[id]--
+		refuse(w, http.StatusBadGateway, "youtube_read_failed", "the read of YouTube failed", 0)
+		return false
+	}
+	if s.unreadable[id] {
+		refuse(w, http.StatusUnprocessableEntity, "video_unavailable", "YouTube lets no signed-out read reach this video", 0)
+		return false
+	}
+	return true
+}
+
+func (s *standInYPL) videoCaptions(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !s.readable(w, id) {
+		return
+	}
+	captions, ok := s.captions[id]
+	if !ok {
+		refuse(w, http.StatusNotFound, "not_found", "video not found", 0)
+		return
+	}
+	answer(w, captions)
+}
+
+func (s *standInYPL) videoAudio(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !s.readable(w, id) {
+		return
+	}
+	audio, ok := s.audio[id]
+	if !ok {
+		refuse(w, http.StatusNotFound, "not_found", "video not found", 0)
+		return
+	}
+	w.Header().Set("Content-Type", "audio/wav")
+	w.Header().Set("Content-Length", strconv.Itoa(len(audio)))
+	if s.cutAudio[id] > 0 {
+		s.cutAudio[id]--
+		audio = audio[:len(audio)/2]
+	}
+	_, _ = w.Write(audio)
+}
+
 // add holds each video, available, finished and published on a day in the
 // past unless set otherwise.
 func (s *standInYPL) add(videos ...standInVideo) {
@@ -193,10 +274,22 @@ func (s *standInYPL) add(videos ...standInVideo) {
 	}
 }
 
-// yplWorker opens the ypl source as worker run does, from a [source.ypl]
-// table naming api and a token command, and answers its poll handler and its
-// deleter's, which the worker's handlers must hold.
+// yplWorker answers the poll handler and the deleter's that the ypl source
+// opens, which the worker's handlers must hold.
 func yplWorker(t *testing.T, p *pipeline, api string) (poll, del worker.Handler) {
+	t.Helper()
+	handlers := yplHandlers(t, p, api)
+	poll, del = handlers[store.PollCapability(ypl.Source)], handlers[store.DeleteCapability(ypl.Source)]
+	if poll == nil || del == nil {
+		t.Fatalf("a worker with a [source.ypl] table holds poll handler %v and delete handler %v, want both", poll, del)
+	}
+	return poll, del
+}
+
+// yplHandlers opens the ypl source as worker run does, from a [source.ypl]
+// table naming api and a token command. It answers each handler that the
+// worker then holds, by capability.
+func yplHandlers(t *testing.T, p *pipeline, api string) map[string]worker.Handler {
 	t.Helper()
 	dir := t.TempDir()
 	token, config := filepath.Join(dir, "ypl-token.json"), filepath.Join(dir, "worker.toml")
@@ -212,18 +305,11 @@ func yplWorker(t *testing.T, p *pipeline, api string) (poll, del worker.Handler)
 	if err != nil {
 		t.Fatal(err)
 	}
+	handlers := map[string]worker.Handler{}
 	for _, h := range workerHandlers(p.worker, nil, openSources(t.Context(), cfg, p.provider.URL, quiet), nil, nil, modelConfig{}, quiet) {
-		switch h.Capability() {
-		case store.PollCapability(ypl.Source):
-			poll = h
-		case store.DeleteCapability(ypl.Source):
-			del = h
-		}
+		handlers[h.Capability()] = h
 	}
-	if poll == nil || del == nil {
-		t.Fatalf("a worker with a [source.ypl] table holds poll handler %v and delete handler %v, want both", poll, del)
-	}
-	return poll, del
+	return handlers
 }
 
 // recording keeps what each run of its handler reported.
@@ -259,14 +345,7 @@ func (r *recording) landedKeys(t *testing.T) []string {
 // body follows its name, mode, source and zone.
 func newYPLPipeline(t *testing.T, connector, body string) *pipeline {
 	t.Helper()
-	captions, err := extract.NewRegistry(extract.Extractor{
-		Name: "test-captions", Version: "1", MediaType: ypl.MediaTypeVideo,
-		Extract: func(context.Context, io.Reader) ([]extract.Unit, error) { return nil, nil },
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	p := newPipeline(t, captions, afterStage(quiet))
+	p := newPipeline(t, extract.Builtin(), afterStage(quiet))
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "connectors"), 0o755); err != nil {
 		t.Fatal(err)

@@ -1,6 +1,6 @@
-# The build reads the Go module, the release scripts that install yr, check
-# out the scan's rules and download Docling's models, and the extractor
-# programs' pinned Python libraries. What it never reads stays out of the context.
+# The build reads the Go module, the release scripts that install yr and
+# ffmpeg, check out the scan's rules and download Docling's and Whisper's
+# models, and the extractor programs' pinned Python libraries. What it never reads stays out of the context.
 .git
 .github
 .task
@@ -9,6 +9,7 @@ release
 !release/install-tools
 !release/download-atr-rules
 !release/download-docling-models
+!release/download-whisper-model
 !release/python-requirements.txt
 dist
 ingestion

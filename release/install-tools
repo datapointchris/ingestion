@@ -8,8 +8,9 @@ usage() {
 Usage: install-tools <directory> <tool>...
 
 Downloads each tool's linux/amd64 release into <directory>, checks it against
-the SHA-256 pinned here, and leaves an executable named for the tool. The
-tools are the names that pin below takes.
+the SHA-256 pinned here, and leaves an executable named for the tool. Where
+the release carries its license, it leaves that beside the tool as
+<tool>-LICENSE.txt. The tools are the names that pin below takes.
 
 A bump edits a tool's version and its SHA-256 together.
 EOF
@@ -27,9 +28,11 @@ fi
 directory=$1
 shift
 
-# Sets version, sha256, url, and member: the file to take from a tarball, or
-# empty where the asset is the binary itself.
+# Sets version, sha256, url, member: the file to take from a tarball, or empty
+# where the asset is the binary itself, and license: the tarball's license
+# file, or empty where none ships.
 pin() {
+  license=
   case $1 in
     kustomize)
       version=5.8.3
@@ -56,6 +59,16 @@ pin() {
       url=https://github.com/VirusTotal/yara-x/releases/download/v$version/yara-x-v$version-x86_64-unknown-linux-gnu.tar.gz
       member=yr
       ;;
+    # A static FFmpeg built with only LGPL parts, which audio-whisper runs to
+    # decode a video's audio. The worker image carries it. The build is one
+    # that FFmpeg-Builds keeps as its month's last.
+    ffmpeg)
+      version=n8.1.3-27-g8dca1586f4
+      sha256=a64f3171e6ad1f7d358d28890a907ee478c331d1177ec696a93418f79ac3f1f3
+      url=https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/autobuild-2026-10-31-12-59/ffmpeg-$version-linux64-lgpl-8.1.tar.xz
+      member=ffmpeg-$version-linux64-lgpl-8.1/bin/ffmpeg
+      license=ffmpeg-$version-linux64-lgpl-8.1/LICENSE.txt
+      ;;
     *) die "no pin for $1" ;;
   esac
 }
@@ -70,8 +83,11 @@ for tool in "$@"; do
   printf '%s  %s\n' "$sha256" "$asset" | sha256sum -c --quiet - \
     || die "$tool $version does not match its pinned SHA-256"
   if [ -n "$member" ]; then
-    tar -xzf "$asset" -C "$work" "$member"
+    tar -xf "$asset" -C "$work" "$member" ${license:+"$license"}
     install -m 0755 "$work/$member" "$directory/$tool"
+    if [ -n "$license" ]; then
+      install -m 0644 "$work/$license" "$directory/$tool-LICENSE.txt"
+    fi
   else
     install -m 0755 "$asset" "$directory/$tool"
   fi

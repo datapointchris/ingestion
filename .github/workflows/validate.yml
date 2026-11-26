@@ -607,6 +607,26 @@ jobs:
             < extract/testdata/pages.pdf > "$RUNNER_TEMP/docling.jsonl"
           jq -se 'map(.label) == ["i", "ii", "1"] and .[1].text == "" and (.[2].text | contains("first chapter"))' "$RUNNER_TEMP/docling.jsonl"
 
+      # The worker runs audio-whisper the same way. It reads its model from the
+      # image and decodes with the image's ffmpeg, with no network, so a model
+      # it would fetch fails the step. The image's ffmpeg makes a three-second
+      # tone, and the first line reports the tone's length.
+      - name: Transcribe a generated tone with audio-whisper in the image, offline
+        run: |
+          docker run --rm --read-only --network none --entrypoint /usr/local/bin/ffmpeg ingestion:validate \
+            -hide_banner -loglevel error -f lavfi -i sine=frequency=440:duration=3 -f wav - > "$RUNNER_TEMP/tone.wav"
+          docker run --rm --read-only --network none --tmpfs /tmp -e HOME=/tmp -e TMPDIR=/tmp -i \
+            --entrypoint /usr/local/libexec/ingestion/extractors/audio-whisper ingestion:validate \
+            < "$RUNNER_TEMP/tone.wav" > "$RUNNER_TEMP/whisper.jsonl"
+          jq -se '.[0].duration_ms == 3000 and .[0].voiced_ms <= 3000' "$RUNNER_TEMP/whisper.jsonl"
+
+      # A video's audio arrives through ypl, so the image holds no YouTube
+      # downloader of its own.
+      - name: Find no yt-dlp in the image
+        run: |
+          docker run --rm --read-only --entrypoint /bin/sh ingestion:validate -c \
+            '! command -v yt-dlp && ! /opt/ingestion/venv/bin/python3 -I -c "import yt_dlp" 2>/dev/null'
+
       # The worker runs pdf-structure the same way. The fixture's outline opens
       # pages 1 and 3, and its one sampled page sets a line in Courier.
       - name: Profile a known PDF with pdf-structure in the image

@@ -3,6 +3,7 @@ package ypl
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -10,7 +11,11 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/datapointchris/ingestion/extract"
 )
 
 // Client calls ypl's API, whose routes under /api/v1/youtube/ call YouTube on
@@ -92,10 +97,28 @@ func (v Video) Streaming() bool {
 // own limit, and a test holds it to the limit that ypl's suite writes.
 const MaxVideos = 500
 
-// callTimeout bounds one request to ypl, so a ypl that takes the connection
-// and never answers frees the worker's slot. ypl waits for its turn at
-// YouTube, then for YouTube's answer, and this outlasts both.
+// callTimeout bounds one request to ypl's Data API routes, so a ypl that
+// takes the connection and never answers frees the worker's slot. It sits
+// above the longest that ypl holds such a request, which ypl's Data API
+// client sets.
 const callTimeout = 2 * time.Minute
+
+// captionsTimeout bounds a read of a video's captions. It sits above the
+// longest that ypl holds a captions read, which ypl's door and its captions
+// route set, so a slow ypl still answers within it.
+const captionsTimeout = 6 * time.Minute
+
+// audioWait bounds how long ypl takes to begin answering a read of a video's
+// audio. It sits above the longest that ypl's door and its audio route hold a
+// read before it answers. The answer's body then streams for as long as the
+// caller's context allows, while each read of it waits at most audioIdle.
+const audioWait = 35 * time.Minute
+
+// audioIdle is the longest that a read of an audio answer's body waits for a
+// byte before it ends the request, so a stream that stalls frees the worker's
+// slot. ypl sends the audio from a file that it holds whole, so a healthy
+// stream never pauses this long.
+const audioIdle = 2 * time.Minute
 
 // Error is ypl's refusal of a request: its status, its code for a client to
 // branch on, and its sentence for a person. RetryAfter holds the refusal's
@@ -119,9 +142,63 @@ func (e *Error) Error() string {
 	return msg
 }
 
-// maxAnswer bounds the answer a read decodes: a playlist of 5,000 items, or 500
-// videos with their descriptions, fits well within it.
+// maxAnswer bounds the answer a read decodes: a playlist of 5,000 items, 500
+// videos with their descriptions, or a long video's caption segments, fits
+// well within it.
 const maxAnswer = 64 << 20
+
+// Captions is a video's captions as ypl read them: its details, its chapters,
+// and the segments of the one caption track that ypl picks. Track is nil
+// where the video has none, which leaves Segments empty.
+type Captions struct {
+	VideoID     string `json:"video_id"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	// Language is the video's own as YouTube reports it, and nil where it
+	// reports none.
+	Language *string `json:"language"`
+	// DurationSeconds is nil for a video with no length, such as a stream.
+	DurationSeconds *int64            `json:"duration_seconds"`
+	Track           *Track            `json:"track"`
+	Segments        []extract.Segment `json:"segments"`
+	Chapters        []Chapter         `json:"chapters"`
+}
+
+// Track is the caption track a read used: its language as YouTube files it,
+// such as en or de-orig, and its kind, manual or automatic.
+type Track struct {
+	Language string `json:"language"`
+	Kind     string `json:"kind"`
+}
+
+// Chapter is one of a video's chapters, which start and end at whole seconds.
+type Chapter struct {
+	StartSeconds int64  `json:"start_seconds"`
+	EndSeconds   int64  `json:"end_seconds"`
+	Title        string `json:"title"`
+}
+
+// Audio is a video's best audio as ypl streams it. Body ends with an error
+// where the stream breaks before Size bytes.
+type Audio struct {
+	Body io.ReadCloser
+	// MediaType is the audio's container, such as audio/webm.
+	MediaType string
+	// Size is the audio's length in bytes, and -1 where ypl sent none.
+	Size int64
+	body *audioBody
+}
+
+// Broken is the first error that a read of Body met before the body ended,
+// such as a dropped connection or a stall past audioIdle, and nil where none
+// has. A reader of the audio may report such a read as a failure of its own,
+// so the caller asks Broken first.
+func (a *Audio) Broken() error {
+	if a.body == nil {
+		return nil
+	}
+	return a.body.broken()
+}
 
 // PlaylistItems reads every item of playlist from YouTube now. playlist is a
 // YouTube id, or the whole title or slug of a playlist that ypl holds.
@@ -167,11 +244,108 @@ func (c *Client) DeletePlaylistItem(ctx context.Context, playlist, item string) 
 	return c.do(ctx, http.MethodDelete, path, nil, http.StatusNoContent, nil)
 }
 
-// do sends one request and decodes its answer into into, where into is not
-// nil. A status of 300 or more is an *Error. Any other status but want is an
-// error too, because only want shows that the route ran.
+// Captions reads video's captions through ypl's door: its details, its
+// chapters, and the segments of the one track that ypl picks. A video with no
+// track answers a nil Track. ypl refuses a video that no signed-out read
+// reaches, such as a members-only one, with 422 video_unavailable.
+func (c *Client) Captions(ctx context.Context, video string) (Captions, error) {
+	var out Captions
+	err := c.doWithin(ctx, captionsTimeout, http.MethodGet, "/api/v1/youtube/videos/"+url.PathEscape(video)+"/captions", nil, http.StatusOK, &out)
+	return out, err
+}
+
+// Audio reads video's best audio through ypl's door. It waits up to audioWait
+// for ypl to begin its answer, and each read of Body waits up to audioIdle.
+// The caller closes Body. ypl refuses as Captions does.
+func (c *Client) Audio(ctx context.Context, video string) (*Audio, error) {
+	path := "/api/v1/youtube/videos/" + url.PathEscape(video) + "/audio"
+	ctx, cancel := context.WithCancel(ctx)
+	timer := time.AfterFunc(audioWait, cancel)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.api+path, nil)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	resp, err := c.http.Do(req)
+	began := timer.Stop()
+	switch {
+	case err != nil && !began:
+		cancel()
+		return nil, fmt.Errorf("GET %s: ypl began no answer within %s", path, audioWait)
+	case err != nil:
+		cancel()
+		return nil, fmt.Errorf("GET %s: %w", path, err)
+	case !began:
+		_ = resp.Body.Close()
+		cancel()
+		return nil, fmt.Errorf("GET %s: ypl began no answer within %s", path, audioWait)
+	case resp.StatusCode >= http.StatusMultipleChoices:
+		defer cancel()
+		defer func() { _ = resp.Body.Close() }()
+		return nil, refusalOf(http.MethodGet, path, resp)
+	case resp.StatusCode != http.StatusOK:
+		_ = resp.Body.Close()
+		cancel()
+		return nil, fmt.Errorf("GET %s: ypl answered %d, not %d", path, resp.StatusCode, http.StatusOK)
+	}
+	body := &audioBody{body: resp.Body, cancel: cancel, idle: audioIdle}
+	return &Audio{Body: body, MediaType: resp.Header.Get("Content-Type"), Size: resp.ContentLength, body: body}, nil
+}
+
+// audioBody is an audio answer's body. A read that waits past idle for a
+// byte ends the request, and the body keeps the first error that a read met
+// before its end. Closing it ends its request's context.
+type audioBody struct {
+	body    io.ReadCloser
+	cancel  context.CancelFunc
+	idle    time.Duration
+	stalled atomic.Bool
+	mu      sync.Mutex
+	err     error
+}
+
+func (b *audioBody) Read(p []byte) (int, error) {
+	timer := time.AfterFunc(b.idle, func() {
+		b.stalled.Store(true)
+		b.cancel()
+	})
+	n, err := b.body.Read(p)
+	timer.Stop()
+	if err != nil && !errors.Is(err, io.EOF) {
+		if b.stalled.Load() {
+			err = fmt.Errorf("ypl sent no byte of the audio for %s", b.idle)
+		}
+		b.mu.Lock()
+		if b.err == nil {
+			b.err = err
+		}
+		b.mu.Unlock()
+	}
+	return n, err
+}
+
+func (b *audioBody) Close() error {
+	defer b.cancel()
+	return b.body.Close()
+}
+
+func (b *audioBody) broken() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.err
+}
+
+// do sends one request bounded by callTimeout, as doWithin does.
 func (c *Client) do(ctx context.Context, method, path string, query url.Values, want int, into any) error {
-	ctx, cancel := context.WithTimeout(ctx, callTimeout)
+	return c.doWithin(ctx, callTimeout, method, path, query, want, into)
+}
+
+// doWithin sends one request bounded by within, and decodes its answer into
+// into, where into is not nil. A status of 300 or more is an *Error. Any other
+// status but want is an error too, because only want shows that the route
+// ran.
+func (c *Client) doWithin(ctx context.Context, within time.Duration, method, path string, query url.Values, want int, into any) error {
+	ctx, cancel := context.WithTimeout(ctx, within)
 	defer cancel()
 	target := c.api + path
 	if len(query) > 0 {
@@ -189,15 +363,7 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 	defer func() { _ = resp.Body.Close() }()
 	body := io.LimitReader(resp.Body, maxAnswer)
 	if resp.StatusCode >= http.StatusMultipleChoices {
-		refusal := &Error{Method: method, Path: path, Status: resp.StatusCode, RetryAfter: retryAfter(resp.Header.Get("Retry-After"), time.Now())}
-		var answer struct {
-			Message string `json:"message"`
-			Code    string `json:"code"`
-		}
-		if json.NewDecoder(body).Decode(&answer) == nil {
-			refusal.Code, refusal.Message = answer.Code, answer.Message
-		}
-		return refusal
+		return refusalOf(method, path, resp)
 	}
 	if resp.StatusCode != want {
 		return fmt.Errorf("%s %s: ypl answered %d, not %d", method, path, resp.StatusCode, want)
@@ -209,6 +375,20 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 		return fmt.Errorf("%s %s: read the answer: %w", method, path, err)
 	}
 	return nil
+}
+
+// refusalOf is ypl's refusal in resp, of a status of 300 or more, with the
+// code and sentence its body names.
+func refusalOf(method, path string, resp *http.Response) *Error {
+	refusal := &Error{Method: method, Path: path, Status: resp.StatusCode, RetryAfter: retryAfter(resp.Header.Get("Retry-After"), time.Now())}
+	var answer struct {
+		Message string `json:"message"`
+		Code    string `json:"code"`
+	}
+	if json.NewDecoder(io.LimitReader(resp.Body, maxAnswer)).Decode(&answer) == nil {
+		refusal.Code, refusal.Message = answer.Code, answer.Message
+	}
+	return refusal
 }
 
 // retryAfter is the wait a Retry-After header asks for, in seconds or as an

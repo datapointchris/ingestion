@@ -83,6 +83,9 @@ esac
 			}
 			out = append(out, key)
 		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
 		return out
 	}
 	if got := queued(); len(got) != 1 || got[0] != keys["a code book"] {
