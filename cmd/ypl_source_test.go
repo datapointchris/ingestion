@@ -54,9 +54,12 @@ type standInItem struct {
 // as a spent day's quota does. refuseDeleteForGood answers every delete of
 // an item as ypl answers YouTube's refusal of the write. emptyReads answers
 // that many reads of uploads with an empty page. busy answers that many of a
-// video's next caption or audio reads as ypl does while its yt-dlp stays busy.
+// video's next caption or audio reads as ypl does while its yt-dlp stays busy,
+// gatewayDown that many after them as a gateway before a restarting ypl does,
+// and failing that many after those as ypl answers a failed read of YouTube.
 // ypl refuses each read of an unreadable video, as it refuses a members-only
-// one.
+// one, and every video read where it holds no yt-dlp. cutAudio sends that
+// many of a video's audio answers with half the bytes that it promised.
 type standInYPL struct {
 	mu                  sync.Mutex
 	playlistIDs         map[string]string
@@ -70,7 +73,11 @@ type standInYPL struct {
 	captions            map[string]map[string]any
 	audio               map[string][]byte
 	busy                map[string]int
+	gatewayDown         map[string]int
+	failing             map[string]int
 	unreadable          map[string]bool
+	noYTDLP             bool
+	cutAudio            map[string]int
 }
 
 func newStandInYPL(t *testing.T) (*standInYPL, *httptest.Server) {
@@ -78,7 +85,8 @@ func newStandInYPL(t *testing.T) (*standInYPL, *httptest.Server) {
 	s := &standInYPL{
 		playlistIDs: map[string]string{}, playlists: map[string][]standInItem{}, uploads: map[string][]standInItem{},
 		videos: map[string]standInVideo{}, refuseDelete: map[string]time.Duration{}, refuseDeleteForGood: map[string]bool{},
-		captions: map[string]map[string]any{}, audio: map[string][]byte{}, busy: map[string]int{}, unreadable: map[string]bool{},
+		captions: map[string]map[string]any{}, audio: map[string][]byte{}, busy: map[string]int{}, gatewayDown: map[string]int{}, failing: map[string]int{},
+		unreadable: map[string]bool{}, cutAudio: map[string]int{},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/youtube/playlists/{id}/items", s.playlistItems)
@@ -187,12 +195,28 @@ func (s *standInYPL) videoDetails(w http.ResponseWriter, r *http.Request) {
 	answer(w, out)
 }
 
-// readable answers a read of a busy or unreadable video as ypl does, and
-// says whether the read goes on.
+// readable answers a read of a busy, unreachable, failing or unreadable video
+// as ypl, or a gateway before it, does, and says whether the read goes on.
 func (s *standInYPL) readable(w http.ResponseWriter, id string) bool {
+	if s.noYTDLP {
+		refuse(w, http.StatusServiceUnavailable, "youtube_reads_unavailable", "this server reads no video through yt-dlp: it has no yt-dlp", 0)
+		return false
+	}
 	if s.busy[id] > 0 {
 		s.busy[id]--
 		refuse(w, http.StatusServiceUnavailable, "youtube_reads_busy", "the server's yt-dlp stayed busy with other reads; send the request again", 90*time.Second)
+		return false
+	}
+	if s.gatewayDown[id] > 0 {
+		s.gatewayDown[id]--
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte("<html><body>502 Bad Gateway</body></html>"))
+		return false
+	}
+	if s.failing[id] > 0 {
+		s.failing[id]--
+		refuse(w, http.StatusBadGateway, "youtube_read_failed", "the read of YouTube failed", 0)
 		return false
 	}
 	if s.unreadable[id] {
@@ -227,6 +251,10 @@ func (s *standInYPL) videoAudio(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "audio/wav")
 	w.Header().Set("Content-Length", strconv.Itoa(len(audio)))
+	if s.cutAudio[id] > 0 {
+		s.cutAudio[id]--
+		audio = audio[:len(audio)/2]
+	}
 	_, _ = w.Write(audio)
 }
 
