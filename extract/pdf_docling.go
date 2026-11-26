@@ -6,9 +6,9 @@ import "time"
 // and that the worker image installs for pdf-docling.
 const DoclingVersion = "2.153.0"
 
-// DoclingTimeout bounds one run of pdf-docling. Docling reads about 1.4 s a
-// page on a desk of 16 CPUs, so the largest book that sections selects, 1,245
-// pages, takes about 30 minutes there, and a node with half its CPUs about
+// DoclingTimeout bounds one run of pdf-docling. Docling reads about 1.6 s a
+// page on a busy desk of 16 CPUs. The longest book that sections selects, 1,245
+// pages, took 34 minutes there, and a node with half its CPUs takes about
 // twice that.
 const DoclingTimeout = 3 * time.Hour
 

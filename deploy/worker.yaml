@@ -90,18 +90,25 @@ spec:
                   name: ingestion-model-queue-client
                   key: secret
                   optional: true
-          # One scan of a 61 MiB parse, about the most a parse report carries,
-          # peaked at 336 MiB in the worker and 110 MiB in yr, and wrote 70 MiB
-          # of the text's two views to /tmp. Two slots hold two such scans, about
-          # 890 MiB in all. The worker's figure is scan.NewHandler's run over a
-          # served task-parse answer of that size, and yr's is
+          # One pdf-docling run over the heaviest PDF that sections selects,
+          # 145 MB in 620 pages, peaked at 3.5 GiB. One scan of a 61 MiB parse,
+          # about the most a parse report carries, peaked at 336 MiB in the
+          # worker and 110 MiB in yr, and wrote 70 MiB of the text's two views to
+          # /tmp. With [worker.slot_limits] holding parse:docling to one of the
+          # two slots, a Docling run beside a scan peaks near 3.9 GiB. Two
+          # Docling runs at once pass the limit. Docling's figure is
+          # `/usr/bin/time -v pdf-docling < <the PDF>`, the worker's is
+          # scan.NewHandler's run over a served task-parse answer of that size,
+          # and yr's is
           # `/usr/bin/time -f %M yr scan --compiled-rules rules.yarc <the views>`.
+          # The request equals the limit, so the node keeps those 5Gi free for
+          # the worker.
           resources:
             requests:
               cpu: 50m
-              memory: 128Mi
+              memory: 5Gi
             limits:
-              memory: 1Gi
+              memory: 5Gi
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

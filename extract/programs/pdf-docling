@@ -33,9 +33,12 @@ import pymupdf
 
 ARTIFACTS = "/usr/local/share/ingestion/docling-models"
 
-# Each convert reads this many pages, so memory holds one span's pages rather
-# than the whole book's, and each span's lines are written once it ends.
-SPAN_PAGES = 50
+# Each convert reads this many pages, and each span's lines are written once it
+# ends. Docling's memory grows with a span's pages. A 145 MB, 620-page PDF
+# peaked at 3.5 GiB in spans of 10 pages, and at 6.3 GiB in spans of 50. A
+# paragraph or a hyphenated word across a span's last page break stays split
+# there, as pdf-text splits it at every page break.
+SPAN_PAGES = 10
 
 
 def main() -> int:
