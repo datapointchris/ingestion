@@ -24,12 +24,16 @@ const FasterWhisperVersion = "1.2.1"
 // release/download-whisper-model pins.
 const WhisperModel = "large-v3-turbo"
 
-// WhisperPins is the first 12 hex digits of the SHA-256 of every pin in
-// release/python-requirements.txt, then every model pin in
+// WhisperPins is the first 12 hex digits of the SHA-256 of the pin of each
+// library in whisperLibraries' closure in release/python-requirements.txt, as
+// DoclingPins reads its own, then every model pin in
 // release/download-whisper-model, then ffmpeg's version and SHA-256 in
 // release/install-tools, one a line. Each shapes a transcript, and a test fails
 // until this equals them.
-const WhisperPins = "f25db1625bcd"
+const WhisperPins = "a764b748ef26"
+
+// whisperLibraries are the libraries that audio-whisper imports.
+var whisperLibraries = []string{"faster-whisper", "numpy"}
 
 // WhisperVersion names the transcription that audio-whisper makes, so a
 // transcript by other libraries, weights or decoding writes beside the old. A

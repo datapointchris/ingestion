@@ -36,10 +36,16 @@ var PDFDocling = func() Extractor {
 	return e
 }()
 
-// DoclingPins is the first 12 hex digits of the SHA-256 of every pin in
-// release/python-requirements.txt, then every model pin in
-// release/download-docling-models, one a line. Each shapes Docling's
+// DoclingPins is the first 12 hex digits of the SHA-256 of the pin of each
+// library in doclingLibraries' closure in release/python-requirements.txt, in
+// the lock's order, then every model pin in release/download-docling-models,
+// one a line. The closure is each of those libraries and every library that
+// the lock's via lines say one in the closure needs. Each shapes Docling's
 // markdown, and a test fails until this equals them.
-const DoclingPins = "87e1925f632b"
+const DoclingPins = "e919138066e6"
+
+// doclingLibraries are the libraries that pdf-docling imports, or that
+// Docling runs without importing by name.
+var doclingLibraries = []string{"docling-slim", "docling-ibm-models", "pymupdf", "torch", "torchvision"}
 
 func init() { store.PreferParse(PDFDocling.Name) }
