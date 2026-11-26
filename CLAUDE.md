@@ -43,7 +43,7 @@ never ahead of it. A stage's code goes in its own package:
 | `outbox` | the relay that ships each logged change past its mark, with outsider text on a channel of its own |
 | `server` | the HTTP API that `ingestion serve` answers, and its route table, whose rows name each route's scope and what a repeat does, read by the CLI's retry and the router's key check |
 | `worker` | `ingestion worker run`, which leases tasks by capability under a fencing token, no more of a capability at once than its slot limit |
-| `push` | `ingestion push`, which hands a URL or a key straight to a named destination |
+| `push` | `ingestion push`, which writes an item's scanned parse as the parse-input document that psyche's `relate --parse -` reads, with each command and link the scan flagged under `suggested` and, under `--enriched`, the quality gate's and the model read's answers, and runs psyche on the push's machine with it; and in `testdata/`, the copy of psyche's schema that the push's test validates against |
 | `views/review` | the review tab of `ingestion tui`: a reader of the review queue and the parse under the cursor, a renderer of each into a gotermboard frame, and the keys that place or drop an item through a `Service` port, which `cmd/tui.go` fills with the CLI's own calls. Its keys' writes run through gotermboard's `keywrites` queue |
 
 `views/` holds the TUI's tabs, one package each, so a later tab joins as its own package beside
@@ -104,8 +104,9 @@ Docling, and the newest done parse otherwise.
   The model judges only what the rules leave, and drops an item only above a high confidence.
 - **A drop is soft.** The item keeps its row and its one-line idea, and a person can still send it
   to a model read.
-- **A push that names its destination skips the quality gate, the side gate and every model
-  stage.** It still parses and scans the item.
+- **`ingestion push` starts no stage.** It hands psyche an item that the service already holds a
+  scanned parse of, so psyche's relate is its only model call. Only a person runs it, on the
+  machine where psyche runs, and nothing in the service calls psyche.
 - **A delivery writes through the destination's own API, and ingestion never queues a settled one
   again.** The destination keeps the item's key as its record's source key. A destination may
   later forget a record it held, so its own conflict answer cannot be the guard against a second

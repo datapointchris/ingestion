@@ -915,6 +915,37 @@ settles the book queues each of its chapters in order, and so does a replay of t
 over the book. When the service starts, it queues each chapter of a delivered book that holds no
 delivery. A refused book delivers no chapter.
 
+### `ingestion push` hands one item's scanned parse to psyche's relate on this machine
+
+psyche relates a source to its reader's own notes. Its `relate --parse -` reads one parsed source
+as JSON on stdin, in the parse-input schema that psyche publishes. `ingestion push` writes that
+document from the service's answers, and runs psyche with it:
+
+```text
+$ ingestion push https://www.reddit.com/r/golang/comments/aq7ggd/ --to psyche --relate
+pushing reddit/t3_aq7ggd to psyche relate: 4 units, 1 finding, 2 suggestions
+…psyche's answer…
+```
+
+- **The document is the item's parse and the findings of the scan that read it**, as
+  `GET /api/v1/items/{key}/parse` answers them. It keeps that route's field names, and writes
+  parse-input `schema_version` 1.
+- **Each command, link and piece of code that ingestion's own rules flagged goes under
+  `suggested`**, apart from the findings. Every other finding, such as an instruction aimed at a
+  model, stays a finding.
+- **`--enriched` adds what the service derived from the parse**: the quality gate's idea, genre,
+  domains, themes and quality, and the newest model read's summary and suggestion. Without it,
+  psyche reads the parse and the findings alone. Where no model stage answered the item, the push
+  says so and sends the parse alone.
+- **A push starts no stage in the service**, so no model reads the item there. psyche's relate is
+  its only model call.
+- **It hands on only a scanned parse.** It refuses an item that holds no done parse, or whose
+  parse no scan has read yet, and `ingestion items show <key>` says where that item waits.
+- **psyche runs from `PATH` on the machine that runs the push**, with the push's environment.
+  `--json` asks psyche for its JSON answer. The command exits 4 when the service gives no answer,
+  and psyche never runs then. It exits 1 where psyche fails, after psyche's own message. A psyche
+  that reads no parse-input version 1 refuses the document by its version.
+
 Each delivery ends in one outcome, which `items show` prints with the app's id for the record:
 
 ```text

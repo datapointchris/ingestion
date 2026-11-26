@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/datapointchris/psyche/schemas/parse-input.schema.json",
+  "title": "One parsed source, for psyche relate --parse",
+  "description": "A source that another program fetched and parsed, which `psyche relate --parse` connects to personal context without fetching it again. psyche refuses a document carrying any key this schema does not declare, naming the key. Each new key in this schema raises schema_version. A psyche release reads the new version and the one before it, and a writer sends the new version only once that release is installed.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "key", "zone", "extractor", "extractor_version", "text", "findings"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "key": {
+      "description": "The source's stable id in the program that parsed it. A URL serves where there is no other.",
+      "type": "string",
+      "minLength": 1
+    },
+    "url": {
+      "description": "Where the source lives, and null where it has no address, such as text typed by hand.",
+      "type": ["string", "null"]
+    },
+    "title": {"type": ["string", "null"]},
+    "zone": {
+      "description": "Who wrote the text. outside is anyone else, even where you shared the link, and owner is you.",
+      "enum": ["outside", "owner"]
+    },
+    "media_type": {
+      "description": "The source's media type before it was parsed, such as text/html.",
+      "type": ["string", "null"]
+    },
+    "extractor": {
+      "description": "The program that turned the source into text, such as pandoc.",
+      "type": "string",
+      "minLength": 1
+    },
+    "extractor_version": {"type": "string", "minLength": 1},
+    "text": {
+      "description": "The source as plain text, which is what relate reads. Whitespace alone is refused, because it leaves nothing to relate.",
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "units": {
+      "description": "The text's structure: each page, chapter, section or post, numbered from 1 in reading order. A finding's unit names one.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["n", "text"],
+        "properties": {
+          "n": {"type": "integer", "minimum": 1},
+          "label": {"type": ["string", "null"]},
+          "text": {"type": "string"}
+        }
+      }
+    },
+    "rules_version": {
+      "description": "The version of the rules a scanner read the text with, and null where nothing scanned it.",
+      "type": ["string", "null"]
+    },
+    "findings": {
+      "description": "What a scanner flagged in the text, such as an instruction aimed at a model or Unicode that hides text from a person. An empty list says nothing was flagged.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["rule", "severity", "span"],
+        "properties": {
+          "rule": {"description": "The id of the rule that matched.", "type": "string", "minLength": 1},
+          "severity": {"description": "From least to most severe.", "enum": ["info", "low", "medium", "high", "critical"]},
+          "span": {"description": "The text the rule matched, which a scanner may cut short.", "type": "string"},
+          "unit": {
+            "description": "The unit the match starts in, and null where the text has no units.",
+            "type": ["integer", "null"],
+            "minimum": 1
+          },
+          "offset": {
+            "description": "Where the match starts, in bytes from its unit's start, or from the text's.",
+            "type": "integer",
+            "minimum": 0
+          },
+          "length": {"description": "The match's length in bytes.", "type": "integer", "minimum": 0}
+        }
+      }
+    },
+    "suggested": {
+      "description": "Each command, link and piece of code the text suggests a reader run, open or paste, listed apart from the findings.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "text"],
+        "properties": {
+          "kind": {"enum": ["command", "link", "code"]},
+          "text": {"type": "string", "minLength": 1},
+          "unit": {"type": ["integer", "null"], "minimum": 1}
+        }
+      }
+    },
+    "enriched": {
+      "description": "What another reader derived from the text before psyche saw it. Every key is optional.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "summary": {"type": ["string", "null"]},
+        "idea": {"description": "One sentence stating the source's idea.", "type": ["string", "null"]},
+        "suggestion": {"description": "One change the source suggests, in a sentence.", "type": ["string", "null"]},
+        "genre": {"description": "What kind of writing it is, such as tutorial or opinion.", "type": ["string", "null"]},
+        "domains": {"description": "What the source is about.", "type": "array", "items": {"type": "string"}},
+        "themes": {"description": "What the source argues or explores.", "type": "array", "items": {"type": "string"}},
+        "quality": {"description": "A rough estimate of its quality, from 1 to 10.", "type": ["integer", "null"], "minimum": 1, "maximum": 10}
+      }
+    }
+  }
+}
