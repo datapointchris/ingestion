@@ -21,7 +21,8 @@
     {"$ref": "#/$defs/keyed_requests"},
     {"$ref": "#/$defs/marks"},
     {"$ref": "#/$defs/gate_trust"},
-    {"$ref": "#/$defs/gate_trust_decisions"}
+    {"$ref": "#/$defs/gate_trust_decisions"},
+    {"$ref": "#/$defs/prompt_proposals"}
   ],
   "$defs": {
     "item_key": {
@@ -34,7 +35,7 @@
       "enum": ["outside", "owner"]
     },
     "sha256": {"description": "A SHA-256, in lowercase hex.", "type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "stage": {"description": "A stage that writes an output or holds a task. A poll's task fetches a connector's source before any item lands. quality-arm is the quality gate's prompt asked of the model that its task names, as a measurement, and sits on no item's line. structure profiles a PDF's outline, page labels, creation date, title and fonts. contents is a model's reading of the printed contents pages of a PDF whose outline gave it no sections. delete removes a landed item from the source of a connector that declares after_landing delete, and sits on no item's line.", "enum": ["poll", "land", "parse", "structure", "contents", "scan", "quality", "quality-arm", "model-read", "deliver", "delete"]},
+    "stage": {"description": "A stage that writes an output or holds a task. A poll's task fetches a connector's source before any item lands. quality-arm is the quality gate's prompt asked of the model that its task names, as a measurement, and sits on no item's line. structure profiles a PDF's outline, page labels, creation date, title and fonts. contents is a model's reading of the printed contents pages of a PDF whose outline gave it no sections. delete removes a landed item from the source of a connector that declares after_landing delete, and sits on no item's line. prompt-proposal drafts a prompt proposal from the quality gate's misses, and sits on no item's line.", "enum": ["poll", "land", "parse", "structure", "contents", "scan", "quality", "quality-arm", "model-read", "deliver", "delete", "prompt-proposal"]},
     "timestamp": {"type": "string", "format": "date-time"},
     "severity": {"description": "A scan finding's severity, from least to most severe.", "enum": ["info", "low", "medium", "high", "critical"]},
     "finding": {
@@ -277,7 +278,7 @@
     },
     "tasks": {
       "title": "tasks, one row per task",
-      "description": "ingestion.record.id is the task's id. A stage's task names its item, and a poll's task names its connector. A failed task's error ships as ingestion.text, because an extractor's stderr can quote the item.",
+      "description": "ingestion.record.id is the task's id. A stage's task names its item, a poll's task names its connector, and a prompt-proposal task names its prompt proposal. A failed task's error ships as ingestion.text, because an extractor's stderr can quote the item.",
       "type": "object",
       "additionalProperties": false,
       "required": ["id", "item_key", "connector", "destination", "stage", "capability", "state", "attempts", "created_ts", "updated_ts"],
@@ -288,6 +289,7 @@
         "destination": {"description": "The destination a deliver task writes its item to, and null for every other task.", "type": ["string", "null"]},
         "model": {"description": "The model that a measurement arm's task asks its run for, and null for every other task.", "type": ["string", "null"]},
         "sighting_connector": {"description": "The connector whose sighting a delete task removes from that connector's source, and null for every other task. Absent from a record shipped before the store kept it.", "type": ["string", "null"]},
+        "proposal_id": {"description": "The prompt proposal that a prompt-proposal task drafts, and null for every other task. Absent from a record shipped before the store kept it.", "type": ["string", "null"]},
         "stage": {"$ref": "#/$defs/stage"},
         "capability": {"description": "What a worker needs to claim the task: poll:<source> for a poll, parse:<extractor> for a parse, deliver:<deliverer> for a delivery and delete:<source> for a delete.", "type": "string"},
         "state": {"enum": ["queued", "leased", "done", "failed"]},
@@ -457,6 +459,75 @@
         "client_id": {"description": "The client that sent the word.", "type": ["string", "null"]},
         "gate_decided_by": {"description": "model:<run id> of the gate's decision that the word judged.", "type": "string"},
         "decided_ts": {"$ref": "#/$defs/timestamp"}
+      }
+    },
+    "prompt_proposal_miss": {
+      "description": "One answer of the quality gate that a person's word went against, as a prompt proposal's draft reads it. Every field is a key, an enum, a number or the person's own words. It never holds a title, a URL, the item's text, the gate's domains, themes, idea or reason, or a sighting's fields.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "n", "item_key", "media_type", "connectors", "label_kind", "label", "destination", "cause", "note", "review_cause", "labeled_ts", "missed",
+        "prompt_version", "model", "effort", "verdict", "verdict_confidence", "side", "side_confidence", "quality", "genre"
+      ],
+      "properties": {
+        "n": {"description": "The miss's number within its proposal, from 1, which the draft's answers cite.", "type": "integer", "minimum": 1},
+        "item_key": {"$ref": "#/$defs/item_key"},
+        "media_type": {"type": "string"},
+        "connectors": {"description": "Each connector that sighted the item.", "type": "array", "items": {"type": "string"}},
+        "label_kind": {"description": "placement where a person placed the item after the gates sent it to review, and mark where a person marked an item that the gate had decided.", "enum": ["placement", "mark"]},
+        "label": {"description": "The person's word: personal, fleet or drop for a placement, and low-quality or read for a mark.", "enum": ["personal", "fleet", "drop", "low-quality", "read"]},
+        "destination": {"description": "Where the person placed the item, and null for a drop or a mark.", "type": ["string", "null"]},
+        "cause": {"description": "What the person said decided the placement, such as title, theme or a sighting field's name, and null for a mark.", "type": ["string", "null"]},
+        "note": {"description": "The note that the person wrote with the placement, and null where they wrote none.", "type": ["string", "null"]},
+        "review_cause": {"description": "Why the item waited in review before the person placed it, and null for a mark.", "type": ["string", "null"]},
+        "labeled_ts": {"description": "When the person gave the word.", "$ref": "#/$defs/timestamp"},
+        "missed": {"description": "What the word went against: verdict, side, or both.", "type": "array", "minItems": 1, "items": {"enum": ["verdict", "side"]}},
+        "prompt_version": {"description": "The version of the quality gate's prompt that answered.", "type": "string"},
+        "model": {"$ref": "#/$defs/family_model"},
+        "effort": {"$ref": "#/$defs/family_effort"},
+        "verdict": {"enum": ["pass", "drop", "unsure"]},
+        "verdict_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "side": {"enum": ["personal", "fleet", "unsure"]},
+        "side_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "quality": {"type": "integer", "minimum": 0, "maximum": 10},
+        "genre": {"description": "One of the gate's genres, an enum of prompts/quality/answer.schema.json.", "type": "string"}
+      }
+    },
+    "prompt_proposals": {
+      "title": "prompt_proposals, one row per drafted change to a model stage's prompt",
+      "description": "ingestion.record.id is the proposal's id. serve writes the row when a time of its [gates.proposals] schedule finds misses labeled since the last done proposal, with the misses that the draft reads and the text of the prompt that it changes. It queues the prompt-proposal task that drafts it. A failed draft's misses are read again by the next proposal. The task's run writes the rest, as a model stage writes its output, so each version of the row is a step of the draft. zone is owner, because every miss holds only keys, enums, numbers and a person's own words, and a model's output takes its input's zone. A draft that is done names its edits in answer.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id", "prompt", "prompt_version", "prompt_text", "labeled_after", "labeled_through", "miss_count", "misses", "zone", "producer", "producer_version", "state",
+        "dispatch_id", "run_id", "model", "effort", "answered_model", "tokens", "answer", "error", "created_ts", "updated_ts"
+      ],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+        "prompt": {"description": "The stage whose prompt the draft changes.", "enum": ["quality"]},
+        "prompt_version": {"description": "The version of that prompt that the draft changes.", "type": "string"},
+        "prompt_text": {"description": "The template of that prompt at prompt_version, as serve's build held it. The draft quotes it and its edits apply to it, so a worker of another build drafts against the same text.", "type": "string", "minLength": 1},
+        "labeled_after": {"description": "The misses were labeled after this time: the labeled_through of the newest done proposal, and null where none is done, so the draft reads every miss before labeled_through.", "anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
+        "labeled_through": {"description": "The misses were labeled at or before this time: the schedule's time that drafted the proposal.", "$ref": "#/$defs/timestamp"},
+        "miss_count": {"type": "integer", "minimum": 1},
+        "misses": {"description": "The projection that the draft reads, the earliest label first.", "type": "array", "items": {"$ref": "#/$defs/prompt_proposal_miss"}},
+        "zone": {"$ref": "#/$defs/zone"},
+        "producer": {"description": "What drafts the proposal.", "const": "prompt-proposal"},
+        "producer_version": {"description": "The version of the prompt-proposal prompt that drafts it.", "type": "string"},
+        "state": {"description": "waiting until the draft's run answers, then done, or failed where the run failed or its answer did not apply to the prompt.", "enum": ["waiting", "done", "failed"]},
+        "dispatch_id": {"description": "The dispatch that the queue adapter follows, and null for a run that answered at once.", "type": ["string", "null"]},
+        "run_id": {"type": ["string", "null"]},
+        "model": {"description": "The model that the run asked for.", "type": ["string", "null"]},
+        "effort": {"description": "The effort that the run asked for.", "type": ["string", "null"]},
+        "answered_model": {"description": "The model that the run reports answering on.", "type": ["string", "null"]},
+        "tokens": {"anyOf": [{"$ref": "#/$defs/tokens"}, {"type": "null"}]},
+        "answer": {
+          "description": "The draft, whole, as prompts/prompt-proposal/answer.schema.json holds it: pattern, change, edits and answers. Each edit's before occurs once in prompt_text, and no two overlap, so applying the edits gives the proposed prompt. Null until the draft is done.",
+          "type": ["object", "null"]
+        },
+        "error": {"description": "Why the draft waits or failed.", "type": ["string", "null"]},
+        "created_ts": {"$ref": "#/$defs/timestamp"},
+        "updated_ts": {"$ref": "#/$defs/timestamp"}
       }
     }
   }

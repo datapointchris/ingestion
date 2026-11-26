@@ -106,6 +106,10 @@ var Tables = []Table{
 		Name: "gate_trust_decisions", Key: []string{"family", "sequence"}, Stamp: []string{"decided_ts"},
 		Bool: []string{"promoted"}, Writes: Appends,
 	},
+	{
+		Name: "prompt_proposals", Key: []string{"id"}, Stamp: []string{"updated_ts"}, JSON: []string{"misses", "tokens", "answer"},
+		Kept: []string{"created_ts"}, Writes: Upserts,
+	},
 }
 
 // TableNamed is the table called name, and false where none is.

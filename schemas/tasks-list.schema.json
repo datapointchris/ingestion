@@ -12,14 +12,15 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "item_key", "connector", "destination", "model", "stage", "capability", "state", "held_by", "lapsed", "lease_holder", "lease_expires_ts", "attempts", "has_error", "not_before_ts", "created_ts", "updated_ts"],
+        "required": ["id", "item_key", "connector", "proposal_id", "destination", "model", "stage", "capability", "state", "held_by", "lapsed", "lease_holder", "lease_expires_ts", "attempts", "has_error", "not_before_ts", "created_ts", "updated_ts"],
         "properties": {
           "id": {"type": "string"},
-          "item_key": {"description": "The item a stage's task works on, and null for a poll.", "type": ["string", "null"]},
+          "item_key": {"description": "The item a stage's task works on, and null for a poll or a prompt-proposal task.", "type": ["string", "null"]},
           "connector": {"description": "The connector a poll fetches for, or the connector whose sighting a delete removes from its source, and null for every other stage's task.", "type": ["string", "null"]},
+          "proposal_id": {"description": "The prompt proposal that a prompt-proposal task drafts, and null for every other task.", "type": ["string", "null"]},
           "destination": {"description": "The destination a deliver task writes its item to, and null for every other task.", "type": ["string", "null"]},
           "model": {"description": "The model that a measurement arm's task asks its run for, and null for every other task.", "type": ["string", "null"]},
-          "stage": {"enum": ["poll", "land", "parse", "structure", "contents", "scan", "quality", "quality-arm", "model-read", "deliver", "delete"]},
+          "stage": {"enum": ["poll", "land", "parse", "structure", "contents", "scan", "quality", "quality-arm", "model-read", "prompt-proposal", "deliver", "delete"]},
           "capability": {"description": "What a worker needs to claim the task: poll:<source> for a poll, parse:<extractor> for a parse, deliver:<deliverer> for a delivery and delete:<source> for a delete.", "type": "string"},
           "state": {"enum": ["queued", "leased", "done", "failed"]},
           "held_by": {"description": "The connector whose first fill holds this queued task until a person releases it.", "type": ["string", "null"]},

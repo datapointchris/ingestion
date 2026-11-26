@@ -44,7 +44,7 @@ func TestTheClaudeCLIAdapterRunsClaudeWithNoToolsAndReadsItsAnswer(t *testing.T)
 		t.Fatal(err)
 	}
 	r := modelport.Request{
-		ItemKey: "reddit/t3_aa1", Stage: store.StageQuality, PromptVersion: "1-test", Prompt: "Judge this opening.",
+		Subject: "reddit/t3_aa1", Stage: store.StageQuality, PromptVersion: "1-test", Prompt: "Judge this opening.",
 		Schema: json.RawMessage(`{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://example.com/a.json","type":"object"}`),
 		Model:  "haiku", Effort: "medium",
 	}

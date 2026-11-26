@@ -1,0 +1,37 @@
+Propose one change to a prompt, from the times a person disagreed with how a model answered it. Answer only through the schema you are given.
+
+The prompt is the {{.Prompt}} gate's, at version {{.PromptVersion}}. A model reads it with one saved item's title and opening, before anyone reads the item whole, and answers the item's genre, quality, verdict and a guess at its side. The service acts on the answer:
+
+- verdict pass lets the item go on to be placed. verdict drop at a confidence of {{.DropFloor}} or more drops the item, or shows it to a person until the gate has earned trust on the item's sources. Every other verdict waits for a person.
+- Where no tag or rule placed the item, side personal at a confidence of {{.GuessFloor}} or more places it on the personal side, unless its source asks a person to sort it. A fleet guess places nothing, and waits for a person.
+
+The prompt is quoted whole between the two PROMPT lines. Its fields in double braces are filled for each item, so keep each one as it is.
+
+----- PROMPT -----
+{{.Template}}
+----- PROMPT ENDS -----
+
+A person disagreed with the gate {{.Count}} times, on items labeled {{.Window}}. Each line between the two MISSES lines is one miss, as JSON. Every value is a key, a name from a fixed list, a number, or the person's own words. No title, link or text of an item is shown, so reason from the pattern in the answers rather than from any one item.
+
+- n numbers the miss.
+- item_key, media_type and connectors say which item it was, what kind, and which sources sent it.
+- label_kind is placement where the person placed the item after the gates sent it to review, and mark where the person marked an item the gate had already decided.
+- label is the person's word. A placement is personal, fleet, or drop. A mark is low-quality, on an item the gate passed, or read, on one it dropped.
+- destination, cause and note are the person's placement: where it went, what the person said decided it, and any note they wrote. Each is null where the person gave none.
+- review_cause is why the item waited in review before the person placed it.
+- missed names what disagreed: verdict where the gate's verdict went the other way from the label, and side where its side guess named the other side.
+- verdict, verdict_confidence, side, side_confidence, quality and genre are the gate's answer.
+- prompt_version, model and effort are what answered. A miss under a version other than {{.PromptVersion}} was answered by an earlier prompt, which a change to this one may already answer.
+
+----- MISSES -----
+{{.Misses}}
+----- MISSES END -----
+
+Find what the misses share: which sides, genres, sources, media types and confidences go wrong, and in which direction. Then propose the smallest change to the prompt's wording that would have answered them, and that leaves alone how the prompt treats the items the misses do not touch.
+
+Answer each field:
+
+- pattern: at most three sentences on what the misses share.
+- change: one or two sentences on what the change does and why it answers the pattern.
+- edits: the change as passages to replace, in the order they occur. before quotes a passage of the prompt exactly as it stands between the PROMPT lines, character for character, long enough that it occurs only once. after is the passage that replaces it. Leave edits empty where no change to the wording would answer the misses, and say why in change.
+- answers: the n of each miss that the change would have answered.

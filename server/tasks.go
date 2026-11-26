@@ -28,10 +28,6 @@ const (
 	maxClaim     = 50
 )
 
-// errOutputsWithoutItem is a poll's report carrying outputs, which name no
-// item to write them for.
-var errOutputsWithoutItem = errors.New("a poll's task reports no outputs")
-
 var (
 	errDeliveryOutsideDeliver  = errors.New("only a deliver task reports a delivery")
 	errBadDelivery             = errors.New("the delivery is not one the store records")
@@ -117,6 +113,27 @@ type LeasedTask struct {
 	// Sighting is a delete task's: the sighting whose source the task removes
 	// the item from. Every other task carries none.
 	Sighting *LeasedSighting `json:"sighting,omitempty"`
+	// ProposalID and Proposal are a prompt-proposal task's: the prompt proposal that
+	// it drafts, and the misses that the draft reads. Its StageOutputs hold
+	// the proposal's run, once one was sent. Every other task carries
+	// neither.
+	ProposalID *string         `json:"proposal_id,omitempty"`
+	Proposal   *LeasedProposal `json:"proposal,omitempty"`
+}
+
+// LeasedProposal is the prompt proposal that a prompt-proposal task drafts: the
+// prompt it changes, at the version it changes, and the misses labeled after
+// LabeledAfter, through LabeledThrough, as one JSON array.
+type LeasedProposal struct {
+	Prompt        string `json:"prompt"`
+	PromptVersion string `json:"prompt_version"`
+	// PromptText is the template of the prompt at PromptVersion, which the
+	// draft's edits apply to.
+	PromptText     string          `json:"prompt_text"`
+	LabeledAfter   *string         `json:"labeled_after"`
+	LabeledThrough string          `json:"labeled_through"`
+	MissCount      int             `json:"miss_count"`
+	Misses         json.RawMessage `json:"misses"`
 }
 
 // LeasedSighting is one connector's sighting of a delete task's item, which
@@ -262,15 +279,31 @@ type ReportOutput struct {
 	Error  *string         `json:"error,omitempty"`
 }
 
-// output is o as the row it writes for task, which names its item.
-func (o ReportOutput) output(task store.Task) store.Output {
+// run is how o's run went, which every subject's table keeps the same way.
+func (o ReportOutput) run() store.StageRun {
+	return store.StageRun{
+		Producer: o.Producer, ProducerVersion: o.ProducerVersion, State: o.State, DispatchID: o.DispatchID, RunID: o.RunID,
+		Model: o.Model, Effort: o.Effort, AnsweredModel: o.AnsweredModel, Tokens: o.Tokens, Answer: o.Answer, Error: o.Error,
+	}
+}
+
+// output is o as an output row, whose item and stage KeepRun takes from the
+// task.
+func (o ReportOutput) output() store.Output {
 	return store.Output{
-		ItemKey: *task.ItemKey, Stage: task.Stage, Producer: o.Producer, ProducerVersion: o.ProducerVersion,
-		Lens: o.Lens, LensVersion: o.LensVersion, NoteDigest: o.NoteDigest, InputProducer: o.InputProducer, InputVersion: o.InputVersion,
-		State: o.State, BlobSHA256: o.BlobSHA256,
-		DispatchID: o.DispatchID, RunID: o.RunID, Model: o.Model, Effort: o.Effort, AnsweredModel: o.AnsweredModel, Tokens: o.Tokens,
-		Findings: o.Findings, RulesVersion: o.RulesVersion, Quality: o.Quality,
-		SideGuess: o.SideGuess, SideConfidence: o.SideConfidence, Spans: o.Spans, Answer: o.Answer, Error: o.Error,
+		StageRun: o.run(), Lens: o.Lens, LensVersion: o.LensVersion, NoteDigest: o.NoteDigest,
+		InputProducer: o.InputProducer, InputVersion: o.InputVersion,
+		BlobSHA256: o.BlobSHA256, Findings: o.Findings, RulesVersion: o.RulesVersion, Quality: o.Quality,
+		SideGuess: o.SideGuess, SideConfidence: o.SideConfidence, Spans: o.Spans,
+	}
+}
+
+// stageOutput is run as a model stage's task carries it, beside the note
+// digest of an item's model read.
+func stageOutput(run store.StageRun, noteDigest *string) StageOutput {
+	return StageOutput{
+		Producer: run.Producer, ProducerVersion: run.ProducerVersion, NoteDigest: noteDigest, State: run.State, DispatchID: run.DispatchID,
+		Model: run.Model, Effort: run.Effort, Error: run.Error,
 	}
 }
 
@@ -282,9 +315,11 @@ type TaskView struct {
 	ItemKey *string `json:"item_key"`
 	// Connector names a poll's connector, and the connector whose sighting a
 	// delete removes from its source.
-	Connector      *string `json:"connector"`
-	Destination    *string `json:"destination"`
-	Model          *string `json:"model"`
+	Connector   *string `json:"connector"`
+	Destination *string `json:"destination"`
+	Model       *string `json:"model"`
+	// ProposalID names the prompt proposal that a prompt-proposal task drafts.
+	ProposalID     *string `json:"proposal_id"`
 	Stage          string  `json:"stage"`
 	Capability     string  `json:"capability"`
 	State          string  `json:"state"`
@@ -402,7 +437,7 @@ func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
 			ID: t.ID, ItemKey: t.ItemKey, Connector: t.Connector, Stage: t.Stage, Capability: t.Capability, Attempts: t.Attempts,
 			LeaseToken: *t.LeaseToken, LeaseExpiresTS: *t.LeaseExpiresTS, MediaType: t.Item.MediaType, BlobSHA256: t.Item.BlobSHA256,
 			Zone: t.Item.Zone, Title: t.Item.Title, URL: t.Item.URL, LandedTS: t.Item.CreatedTS, Destination: t.Destination,
-			Model: t.Model,
+			Model: t.Model, ProposalID: t.ProposalID,
 		}
 		if d := t.Delivery; d != nil {
 			leased.Title, leased.URL, leased.SourceTS, leased.Path, leased.Chapter = d.Title, d.URL, d.SourceTS, d.Path, d.Chapter()
@@ -411,13 +446,17 @@ func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
 			leased.Lens, leased.Note = t.Read.Lens, t.Read.Note
 		}
 		for _, o := range t.Outputs {
-			leased.StageOutputs = append(leased.StageOutputs, StageOutput{
-				Producer: o.Producer, ProducerVersion: o.ProducerVersion, NoteDigest: o.NoteDigest, State: o.State, DispatchID: o.DispatchID,
-				Model: o.Model, Effort: o.Effort, Error: o.Error,
-			})
+			leased.StageOutputs = append(leased.StageOutputs, stageOutput(o.StageRun, o.NoteDigest))
 		}
 		if s := t.Sighting; s != nil {
 			leased.Sighting = &LeasedSighting{Connector: s.Connector, ExternalKey: s.ExternalKey, Fields: s.Fields}
+		}
+		if p := t.Proposal; p != nil {
+			leased.Proposal = &LeasedProposal{
+				Prompt: p.Prompt, PromptVersion: p.PromptVersion, PromptText: p.PromptText, LabeledAfter: p.LabeledAfter,
+				LabeledThrough: p.LabeledThrough, MissCount: p.MissCount, Misses: p.Misses,
+			}
+			leased.StageOutputs = append(leased.StageOutputs, stageOutput(p.StageRun, nil))
 		}
 		if t.Stage == store.StagePoll && t.Connector != nil {
 			if t.Cursor != nil {
@@ -475,9 +514,6 @@ func (h taskHandlers) report(w http.ResponseWriter, r *http.Request) {
 	}
 	var polled connectors.PollLanded
 	task, err := h.store.Report(r.Context(), r.PathValue("id"), body.Token, outcome, func(tx *store.Tx, task store.Task, ended *store.Outcome) error {
-		if task.ItemKey == nil && len(body.Outputs) > 0 {
-			return errOutputsWithoutItem
-		}
 		if (len(body.Arrivals) > 0 || body.Cursor != nil) && (task.Stage != store.StagePoll || outcome.State != store.TaskDone) {
 			return errArrivalsOutsideDonePoll
 		}
@@ -491,7 +527,7 @@ func (h taskHandlers) report(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		for _, o := range body.Outputs {
-			if err := tx.PutOutputWithUnits(r.Context(), o.output(task), o.Units); err != nil {
+			if err := tx.KeepRun(r.Context(), task, o.output(), o.Units); err != nil {
 				return err
 			}
 		}
@@ -563,6 +599,9 @@ func (h taskHandlers) retry(w http.ResponseWriter, r *http.Request) {
 		return
 	case errors.Is(err, store.ErrTaskDone):
 		Refuse(w, http.StatusConflict, CodeTaskDone, "task %s ended done, so nothing is retried: items replay runs its stage again", r.PathValue("id"))
+		return
+	case errors.Is(err, store.ErrTaskSuperseded):
+		Refuse(w, http.StatusConflict, CodeTaskSuperseded, "%v, so nothing is retried", err)
 		return
 	case err != nil:
 		h.internal(w, r, "retry a task", err)
@@ -677,8 +716,8 @@ func (h taskHandlers) list(w http.ResponseWriter, r *http.Request) {
 
 func viewOf(t store.Task, now time.Time) TaskView {
 	return TaskView{
-		ID: t.ID, ItemKey: t.ItemKey, Connector: cmp.Or(t.Connector, t.SightingConnector), Destination: t.Destination, Model: t.Model,
-		Stage: t.Stage, Capability: t.Capability,
+		ID: t.ID, ItemKey: t.ItemKey, Connector: cmp.Or(t.Connector, t.SightingConnector), ProposalID: t.ProposalID,
+		Destination: t.Destination, Model: t.Model, Stage: t.Stage, Capability: t.Capability,
 		State: t.State, HeldBy: t.HeldBy, Lapsed: t.Lapsed(now),
 		LeaseHolder: t.LeaseHolder, LeaseExpiresTS: t.LeaseExpiresTS, Attempts: t.Attempts, HasError: t.Error != nil,
 		NotBeforeTS: t.NotBeforeTS, CreatedTS: t.CreatedTS, UpdatedTS: t.UpdatedTS,
@@ -698,7 +737,7 @@ func (h taskHandlers) leaseRefused(w http.ResponseWriter, r *http.Request, err e
 		Refuse(w, http.StatusConflict, CodeStaleLease, "%v", err)
 	case errors.Is(err, store.ErrNoItem):
 		Refuse(w, http.StatusUnprocessableEntity, CodeItemNotFound, "%v", err)
-	case errors.Is(err, errOutputsWithoutItem):
+	case errors.Is(err, store.ErrRunWithoutSubject):
 		Refuse(w, http.StatusUnprocessableEntity, CodeInvalidBody, "task %s polls a connector, which carries no item, so it reports no outputs", r.PathValue("id"))
 	case errors.Is(err, errDeliveryOutsideDeliver):
 		Refuse(w, http.StatusUnprocessableEntity, CodeInvalidBody, "task %s delivers nothing, so it reports no delivery", r.PathValue("id"))

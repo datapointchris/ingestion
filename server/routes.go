@@ -71,6 +71,7 @@ var (
 	RouteGateTrust      = Route{"GET /api/v1/gates/trust", ScopeItemsRead, RepeatRead}
 	// RouteGateTrustPromote's family is <connector>@<prompt version>@<model>@<effort>.
 	RouteGateTrustPromote = Route{"POST /api/v1/gates/trust/{family}/promote", ScopeTrustPromote, RepeatByContent}
+	RouteGateProposals    = Route{"GET /api/v1/gates/proposals", ScopeItemsRead, RepeatRead}
 )
 
 // Handle serves route with h. A service reaches it only while its token

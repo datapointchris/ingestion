@@ -228,7 +228,7 @@ func failedRun(c Connector, cur *store.Cursor, runErr error, now time.Time) (tim
 	if c.Once() {
 		return now.Add(min(wait, onceRecheck)).UTC(), nil
 	}
-	schedule, err := parseSchedule(c.Schedule)
+	schedule, err := ParseSchedule(c.Schedule)
 	if err != nil {
 		return time.Time{}, err
 	}

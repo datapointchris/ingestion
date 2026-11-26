@@ -60,23 +60,28 @@ func TestAnItemGainsEachStageRecordAndEachChangeReachesTheCollectorOnce(t *testi
 		}},
 		{"parsed", func(tx *store.Tx) error {
 			return tx.PutOutputWithUnits(ctx, store.Output{
-				ItemKey: key, Stage: store.StageParse, Producer: "thread-text", ProducerVersion: "1", State: store.OutputDone,
+				ItemKey: key, Stage: store.StageParse,
+				StageRun: store.StageRun{Producer: "thread-text", ProducerVersion: "1", State: store.OutputDone},
 			}, []store.Unit{{N: 1, Text: text}})
 		}},
 		{"scanned", func(tx *store.Tx) error {
 			unit := 1
 			return tx.PutOutput(ctx, store.Output{
-				ItemKey: key, Stage: store.StageScan, Producer: "rules", ProducerVersion: "atr@84a377d5+yr@1.24.0+503f73d3/thread-text@1",
-				State: store.OutputDone, Findings: []store.Finding{{Rule: "ingestion.code", Severity: "info", Unit: &unit, Offset: 4, Length: 6}},
-				Spans: []store.Span{{Rule: "ingestion.code", Span: "thread"}},
+				ItemKey: key, Stage: store.StageScan,
+				StageRun: store.StageRun{Producer: "rules", ProducerVersion: "atr@84a377d5+yr@1.24.0+503f73d3/thread-text@1", State: store.OutputDone},
+				Findings: []store.Finding{{Rule: "ingestion.code", Severity: "info", Unit: &unit, Offset: 4, Length: 6}},
+				Spans:    []store.Span{{Rule: "ingestion.code", Span: "thread"}},
 			})
 		}},
 		{"gated", func(tx *store.Tx) error {
 			if err := tx.PutOutput(ctx, store.Output{
-				ItemKey: key, Stage: store.StageQuality, Producer: "quality-gate", ProducerVersion: "1",
-				State: store.OutputDone, Quality: &quality, SideGuess: &side, SideConfidence: &confidence,
-				Answer: json.RawMessage(`{"genre":"how-to","idea":"loud markers hurt adherence"}`),
-				Tokens: &store.Tokens{UncachedInput: 12, CacheWrite: 3100, Output: 210},
+				ItemKey: key, Stage: store.StageQuality,
+				StageRun: store.StageRun{
+					Producer: "quality-gate", ProducerVersion: "1", State: store.OutputDone,
+					Answer: json.RawMessage(`{"genre":"how-to","idea":"loud markers hurt adherence"}`),
+					Tokens: &store.Tokens{UncachedInput: 12, CacheWrite: 3100, Output: 210},
+				},
+				Quality: &quality, SideGuess: &side, SideConfidence: &confidence,
 			}); err != nil {
 				return err
 			}
@@ -94,8 +99,11 @@ func TestAnItemGainsEachStageRecordAndEachChangeReachesTheCollectorOnce(t *testi
 		{"read", func(tx *store.Tx) error {
 			dispatch := "dispatch-1"
 			return tx.PutOutput(ctx, store.Output{
-				ItemKey: key, Stage: store.StageModelRead, Producer: "model-read", ProducerVersion: "1",
-				State: store.OutputDone, DispatchID: &dispatch, Answer: json.RawMessage(`{"summary":"s","suggestion":"t"}`),
+				ItemKey: key, Stage: store.StageModelRead,
+				StageRun: store.StageRun{
+					Producer: "model-read", ProducerVersion: "1", State: store.OutputDone,
+					DispatchID: &dispatch, Answer: json.RawMessage(`{"summary":"s","suggestion":"t"}`),
+				},
 			})
 		}},
 		{"delivered", func(tx *store.Tx) error {
@@ -169,6 +177,23 @@ func TestAnItemGainsEachStageRecordAndEachChangeReachesTheCollectorOnce(t *testi
 			Family: family, Model: "claude-haiku", Effort: "medium", ItemKey: key, Kind: "mark", Agreement: "agreed", DecidedBy: "person:person",
 			GateDecidedBy: run,
 		}); err != nil {
+			return err
+		}
+		proposal, err := tx.AddPromptProposal(ctx, store.PromptProposal{
+			Prompt: store.StageQuality, PromptVersion: version, PromptText: "Judge the item. a", LabeledThrough: "2026-03-02T06:00:00.000000000Z", MissCount: 1, Zone: store.Owner,
+			Misses: json.RawMessage(`[{"n":1,"item_key":"` + key + `","media_type":"application/pdf","connectors":["reddit-exports"],` +
+				`"label_kind":"mark","label":"low-quality","destination":null,"cause":null,"note":null,"review_cause":null,` +
+				`"labeled_ts":"2026-03-01T09:00:00.000000000Z","missed":["verdict"],"prompt_version":"` + version + `","model":"claude-haiku",` +
+				`"effort":"medium","verdict":"pass","verdict_confidence":0.7,"side":"fleet","side_confidence":0.8,"quality":6,"genre":"tutorial"}]`),
+			StageRun: store.StageRun{Producer: "prompt-proposal", ProducerVersion: "1-0c4d2e1a"},
+		})
+		if err != nil {
+			return err
+		}
+		drafted := "drafted"
+		proposal.State, proposal.RunID = store.OutputDone, &drafted
+		proposal.Answer = json.RawMessage(`{"pattern":"Kept thin tutorials.","change":"Weigh depth.","edits":[{"before":"a","after":"b"}],"answers":[1]}`)
+		if err := tx.PutPromptProposal(ctx, proposal); err != nil {
 			return err
 		}
 		if err := tx.AddKeyedRequest(ctx, store.KeyedRequest{
@@ -288,7 +313,7 @@ func TestAWriteThatMovesAnItemsPhaseShipsTheItemWithIt(t *testing.T) {
 			}
 		}
 		for _, key := range []string{sided, unscanned} {
-			if err := tx.PutOutput(ctx, store.Output{ItemKey: key, Stage: store.StageParse, Producer: "html", ProducerVersion: "1", State: store.OutputDone}); err != nil {
+			if err := tx.PutOutput(ctx, store.Output{ItemKey: key, Stage: store.StageParse, StageRun: store.StageRun{Producer: "html", ProducerVersion: "1", State: store.OutputDone}}); err != nil {
 				return err
 			}
 		}
@@ -304,7 +329,7 @@ func TestAWriteThatMovesAnItemsPhaseShipsTheItemWithIt(t *testing.T) {
 		if _, err := tx.AddDecision(ctx, store.Decision{ItemKey: sided, Gate: store.GateSide, Verdict: "review", DecidedBy: "rule:none", Cause: "no-rule"}); err != nil {
 			return err
 		}
-		return tx.PutOutput(ctx, store.Output{ItemKey: unparsed, Stage: store.StageParse, Producer: "html", ProducerVersion: "1", State: store.OutputFailed})
+		return tx.PutOutput(ctx, store.Output{ItemKey: unparsed, Stage: store.StageParse, StageRun: store.StageRun{Producer: "html", ProducerVersion: "1", State: store.OutputFailed}})
 	}); err != nil {
 		t.Fatal(err)
 	}

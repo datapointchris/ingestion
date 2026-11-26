@@ -80,6 +80,14 @@ type fileConfig struct {
 	// Model names the adapter that carries every model call, its settings,
 	// and what each model stage asks its run for, read by worker run.
 	Model modelConfig `toml:"model"`
+	// Gates holds what serve schedules for the gates, such as when it drafts
+	// a change to the quality gate's prompt from its misses.
+	Gates struct {
+		Proposals struct {
+			// Schedule is a cron expression, as a connector's schedule reads it.
+			Schedule string `toml:"schedule"`
+		} `toml:"proposals"`
+	} `toml:"gates"`
 }
 
 // modelConfig is the [model] table.
@@ -96,9 +104,10 @@ type modelConfig struct {
 		// Command is the claude binary, by path or by name on PATH.
 		Command string `toml:"command"`
 	} `toml:"claude-cli"`
-	Contents  stageModel `toml:"contents"`
-	Quality   stageModel `toml:"quality"`
-	ModelRead stageModel `toml:"model-read"`
+	Contents       stageModel `toml:"contents"`
+	Quality        stageModel `toml:"quality"`
+	ModelRead      stageModel `toml:"model-read"`
+	PromptProposal stageModel `toml:"prompt-proposal"`
 }
 
 // stageModel is what one model stage asks its run for.

@@ -108,7 +108,7 @@ func (q queue) Start(ctx context.Context, r Request) (Progress, error) {
 		err = fmt.Errorf("%w: %w", ErrRefused, status)
 	}
 	if err != nil {
-		return Progress{}, fmt.Errorf("dispatch the %s stage of %s: %w", r.Stage, r.ItemKey, err)
+		return Progress{}, fmt.Errorf("dispatch the %s stage of %s: %w", r.Stage, r.Subject, err)
 	}
 	if d.ID == "" {
 		return Progress{}, errors.New("the dispatch service answered a dispatch with no id")

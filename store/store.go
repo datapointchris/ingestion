@@ -22,6 +22,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -109,14 +110,23 @@ func dsn(path string, readOnly bool) string {
 	return "file:" + path + "?" + q.Encode()
 }
 
+// SchemaGeneration is the generation of the schema files. Raise it with any
+// change to them that rebuilds a table: a column made nullable, or a table
+// constraint changed. A store keeps the highest generation that converged it
+// in PRAGMA user_version. A build whose generation is older rebuilds none of
+// its tables, so a release reverted after a later one converged the store
+// keeps that release's columns and constraints.
+const SchemaGeneration = 1
+
 // converge brings the store to what the schema files declare, reading that
 // from a scratch database the files are applied to. Where the store already
 // holds tables and the files change one, it first copies the store beside
 // itself, so an earlier release has a store to return to. It rebuilds each
-// table whose column the files make nullable, adds each column a table lacks,
-// applies each file in name order, checks that Tables declares every table the
-// files create, guards each logged table, and starts the stamp clock past the
-// newest stamp in any table.
+// table whose column the files make nullable or whose table constraints they
+// change, unless a later generation converged the store. It adds each column
+// a table lacks, applies each file in name order, checks that Tables declares
+// every table the files create, guards each logged table, stamps the store's
+// generation, and starts the stamp clock past the newest stamp in any table.
 func (s *Store) converge(ctx context.Context) error {
 	names, err := fs.Glob(schemaFiles, "*.sql")
 	if err != nil {
@@ -153,6 +163,13 @@ func (s *Store) converge(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	var generation int
+	if err := s.write.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&generation); err != nil {
+		return fmt.Errorf("read the store's schema generation: %w", err)
+	}
+	if generation > SchemaGeneration {
+		changes.rebuild = nil
+	}
 	if changes.held && changes.any() {
 		if err := s.copyBeside(ctx); err != nil {
 			return err
@@ -185,6 +202,11 @@ func (s *Store) converge(ctx context.Context) error {
 			return err
 		}
 	}
+	if generation < SchemaGeneration {
+		if _, err := s.write.ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version = %d`, SchemaGeneration)); err != nil {
+			return fmt.Errorf("stamp the store's schema generation: %w", err)
+		}
+	}
 	for _, t := range Tables {
 		var newest sql.NullString
 		if err := s.write.QueryRowContext(ctx, `SELECT max(`+t.StampSQL("")+`) FROM `+t.Name).Scan(&newest); err != nil {
@@ -199,8 +221,9 @@ func (s *Store) converge(ctx context.Context) error {
 
 // schemaChanges is what converging the files changes in a store. A CREATE
 // TABLE in a file never changes a table that exists, so a column the table
-// lacks is added with its type, NOT NULL and default and no other constraint,
-// and a table whose column the files make nullable is rebuilt whole.
+// lacks is added with its type, NOT NULL and default and no other constraint.
+// A table whose column the files make nullable, or whose table constraints
+// the files change, is rebuilt whole.
 type schemaChanges struct {
 	// held says the store held tables before this open.
 	held    bool
@@ -241,6 +264,14 @@ func planChanges(ctx context.Context, declared, live *sql.DB) (schemaChanges, er
 			changes.create = append(changes.create, name)
 			continue
 		}
+		constrained, err := constraintsChanged(ctx, declared, live, name)
+		if err != nil {
+			return changes, err
+		}
+		if constrained {
+			changes.rebuild = append(changes.rebuild, name)
+			continue
+		}
 		notNull := map[string]bool{}
 		for _, c := range have {
 			notNull[c.name] = c.notNull
@@ -277,12 +308,77 @@ func (s *Store) copyBeside(ctx context.Context) error {
 	return nil
 }
 
+// constraintsChanged says whether the files declare table with other table
+// constraints than live holds it with. A column that converge added to live
+// carries no constraint of the table's, so only the table constraints compare.
+func constraintsChanged(ctx context.Context, declared, live *sql.DB, table string) (bool, error) {
+	var want, have string
+	if err := declared.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&want); err != nil {
+		return false, fmt.Errorf("read how the files create %s: %w", table, err)
+	}
+	if err := live.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&have); err != nil {
+		return false, fmt.Errorf("read how the store holds %s: %w", table, err)
+	}
+	return !slices.Equal(tableConstraints(want), tableConstraints(have)), nil
+}
+
+// tableConstraints is each table constraint in a CREATE TABLE statement, such
+// as a CHECK or a PRIMARY KEY over columns, with its whitespace collapsed,
+// sorted. A column's own constraints are part of its definition, so none is
+// listed.
+func tableConstraints(create string) []string {
+	open := strings.IndexByte(create, '(')
+	if open < 0 {
+		return nil
+	}
+	var parts []string
+	depth, start := 0, open+1
+	var quoted byte
+	for i := open + 1; i < len(create); i++ {
+		c := create[i]
+		switch {
+		case quoted != 0:
+			if c == quoted {
+				quoted = 0
+			}
+		case c == '\'' || c == '"' || c == '`':
+			quoted = c
+		case c == '[':
+			quoted = ']'
+		case c == '(':
+			depth++
+		case c == ')' && depth == 0:
+			parts = append(parts, create[start:i])
+			i = len(create)
+		case c == ')':
+			depth--
+		case c == ',' && depth == 0:
+			parts = append(parts, create[start:i])
+			start = i + 1
+		}
+	}
+	var out []string
+	for _, part := range parts {
+		fields := strings.Fields(part)
+		if len(fields) == 0 {
+			continue
+		}
+		word, _, _ := strings.Cut(strings.ToUpper(fields[0]), "(")
+		switch word {
+		case "CONSTRAINT", "CHECK", "PRIMARY", "UNIQUE", "FOREIGN":
+			out = append(out, strings.Join(fields, " "))
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
 // rebuild remakes table as the files declare it and keeps every row, because
-// SQLite cannot make a column nullable in place. It follows SQLite's
-// documented procedure: foreign keys off, a new table, the rows copied, the
-// old table dropped and the new one renamed, then a foreign key check, in one
-// transaction. Applying the files and guarding the tables afterwards puts the
-// table's indexes and triggers back.
+// SQLite can neither make a column nullable nor change a table constraint in
+// place. It follows SQLite's documented procedure: foreign keys off, a new
+// table, the rows copied, the old table dropped and the new one renamed, then
+// a foreign key check, in one transaction. Applying the files and guarding the
+// tables afterwards puts the table's indexes and triggers back.
 func (s *Store) rebuild(ctx context.Context, declared *sql.DB, table string) error {
 	var create string
 	if err := declared.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&create); err != nil {
