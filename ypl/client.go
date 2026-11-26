@@ -3,7 +3,6 @@ package ypl
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -22,10 +21,13 @@ type Client struct {
 	http *http.Client
 }
 
-// NewClient is the client that reaches ypl at api through client, which
-// carries the service client's token.
+// NewClient is the client that reaches ypl at api through a copy of client,
+// which carries the service client's token. The copy follows no redirect, so
+// a redirect is a refusal rather than an answer from wherever it points.
 func NewClient(api string, client *http.Client) *Client {
-	return &Client{api: strings.TrimRight(api, "/"), http: client}
+	unredirected := *client
+	unredirected.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return &Client{api: strings.TrimRight(api, "/"), http: &unredirected}
 }
 
 // PlaylistItem is one item of a playlist or of a channel's uploads, as YouTube
@@ -86,8 +88,14 @@ func (v Video) Streaming() bool {
 	return v.LiveBroadcastContent == BroadcastLive || v.LiveBroadcastContent == BroadcastUpcoming
 }
 
-// MaxVideos is the most ids one read of video details names.
+// MaxVideos is the most ids one read of video details names. It copies ypl's
+// own limit, and a test holds it to the limit that ypl's suite writes.
 const MaxVideos = 500
+
+// callTimeout bounds one request to ypl, so a ypl that takes the connection
+// and never answers frees the worker's slot. ypl waits for its turn at
+// YouTube, then for YouTube's answer, and this outlasts both.
+const callTimeout = 2 * time.Minute
 
 // Error is ypl's refusal of a request: its status, its code for a client to
 // branch on, and its sentence for a person. RetryAfter holds the refusal's
@@ -119,7 +127,7 @@ const maxAnswer = 64 << 20
 // YouTube id, or the whole title or slug of a playlist that ypl holds.
 func (c *Client) PlaylistItems(ctx context.Context, playlist string) (Playlist, error) {
 	var out Playlist
-	err := c.do(ctx, http.MethodGet, "/api/v1/youtube/playlists/"+url.PathEscape(playlist)+"/items", nil, &out)
+	err := c.do(ctx, http.MethodGet, "/api/v1/youtube/playlists/"+url.PathEscape(playlist)+"/items", nil, http.StatusOK, &out)
 	return out, err
 }
 
@@ -132,7 +140,7 @@ func (c *Client) ChannelUploads(ctx context.Context, channel, pageToken string) 
 		query.Set("page_token", pageToken)
 	}
 	var out UploadsPage
-	err := c.do(ctx, http.MethodGet, "/api/v1/youtube/channels/"+url.PathEscape(channel)+"/uploads", query, &out)
+	err := c.do(ctx, http.MethodGet, "/api/v1/youtube/channels/"+url.PathEscape(channel)+"/uploads", query, http.StatusOK, &out)
 	return out, err
 }
 
@@ -144,7 +152,7 @@ func (c *Client) Videos(ctx context.Context, ids []string) ([]Video, error) {
 	for start := 0; start < len(ids); start += MaxVideos {
 		var page []Video
 		query := url.Values{"ids": {strings.Join(ids[start:min(start+MaxVideos, len(ids))], ",")}}
-		if err := c.do(ctx, http.MethodGet, "/api/v1/youtube/videos", query, &page); err != nil {
+		if err := c.do(ctx, http.MethodGet, "/api/v1/youtube/videos", query, http.StatusOK, &page); err != nil {
 			return out, err
 		}
 		out = append(out, page...)
@@ -155,12 +163,16 @@ func (c *Client) Videos(ctx context.Context, ids []string) ([]Video, error) {
 // DeletePlaylistItem deletes item from playlist on YouTube. ypl answers an item
 // already gone as deleted.
 func (c *Client) DeletePlaylistItem(ctx context.Context, playlist, item string) error {
-	return c.do(ctx, http.MethodDelete, "/api/v1/youtube/playlists/"+url.PathEscape(playlist)+"/items/"+url.PathEscape(item), nil, nil)
+	path := "/api/v1/youtube/playlists/" + url.PathEscape(playlist) + "/items/" + url.PathEscape(item)
+	return c.do(ctx, http.MethodDelete, path, nil, http.StatusNoContent, nil)
 }
 
 // do sends one request and decodes its answer into into, where into is not
-// nil. A status of 300 or more is an *Error.
-func (c *Client) do(ctx context.Context, method, path string, query url.Values, into any) error {
+// nil. A status of 300 or more is an *Error. Any other status but want is an
+// error too, because only want shows that the route ran.
+func (c *Client) do(ctx context.Context, method, path string, query url.Values, want int, into any) error {
+	ctx, cancel := context.WithTimeout(ctx, callTimeout)
+	defer cancel()
 	target := c.api + path
 	if len(query) > 0 {
 		target += "?" + query.Encode()
@@ -187,6 +199,9 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 		}
 		return refusal
 	}
+	if resp.StatusCode != want {
+		return fmt.Errorf("%s %s: ypl answered %d, not %d", method, path, resp.StatusCode, want)
+	}
 	if into == nil {
 		return nil
 	}
@@ -209,10 +224,4 @@ func retryAfter(header string, now time.Time) time.Duration {
 		return at.Sub(now)
 	}
 	return 0
-}
-
-// refusedWith says whether err is ypl's refusal with status.
-func refusedWith(err error, status int) bool {
-	var refusal *Error
-	return errors.As(err, &refusal) && refusal.Status == status
 }

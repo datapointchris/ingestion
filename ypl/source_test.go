@@ -2,34 +2,35 @@ package ypl_test
 
 import (
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
-	"strings"
+	"slices"
 	"testing"
 
 	"github.com/datapointchris/ingestion/connectors"
 	_ "github.com/datapointchris/ingestion/ypl"
 )
 
-// A set refuses each ypl connector that names no playlist or channel, names
-// both, names a key ypl does not take, or deletes or polls once from a
-// channel, and names each problem. A playlist and a channel declared as ypl
-// reads them are not refused.
+// A set refuses each ypl connector that cannot run, and accepts a capture
+// playlist, a playlist landed once and a channel. Each refused connector
+// breaks one rule, so a rule that stops refusing leaves its connector
+// accepted.
 func TestASetRefusesAYPLConnectorThatCannotRun(t *testing.T) {
-	head := "mode: poll\nsource: ypl\nzone: outside\n"
+	head := "source: ypl\nzone: outside\n"
+	poll := head + "mode: poll\n"
 	declarations := map[string]string{
-		"capture":         head + "schedule: \"@every 30m\"\nafter_landing: delete\nsource_parameters:\n  playlist: capture\n",
-		"talks":           head + "schedule: \"@hourly\"\nsource_parameters:\n  channel: \"@testchannel\"\n",
-		"nothing":         head + "schedule: once\n",
-		"both":            head + "schedule: once\nsource_parameters:\n  playlist: capture\n  channel: UCtestchannel\n",
-		"misspelled":      head + "schedule: once\nsource_parameters:\n  playlists: capture\n",
-		"channel-deletes": head + "schedule: once\nafter_landing: delete\nsource_parameters:\n  channel: UCtestchannel\n",
-	}
-	want := map[string][]string{
-		"connector nothing":         {"name the playlist or the channel"},
-		"connector both":            {"a playlist or a channel, not both"},
-		"connector misspelled":      {"not playlists", "name the playlist or the channel"},
-		"connector channel-deletes": {"nothing deletes them", "a channel polls on a schedule"},
+		"capture":         poll + "schedule: \"@every 30m\"\nafter_landing: delete\nsource_parameters:\n  playlist: capture\n",
+		"backfill":        poll + "schedule: once\nsource_parameters:\n  playlist: PLtestbackfill\n",
+		"talks":           poll + "schedule: \"@hourly\"\nsource_parameters:\n  channel: \"@testchannel\"\n",
+		"nothing":         poll + "schedule: once\n",
+		"both":            poll + "schedule: \"@hourly\"\nsource_parameters:\n  playlist: capture\n  channel: UCtestchannel\n",
+		"misspelled":      poll + "schedule: once\nsource_parameters:\n  playlist: capture\n  playlists: capture\n",
+		"bad-channel":     poll + "schedule: \"@hourly\"\nsource_parameters:\n  channel: \"not a channel\"\n",
+		"channel-deletes": poll + "schedule: \"@hourly\"\nafter_landing: delete\nsource_parameters:\n  channel: UCtestchannel\n",
+		"channel-once":    poll + "schedule: once\nsource_parameters:\n  channel: UCtestchannel\n",
+		"playlist-kept":   poll + "schedule: \"@every 30m\"\nsource_parameters:\n  playlist: capture\n",
+		"pushed":          head + "mode: push\ndue_interval: 7d\nsource_parameters:\n  channel: UCtestchannel\n",
 	}
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "connectors"), 0o755); err != nil {
@@ -45,18 +46,20 @@ func TestASetRefusesAYPLConnectorThatCannotRun(t *testing.T) {
 	if !errors.As(err, &invalid) {
 		t.Fatalf("reading the set answered %v, want the invalid declarations", err)
 	}
-	got := map[string]string{}
+	refused := map[string][]string{}
 	for _, inv := range invalid.Invalid {
-		got[inv.Declaration] = strings.Join(inv.Problems, "; ")
+		refused[inv.Declaration] = inv.Problems
 	}
-	for declaration, phrases := range want {
-		for _, phrase := range phrases {
-			if !strings.Contains(got[declaration], phrase) {
-				t.Errorf("%s's problems are %q, want one naming %q", declaration, got[declaration], phrase)
-			}
+	want := []string{
+		"connector bad-channel", "connector both", "connector channel-deletes", "connector channel-once",
+		"connector misspelled", "connector nothing", "connector playlist-kept", "connector pushed",
+	}
+	if got := slices.Sorted(maps.Keys(refused)); !slices.Equal(got, want) {
+		t.Errorf("the set refused %v, want %v", got, want)
+	}
+	for declaration, problems := range refused {
+		if len(problems) != 1 {
+			t.Errorf("%s breaks %d rules, want one: %q", declaration, len(problems), problems)
 		}
-	}
-	if len(got) != len(want) {
-		t.Errorf("the set refused %v, want only %d connectors", got, len(want))
 	}
 }

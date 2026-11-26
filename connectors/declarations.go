@@ -100,7 +100,7 @@ type Connector struct {
 	PersonSorts bool `json:"person_sorts,omitempty" yaml:"person_sorts"`
 	// SourceParameters are the source's own settings for this connector, such
 	// as the playlist that a video source reads. The source names the keys it
-	// takes and checks their values through RegisterSourceRules.
+	// takes and checks their values through its Source's Rules.
 	SourceParameters map[string]string `json:"source_parameters,omitempty" yaml:"source_parameters"`
 }
 
@@ -422,14 +422,7 @@ func (c Connector) problems(compiled declarationSchemas, roots []string) []strin
 			out = append(out, fmt.Sprintf("schedule %q is not a cron expression or once: %v", c.Schedule, err))
 		}
 	}
-	if c.AfterLanding == AfterLandingDelete && !deleters[c.Source] {
-		out = append(out, fmt.Sprintf("after_landing: source %s registers no deleter in this build, so nothing would delete what it lands", c.Source))
-	}
-	if rules, ok := sourceRules[c.Source]; ok {
-		out = append(out, rules(c)...)
-	} else if len(c.SourceParameters) > 0 {
-		out = append(out, fmt.Sprintf("source_parameters: source %s registers no rules in this build, so nothing would read them", c.Source))
-	}
+	out = append(out, c.sourceProblems()...)
 	if c.Format != "" {
 		f, ok := dropFormats[c.Format]
 		switch {
@@ -448,22 +441,6 @@ func (c Connector) problems(compiled declarationSchemas, roots []string) []strin
 		}
 	}
 	return out
-}
-
-// sourceRules holds the rules that each source registers for its connectors.
-var sourceRules = map[string]func(Connector) []string{}
-
-// RegisterSourceRules records the rules that every connector of source holds
-// to beside its schema, such as the source_parameters it takes and a field it
-// cannot honor. rules answers why a connector breaks them, one problem each,
-// and Validate refuses the set for any. A connector that names source_parameters of a
-// source that registers no rules is refused, because nothing would read them.
-// Registering a source twice panics, as a duplicate is a build error.
-func RegisterSourceRules(source string, rules func(Connector) []string) {
-	if _, taken := sourceRules[source]; taken {
-		panic("connectors: the rules of source " + source + " are registered twice")
-	}
-	sourceRules[source] = rules
 }
 
 // Decode reads the set back from an applied declarations row.

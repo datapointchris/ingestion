@@ -2,62 +2,21 @@
 // after_landing delete has serve queue a delete task in the write that lands
 // each item, so the source lets go of what ingestion now holds, as a message
 // queue's consumer acknowledges a message once it is stored. A source that
-// removes items registers its deleter from its own init, so a set may declare
-// after_landing delete on its connectors, and a worker opens the deleter from
-// its [source.<name>] table. A worker runs the deleter through Handler, and a
-// failed delete tries again with backoff.
+// removes items names its deleter in its one registration with the sources
+// package, so a set may declare after_landing delete on its connectors, and a
+// worker opens the deleter from the source's [source.<name>] table. A worker
+// runs the deleter through Handler. A failed delete tries again with backoff,
+// and one that the source refused for good fails.
 package deletion
 
 import (
 	"context"
-	"net/http"
-	"slices"
 	"time"
 
-	"github.com/datapointchris/ingestion/connectors"
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
 	"github.com/datapointchris/ingestion/worker"
 )
-
-// Registration is one source's deleter as this build carries it.
-type Registration struct {
-	// Source names where the deleter removes items. It is the suffix of the
-	// delete tasks' capability, and the table's name under [source] in a
-	// worker's config.
-	Source string
-	// Scopes is what the source's service client asks its token for.
-	Scopes []string
-	// Open is the deleter that reaches the source at api through client,
-	// which carries the service client's token.
-	Open func(api string, client *http.Client) Deleter
-}
-
-var registered = map[string]Registration{}
-
-// Register records r, and records its source with
-// connectors.RegisterDeleter, so each source whose connectors a set lets
-// delete is one whose deleter a worker can open.
-func Register(r Registration) {
-	connectors.RegisterDeleter(r.Source)
-	registered[r.Source] = r
-}
-
-// Lookup is the deleter registered for source, and false where none is.
-func Lookup(source string) (Registration, bool) {
-	r, ok := registered[source]
-	return r, ok
-}
-
-// Sources names, in order, each source whose deleter this build registers.
-func Sources() []string {
-	sources := make([]string, 0, len(registered))
-	for source := range registered {
-		sources = append(sources, source)
-	}
-	slices.Sort(sources)
-	return sources
-}
 
 // Sighting is one connector's sighting of a landed item, which a deleter
 // removes from that connector's source.
@@ -83,6 +42,11 @@ type Outcome struct {
 	// RetryAfter is how long the source asked the next try to wait, such as
 	// until its day's quota resets. Zero waits the stage's own backoff.
 	RetryAfter time.Duration
+	// Final says that the source refused the delete in a way that no wait
+	// clears, such as a write to a playlist that its account cannot edit. The
+	// task then fails, and no later poll queues another delete of the item
+	// until a person retries it.
+	Final bool
 }
 
 // Deleter removes landed items from one source.
@@ -109,7 +73,7 @@ func (h handler) Capability() string { return store.DeleteCapability(h.source) }
 
 // Run removes the task's item from its sighting's source. A delete that
 // leaves the item at the source tries again, after the wait the source asked
-// for or the stage's backoff.
+// for or the stage's backoff. One that the source refused for good fails.
 func (h handler) Run(ctx context.Context, task worker.Task) worker.Result {
 	if task.ItemKey == nil || task.Sighting == nil {
 		reason := "a delete task names its item and the sighting it removes"
@@ -119,8 +83,11 @@ func (h handler) Run(ctx context.Context, task worker.Task) worker.Result {
 		ItemKey: *task.ItemKey, Connector: task.Sighting.Connector, ExternalKey: task.Sighting.ExternalKey,
 		Fields: task.Sighting.Fields, URL: task.URL,
 	})
-	if o.Error == nil {
+	switch {
+	case o.Error == nil:
 		return worker.Result{Outcome: server.OutcomeDone}
+	case o.Final:
+		return worker.Result{Outcome: server.OutcomeFailed, Error: o.Error}
 	}
 	wait := o.RetryAfter
 	if wait <= 0 {

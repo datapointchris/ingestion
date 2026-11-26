@@ -36,6 +36,8 @@ type standInVideo struct {
 	// withheld leaves the video out of a details read, as YouTube leaves out a
 	// deleted or private one.
 	withheld bool
+	// published is when the video was published, in RFC 3339.
+	published string
 }
 
 // standInItem is one playlist item or upload.
@@ -47,23 +49,28 @@ type standInItem struct {
 // standInYPL answers ypl's Data API routes with the shapes its handlers
 // write: a playlist's live items, a channel's uploads a page of 50 at a time,
 // the details of videos, and a playlist item's delete. It refuses a request
-// without yplToken. refuseDelete answers an item's first delete with a 503
-// and a Retry-After, as a spent day's quota does.
+// without yplToken, and a read of more video details than ypl reads at once.
+// refuseDelete answers an item's first delete with a 503 and a Retry-After,
+// as a spent day's quota does. refuseDeleteForGood answers every delete of
+// an item as ypl answers YouTube's refusal of the write. emptyReads answers
+// that many reads of uploads with an empty page.
 type standInYPL struct {
-	mu           sync.Mutex
-	playlistIDs  map[string]string
-	playlists    map[string][]standInItem
-	uploads      map[string][]standInItem
-	videos       map[string]standInVideo
-	refuseDelete map[string]time.Duration
-	deletes      []string
+	mu                  sync.Mutex
+	playlistIDs         map[string]string
+	playlists           map[string][]standInItem
+	uploads             map[string][]standInItem
+	videos              map[string]standInVideo
+	refuseDelete        map[string]time.Duration
+	refuseDeleteForGood map[string]bool
+	emptyReads          int
+	deletes             []string
 }
 
 func newStandInYPL(t *testing.T) (*standInYPL, *httptest.Server) {
 	t.Helper()
 	s := &standInYPL{
 		playlistIDs: map[string]string{}, playlists: map[string][]standInItem{}, uploads: map[string][]standInItem{},
-		videos: map[string]standInVideo{}, refuseDelete: map[string]time.Duration{},
+		videos: map[string]standInVideo{}, refuseDelete: map[string]time.Duration{}, refuseDeleteForGood: map[string]bool{},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/youtube/playlists/{id}/items", s.playlistItems)
@@ -126,12 +133,20 @@ func (s *standInYPL) deleteItem(w http.ResponseWriter, r *http.Request) {
 		refuse(w, http.StatusServiceUnavailable, "youtube_quota_spent", "the day's quota cannot afford this call", wait)
 		return
 	}
+	if s.refuseDeleteForGood[item] {
+		refuse(w, http.StatusUnprocessableEntity, "youtube_refused", "YouTube refused the call", 0)
+		return
+	}
 	s.playlists[playlist] = slices.DeleteFunc(s.playlists[playlist], func(i standInItem) bool { return i.itemID == item })
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *standInYPL) channelUploads(w http.ResponseWriter, r *http.Request) {
 	uploads := s.uploads[r.PathValue("id")]
+	if s.emptyReads > 0 {
+		s.emptyReads--
+		uploads = nil
+	}
 	start, _ := strconv.Atoi(r.URL.Query().Get("page_token"))
 	end := min(start+50, len(uploads))
 	page := map[string]any{"data": s.shown(uploads[start:end]), "next_page_token": nil}
@@ -142,28 +157,37 @@ func (s *standInYPL) channelUploads(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *standInYPL) videoDetails(w http.ResponseWriter, r *http.Request) {
+	ids := strings.Split(r.URL.Query().Get("ids"), ",")
+	if len(ids) > ypl.MaxVideos {
+		refuse(w, http.StatusUnprocessableEntity, "too_many_videos", "ids names too many videos", 0)
+		return
+	}
 	out := []map[string]any{}
-	for id := range strings.SplitSeq(r.URL.Query().Get("ids"), ",") {
+	for _, id := range ids {
 		v, ok := s.videos[id]
 		if !ok || v.withheld {
 			continue
 		}
 		out = append(out, map[string]any{
 			"id": v.id, "title": v.title, "description": "A description.", "channel_id": "UCtestchannel", "channel_title": "Test channel",
-			"published_at": "2026-11-20T10:00:00Z", "privacy": "public", "duration_seconds": 754,
+			"published_at": v.published, "privacy": "public", "duration_seconds": 754,
 			"live_broadcast_content": v.broadcast, "view_count": 1200, "like_count": 40, "comment_count": 3,
 		})
 	}
 	answer(w, out)
 }
 
-// add holds each video, available and finished unless set otherwise.
+// add holds each video, available, finished and published on a day in the
+// past unless set otherwise.
 func (s *standInYPL) add(videos ...standInVideo) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, v := range videos {
 		if v.broadcast == "" {
 			v.broadcast = "none"
+		}
+		if v.published == "" {
+			v.published = "2026-11-20T10:00:00Z"
 		}
 		s.videos[v.id] = v
 	}
@@ -259,20 +283,25 @@ func newYPLPipeline(t *testing.T, connector, body string) *pipeline {
 // youtube/<id>, with its details as fields and metrics, and passes over one
 // that ypl marks unavailable. A premiere waits in the playlist until it airs.
 // Each landed video's delete calls ypl's playlist-item delete once. A delete
-// that ypl refuses for the day's quota waits the Retry-After it sent, and a
-// poll of what the playlist still holds lands nothing new.
+// that ypl refuses for the day's quota waits the Retry-After it sent. A
+// delete that YouTube refuses for good fails, and a later poll that reports
+// its video again asks for no other. When the playlist's title comes to
+// name another playlist, the poll fails and lands nothing.
 func TestAYPLCapturePollLandsEachAvailableVideoOnceAndDeletesItFromThePlaylist(t *testing.T) {
 	stand, api := newStandInYPL(t)
 	stand.add(standInVideo{id: "testvid0001", title: "Test video 1"}, standInVideo{id: "testvid0002", title: "Test video 2"},
-		standInVideo{id: "testvid0003", title: "Test video 3"}, standInVideo{id: "testvid0004", title: "Test video 4", broadcast: "upcoming"})
+		standInVideo{id: "testvid0003", title: "Test video 3"}, standInVideo{id: "testvid0004", title: "Test video 4", broadcast: "upcoming"},
+		standInVideo{id: "testvid0005", title: "Test video 5"})
 	stand.playlistIDs["capture"], stand.playlistIDs["PLtestcapture"] = "PLtestcapture", "PLtestcapture"
 	stand.playlists["PLtestcapture"] = []standInItem{
 		{itemID: "item0001", videoID: "testvid0001"},
 		{itemID: "item0002", videoID: "testvid0002", unavailable: true},
 		{itemID: "item0003", videoID: "testvid0003"},
 		{itemID: "item0004", videoID: "testvid0004"},
+		{itemID: "item0005", videoID: "testvid0005"},
 	}
 	stand.refuseDelete["item0003"] = time.Hour
+	stand.refuseDeleteForGood["item0005"] = true
 	p := newYPLPipeline(t, "ypl-capture", "schedule: \"@every 30m\"\nafter_landing: delete\nsource_parameters:\n  playlist: capture\n")
 	pollHandler, deleteHandler := yplWorker(t, p, api.URL)
 	poll := &recording{Handler: pollHandler}
@@ -283,8 +312,8 @@ func TestAYPLCapturePollLandsEachAvailableVideoOnceAndDeletesItFromThePlaylist(t
 		return poll.landedKeys(t)
 	}
 
-	if got := pollNow(); !slices.Equal(got, []string{"youtube/testvid0001", "youtube/testvid0003"}) {
-		t.Fatalf("the first poll reported %v, want the two available videos that have aired, in the playlist's order", got)
+	if got := pollNow(); !slices.Equal(got, []string{"youtube/testvid0001", "youtube/testvid0003", "youtube/testvid0005"}) {
+		t.Fatalf("the first poll reported %v, want the three available videos that have aired, in the playlist's order", got)
 	}
 	shown := p.item(t, "youtube/testvid0001")
 	s := shown.Sightings[0]
@@ -295,38 +324,54 @@ func TestAYPLCapturePollLandsEachAvailableVideoOnceAndDeletesItFromThePlaylist(t
 	}
 
 	p.run(t, deleteHandler)
-	if !slices.Equal(stand.deletes, []string{"PLtestcapture/item0001", "PLtestcapture/item0003"}) {
+	if !slices.Equal(stand.deletes, []string{"PLtestcapture/item0001", "PLtestcapture/item0003", "PLtestcapture/item0005"}) {
 		t.Fatalf("ypl was asked to delete %v, want each landed video's item once", stand.deletes)
+	}
+	if n := p.count(t, `SELECT count(*) FROM tasks WHERE stage = ? AND state = ?`, store.StageDelete, store.TaskFailed); n != 1 {
+		t.Errorf("%d deletes failed, want the one that YouTube refused for good", n)
 	}
 	p.advance(10 * time.Minute)
 	p.run(t, deleteHandler)
-	if len(stand.deletes) != 2 {
+	if len(stand.deletes) != 3 {
 		t.Errorf("a delete refused with an hour's Retry-After ran again after ten minutes: %v", stand.deletes)
 	}
 	p.advance(time.Hour)
 	p.run(t, deleteHandler)
-	if len(stand.deletes) != 3 || stand.deletes[2] != "PLtestcapture/item0003" {
+	if len(stand.deletes) != 4 || stand.deletes[3] != "PLtestcapture/item0003" {
 		t.Errorf("after the Retry-After ypl was asked to delete %v, want the refused item once more", stand.deletes)
 	}
 
-	if got := pollNow(); len(got) != 0 {
-		t.Errorf("a poll of a playlist holding an unavailable video and a premiere reported %v, want nothing", got)
+	if got := pollNow(); !slices.Equal(got, []string{"youtube/testvid0005"}) {
+		t.Errorf("a poll of a playlist holding an unavailable video, a premiere and a refused delete reported %v, want the last", got)
 	}
 	stand.add(standInVideo{id: "testvid0004", title: "Test video 4"})
-	if got := pollNow(); !slices.Equal(got, []string{"youtube/testvid0004"}) {
-		t.Errorf("the poll after the premiere aired reported %v, want it", got)
+	if got := pollNow(); !slices.Equal(got, []string{"youtube/testvid0004", "youtube/testvid0005"}) {
+		t.Errorf("the poll after the premiere aired reported %v, want it beside the refused delete's video", got)
 	}
 	p.run(t, deleteHandler)
-	if n := p.count(t, `SELECT count(*) FROM items WHERE media_type = ?`, ypl.MediaTypeVideo); n != 3 ||
-		len(stand.deletes) != 4 || stand.deletes[3] != "PLtestcapture/item0004" {
-		t.Errorf("three polls left %d videos and asked ypl to delete %v, want 3 videos, each deleted once", n, stand.deletes)
+	if n := p.count(t, `SELECT count(*) FROM items WHERE media_type = ?`, ypl.MediaTypeVideo); n != 4 ||
+		len(stand.deletes) != 5 || stand.deletes[4] != "PLtestcapture/item0004" {
+		t.Errorf("three polls left %d videos and asked ypl to delete %v, want 4 videos, each deleted once", n, stand.deletes)
+	}
+
+	stand.mu.Lock()
+	stand.playlistIDs["capture"] = "PLtestother"
+	stand.playlists["PLtestother"] = []standInItem{{itemID: "itemother1", videoID: "testvid0001"}}
+	stand.mu.Unlock()
+	p.runConnector(t, "ypl-capture")
+	p.run(t, poll, deleteHandler)
+	if last := poll.results[len(poll.results)-1]; last.Outcome != server.OutcomeFailed || len(stand.deletes) != 5 {
+		t.Errorf("a poll of a title that now names another playlist ended %s and asked ypl to delete %v, want it failed and no delete",
+			last.Outcome, stand.deletes)
 	}
 }
 
 // A channel's first poll keeps its newest 50 uploads as a baseline and lands
 // nothing. The next lands each upload that the channel added, oldest first,
 // and holds back one on air. A poll with nothing new lands nothing, and the
-// one after the stream ends lands it.
+// one after the stream ends lands it. A read that answers no uploads keeps
+// the window. A poll that finds every upload of the window gone lands none of
+// the back catalog behind it.
 func TestAYPLChannelPollLandsEachNewUploadOnceAfterItsBaseline(t *testing.T) {
 	stand, api := newStandInYPL(t)
 	var catalog []standInItem
@@ -349,8 +394,9 @@ func TestAYPLChannelPollLandsEachNewUploadOnceAfterItsBaseline(t *testing.T) {
 	if got := pollNow(); len(got) != 0 {
 		t.Fatalf("the baseline poll reported %v, want nothing", got)
 	}
-	stand.add(standInVideo{id: "newvid00001", title: "New video 1"}, standInVideo{id: "newvid00002", title: "New video 2"},
-		standInVideo{id: "newvid00003", title: "New video 3", broadcast: "live"})
+	now := time.Now().UTC().Format(time.RFC3339)
+	stand.add(standInVideo{id: "newvid00001", title: "New video 1", published: now}, standInVideo{id: "newvid00002", title: "New video 2", published: now},
+		standInVideo{id: "newvid00003", title: "New video 3", broadcast: "live", published: now})
 	stand.mu.Lock()
 	stand.uploads["@testchannel"] = append([]standInItem{
 		{itemID: "upnew3", videoID: "newvid00003"}, {itemID: "upnew2", videoID: "newvid00002"}, {itemID: "upnew1", videoID: "newvid00001"},
@@ -362,9 +408,25 @@ func TestAYPLChannelPollLandsEachNewUploadOnceAfterItsBaseline(t *testing.T) {
 	if got := pollNow(); len(got) != 0 {
 		t.Errorf("a third poll with nothing new reported %v, want nothing", got)
 	}
-	stand.add(standInVideo{id: "newvid00003", title: "New video 3"})
+	stand.add(standInVideo{id: "newvid00003", title: "New video 3", published: now})
 	if got := pollNow(); !slices.Equal(got, []string{"youtube/newvid00003"}) {
 		t.Errorf("the poll after the stream ended reported %v, want it", got)
+	}
+
+	stand.mu.Lock()
+	stand.emptyReads = 1
+	stand.mu.Unlock()
+	if got := pollNow(); len(got) != 0 {
+		t.Errorf("a poll that read no uploads reported %v, want nothing", got)
+	}
+	if got := pollNow(); len(got) != 0 {
+		t.Errorf("the poll after a read of no uploads reported %v, want nothing", got)
+	}
+	stand.mu.Lock()
+	stand.uploads["@testchannel"] = catalog[len(catalog)-5:]
+	stand.mu.Unlock()
+	if got := pollNow(); len(got) != 0 {
+		t.Errorf("a poll that found the window's uploads gone reported %v, want none of the back catalog", got)
 	}
 	if n := p.count(t, `SELECT count(*) FROM items WHERE media_type = ?`, ypl.MediaTypeVideo); n != 3 {
 		t.Errorf("the channel's polls left %d videos, want the 3 new uploads", n)

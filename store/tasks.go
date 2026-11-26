@@ -110,11 +110,12 @@ func DeleteTask(key, connector, source string) Task {
 	return Task{ItemKey: &key, SightingConnector: &connector, Stage: StageDelete, Capability: DeleteCapability(source)}
 }
 
-// DeleteInFlight says whether a delete of the item under key from
-// connector's source is queued or leased.
-func (t *Tx) DeleteInFlight(ctx context.Context, key, connector string) (bool, error) {
+// DeleteOutstanding says whether a delete of the item under key from
+// connector's source is queued, leased, or failed. A failed delete is one
+// that the source refused for good, which waits for a person to retry it.
+func (t *Tx) DeleteOutstanding(ctx context.Context, key, connector string) (bool, error) {
 	_, found, err := first[Task](ctx, t.tx, table("tasks"),
-		`item_key = ? AND stage = ? AND sighting_connector = ? AND state IN ('queued', 'leased')`, key, StageDelete, connector)
+		`item_key = ? AND stage = ? AND sighting_connector = ? AND state IN ('queued', 'leased', 'failed')`, key, StageDelete, connector)
 	return found, err
 }
 

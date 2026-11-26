@@ -149,11 +149,10 @@ api = "https://learning.example.com"
 client_id = "learning-svc-ingestion"
 root = "books"
 
-# A table for each source whose poller and deleter the worker opens, named for
-# the source. It takes api, client_id, token_command and issuer as a
-# [deliver.<name>] table does. This one reads YouTube through ypl, as a client
-# that holds the scopes ypl.playlists.read, ypl.channels.read, ypl.videos.read
-# and ypl.playlist-items.write.
+# A table for each source whose stages the worker runs, named for the source.
+# It takes api, client_id, token_command and issuer as a [deliver.<name>]
+# table does. This one reads YouTube through ypl, as a client that holds the
+# scopes that `ingestion worker run --help` names for ypl.
 [source.ypl]
 api = "https://ypl.example.com"
 client_id = "ypl-svc-ingestion"
@@ -170,8 +169,8 @@ client_id = "ypl-svc-ingestion"
   unaffected.
 - **`INGESTION_SOURCE_<NAME>_CLIENT_SECRET`** is the secret of the client that a
   `[source.<name>]` table names by `client_id`, such as `INGESTION_SOURCE_YPL_CLIENT_SECRET`. The
-  worker opens the poller and the deleter that the source registers only where its table opens,
-  and leaves that source's polls and deletes queued otherwise.
+  worker runs the stages that the source registers only where its table opens, and leaves that
+  source's polls and deletes queued otherwise.
 - **`NODE_NAME`**, where set, names the node in each shipped record's resource.
 - **The access token decides what a caller reaches.** A person's token reaches every route. A
   service token reaches only the routes its scopes grant. A worker needs `ingestion.tasks.claim`,
@@ -436,28 +435,39 @@ source_parameters:
 # channel: "@somechannel"    # or a channel's id or @handle
 ```
 
-A worker reads ypl through its `[source.ypl]` table, as a client that holds the scopes
-`ypl.playlists.read`, `ypl.channels.read`, `ypl.videos.read` and `ypl.playlist-items.write`. The
-worker holding that table claims `poll:ypl` and `delete:ypl`.
+A worker reads ypl through its `[source.ypl]` table, as a client that holds the scopes that
+`ingestion worker run --help` names for ypl. The worker holding that table claims `poll:ypl` and
+`delete:ypl`. Each request to ypl gives up after two minutes, and a redirect is a refusal.
 
 - **Each video lands once as `youtube/<video id>`**, with its watch URL, its title and the media
   type `application/x-youtube-video`. Its item holds no bytes. Its sighting carries `channel_id`
   and `channel_title`, and its metrics `duration_s`, `views`, `likes` and `comments`. Its source
-  time is when it was published. A poll reads every new video's details in one request per 500
-  ids, which ypl charges a unit per 50.
+  time is when it was published. A poll reads every new video's details in as few requests as
+  ypl's limit allows.
+- **A playlist polled on a schedule declares `after_landing: delete`.** Each landed video then
+  leaves the playlist through ypl, so the playlist holds only what has not landed. Without it each
+  poll would read the whole playlist again. A playlist that keeps its videos is scheduled `once`.
 - **A playlist's poll reports each available video it holds, in order.** It skips a video that
   YouTube withholds, such as a deleted or private one, and logs how many. Its sighting keeps the
-  playlist item's id and the playlist's `playlist_id`, which the delete names. It keeps no cursor,
-  because a video it already landed lands as nothing new.
-- **`after_landing: delete` removes each landed video from its playlist** through ypl, which
-  charges the day's quota 50 units a delete. A delete that the day's quota cannot afford waits
-  until ypl's Retry-After, at midnight Pacific. So a capture playlist holds only what has not
-  landed.
-- **A channel's first poll keeps its newest 50 uploads as a baseline and lands none of them**, so
-  a back catalog never floods the review queue. Each later poll reads newest first until it meets
-  an upload from the last poll's 50, and lands each upload before it, oldest first. It reads at
-  most 500 uploads, and logs a gap where it met none of the 50. A connector declared again for
-  another channel takes a new baseline. A channel's connector neither deletes nor runs `once`.
+  playlist item's id and the playlist's `playlist_id`, which the delete names. A video it already
+  landed lands as nothing new.
+- **A playlist named by its title stays the one that the title named at the first poll.** The
+  connector's cursor keeps that playlist's YouTube id. Where the title later reads as another
+  playlist, as after a rename, the poll fails and lands nothing. Name the playlist by its id to
+  read the other one.
+- **A delete costs quota that ypl prices.** One that the day's quota cannot afford waits until the
+  Retry-After that ypl sends. ypl answers an item already gone as deleted. A delete that ypl
+  refuses with a 4xx other than 408 or 429 fails, such as YouTube refusing a write to a playlist
+  that the channel cannot edit. No later poll asks to delete that video again until `ingestion
+  tasks retry` queues the failed delete once more.
+- **A channel's first poll keeps its newest page of uploads as its window, notes the time as its
+  baseline, and lands nothing.** Each later poll reads newest first until it meets an upload from
+  the last window, and lands each upload before it, oldest first. An upload published before the
+  baseline never lands, so a back catalog never floods the review queue. A poll that meets none of
+  the window logs a warning. It reads a bounded number of uploads past the window, and logs a gap
+  where they run on past that. A read that holds no uploads keeps the last window. `windowSize`
+  and `mostUploads` in `ypl/poll.go` hold the two numbers. A connector declared again for another
+  channel takes a new baseline. A channel's connector neither deletes nor runs `once`.
 - **A video on air or scheduled waits until its recording is finished.** A playlist leaves it in
   place for the next poll, and a channel's cursor holds it. A poll of a playlist scheduled `once`
   is its last, so it lands such a video rather than leave it behind.

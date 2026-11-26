@@ -2,8 +2,9 @@
 // a poll task each time a poll connector falls due, and a worker that holds
 // the source's poller claims it. The poller reads the source past the
 // connector's cursor and answers what it found, which serve lands in the write
-// that ends the lease. A source registers its poller from its own init, and a
-// worker opens it from the source's [source.<name>] table.
+// that ends the lease. A source names its poller in its one registration with
+// the sources package, which opens it for a worker from the source's
+// [source.<name>] table.
 package polling
 
 import (
@@ -11,7 +12,6 @@ import (
 	"encoding/json"
 	"log/slog"
 	"maps"
-	"net/http"
 	"slices"
 	"time"
 
@@ -20,39 +20,6 @@ import (
 	"github.com/datapointchris/ingestion/store"
 	"github.com/datapointchris/ingestion/worker"
 )
-
-// Registration is one source's poller as this build carries it.
-type Registration struct {
-	// Source names the source that the poller reads. It is the suffix of the
-	// poll tasks' capability, and the table's name under [source] in a
-	// worker's config.
-	Source string
-	// Scopes is what the source's service client asks its token for.
-	Scopes []string
-	// Open is the poller that reaches the source at api through client, which
-	// carries the service client's token.
-	Open func(api string, client *http.Client) Poller
-}
-
-var registered = map[string]Registration{}
-
-// Register records r. Registering a source twice panics, as a duplicate is a
-// build error.
-func Register(r Registration) {
-	if _, taken := registered[r.Source]; taken {
-		panic("polling: the poller of source " + r.Source + " is registered twice")
-	}
-	registered[r.Source] = r
-}
-
-// Lookup is the poller registered for source, and false where none is.
-func Lookup(source string) (Registration, bool) {
-	r, ok := registered[source]
-	return r, ok
-}
-
-// Sources names, in order, each source whose poller this build registers.
-func Sources() []string { return slices.Sorted(maps.Keys(registered)) }
 
 // Poll is one poll a poller runs: its connector as the set in force declares
 // it, and the position an earlier poll left, nil before the first.

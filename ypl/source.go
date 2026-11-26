@@ -7,7 +7,7 @@
 // source_parameters: a playlist, whose items land as they appear, and a
 // channel, whose new uploads land after a first poll that keeps a baseline.
 // It deletes a landed save from its playlist for a connector that declares
-// after_landing delete.
+// after_landing delete, which a playlist polled on a schedule declares.
 package ypl
 
 import (
@@ -20,6 +20,7 @@ import (
 	"github.com/datapointchris/ingestion/connectors"
 	"github.com/datapointchris/ingestion/deletion"
 	"github.com/datapointchris/ingestion/polling"
+	"github.com/datapointchris/ingestion/sources"
 )
 
 // Source is the source's name: the suffix of its tasks' capabilities, and its
@@ -49,32 +50,27 @@ const (
 	FieldPlaylistID = "playlist_id"
 )
 
-// The scopes that the source's service client asks for: what the poller reads,
-// and what the deleter writes.
-var (
-	PollScopes   = []string{"ypl.playlists.read", "ypl.channels.read", "ypl.videos.read"}
-	DeleteScopes = []string{"ypl.playlist-items.write"}
-)
+// Scopes are what the source's service client asks for: what the poller
+// reads, and what the deleter writes. ypl's route table grants each, and a
+// test holds them to the routes this package calls.
+var Scopes = []string{"ypl.playlists.read", "ypl.channels.read", "ypl.videos.read", "ypl.playlist-items.write"}
 
 func init() {
-	connectors.RegisterSourceRules(Source, rules)
-	polling.Register(polling.Registration{Source: Source, Scopes: PollScopes, Open: func(api string, client *http.Client) polling.Poller {
-		return NewPoller(NewClient(api, client))
-	}})
-	deletion.Register(deletion.Registration{Source: Source, Scopes: DeleteScopes, Open: func(api string, client *http.Client) deletion.Deleter {
-		return NewDeleter(NewClient(api, client))
-	}})
+	sources.Register(sources.Registration{
+		Name: Source, Scopes: Scopes, Rules: rules,
+		Poller:  func(api string, client *http.Client) polling.Poller { return NewPoller(NewClient(api, client)) },
+		Deleter: func(api string, client *http.Client) deletion.Deleter { return NewDeleter(NewClient(api, client)) },
+	})
 }
 
-// channelName is the shape of a channel id or an @handle, as ypl takes one.
+// channelName is the shape of a channel id or an @handle that ypl takes in a
+// path. It copies ypl's own, and a test holds it to the pattern that ypl's
+// suite writes.
 var channelName = regexp.MustCompile(`^@?[A-Za-z0-9_.-]+$`)
 
 // rules answers why c is not a ypl connector that can run.
 func rules(c connectors.Connector) []string {
 	var out []string
-	if c.Mode != connectors.ModePoll {
-		out = append(out, fmt.Sprintf("mode: a %s connector polls, and is not a %s", Source, c.Mode))
-	}
 	for _, key := range slices.Sorted(maps.Keys(c.SourceParameters)) {
 		if key != ParameterPlaylist && key != ParameterChannel {
 			out = append(out, fmt.Sprintf("source_parameters: %s takes %s or %s, not %s", Source, ParameterPlaylist, ParameterChannel, key))
@@ -96,6 +92,9 @@ func rules(c connectors.Connector) []string {
 		if c.Once() {
 			out = append(out, "schedule: a channel's first poll keeps a baseline and lands nothing, so a channel polls on a schedule")
 		}
+	case !c.Once() && c.AfterLanding != connectors.AfterLandingDelete:
+		out = append(out, "after_landing: a playlist polled on a schedule deletes what it lands, "+
+			"or each poll reads the whole playlist again. Schedule it once to land a playlist that keeps its videos")
 	}
 	return out
 }

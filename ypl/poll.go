@@ -35,6 +35,9 @@ const (
 	// countBaseline is each upload that a channel's first poll keeps as its
 	// window.
 	countBaseline = "baseline"
+	// countBeforeBaseline is an upload published before the channel's
+	// baseline, which was in its catalog then.
+	countBeforeBaseline = "before_baseline"
 )
 
 // Poller reads ypl for each ypl connector's poll.
@@ -51,22 +54,47 @@ func (p Poller) Poll(ctx context.Context, poll polling.Poll) polling.Outcome {
 		return p.pollChannel(ctx, channel, poll.Cursor)
 	}
 	if playlist := params[ParameterPlaylist]; playlist != "" {
-		return p.pollPlaylist(ctx, playlist, poll.Connector.Once())
+		return p.pollPlaylist(ctx, playlist, poll.Cursor, poll.Connector.Once())
 	}
 	reason := fmt.Sprintf("connector %s names neither a playlist nor a channel in its source_parameters", poll.Connector.Name)
 	return polling.Outcome{Error: &reason}
 }
 
+// playlistCursor is a playlist connector's position: the YouTube id that its
+// playlist resolved to at its first poll.
+type playlistCursor struct {
+	// Playlist is the playlist as the connector named it then, so a
+	// connector declared again for another playlist reads that one.
+	Playlist   string `json:"playlist"`
+	PlaylistID string `json:"playlist_id"`
+}
+
 // pollPlaylist reports each available video that playlist holds, in its
-// order. It keeps no cursor, because serve lands a video it already holds as
-// nothing new, and a capture's playlist holds only what has not landed. A
+// order. A video it already landed lands as nothing new, and the delete
+// after landing leaves the playlist holding only what has not landed. A
 // video on air or scheduled waits in the playlist until its recording is
 // finished. A poll of a connector scheduled once is its last, so it lands
 // such a video rather than leave it behind.
-func (p Poller) pollPlaylist(ctx context.Context, playlist string, last bool) polling.Outcome {
+//
+// ypl may read a title as another playlist once the first is renamed. So
+// where playlist resolves to another id than at the connector's first poll,
+// the poll fails and lands nothing, rather than empty the other playlist.
+func (p Poller) pollPlaylist(ctx context.Context, playlist string, cursor *string, last bool) polling.Outcome {
+	var was playlistCursor
+	if cursor != nil {
+		if err := json.Unmarshal([]byte(*cursor), &was); err != nil {
+			reason := fmt.Sprintf("the connector's cursor is not a %s playlist's position: %v", Source, err)
+			return polling.Outcome{Error: &reason}
+		}
+	}
 	read, err := p.client.PlaylistItems(ctx, playlist)
 	if err != nil {
 		return failed(err)
+	}
+	if was.Playlist == playlist && was.PlaylistID != "" && was.PlaylistID != read.PlaylistID {
+		reason := fmt.Sprintf("playlist %s reads as %s, and read as %s at the connector's first poll, so the poll lands nothing. "+
+			"Name the playlist by its YouTube id to read the other one", playlist, read.PlaylistID, was.PlaylistID)
+		return polling.Outcome{Error: &reason}
 	}
 	out := polling.Outcome{Counts: map[string]int{}}
 	var items []PlaylistItem
@@ -97,7 +125,7 @@ func (p Poller) pollPlaylist(ctx context.Context, playlist string, last bool) po
 			out.Arrivals = append(out.Arrivals, arrival(v, item.ItemID, map[string]string{FieldPlaylistID: read.PlaylistID}))
 		}
 	}
-	return out
+	return withCursor(out, playlistCursor{Playlist: playlist, PlaylistID: read.PlaylistID})
 }
 
 // channelCursor is a channel connector's position.
@@ -105,6 +133,8 @@ type channelCursor struct {
 	// Channel is the channel that the window was read from, so a connector
 	// declared again for another channel keeps a new baseline.
 	Channel string `json:"channel"`
+	// Since is when the baseline was kept, in RFC 3339.
+	Since string `json:"since"`
 	// Window is the newest uploads' video ids at the last poll, newest first.
 	Window []string `json:"window"`
 	// Waiting is each upload that was on air or scheduled at the last poll,
@@ -113,12 +143,14 @@ type channelCursor struct {
 }
 
 // pollChannel reports each upload that channel added since the last poll,
-// oldest first. Its first poll keeps the newest uploads as its window and
-// lands nothing, so a channel's back catalog never floods the review queue.
-// A later poll reads newest first until it meets an upload in the window. It
-// stops at mostUploads with a gap where it meets none, as where the channel
-// deleted every upload in the window. An upload on air or scheduled waits
-// in the cursor until its recording is finished.
+// oldest first. Its first poll keeps the newest uploads as its window, notes
+// the time as its baseline, and lands nothing. An upload published before
+// the baseline never lands, so a channel's back catalog never floods the
+// review queue. A later poll reads newest first until it meets an upload in
+// the window, and warns where it meets none. It stops at mostUploads with a
+// gap where the uploads run on past that. A read that holds no uploads keeps
+// the last window. An upload on air or scheduled waits in the cursor until
+// its recording is finished.
 func (p Poller) pollChannel(ctx context.Context, channel string, cursor *string) polling.Outcome {
 	var was channelCursor
 	if cursor != nil {
@@ -131,14 +163,23 @@ func (p Poller) pollChannel(ctx context.Context, channel string, cursor *string)
 	if err != nil {
 		return failed(err)
 	}
-	next := channelCursor{Channel: channel, Window: []string{}, Waiting: []string{}}
+	next := channelCursor{Channel: channel, Since: was.Since, Window: []string{}, Waiting: []string{}}
 	for _, item := range page.Data[:min(windowSize, len(page.Data))] {
 		next.Window = append(next.Window, item.VideoID)
 	}
 	out := polling.Outcome{Counts: map[string]int{}}
-	if cursor == nil || was.Channel != channel {
+	if cursor == nil || was.Channel != channel || was.Since == "" {
+		next.Since = time.Now().UTC().Format(time.RFC3339)
 		out.Counts[countBaseline] = len(next.Window)
 		return withCursor(out, next)
+	}
+	since, err := time.Parse(time.RFC3339, was.Since)
+	if err != nil {
+		reason := fmt.Sprintf("the connector's cursor holds no baseline time: %v", err)
+		return polling.Outcome{Error: &reason}
+	}
+	if len(next.Window) == 0 {
+		next.Window = was.Window
 	}
 
 	inWindow := map[string]bool{}
@@ -163,9 +204,15 @@ read:
 			return failed(err)
 		}
 	}
-	if !met && page.NextPageToken != nil {
+	switch {
+	case met || len(was.Window) == 0:
+	case page.NextPageToken != nil:
 		out.Warnings = append(out.Warnings, fmt.Sprintf(
 			"read %d uploads without meeting the last poll's window, so any upload older than them and newer than the window is not read",
+			len(added)))
+	default:
+		out.Warnings = append(out.Warnings, fmt.Sprintf(
+			"read all %d uploads that the channel lists without meeting the last poll's window, so only those published since the baseline land",
 			len(added)))
 	}
 
@@ -190,6 +237,8 @@ read:
 		switch {
 		case !ok:
 			out.Counts[countUnavailable]++
+		case v.publishedBefore(since):
+			out.Counts[countBeforeBaseline]++
 		case v.Streaming():
 			out.Counts[countStreaming]++
 			next.Waiting = append(next.Waiting, item.VideoID)
@@ -244,19 +293,27 @@ func arrival(v Video, externalKey string, fields map[string]string) server.Repor
 	return a
 }
 
+// publishedBefore says whether v was published before t. A video whose
+// publish time does not read is not.
+func (v Video) publishedBefore(t time.Time) bool {
+	published, err := time.Parse(time.RFC3339, v.PublishedAt)
+	return err == nil && published.Before(t)
+}
+
 // WatchURL is the address of video id's watch page.
 func WatchURL(id string) string { return "https://www.youtube.com/watch?v=" + id }
 
 func count(n uint64) int64 { return int64(min(n, math.MaxInt64)) }
 
-func withCursor(out polling.Outcome, c channelCursor) polling.Outcome {
-	raw, err := json.Marshal(c)
+// withCursor is out moving the connector's cursor to position.
+func withCursor(out polling.Outcome, position any) polling.Outcome {
+	raw, err := json.Marshal(position)
 	if err != nil {
-		reason := "write the channel's cursor: " + err.Error()
+		reason := "write the connector's cursor: " + err.Error()
 		return polling.Outcome{Error: &reason}
 	}
-	position := string(raw)
-	out.Cursor = &position
+	written := string(raw)
+	out.Cursor = &written
 	return out
 }
 
