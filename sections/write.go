@@ -3,7 +3,6 @@ package sections
 import (
 	"context"
 	"errors"
-	"fmt"
 	"regexp"
 	"strconv"
 	"time"
@@ -15,15 +14,15 @@ import (
 	"github.com/datapointchris/ingestion/store"
 )
 
-// parsedBy is the extractor whose items pass the structure stage. Its parse's
+// ParsedBy is the extractor whose items pass the structure stage. Its parse's
 // end queues the stage, a replay selects its media type, and the outline rule
-// reads its parse.
-var parsedBy = extract.PDFText
+// and the contents placement read its parse.
+var ParsedBy = extract.PDFText
 
 // QueueAfterParse queues the structure task of a PDF in the write that ends
 // its pdf-text parse done, so every parsed PDF is profiled.
 func QueueAfterParse(ctx context.Context, tx *store.Tx, task store.Task) error {
-	if task.Capability != extract.Capability(parsedBy) {
+	if task.Capability != extract.Capability(ParsedBy) {
 		return nil
 	}
 	_, err := tx.Enqueue(ctx, store.Task{ItemKey: task.ItemKey, Stage: store.StageStructure, Capability: Capability})
@@ -35,7 +34,7 @@ func QueueAfterParse(ctx context.Context, tx *store.Tx, task store.Task) error {
 // beside the old.
 func Replayable() server.Replayable {
 	return server.Replayable{Capability: func(item store.Item) (string, bool) {
-		return Capability, item.MediaType == parsedBy.MediaType
+		return Capability, item.MediaType == ParsedBy.MediaType
 	}}
 }
 
@@ -63,14 +62,11 @@ func AfterStructure(ctx context.Context, tx *store.Tx, task store.Task) error {
 	if err != nil {
 		return err
 	}
+	profile, ok, err := NewestProfile(outputs)
+	if err != nil || !ok {
+		return err
+	}
 	structure := store.NewestDone(outputs, store.StageStructure)
-	if structure == nil {
-		return nil
-	}
-	profile, err := decodeProfile(structure.Answer)
-	if err != nil {
-		return fmt.Errorf("read %s's profile from %s %s: %w", key, structure.Producer, structure.ProducerVersion, err)
-	}
 	if item.SourceTS == nil {
 		if made, ok := CreationTime(profile.CreationDate); ok {
 			stamp := store.Stamp(made)
@@ -80,7 +76,7 @@ func AfterStructure(ctx context.Context, tx *store.Tx, task store.Task) error {
 			}
 		}
 	}
-	parse, err := tx.Parse(ctx, key, store.ParsePick{Extractor: parsedBy.Name})
+	parse, err := tx.Parse(ctx, key, store.ParsePick{Extractor: ParsedBy.Name})
 	switch {
 	case errors.Is(err, store.ErrNoParse):
 		// The parse's end queues the structure again, which writes them.
@@ -88,7 +84,7 @@ func AfterStructure(ctx context.Context, tx *store.Tx, task store.Task) error {
 	case err != nil:
 		return err
 	}
-	return Write(ctx, tx, item, Outline(profile, parse.Units, OutlineVersion(*structure, parse.Output)))
+	return Write(ctx, tx, item, Outline(profile, parse.Units, deref(item.Title), OutlineVersion(*structure, parse.Output)))
 }
 
 // Write writes one producer version's sections of book, once, and the
@@ -96,8 +92,9 @@ func AfterStructure(ctx context.Context, tx *store.Tx, task store.Task) error {
 // row becomes a child item, numbered from 1, which takes the book's zone,
 // source time, side and read decisions. Where it holds chapters, a chapter
 // row names the item that an earlier version made for a chapter with the same
-// start page and title. A row that matches none names no item, so a later
-// version renames no chapter and makes none.
+// start page and TitleKey. So where a model words a title anew, the chapter
+// keeps its item. A row that matches none names no item, so a later version
+// renames no chapter and makes none.
 func Write(ctx context.Context, tx *store.Tx, book store.Item, rows []store.Section) error {
 	if len(rows) == 0 {
 		return nil
@@ -147,17 +144,17 @@ func Write(ctx context.Context, tx *store.Tx, book store.Item, rows []store.Sect
 	return route.PassToChapters(ctx, tx, book.Key)
 }
 
-// chapterStart is where a chapter starts and what it is called, which a later
+// chapterStart is where a chapter starts and its title's key, which a later
 // version's chapter must share to name the same chapter item.
 type chapterStart struct {
-	page  int
-	title string
+	page int
+	key  string
 }
 
 func startOf(s store.Section) chapterStart {
 	start := chapterStart{page: s.PDFPageStart}
 	if s.Title != nil {
-		start.title = *s.Title
+		start.key = TitleKey(*s.Title)
 	}
 	return start
 }

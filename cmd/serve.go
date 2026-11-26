@@ -20,6 +20,7 @@ import (
 
 	"github.com/datapointchris/ingestion/accuracy"
 	"github.com/datapointchris/ingestion/connectors"
+	"github.com/datapointchris/ingestion/contents"
 	"github.com/datapointchris/ingestion/deliver"
 	"github.com/datapointchris/ingestion/extract"
 	"github.com/datapointchris/ingestion/landing"
@@ -88,7 +89,8 @@ func init() {
 func afterStage(log *slog.Logger) server.AfterStage {
 	next := map[string][]server.AfterStage{
 		store.StageParse:     {scan.QueueAfterParse, sections.QueueAfterParse},
-		store.StageStructure: {sections.AfterStructure},
+		store.StageStructure: {sections.AfterStructure, contents.AfterStructure(log)},
+		store.StageContents:  {contents.AfterAnswer(log)},
 		store.StageScan:      {qualitygate.QueueAfterScan},
 		store.StageQuality:   {qualitygate.DecideAfterAnswer},
 	}
@@ -110,6 +112,7 @@ func replayableStages(st *store.Store, extractors *extract.Registry) map[string]
 	return map[string]server.Replayable{
 		store.StageParse:      extractors.Replayable(),
 		store.StageStructure:  sections.Replayable(),
+		store.StageContents:   contents.Replayable(st),
 		store.StageScan:       scan.Replayable(extractors),
 		store.StageQuality:    qualitygate.Replayable(st),
 		store.StageQualityArm: qualitygate.ArmReplayable(st),

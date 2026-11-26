@@ -23,6 +23,7 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/oauth2"
 
+	"github.com/datapointchris/ingestion/contents"
 	"github.com/datapointchris/ingestion/deliver"
 	"github.com/datapointchris/ingestion/extract"
 	"github.com/datapointchris/ingestion/modelport"
@@ -42,9 +43,11 @@ const (
 )
 
 // workerHandlers lists the stage handlers for a worker to run: each
-// extractor's, the scan's where scanner is installed, the quality gate's and
-// its arm's where port is open, the model read's where both are, and each of deliverers by its
-// name. A stage whose work runs in a worker adds its handler here.
+// extractor's, the structure's where pdf-structure is installed, the scan's
+// where scanner is installed, the contents stage's, the quality gate's and
+// its arm's where port is open, the model read's where both are, and each of
+// deliverers by its name. A stage whose work runs in a worker adds its
+// handler here.
 func workerHandlers(client *worker.Client, deliverers map[string]deliver.Deliverer, port modelport.Port, scanner *scan.Scanner,
 	models modelConfig, log *slog.Logger,
 ) []worker.Handler {
@@ -57,7 +60,9 @@ func workerHandlers(client *worker.Client, deliverers map[string]deliver.Deliver
 	}
 	if port != nil {
 		quality := modelstage.Settings{Model: models.Quality.Model, Effort: models.Quality.Effort}
-		handlers = append(handlers, qualitygate.NewHandler(port, client, quality, log), qualitygate.NewArmHandler(port, client, quality, log))
+		handlers = append(handlers,
+			contents.NewHandler(port, client, modelstage.Settings{Model: models.Contents.Model, Effort: models.Contents.Effort}, log),
+			qualitygate.NewHandler(port, client, quality, log), qualitygate.NewArmHandler(port, client, quality, log))
 	}
 	if port != nil && scanner != nil {
 		handlers = append(handlers, modelread.NewHandler(port, client, scanner,
@@ -78,7 +83,7 @@ func openModelPort(ctx context.Context, cfg modelConfig, issuer string, log *slo
 	var err error
 	switch cfg.Adapter {
 	case "":
-		log.Warn("the config names no [model] adapter, so the worker claims no " + qualitygate.Capability + " or " + modelread.Capability + " task")
+		log.Warn("the config names no [model] adapter, so the worker claims no model stage's task", "stages", store.ModelStages())
 		return nil
 	case modelport.AdapterQueue:
 		var client *http.Client
@@ -91,7 +96,7 @@ func openModelPort(ctx context.Context, cfg modelConfig, issuer string, log *slo
 		err = fmt.Errorf("adapter %q is none of %s", cfg.Adapter, strings.Join(modelport.Adapters, ", "))
 	}
 	if err != nil {
-		log.Error("[model] cannot open, so the worker claims no "+qualitygate.Capability+" or "+modelread.Capability+" task",
+		log.Error("[model] cannot open, so the worker claims no model stage's task", "stages", store.ModelStages(),
 			"adapter", cfg.Adapter, "error", err)
 		return nil
 	}
@@ -196,15 +201,14 @@ var workerRunCmd = &cobra.Command{
 		deliver.LearningResources + " client " + strings.Join(deliver.LearningResourcesScopes, " ") + ". A table that\n" +
 		"cannot open is logged and left out, and the worker's other stages run on.\n" +
 		"\n" +
-		"It runs the quality gate, its arm and the model read through the adapter that\n" +
-		"the [model] table names. An arm's task asks for the model that its replay\n" +
-		"named, at the quality gate's effort. It runs the model read only where it also\n" +
-		"runs the scan, because the scanner reads each suggestion before it is kept:\n" +
+		"It runs each model stage through the adapter that the [model] table names.\n" +
+		"An arm's task asks for the model that its replay named, at the quality\n" +
+		"gate's effort. It runs the model read only where it also runs the scan,\n" +
+		"because the scanner reads each suggestion before it is kept:\n" +
 		"\n" +
 		"  [model]\n" +
 		"  adapter            queue or claude-cli. With none, the worker claims no\n" +
-		"                     quality, quality-arm or model-read task, and the item\n" +
-		"                     waits there\n" +
+		"                     model stage's task, and the item waits there\n" +
 		"  [model.queue]      an HTTP dispatch service\n" +
 		"  api                its address\n" +
 		"  agent              the kind of run it starts (default " + modelport.DefaultAgent + ")\n" +
@@ -214,6 +218,9 @@ var workerRunCmd = &cobra.Command{
 		"  issuer             the OIDC provider that signs its tokens (default the file's)\n" +
 		"  [model.claude-cli] claude -p on this machine, with no tools and no settings\n" +
 		"  command            the claude binary (default claude, found on PATH)\n" +
+		"  [model.contents]   what the contents stage asks its run for\n" +
+		"  model              the model (default " + contents.DefaultModel + ")\n" +
+		"  effort             the effort (default " + contents.DefaultEffort + ")\n" +
 		"  [model.quality]    what the quality gate asks its run for\n" +
 		"  model              the model (default " + qualitygate.DefaultModel + ")\n" +
 		"  effort             the effort (default " + qualitygate.DefaultEffort + ")\n" +

@@ -29,7 +29,7 @@ func TestAnUnlabeledBookPrintsByItsOffsetAndAnOutlinelessOneByItsLength(t *testi
 		{Level: 1, Title: "3. Late", Page: page(35)},
 		{Level: 1, Title: "4. End", Page: page(50)},
 	}}
-	got := Outline(outlined, units(60), "v")
+	got := Outline(outlined, units(60), "", "v")
 	if len(got) != 4 {
 		t.Fatalf("the outline made %d sections, want 4", len(got))
 	}
@@ -41,19 +41,22 @@ func TestAnUnlabeledBookPrintsByItsOffsetAndAnOutlinelessOneByItsLength(t *testi
 	}
 
 	short := Profile{Pages: 40, Outline: outlined.Outline[:2]}
-	if got := Outline(short, units(40), "v"); len(got) != 1 || got[0].StartPlacedBy != PlacedByWholeFile || got[0].PDFPageEnd != 40 {
+	if got := Outline(short, units(40), "", "v"); len(got) != 1 || got[0].StartPlacedBy != PlacedByWholeFile || got[0].PDFPageEnd != 40 {
 		t.Errorf("a 40-page book with two outline entries made %+v, want one section over the whole file", got)
 	}
-	if got := Outline(Profile{Pages: WholeFilePages}, units(WholeFilePages), "v"); got != nil {
+	if got := Outline(Profile{Pages: WholeFilePages}, units(WholeFilePages), "", "v"); got != nil {
 		t.Errorf("a %d-page book with no outline made %+v, want none", WholeFilePages, got)
 	}
 }
 
 // A book in parts keeps the Introduction and Conclusion beside its parts as
 // chapters, and a chapter whose title opens on a matter word stays a chapter.
+// An entry on PDF page 1 that names the book, as its file's name spells it,
+// is front matter.
 func TestAnEntryBesideTheBooksPartsIsAChapterAndSoIsOneTitledLikeMatter(t *testing.T) {
 	page := func(n int) *int { return &n }
 	book := Profile{Pages: 300, Outline: []OutlineEntry{
+		{Level: 1, Title: "Practical Widgets, Second Edition", Page: page(1)},
 		{Level: 1, Title: "Preface", Page: page(5)},
 		{Level: 1, Title: "Introduction", Page: page(10)},
 		{Level: 1, Title: "Part I", Page: page(20)},
@@ -66,10 +69,10 @@ func TestAnEntryBesideTheBooksPartsIsAChapterAndSoIsOneTitledLikeMatter(t *testi
 		{Level: 1, Title: "Index of Notation", Page: page(290)},
 	}}
 	var kinds []string
-	for _, s := range Outline(book, nil, "v") {
+	for _, s := range Outline(book, nil, "practicalwidgets", "v") {
 		kinds = append(kinds, s.Kind)
 	}
-	if got, want := strings.Join(kinds, " "), "front-matter chapter part chapter part chapter part chapter chapter back-matter"; got != want {
+	if got, want := strings.Join(kinds, " "), "front-matter front-matter chapter part chapter part chapter part chapter chapter back-matter"; got != want {
 		t.Errorf("the book's sections are %s, want %s", got, want)
 	}
 }

@@ -2,8 +2,11 @@ package sections
 
 import (
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/datapointchris/ingestion/store"
 )
@@ -11,7 +14,7 @@ import (
 const (
 	// RuleVersion names the outline rule and the offset, so a changed rule
 	// writes its sections beside the old.
-	RuleVersion = "1"
+	RuleVersion = "2"
 	// WholeFilePages is the page count under which a PDF with no usable
 	// outline takes one section over the whole file. A longer one gets no
 	// sections from the outline rule.
@@ -28,6 +31,14 @@ const (
 	// edgeLines is how many lines at the top and at the bottom of a page are
 	// read for its printed number.
 	edgeLines = 3
+	// bookPrefix is the fewest letters and digits that an entry's title and
+	// the book's must share at the start to name the same book, and
+	// bookWordShare the least share of its words that names it otherwise.
+	bookPrefix    = 6
+	bookWordShare = 0.6
+	// identityShare is the share of a book's pages whose label is their PDF
+	// page at or above which PageLabels reads none of its labels.
+	identityShare = 0.9
 )
 
 // How a section's start page was found.
@@ -77,33 +88,77 @@ func matterTitle(phrases, words, bare string) *regexp.Regexp {
 }
 
 // Outline is the sections that serve writes from p and the units of the
-// PDF's positional parse, under producer version version. Where the outline
-// is usable it is one row per entry, each with its kind as kindOf decides it.
-// Where the outline is not usable and the PDF is under WholeFilePages pages,
-// it is one section over the whole file. Otherwise it is none.
-func Outline(p Profile, units []store.Unit, version string) []store.Section {
-	entries := entriesOf(p)
-	level, usable := chapterLevel(entries, p.Pages)
-	printed := printedPages(units)
-	if !usable {
-		if p.Pages >= WholeFilePages {
-			return nil
+// PDF's positional parse, under producer version version. title is the
+// book's title as its item holds it. Where the outline is usable it is one
+// row per entry, each with its kind as FromEntries decides it. Where the
+// outline is not usable and the PDF is under WholeFilePages pages, it is one
+// section over the whole file. Otherwise it is none.
+func Outline(p Profile, units []store.Unit, title, version string) []store.Section {
+	var entries []Entry
+	for _, e := range p.Outline {
+		if e.Page == nil || *e.Page < 1 || *e.Page > p.Pages || e.Level < 1 {
+			continue
 		}
-		return []store.Section{{
-			Producer: store.SectionsFromOutline, ProducerVersion: version, N: 1, Level: 1, Kind: store.SectionSection,
-			PDFPageStart: 1, PDFPageEnd: p.Pages, PrintedPageStart: printed(1), PrintedPageEnd: printed(p.Pages),
-			StartPlacedBy: PlacedByWholeFile,
-		}}
+		entries = append(entries, Entry{Level: e.Level, Title: e.Title, Page: *e.Page, PlacedBy: PlacedByOutline})
 	}
-	out := make([]store.Section, len(entries))
-	var parents []int
+	book := Book{Pages: p.Pages, Titles: []string{title, deref(p.Title)}, Units: units}
+	if rows := FromEntries(entries, book, store.SectionsFromOutline, version); rows != nil || p.Pages >= WholeFilePages {
+		return rows
+	}
+	printed := printedPages(units)
+	return []store.Section{{
+		Producer: store.SectionsFromOutline, ProducerVersion: version, N: 1, Level: 1, Kind: store.SectionSection,
+		PDFPageStart: 1, PDFPageEnd: p.Pages, PrintedPageStart: printed(1), PrintedPageEnd: printed(p.Pages),
+		StartPlacedBy: PlacedByWholeFile,
+	}}
+}
+
+// Entry is one entry that opens a page of a book, as its outline or its
+// printed contents names it, in the book's order.
+type Entry struct {
+	// Level is the entry's depth, from 1 at the top.
+	Level int
+	Title string
+	// Page is the PDF page that the entry opens, from 1.
+	Page int
+	// PlacedBy says how Page was found, such as outline.
+	PlacedBy string
+}
+
+// Book is what the rule reads of a book beside its entries.
+type Book struct {
+	Pages int
+	// Titles are the names the book goes by, such as its item's title and
+	// its PDF's own, any of them empty.
+	Titles []string
+	// Units are the PDF's positional parse, unit n being PDF page n.
+	Units []store.Unit
+}
+
+// FromEntries is the sections that producer writes from entries under
+// version: one row per entry, each with its kind as kindOf decides it, and
+// nil where no level of them makes a usable outline of book. An entry on PDF
+// page 1 whose title names the book is front matter, as a cover or title page
+// is.
+func FromEntries(entries []Entry, book Book, producer, version string) []store.Section {
+	es := make([]entry, len(entries))
 	for i, e := range entries {
-		for len(parents) > 0 && entries[parents[len(parents)-1]].level >= e.level {
+		es[i] = entry{level: e.Level, title: e.Title, page: e.Page, placedBy: e.PlacedBy, matter: matterOf(e, book.Titles)}
+	}
+	level, usable := chapterLevel(es, book.Pages)
+	if !usable {
+		return nil
+	}
+	printed := printedPages(book.Units)
+	out := make([]store.Section, len(es))
+	var parents []int
+	for i, e := range es {
+		for len(parents) > 0 && es[parents[len(parents)-1]].level >= e.level {
 			parents = parents[:len(parents)-1]
 		}
 		s := store.Section{
-			Producer: store.SectionsFromOutline, ProducerVersion: version, N: i + 1, Level: e.level, Kind: kindOf(entries, i, level),
-			PDFPageStart: e.page, PDFPageEnd: endOf(entries, i, p.Pages), StartPlacedBy: PlacedByOutline,
+			Producer: producer, ProducerVersion: version, N: i + 1, Level: e.level, Kind: kindOf(es, i, level),
+			PDFPageStart: e.page, PDFPageEnd: endOf(es, i, book.Pages), StartPlacedBy: e.placedBy,
 		}
 		if title := strings.TrimSpace(e.title); title != "" {
 			s.Title = &title
@@ -119,39 +174,76 @@ func Outline(p Profile, units []store.Unit, version string) []store.Section {
 	return out
 }
 
-// entry is one outline entry that opens a page of the document.
+// entry is one Entry as the rule reads it.
 type entry struct {
-	level int
-	title string
-	page  int
-	// matter is the entry's kind where its title names front or back
-	// matter, and empty otherwise.
+	level    int
+	title    string
+	page     int
+	placedBy string
+	// matter is the entry's kind where it is front or back matter, and empty
+	// otherwise.
 	matter string
 }
 
-// entriesOf is p's outline entries that open a page of the document, in the
-// outline's order.
-func entriesOf(p Profile) []entry {
-	var out []entry
-	for _, e := range p.Outline {
-		if e.Page == nil || *e.Page < 1 || *e.Page > p.Pages || e.Level < 1 {
-			continue
+// matterOf is e's kind where its title names front or back matter, or where
+// it opens PDF page 1 and names the book, and empty otherwise.
+func matterOf(e Entry, titles []string) string {
+	title := normalized(e.Title)
+	switch {
+	case frontMatter.MatchString(title):
+		return store.SectionFrontMatter
+	case backMatter.MatchString(title):
+		return store.SectionBackMatter
+	case e.Page == 1 && slices.ContainsFunc(titles, func(book string) bool { return namesBook(e.Title, book) }):
+		return store.SectionFrontMatter
+	}
+	return ""
+}
+
+// namesBook says whether title names the book called book: one's letters
+// and digits open the other's, the shorter holding at least bookPrefix of
+// them, or at least bookWordShare of title's words, two at least, are book's.
+// A file's name such as gobookname reads the same as Go Book Name.
+func namesBook(title, book string) bool {
+	a, b := Squashed(title), Squashed(book)
+	if len(a) > len(b) {
+		a, b = b, a
+	}
+	if len(a) >= bookPrefix && strings.HasPrefix(b, a) {
+		return true
+	}
+	words, theirs := wordsOf(title), wordsOf(book)
+	shared := 0
+	for w := range words {
+		if theirs[w] {
+			shared++
 		}
-		title := normalized(e.Title)
-		matter := ""
-		switch {
-		case frontMatter.MatchString(title):
-			matter = store.SectionFrontMatter
-		case backMatter.MatchString(title):
-			matter = store.SectionBackMatter
+	}
+	return shared >= 2 && float64(shared) >= bookWordShare*float64(len(words))
+}
+
+// wordsOf is the set of s's lowercased words of three letters or digits or
+// more.
+func wordsOf(s string) map[string]bool {
+	out := map[string]bool{}
+	for _, w := range strings.FieldsFunc(strings.ToLower(s), func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) }) {
+		if utf8.RuneCountInString(w) >= 3 {
+			out[w] = true
 		}
-		out = append(out, entry{level: e.Level, title: e.Title, page: *e.Page, matter: matter})
 	}
 	return out
 }
 
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
 // normalized is title lowercased, its spaces collapsed, and any numbering
-// before it dropped, so Appendix and A. Appendix read alike.
+// before it dropped, so Appendix and A. Appendix read alike. It keeps the Part
+// or Appendix word that TitleKey drops, because the rule reads that word.
 func normalized(title string) string {
 	t := strings.ToLower(strings.Join(strings.Fields(title), " "))
 	return leadingNumber.ReplaceAllString(t, "")
@@ -248,17 +340,38 @@ func endOf(entries []entry, i, pages int) int {
 	return max(entries[i].page, pages)
 }
 
-// printedPages answers each PDF page's printed page: its label where the
-// parse holds one, else the PDF page less the book's offset where one is
-// measured and the result is a page, and nil otherwise.
+// PageLabels is each page's label in units, trimmed, unit n's at index n-1,
+// and empty where it has none. Every one is empty where the labels are their
+// pages' PDF pages on identityShare of the pages, because such labels say
+// nothing of the numbers that the book prints.
+func PageLabels(units []store.Unit) []string {
+	labels := make([]string, len(units))
+	identity := 0
+	for i, u := range units {
+		if u.Label == nil {
+			continue
+		}
+		labels[i] = strings.TrimSpace(*u.Label)
+		if labels[i] == strconv.Itoa(i+1) {
+			identity++
+		}
+	}
+	if len(units) > 0 && float64(identity) >= identityShare*float64(len(units)) {
+		return make([]string, len(units))
+	}
+	return labels
+}
+
+// printedPages answers each PDF page's printed page: its label as PageLabels
+// reads it, else the PDF page less the book's offset where one is measured
+// and the result is a page, and nil otherwise.
 func printedPages(units []store.Unit) func(page int) *string {
 	offset, measured := Offset(units)
+	labels := PageLabels(units)
 	return func(page int) *string {
-		if page >= 1 && page <= len(units) {
-			if label := units[page-1].Label; label != nil && strings.TrimSpace(*label) != "" {
-				l := strings.TrimSpace(*label)
-				return &l
-			}
+		if page >= 1 && page <= len(units) && labels[page-1] != "" {
+			l := labels[page-1]
+			return &l
 		}
 		if !measured || page-offset < 1 {
 			return nil

@@ -31,7 +31,7 @@
       "enum": ["outside", "owner"]
     },
     "sha256": {"description": "A SHA-256, in lowercase hex.", "type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "stage": {"description": "A stage that writes an output or holds a task. A poll's task fetches a connector's source before any item lands. quality-arm is the quality gate's prompt asked of the model that its task names, as a measurement, and sits on no item's line. structure profiles a PDF's outline, page labels, creation date and fonts.", "enum": ["poll", "land", "parse", "structure", "scan", "quality", "quality-arm", "model-read", "deliver"]},
+    "stage": {"description": "A stage that writes an output or holds a task. A poll's task fetches a connector's source before any item lands. quality-arm is the quality gate's prompt asked of the model that its task names, as a measurement, and sits on no item's line. structure profiles a PDF's outline, page labels, creation date, title and fonts. contents is a model's reading of the printed contents pages of a PDF whose outline gave it no sections.", "enum": ["poll", "land", "parse", "structure", "contents", "scan", "quality", "quality-arm", "model-read", "deliver"]},
     "timestamp": {"type": "string", "format": "date-time"},
     "severity": {"description": "A scan finding's severity, from least to most severe.", "enum": ["info", "low", "medium", "high", "critical"]},
     "finding": {
@@ -192,7 +192,7 @@
         "pdf_page_end": {"description": "The last PDF page: the page before the next entry at its level or above begins, its own start where that one begins on the same page, or the book's last page.", "type": "integer", "minimum": 1},
         "printed_page_start": {"description": "The first page as the book prints it: its page label, else the PDF page less the book's measured offset, and null where neither gives one.", "type": ["string", "null"]},
         "printed_page_end": {"description": "The last page as the book prints it, found as printed_page_start is.", "type": ["string", "null"]},
-        "start_placed_by": {"description": "How the start page was found: outline from the outline entry's own target, whole-file for one section over a short PDF with no usable outline.", "type": "string"},
+        "start_placed_by": {"description": "How the start page was found: outline from the outline entry's own target, whole-file for one section over a short PDF with no usable outline. A contents entry's is label where a page label names its printed page, offset where the page less the book's measured offset gave it, title where the search for its title near that page, or after the entry before it, found it, and next-entry where it printed no page and takes the next placed entry's start.", "type": "string"},
         "child_key": {"description": "The key of the item made for a chapter, which takes the item's side and read decisions, and null on every other row. A version written after the item held chapters names the item of the chapter with the same start page and title, and null where none matches.", "anyOf": [{"$ref": "#/$defs/item_key"}, {"type": "null"}]},
         "created_ts": {"$ref": "#/$defs/timestamp"}
       }
