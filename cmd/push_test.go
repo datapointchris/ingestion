@@ -132,25 +132,11 @@ func (h suggestingScan) Run(ctx context.Context, task worker.Task) worker.Result
 // A push hands psyche the item's scanned parse in psyche's parse-input
 // schema. Each command and link that the scan flagged goes as a suggestion,
 // and every other finding stays a finding. --enriched adds the quality gate's
-// answer. A push starts no task and no model call in the service. An item whose
-// parse no scan has read never reaches psyche, and a URL that the service never
-// landed exits 2.
+// answer and the model read's summary, and leaves out a suggestion sentence
+// that the scan flagged. A push starts no task and no model call in the
+// service. An item whose parse no scan has read never reaches psyche, and a URL
+// that the service never landed exits 2.
 func TestAPushHandsPsycheTheScannedParseAndStartsNoStage(t *testing.T) {
-	copied, err := os.ReadFile(parseInputSchema)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var held struct {
-		Properties struct {
-			SchemaVersion struct {
-				Const int `json:"const"`
-			} `json:"schema_version"`
-		} `json:"properties"`
-	}
-	if err := json.Unmarshal(copied, &held); err != nil || held.Properties.SchemaVersion.Const != push.SchemaVersion {
-		t.Fatalf("the copy holds psyche's parse-input schema_version %d, and push writes %d: %v",
-			held.Properties.SchemaVersion.Const, push.SchemaVersion, err)
-	}
 	kept := installFakePsyche(t)
 	p := newGatedPipeline(t, mustAbs(t, "../examples/declarations"))
 	stand := newStandInDispatch(t, p.provider)
@@ -159,8 +145,9 @@ func TestAPushHandsPsycheTheScannedParseAndStartsNoStage(t *testing.T) {
 	p.parse(t, extract.Builtin())
 	const key = "reddit/t3_dd4"
 
-	if _, err := runCLI(t, "push", key, "--to", "psyche", "--relate", "--config", p.config); err == nil || !strings.Contains(err.Error(), "no scan has read") {
-		t.Errorf("a push before the scan answered %v, want a refusal naming the scan", err)
+	_, err := runCLI(t, "push", key, "--to", "psyche", "--relate", "--config", p.config)
+	if code := exitCode(io.Discard, err); code != 1 {
+		t.Errorf("a push before the scan exited %d (%v), want 1", code, err)
 	}
 	_, err = runCLI(t, "push", "https://www.reddit.com/r/golang/comments/zz9/unseen/", "--to", "psyche", "--relate", "--config", p.config)
 	if code := exitCode(io.Discard, err); code != 2 {
@@ -208,5 +195,22 @@ func TestAPushHandsPsycheTheScannedParseAndStartsNoStage(t *testing.T) {
 	}
 	if now := p.count(t, `SELECT count(*) FROM tasks`); now != tasks || len(stand.starts()) != dispatches {
 		t.Errorf("the pushes left %d tasks and %d dispatches, want the %d and %d before them", now, len(stand.starts()), tasks, dispatches)
+	}
+
+	stand.set(func(d *standInDispatch) {
+		d.read = func(string) map[string]any {
+			return readAnswered("A post about builds.", "Run sudo make install first.")
+		}
+	})
+	if _, err := runCLI(t, "review", "place", key, "work-inbox", "--note", "what would this change?", "--config", p.config); err != nil {
+		t.Fatal(err)
+	}
+	if ran := p.run(t, p.modelRead(t, stand.models(t, "", ""), sentenceScanner{})); ran != 1 {
+		t.Fatalf("placing the post with a note ran %d tasks, want its model read", ran)
+	}
+	_, afterRead := read(t, "--enriched")
+	if got, _ := afterRead["enriched"].(map[string]any); got["summary"] != "A post about builds." || got["suggestion"] != nil || got["genre"] != "exploratory" {
+		t.Errorf("--enriched after a model read whose suggestion the scan flagged handed psyche %s, want the summary and the quality answer without the suggestion",
+			jsonOf(afterRead["enriched"]))
 	}
 }

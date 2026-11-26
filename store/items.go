@@ -273,8 +273,9 @@ func Precedes(step, later string) bool {
 
 // Conditions derives each stage's and gate's condition from which records
 // exist, as Kubernetes derives a pod's status from its conditions. A stage
-// with no record is left out. So when a push sends an item past the gates, it
-// shows no gate at all rather than one that failed.
+// with no record is left out. So an item that a tag, a rule or a person
+// settled before a gate read it shows no gate at all rather than one that
+// failed.
 func (r ItemRecords) Conditions() []Condition {
 	var out []Condition
 	for _, step := range line {

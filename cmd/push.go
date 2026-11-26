@@ -3,6 +3,7 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
 
@@ -21,18 +22,17 @@ var pushCmd = &cobra.Command{
 		"`psyche relate --parse -` on this machine with that document on its stdin.\n" +
 		"psyche prints its answer as it runs, and --json asks psyche for its JSON.\n" +
 		"\n" +
-		"Each command, link and piece of code that the scan flagged reaches psyche as a\n" +
-		"suggestion rather than a finding. --enriched adds what the service derived from\n" +
-		"the parse: the quality gate's idea, genre, domains, themes and quality, and the\n" +
-		"newest model read's summary and suggestion. Without it psyche reads the parse\n" +
-		"and the findings alone.\n" +
+		"A finding of a rule that lists what the item suggests reaches psyche as a\n" +
+		"suggestion rather than a finding. --enriched adds the service's current quality\n" +
+		"gate answer and model read, and names each part it left out and why. Without it\n" +
+		"psyche reads the parse and the findings alone.\n" +
 		"\n" +
 		"A push starts no stage in the service, so no model reads the item there. It\n" +
-		"hands on only an item that the service holds a scanned parse of. A URL resolves\n" +
+		"hands on only an item that a connector landed and a scan read. A URL resolves\n" +
 		"to the key of the artifact it names. The command exits 4 when the service gives\n" +
 		"no answer, and psyche never runs then. It exits 2 when it names an item that the\n" +
-		"service holds no record of, and 1 when the item has no scanned parse yet or\n" +
-		"psyche fails.",
+		"service never landed, and 1 when the item has no scanned parse yet or psyche\n" +
+		"fails.",
 	Example: "  ingestion push reddit/t3_aq7ggd --to psyche --relate\n" +
 		"  ingestion push https://www.reddit.com/r/golang/comments/aq7ggd/ --to psyche --relate --enriched\n" +
 		"  ingestion push reddit/t3_aq7ggd --to psyche --relate --json",
@@ -69,36 +69,45 @@ func runPush(cmd *cobra.Command, args []string) error {
 	var parse server.ParseAnswer
 	_, err := getJSON(ctx, config, api, server.RouteItemParse, target+"/parse", &parse)
 	var refused *refusal
-	if errors.As(err, &refused) && refused.Code == server.CodeParseNotFound {
+	switch {
+	case errors.As(err, &refused) && refused.Code == server.CodeParseNotFound:
 		return fmt.Errorf("%s, so there is nothing to hand %s yet. `ingestion items show %s` says where it waits", refused.Message, push.Program, ref)
+	case errors.As(err, &refused) && refused.Code == server.CodeItemNotFound && refused.Status < http.StatusInternalServerError:
+		return fmt.Errorf("%w: %s. The service never landed it, and a push hands on only an item that a connector landed. "+
+			"`ingestion connectors list` names each connector", goclikit.ErrUsage, refused.Message)
 	}
 	if err := argumentRefusal(err); err != nil {
 		return err
 	}
-	var derived *push.Enriched
+	stderr := cmd.ErrOrStderr()
+	var added push.Enrichment
 	if enriched {
 		var item server.ItemAnswer
 		if _, err := getJSON(ctx, config, api, server.RouteItem, target, &item); err != nil {
 			return err
 		}
-		if derived = push.EnrichedFrom(item); derived == nil {
-			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "%s holds no quality gate answer or model read, so %s reads the parse alone\n", parse.Key, push.Program)
+		added = push.Enrich(item)
+		for _, left := range added.Left {
+			_, _ = fmt.Fprintln(stderr, left)
+		}
+		if len(added.Left) > 0 {
+			_, _ = fmt.Fprintf(stderr, "`ingestion items show %s` says where each stage stands\n", parse.Key)
 		}
 	}
-	doc, err := push.Write(parse, derived)
+	doc, err := push.Write(parse, added.Enriched)
 	switch {
 	case errors.Is(err, push.ErrNotScanned):
-		return fmt.Errorf("%s holds a parse that no scan has read yet, and a push hands on only a scanned parse. `ingestion items show %s` says where it waits", parse.Key, parse.Key)
+		return fmt.Errorf("%s holds a parse, and a push hands on only a scanned one: %w. `ingestion items show %s` says where it waits", parse.Key, err, parse.Key)
 	case err != nil:
 		return fmt.Errorf("%s: %w", parse.Key, err)
 	}
 	enrichedWords := ""
-	if derived != nil {
-		enrichedWords = ", enriched"
+	if len(added.From) > 0 {
+		enrichedWords = ", enriched by " + strings.Join(added.From, " and ")
 	}
-	_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pushing %s to %s relate: %s, %s, %s%s\n", doc.Key, push.Program,
+	_, _ = fmt.Fprintf(stderr, "pushing %s to %s relate: %s, %s, %s%s\n", doc.Key, push.Program,
 		counted(len(doc.Units), "unit"), counted(len(doc.Findings), "finding"), counted(len(doc.Suggested), "suggestion"), enrichedWords)
-	return push.Relate(ctx, doc, asJSON, cmd.OutOrStdout(), cmd.ErrOrStderr())
+	return push.Relate(ctx, doc, asJSON, cmd.OutOrStdout(), stderr)
 }
 
 // counted is n of noun, as a person writes it.
