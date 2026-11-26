@@ -175,7 +175,7 @@ func DecideAfterAnswer(ctx context.Context, tx *store.Tx, task store.Task) error
 	if err != nil {
 		return err
 	}
-	if err := gatetrust.Ensure(ctx, tx, key, newest.ProducerVersion, gatetrust.Connectors(sightings)); err != nil {
+	if err := gatetrust.Ensure(ctx, tx, key, gatetrust.AnswererOf(*newest), gatetrust.Connectors(sightings)); err != nil {
 		return err
 	}
 	d := Decision(a, newest.Run())

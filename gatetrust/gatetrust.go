@@ -1,8 +1,8 @@
 // Package gatetrust is how far a person trusts the quality gate's drops. A
-// family is one connector under one version of the gate's prompt, so a new
-// prompt starts every family again at rung 0. Each family is an
-// earnedtrust.Family, and its standing is what earnedtrust reads from the
-// family's decisions and its promotion.
+// family is one connector under one version of the gate's prompt, answered by
+// one model at one effort. So a new prompt, model or effort starts its
+// families at rung 0. Each family is an earnedtrust.Family, and its standing
+// is what earnedtrust reads from the family's decisions and its promotion.
 //
 // A mark of low-quality agrees with a drop and disagrees with a pass. A mark
 // of read agrees with a pass and disagrees with a drop. Only an agreement on
@@ -23,6 +23,7 @@
 package gatetrust
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -86,14 +87,55 @@ const (
 // ErrNoFamily is a promotion naming a family the store holds no standing of.
 var ErrNoFamily = errors.New("no such gate family")
 
-// Family is the name of connector's family under the gate's prompt version.
-func Family(connector, promptVersion string) string { return connector + "@" + promptVersion }
+// DefaultSetting stands for a model or an effort that a run left to its
+// adapter.
+const DefaultSetting = "default"
 
-// Judgment is the quality gate's newest decision on an item, and the version
-// of the prompt that answered it.
+// Answerer is what answered one of the gate's decisions: the version of its
+// prompt, the model that its run reports answering on, else the model that
+// the run asked for, and the effort that the run asked at. A new model or
+// effort is a new family, so it earns its own trust from rung 0.
+type Answerer struct {
+	PromptVersion string
+	Model         string
+	Effort        string
+}
+
+// AnswererOf is what answered the gate's output o.
+func AnswererOf(o store.Output) Answerer {
+	return Answerer{
+		PromptVersion: o.ProducerVersion,
+		Model:         cmp.Or(text(o.AnsweredModel), text(o.Model), DefaultSetting),
+		Effort:        cmp.Or(text(o.Effort), DefaultSetting),
+	}
+}
+
+// Answered is what answered d: the done quality output among outputs whose
+// run d names. It is the zero Answerer where none is.
+func Answered(outputs []store.Output, d store.Decision) Answerer {
+	run, ok := d.ModelRun()
+	if !ok {
+		return Answerer{}
+	}
+	for _, o := range outputs {
+		if o.Stage == store.StageQuality && o.State == store.OutputDone && o.Run() == run {
+			return AnswererOf(o)
+		}
+	}
+	return Answerer{}
+}
+
+// Family is the name of connector's family under what answered:
+// <connector>@<prompt version>@<model>@<effort>.
+func Family(connector string, a Answerer) string {
+	return connector + "@" + a.PromptVersion + "@" + a.Model + "@" + a.Effort
+}
+
+// Judgment is the quality gate's newest decision on an item, and what
+// answered it.
 type Judgment struct {
 	store.Decision
-	PromptVersion string
+	Answerer Answerer
 }
 
 // JudgmentOn reads the gate's newest decision on the item under key, and the
@@ -120,23 +162,7 @@ func JudgmentOn(ctx context.Context, tx *store.Tx, key string) (Judgment, []stri
 	if err != nil {
 		return Judgment{}, nil, false, err
 	}
-	return Judgment{Decision: d, PromptVersion: PromptVersion(outputs, d)}, Connectors(sightings), true, nil
-}
-
-// PromptVersion is the version of the gate's prompt whose answer d came
-// from: the done quality output among outputs whose run d names, and "" where
-// none is.
-func PromptVersion(outputs []store.Output, d store.Decision) string {
-	run, ok := d.ModelRun()
-	if !ok {
-		return ""
-	}
-	for _, o := range outputs {
-		if o.Stage == store.StageQuality && o.State == store.OutputDone && o.Run() == run {
-			return o.ProducerVersion
-		}
-	}
-	return ""
+	return Judgment{Decision: d, Answerer: Answered(outputs, d)}, Connectors(sightings), true, nil
 }
 
 // Connectors names each connector of sightings once, in their order.
@@ -152,26 +178,29 @@ func Connectors(sightings []store.Sighting) []string {
 
 // Start is a family's standing before any person's word: rung 0, where every
 // drop shows.
-func Start(connector, promptVersion string) store.GateTrust {
-	g := store.GateTrust{Family: Family(connector, promptVersion), Connector: connector, PromptVersion: promptVersion, LastChange: ChangeGateAnswer}
+func Start(connector string, a Answerer) store.GateTrust {
+	g := store.GateTrust{
+		Family: Family(connector, a), Connector: connector, PromptVersion: a.PromptVersion, Model: a.Model, Effort: a.Effort,
+		LastChange: ChangeGateAnswer,
+	}
 	return withStanding(g, familyOf(g.Family).Standing(nil, false))
 }
 
-// Ensure writes a standing at rung 0 for each family of connectors under
-// promptVersion that holds none, in the write that appends the gate's
-// decision, so every family that judged an item is listed.
-func Ensure(ctx context.Context, tx *store.Tx, key, promptVersion string, connectors []string) error {
-	if promptVersion == "" {
+// Ensure writes a standing at rung 0 for each family of connectors under a
+// that holds none, in the write that appends the gate's decision, so every
+// family that judged an item is listed.
+func Ensure(ctx context.Context, tx *store.Tx, key string, a Answerer, connectors []string) error {
+	if a.PromptVersion == "" {
 		return nil
 	}
 	for _, c := range connectors {
-		if _, ok, err := tx.GateTrust(ctx, Family(c, promptVersion)); err != nil || ok {
+		if _, ok, err := tx.GateTrust(ctx, Family(c, a)); err != nil || ok {
 			if err != nil {
 				return err
 			}
 			continue
 		}
-		g := Start(c, promptVersion)
+		g := Start(c, a)
 		g.LastItemKey = &key
 		if err := tx.PutGateTrust(ctx, g); err != nil {
 			return err
@@ -181,17 +210,17 @@ func Ensure(ctx context.Context, tx *store.Tx, key, promptVersion string, connec
 }
 
 // Shows says whether the gate's drop in answer, its decided_by, shows in
-// review under the families of connectors at promptVersion. It shows where
-// any of those families has not earned hiding it: one with no standing, or
-// one whose earnedtrust standing puts the answer to a person. The strictest
-// family wins, as the strictest zone does. The review queue holds every drop
-// it is shown, so no drop waits there for room.
-func Shows(ctx context.Context, tx *store.Tx, answer, promptVersion string, connectors []string) (bool, error) {
-	if promptVersion == "" || len(connectors) == 0 {
+// review under the families of connectors that a answered for. It shows
+// where any of those families has not earned hiding it: one with no
+// standing, or one whose earnedtrust standing puts the answer to a person.
+// The strictest family wins, as the strictest zone does. The review queue
+// holds every drop it is shown, so no drop waits there for room.
+func Shows(ctx context.Context, tx *store.Tx, answer string, a Answerer, connectors []string) (bool, error) {
+	if a.PromptVersion == "" || len(connectors) == 0 {
 		return true, nil
 	}
 	for _, c := range connectors {
-		g, ok, err := tx.GateTrust(ctx, Family(c, promptVersion))
+		g, ok, err := tx.GateTrust(ctx, Family(c, a))
 		if err != nil {
 			return true, err
 		}
@@ -260,8 +289,8 @@ func Mark(ctx context.Context, tx *store.Tx, key string, m Marking) (store.Mark,
 	mark := store.Mark{ItemKey: key, Mark: m.Mark, DecidedBy: m.DecidedBy, ClientID: orNil(m.ClientID), Agreement: Neither, Families: []string{}}
 	if judged {
 		mark.GateVerdict, mark.GateDecidedBy = &judgment.Verdict, &judgment.DecidedBy
-		if judgment.PromptVersion != "" {
-			mark.PromptVersion = &judgment.PromptVersion
+		if v := judgment.Answerer.PromptVersion; v != "" {
+			mark.PromptVersion = &v
 		}
 		mark.Agreement = Agreement(m.Mark, judgment.Verdict)
 	}
@@ -291,28 +320,28 @@ func Disagree(ctx context.Context, tx *store.Tx, key, decidedBy, clientID string
 	return record(ctx, tx, key, judgment, connectors, word, ChangePlacement)
 }
 
-// record appends word to each family of connectors under the judgment's
-// prompt version, and writes each family's standing after it. The word climbs
-// past a family's promotion only where the gate answered the item after it.
+// record appends word to each family of connectors under what answered the
+// judgment, and writes each family's standing after it. The word climbs past
+// a family's promotion only where the gate answered the item after it.
 func record(ctx context.Context, tx *store.Tx, key string, j Judgment, connectors []string, word store.GateTrustDecision,
 	change string,
 ) ([]store.GateTrust, error) {
-	if j.PromptVersion == "" {
+	if j.Answerer.PromptVersion == "" {
 		return nil, nil
 	}
 	out := make([]store.GateTrust, 0, len(connectors))
 	for _, c := range connectors {
-		g, ok, err := tx.GateTrust(ctx, Family(c, j.PromptVersion))
+		g, ok, err := tx.GateTrust(ctx, Family(c, j.Answerer))
 		if err != nil {
 			return nil, err
 		}
 		if !ok {
-			g = Start(c, j.PromptVersion)
+			g = Start(c, j.Answerer)
 			if err := tx.PutGateTrust(ctx, g); err != nil {
 				return nil, err
 			}
 		}
-		word.Family, word.ItemKey, word.GateDecidedBy = g.Family, key, j.DecidedBy
+		word.Family, word.Model, word.Effort, word.ItemKey, word.GateDecidedBy = g.Family, g.Model, g.Effort, key, j.DecidedBy
 		word.Promoted = g.Promoted() && *g.PromotedTS <= j.DecidedTS
 		if _, err := tx.AddGateTrustDecision(ctx, word); err != nil {
 			return nil, err

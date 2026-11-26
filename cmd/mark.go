@@ -22,8 +22,8 @@ var itemsMarkCmd = &cobra.Command{
 		"Each mark reads against the quality gate's newest decision on the item.\n" +
 		"low-quality agrees with a drop and disagrees with a pass, and read the\n" +
 		"other way round. An agreement with a drop counts toward each family of\n" +
-		"that decision, one connector under one version of the gate's prompt, and\n" +
-		"a disagreement returns each to rung 0. An agreement with a pass is kept\n" +
+		"that decision: one connector under the prompt version, model and effort\n" +
+		"that answered. A disagreement returns each to rung 0. An agreement with a pass is kept\n" +
 		"and moves no family, because a pass shows its item whatever a family's\n" +
 		"standing. `ingestion gates trust list` shows where each stands. Marking\n" +
 		"an item again with the mark it holds changes nothing until the gate\n" +

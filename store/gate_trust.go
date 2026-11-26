@@ -30,9 +30,13 @@ type Mark struct {
 // GateTrust is one family's standing on the trust ladder, as gate_trust holds
 // it.
 type GateTrust struct {
-	Family        string  `json:"family"`
-	Connector     string  `json:"connector"`
-	PromptVersion string  `json:"prompt_version"`
+	Family        string `json:"family"`
+	Connector     string `json:"connector"`
+	PromptVersion string `json:"prompt_version"`
+	// Model and Effort are what answered under the family, as the family's
+	// name holds them.
+	Model         string  `json:"model"`
+	Effort        string  `json:"effort"`
 	Rung          int     `json:"rung"`
 	Run           int     `json:"run"`
 	StraightRun   int     `json:"straight_run"`
@@ -91,13 +95,17 @@ func (t *Tx) PutGateTrust(ctx context.Context, g GateTrust) error {
 // GateTrusts reads every family's standing, by connector and then prompt
 // version.
 func (s *Store) GateTrusts(ctx context.Context) ([]GateTrust, error) {
-	return readInto[GateTrust](ctx, s.read, table("gate_trust"), `1 ORDER BY connector, prompt_version`)
+	return readInto[GateTrust](ctx, s.read, table("gate_trust"), `1 ORDER BY connector, prompt_version, model, effort`)
 }
 
 // GateTrustDecision is one person's word that counts on a family's ladder, as
 // gate_trust_decisions holds it.
 type GateTrustDecision struct {
-	Family   string `json:"family"`
+	Family string `json:"family"`
+	// Model and Effort are the family's, so a reader filters by them without
+	// parsing its name.
+	Model    string `json:"model"`
+	Effort   string `json:"effort"`
 	Sequence int    `json:"sequence"`
 	ItemKey  string `json:"item_key"`
 	// Kind is mark or placement.
@@ -134,5 +142,5 @@ func (t *Tx) GateTrustDecisions(ctx context.Context, family string) ([]GateTrust
 
 // GateTrusts reads every family's standing as this write sees it.
 func (t *Tx) GateTrusts(ctx context.Context) ([]GateTrust, error) {
-	return readInto[GateTrust](ctx, t.tx, table("gate_trust"), `1 ORDER BY connector, prompt_version`)
+	return readInto[GateTrust](ctx, t.tx, table("gate_trust"), `1 ORDER BY connector, prompt_version, model, effort`)
 }

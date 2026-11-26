@@ -27,9 +27,10 @@ import (
 // family's run to 0. Thirty straight low-quality marks earn asking, a
 // repeated mark counts once, and one promote climbs the family to rung 1. Of
 // the next saves the gate drops, the seeded draw over each answer shows its
-// share in review, and the rest drop as gate with their rows and ideas kept.
-// Thirty agreeing marks on drops answered after the promote climb it to
-// rung 2. A read on a hidden drop disagrees, which returns the promoted family
+// share in review, and the rest drop as quality-drop with their rows and ideas
+// kept. Thirty agreeing marks on drops answered after the promote climb it to
+// rung 2. Another model's drops all show, because its family starts on rung 0.
+// A read on a hidden drop disagrees, which returns the promoted family
 // to rung 0, where every drop shows. Placing a hidden drop on a destination
 // disagrees too.
 func TestAGateFamilyEarnsTrustBeforeItHidesAShareOfItsDrops(t *testing.T) {
@@ -41,8 +42,9 @@ func TestAGateFamilyEarnsTrustBeforeItHidesAShareOfItsDrops(t *testing.T) {
 		}
 		return judged(qualitygate.AnswerDrop, 0.95, connectors.SidePersonal, 0.4)
 	}
-	gate := p.qualityGate(t, stand.models(t, "", ""))
-	family := gatetrust.Family("reddit-exports", prompts.Quality.Version)
+	gate := p.qualityGate(t, stand.models(t, "haiku", "medium"))
+	answerer := gatetrust.Answerer{PromptVersion: prompts.Quality.Version, Model: "haiku", Effort: "medium"}
+	family := gatetrust.Family("reddit-exports", answerer)
 	land := func(name string, tags []string, ids ...string) []string {
 		saves, keys := make([]string, 0, len(ids)), make([]string, 0, len(ids))
 		for _, id := range ids {
@@ -84,16 +86,23 @@ func TestAGateFamilyEarnsTrustBeforeItHidesAShareOfItsDrops(t *testing.T) {
 		t.Fatalf("the gate has not answered %s", key)
 		return ""
 	}
-	standing := func() store.GateTrust {
+	standingOf := func(name string) store.GateTrust {
 		t.Helper()
 		out, err := runCLI(t, "gates", "trust", "list", "--json", "--config", p.config)
 		var a server.GateTrustAnswer
-		if err != nil || json.Unmarshal([]byte(out), &a) != nil || len(a.Families) != 1 || a.Families[0].Family != family {
-			t.Fatalf("gates trust list printed %q, %v, want the one family %s", out, err, family)
+		if err != nil || json.Unmarshal([]byte(out), &a) != nil {
+			t.Fatalf("gates trust list printed %q, %v", out, err)
 		}
 		holdsTo(t, []byte(out), "gate-trust-list.schema.json")
-		return a.Families[0]
+		for _, g := range a.Families {
+			if g.Family == name {
+				return g
+			}
+		}
+		t.Fatalf("gates trust list printed %q, want the family %s", out, name)
+		return store.GateTrust{}
 	}
+	standing := func() store.GateTrust { t.Helper(); return standingOf(family) }
 
 	tagged := land("tagged", []string{"read-later"}, "t3_tg1")[0]
 	if _, err := runCLI(t, "connectors", "release", "reddit-exports", "--config", p.config); err != nil {
@@ -153,8 +162,8 @@ func TestAGateFamilyEarnsTrustBeforeItHidesAShareOfItsDrops(t *testing.T) {
 			continue
 		}
 		hidden = append(hidden, key)
-		if side.Verdict != route.VerdictDrop || side.Cause != route.CauseGateDrop || p.phase(t, key) != "dropped" {
-			t.Errorf("%s falls outside the draw's share, and is %s for %s, want dropped as %s", key, side.Verdict, side.Cause, route.CauseGateDrop)
+		if side.Verdict != route.VerdictDrop || side.Cause != route.CauseQualityDrop || p.phase(t, key) != "dropped" {
+			t.Errorf("%s falls outside the draw's share, and is %s for %s, want dropped as %s", key, side.Verdict, side.Cause, route.CauseQualityDrop)
 		}
 	}
 	if len(hidden) == 0 || len(hidden) == len(next) {
@@ -171,6 +180,26 @@ func TestAGateFamilyEarnsTrustBeforeItHidesAShareOfItsDrops(t *testing.T) {
 	if g := standing(); g.Rung != 2 || g.Share != 0.1875 {
 		t.Errorf("after thirty marks on drops answered since the promote the family stands at %s, want rung 2", jsonOf(g))
 	}
+
+	trusted := gate
+	gate = p.qualityGate(t, stand.models(t, "sonnet", "medium"))
+	wouldHide := 0
+	for _, key := range land("another model", nil, ids(300, 8)...) {
+		if seededhash.Fraction(family, answerOf(key)) >= 0.1875 {
+			wouldHide++
+		}
+		if _, side, _ := p.decisions(t, key); side.Verdict != route.VerdictReview || side.Cause != route.CauseGateWouldDrop {
+			t.Errorf("another model's drop of %s is %s for %s, want review as %s", key, side.Verdict, side.Cause, route.CauseGateWouldDrop)
+		}
+	}
+	if wouldHide == 0 {
+		t.Fatal("the rung-2 family's draw would hide none of another model's drops, so the step shows nothing")
+	}
+	answerer.Model = "sonnet"
+	if g := standingOf(gatetrust.Family("reddit-exports", answerer)); g.Rung != 0 || g.Model != "sonnet" || g.Effort != "medium" {
+		t.Errorf("another model's family stands at %s, want rung 0 under sonnet at medium", jsonOf(g))
+	}
+	gate = trusted
 	if a := mark(hidden[0], gatetrust.MarkRead); a.Mark.Agreement != gatetrust.Disagreed {
 		t.Errorf("read on a hidden drop answered %s, want disagreed", jsonOf(a))
 	}

@@ -760,13 +760,16 @@ waits in review as `no-guess`. The replay is what runs the gate over such items.
 
 ### Each connector's family earns trust from a person's marks before the gate hides its drops
 
-A family is one connector under one version of the gate's prompt, named
-`<connector>@<prompt version>`. A new prompt version starts a new family at rung 0. The gate
-writes a family's row with its first answer on an item that the connector sighted.
+A family is one connector under one version of the gate's prompt, answered by one model at one
+effort. It is named `<connector>@<prompt version>@<model>@<effort>`. The model is the one that
+the run reports answering on, else the one that it asked for. A model or effort that the run
+left to the adapter reads `default`. A new prompt version, model or effort starts a new family at
+rung 0, so a model swap earns its own trust before it hides anything. The gate writes a family's
+row with its first answer on an item that the connector sighted.
 
 The family climbs earnedtrust's ladder at its cautious pace, the skip-lot pattern of acceptance
 sampling. Rung 0 shows every drop in review as `gate-would-drop`. Each rung above shows a lower
-share of the drops, down to a floor, and drops the rest as `gate`. `ingestion gates trust list`
+share of the drops, down to a floor, and drops the rest as `quality-drop`. `ingestion gates trust list`
 prints the run that earns asking and each rung's share.
 
 - **A person's mark agrees or disagrees with the gate's answer on the item.** `low-quality`
@@ -777,7 +780,7 @@ prints the run that earns asking and each rung's share.
   item whatever the family's standing. So `read` on a pass is kept as agreed and moves no family.
   A disagreement on either answer counts.
 - **A mark moves no item.** It counts on each family that sighted the item, under the prompt
-  version that answered it. A mark that repeats the item's newest, by the same hand on the same
+  version, model and effort that answered it. A mark that repeats the item's newest, by the same hand on the same
   answer of the gate, appends nothing.
 - **Placing an item on a destination disagrees where the gate showed or hid its drop.** Dropping a
   `gate-would-drop` item counts nothing. The marks say whether the gate was right.
@@ -799,14 +802,14 @@ A hidden drop keeps its row, its idea and its reason, and a person can still pla
 
 ```text
 $ ingestion items mark reddit/t3_bb2 low-quality
-Marked reddit/t3_bb2 low-quality, which agrees with the quality gate's drop: reddit-exports@v1-<digest> rung 0, straight run 30 of 30.
+Marked reddit/t3_bb2 low-quality, which agrees with the quality gate's drop: reddit-exports@1-<digest>@claude-haiku-4-5@medium rung 0, straight run 30 of 30.
 $ ingestion gates trust list
 A straight run of 30 agreeing marks earns asking. Rungs 1 up show 25%, 18.75%, 14.06%, 10.55%, 7.91%, 5.93%, 5% of the gate's drops.
 
-FAMILY                       RUNG  RUN  STRAIGHT RUN  SHOWS  ASKS  PROMOTED BY
-reddit-exports@v1-<digest>   0     30   30 of 30      100%   yes   —
-$ ingestion gates trust promote reddit-exports@v1-<digest>
-Promoted reddit-exports@v1-<digest> to rung 1, which shows 25% of the gate's drops and drops the rest as gate.
+FAMILY                                             RUNG  RUN  STRAIGHT RUN  SHOWS  ASKS  PROMOTED BY
+reddit-exports@1-<digest>@claude-haiku-4-5@medium  0     30   30 of 30      100%   yes   —
+$ ingestion gates trust promote reddit-exports@1-<digest>@claude-haiku-4-5@medium
+Promoted reddit-exports@1-<digest>@claude-haiku-4-5@medium to rung 1, which shows 25% of the gate's drops and drops the rest as quality-drop.
 ```
 
 `items mark` posts to `/api/v1/items/{key}/marks`, which needs `ingestion.marks.write`, and its
@@ -820,8 +823,10 @@ counts as the person's word that the service relays.
 
 Each mark is a row of `marks`. Each word that counts on a family is a row of
 `gate_trust_decisions`, and the family's `gate_trust` row holds the standing that earnedtrust reads
-from them. `serve` reads every family's standing again once it listens, so a release that changes
-the ladder places each family again from its decisions. All three ship on the record channel.
+from them. Both family tables carry the family's `model` and `effort` as columns, so a reader
+filters by them without parsing the name. `serve` reads every family's standing again once it
+listens, so a release that changes the ladder places each family again from its decisions. All
+three ship on the record channel.
 
 ### The side gate places each item, and a person places what it leaves
 
@@ -834,8 +839,8 @@ places the item by the first rung that decides it:
 2. **A routing rule**: the first in the file whose match holds on one sighting. A Reddit save's
    sighting carries its `subreddit` field for a rule to match.
 3. **The quality gate.** The item waits at `quality` until the gate answers. A confident drop
-   sends it to review as `gate-would-drop`, or drops it as `gate` where its families' trust hides
-   it. An unsure answer, or a drop below the floor, sends it to review as `quality-review`. A pass reads the
+   sends it to review as `gate-would-drop`, or drops it as `quality-drop` where its families'
+   trust hides it. An unsure answer, or a drop below the floor, sends it to review as `quality-review`. A pass reads the
    gate's side guess. A personal guess places the item where its confidence reaches the floor
    that `route.GuessFloor` sets. A fleet guess places nothing at any confidence, because a tag,
    a rule or a person puts an item on the fleet side, never a guess. A fleet guess, a guess below

@@ -240,7 +240,7 @@
         },
         "confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
         "cause": {
-          "description": "What decided. The quality gate writes pass, drop, unsure, or below-drop-floor where it would drop the item below its confidence floor. The side gate writes tags, tags-disagree, rule, guess, below-floor, person-sorts, no-guess, gate-error, gate-would-drop where the quality gate dropped the item and a family of it has not earned hiding it, gate where every family hides it, or quality-review, and the read gate connector or side-default. A row written before the trust ladder may read quality-drop for a quality gate's drop. A person's decision names an aspect, such as subreddit, channel, theme or title, or unstated.",
+          "description": "What decided. The quality gate writes pass, drop, unsure, or below-drop-floor where it would drop the item below its confidence floor. The side gate writes tags, tags-disagree, rule, guess, below-floor, person-sorts, no-guess, gate-error, gate-would-drop where the quality gate dropped the item and a family of it has not earned hiding it, quality-drop where every family hides it, or quality-review, and the read gate connector or side-default. A person's decision names an aspect, such as subreddit, channel, theme or title, or unstated.",
           "type": "string",
           "pattern": "^[a-z][a-z-]{0,63}$"
         },
@@ -370,9 +370,19 @@
       }
     },
     "family": {
-      "description": "A family of the quality gate: one connector under one version of the gate's prompt, as <connector>@<prompt version>.",
+      "description": "A family of the quality gate: one connector under one version of the gate's prompt, answered by one model at one effort, as <connector>@<prompt version>@<model>@<effort>.",
       "type": "string",
-      "pattern": "^[a-z][a-z0-9-]*@.+$"
+      "pattern": "^[a-z][a-z0-9-]*@[^@]+@[^@]+@[^@]+$"
+    },
+    "family_model": {
+      "description": "The model of a family of the quality gate: the model that its runs report answering on, else the model that they asked for, and default where they named none. A new one starts a new family at rung 0.",
+      "type": "string",
+      "minLength": 1
+    },
+    "family_effort": {
+      "description": "The effort that a family's runs asked for, and default where they named none. A new one starts a new family at rung 0.",
+      "type": "string",
+      "minLength": 1
     },
     "marks": {
       "title": "marks, one row per mark a person gave an item, appended",
@@ -400,13 +410,15 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "family", "connector", "prompt_version", "rung", "run", "straight_run", "share", "threshold", "first_share", "asks_promotion", "last_change",
-        "created_ts", "updated_ts"
+        "family", "connector", "prompt_version", "model", "effort", "rung", "run", "straight_run", "share", "threshold", "first_share", "asks_promotion",
+        "last_change", "created_ts", "updated_ts"
       ],
       "properties": {
         "family": {"$ref": "#/$defs/family"},
         "connector": {"type": "string"},
         "prompt_version": {"description": "The version of the quality gate's prompt. A new one starts a new family at rung 0.", "type": "string"},
+        "model": {"$ref": "#/$defs/family_model"},
+        "effort": {"$ref": "#/$defs/family_effort"},
         "rung": {"description": "0 while every drop shows, 1 once promoted and earned, and higher as straight runs lower the share.", "type": "integer", "minimum": 0},
         "run": {"description": "The run of a person's agreements with the gate's drops on this rung.", "type": "integer", "minimum": 0},
         "straight_run": {"description": "The run of a person's agreements with the gate's drops since the last disagreement, across rungs.", "type": "integer", "minimum": 0},
@@ -431,9 +443,11 @@
       "description": "ingestion.record.id is <family>/<sequence>. A family's rows, in sequence, are what earnedtrust reads its standing from: a mark that agrees with the gate's drop, a mark that disagrees with its answer, and a placement on a destination of an item whose drop the gate showed or hid. A mark that agrees with a pass writes none. A row holds no outsider text.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["family", "sequence", "item_key", "kind", "agreement", "promoted", "decided_by", "gate_decided_by", "decided_ts"],
+      "required": ["family", "model", "effort", "sequence", "item_key", "kind", "agreement", "promoted", "decided_by", "gate_decided_by", "decided_ts"],
       "properties": {
         "family": {"$ref": "#/$defs/family"},
+        "model": {"$ref": "#/$defs/family_model"},
+        "effort": {"$ref": "#/$defs/family_effort"},
         "sequence": {"description": "The row's place among the family's decisions.", "type": "integer", "minimum": 1},
         "item_key": {"$ref": "#/$defs/item_key"},
         "kind": {"description": "mark, or placement where a person placed on a destination an item whose drop the gate showed or hid.", "enum": ["mark", "placement"]},

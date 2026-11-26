@@ -73,10 +73,10 @@ const (
 	CausePersonSorts = "person-sorts"
 	// CauseGateWouldDrop sends to review an item that the quality gate
 	// dropped, where a family of the item has not earned hiding it.
-	// CauseGateDrop drops one that every family's trust hides, and keeps its
+	// CauseQualityDrop drops one that every family's trust hides, and keeps its
 	// row. CauseQualityReview sends to review one that the gate was unsure of.
 	CauseGateWouldDrop = "gate-would-drop"
-	CauseGateDrop      = "gate"
+	CauseQualityDrop   = "quality-drop"
 	CauseQualityReview = store.ReasonQualityReview
 	// CauseConnector and CauseSideDefault are the read gate's.
 	CauseConnector   = "connector"
@@ -431,9 +431,10 @@ func byQuality(ctx context.Context, tx *store.Tx, key string, side store.Decisio
 
 // byTrust is the side decision on an item that the quality gate dropped: a
 // review marked gate-would-drop where a family of the item shows the drop,
-// and a drop marked gate where every family hides it, as gatetrust.Shows
-// decides from the answer. It decides once for each answer of the gate, so a family that
-// climbs or falls later moves no item already shown or hidden. A sighting
+// and a drop marked quality-drop where every family hides it. gatetrust.Shows
+// decides from the answer, under the families of the prompt version, model
+// and effort that gave it. It decides once for each answer of the gate, so a
+// family that climbs or falls later moves no item already shown or hidden. A sighting
 // that arrives after a hidden drop shows the item where its own family shows
 // it, so a connector whose family stands lower still reaches the person.
 func byTrust(ctx context.Context, tx *store.Tx, key string, quality store.Decision, outputs []store.Output, sightings []store.Sighting,
@@ -444,7 +445,7 @@ func byTrust(ctx context.Context, tx *store.Tx, key string, quality store.Decisi
 		switch held.Cause {
 		case CauseGateWouldDrop:
 			return *held, nil
-		case CauseGateDrop:
+		case CauseQualityDrop:
 			read = slices.DeleteFunc(slices.Clone(sightings), func(s store.Sighting) bool { return s.FirstSeenTS <= held.DecidedTS })
 			if len(read) == 0 {
 				return *held, nil
@@ -452,11 +453,11 @@ func byTrust(ctx context.Context, tx *store.Tx, key string, quality store.Decisi
 		}
 	}
 	d := store.Decision{Gate: store.GateSide, DecidedBy: quality.DecidedBy, Confidence: quality.Confidence}
-	shows, err := gatetrust.Shows(ctx, tx, quality.DecidedBy, gatetrust.PromptVersion(outputs, quality), gatetrust.Connectors(read))
+	shows, err := gatetrust.Shows(ctx, tx, quality.DecidedBy, gatetrust.Answered(outputs, quality), gatetrust.Connectors(read))
 	if err != nil {
 		return d, err
 	}
-	d.Verdict, d.Cause = VerdictDrop, CauseGateDrop
+	d.Verdict, d.Cause = VerdictDrop, CauseQualityDrop
 	if shows {
 		d.Verdict, d.Cause = VerdictReview, CauseGateWouldDrop
 	}
@@ -985,7 +986,7 @@ func Place(ctx context.Context, tx *store.Tx, key string, p Placement) ([]store.
 // quality gate's, shown in review or hidden.
 func gateDropped(side store.Decision) bool {
 	_, byModel := side.ModelRun()
-	return byModel && (side.Cause == CauseGateWouldDrop || side.Cause == CauseGateDrop)
+	return byModel && (side.Cause == CauseGateWouldDrop || side.Cause == CauseQualityDrop)
 }
 
 // repeated answers the decisions that an earlier copy of side made, and is

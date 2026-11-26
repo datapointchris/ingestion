@@ -5,8 +5,12 @@
 -- it, and each family it counted toward.
 --
 -- A gate_trust row is one family's standing on the trust ladder: one connector
--- under one version of the quality gate's prompt. rung, run, straight_run and
--- share are the ladder's, threshold is the straight run that earns asking, and
+-- under one version of the quality gate's prompt, answered by one model at one
+-- effort. model is the model that a run reports answering on, else the model
+-- it was asked for, and default where it named none. effort is the effort it
+-- was asked at, and default where it named none. Both decision rows and the
+-- family row carry them. rung, run, straight_run and share are the ladder's,
+-- threshold is the straight run that earns asking, and
 -- first_share the share that rung 1 shows. asks_promotion is set on a family
 -- not yet promoted whose straight run reached its threshold. promoted_by and
 -- promoted_ts record the person's yes. last_change and last_item_key name what
@@ -41,6 +45,8 @@ CREATE TABLE IF NOT EXISTS gate_trust (
     family             TEXT PRIMARY KEY,
     connector          TEXT NOT NULL,
     prompt_version     TEXT NOT NULL,
+    model              TEXT NOT NULL,
+    effort             TEXT NOT NULL,
     rung               INTEGER NOT NULL,
     run                INTEGER NOT NULL,
     straight_run       INTEGER NOT NULL,
@@ -60,6 +66,8 @@ CREATE INDEX IF NOT EXISTS gate_trust_by_stamp ON gate_trust (updated_ts);
 
 CREATE TABLE IF NOT EXISTS gate_trust_decisions (
     family          TEXT NOT NULL REFERENCES gate_trust (family),
+    model           TEXT NOT NULL,
+    effort          TEXT NOT NULL,
     sequence        INTEGER NOT NULL,
     item_key        TEXT NOT NULL REFERENCES items (key),
     kind            TEXT NOT NULL CHECK (kind IN ('mark', 'placement')),

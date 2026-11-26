@@ -54,8 +54,8 @@ var gatesAgreementCmd = &cobra.Command{
 var gatesTrustCmd = &cobra.Command{
 	Use:   "trust",
 	Short: "Read and promote how far each family of the quality gate is trusted to hide its drops",
-	Long: "A family is one connector under one version of the quality gate's prompt.\n" +
-		"While a family stands on rung 0, every item that the gate drops waits in\n" +
+	Long: "A family is one connector under one version of the quality gate's prompt,\n" +
+		"answered by one model at one effort. While a family stands on rung 0, every item that the gate drops waits in\n" +
 		"review as gate-would-drop. Your marks move it. low-quality on a drop agrees\n" +
 		"and climbs. read on a drop, or low-quality on a pass, disagrees. read on a\n" +
 		"pass is kept and moves nothing, because a pass shows its item on any rung.\n" +
@@ -66,18 +66,20 @@ var gatesTrustCmd = &cobra.Command{
 		"A straight run of agreeing marks earns asking, and one yes promotes the\n" +
 		"family. A promoted family climbs on the drops that the gate answers after\n" +
 		"the yes. It shows its rung's share of the gate's drops, picked by a seeded\n" +
-		"draw over the family and the gate's answer, and drops the rest as gate,\n" +
-		"which keeps their rows. A new prompt version starts every family again.",
+		"draw over the family and the gate's answer. It drops the rest as\n" +
+		"quality-drop, which keeps their rows. A new prompt version, model or effort\n" +
+		"starts its families on rung 0.",
 	Example: "  ingestion gates trust list\n" +
-		"  ingestion gates trust promote reddit-exports@1-3f9a0b2c",
+		"  ingestion gates trust promote reddit-exports@1-3f9a0b2c@claude-haiku-4-5@medium",
 }
 
 var gatesTrustListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "Print each gate family's rung, straight run and the share of drops it shows",
-	Long: "Prints each family by connector and prompt version: its rung, its run on the\n" +
-		"rung, its straight run since the last disagreement against the run that\n" +
-		"earns asking, the share of the gate's drops it shows, and who promoted it.\n" +
+	Long: "Prints each family by connector, prompt version, model and effort: its\n" +
+		"rung, its run on the rung, its straight run since the last disagreement\n" +
+		"against the run that earns asking, the share of the gate's drops it shows,\n" +
+		"and who promoted it.\n" +
 		"ASKS reads yes on a family whose straight run earned asking and that\n" +
 		"nobody has promoted.",
 	Example: "  ingestion gates trust list\n" +
@@ -95,7 +97,7 @@ var gatesTrustPromoteCmd = &cobra.Command{
 		"its run reaches it, with no second yes. A disagreement later returns it to\n" +
 		"rung 0, and it climbs back to rung 1 on its own once its run reaches the\n" +
 		"threshold again. Promoting a promoted family changes nothing.",
-	Example: "  ingestion gates trust promote reddit-exports@1-3f9a0b2c",
+	Example: "  ingestion gates trust promote reddit-exports@1-3f9a0b2c@claude-haiku-4-5@medium",
 	Args:    cobra.ExactArgs(1),
 	RunE:    runGatesTrustPromote,
 }
@@ -168,7 +170,7 @@ func runGatesTrustPromote(cmd *cobra.Command, args []string) error {
 			g.Family, g.StraightRun, g.Threshold, g.Threshold)
 		return err
 	}
-	_, err = fmt.Fprintf(w, "Promoted %s to rung %d, which shows %s of the gate's drops and drops the rest as gate.\n",
+	_, err = fmt.Fprintf(w, "Promoted %s to rung %d, which shows %s of the gate's drops and drops the rest as quality-drop.\n",
 		g.Family, g.Rung, earnedtrust.Percent(g.Share))
 	return err
 }
