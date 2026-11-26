@@ -29,9 +29,19 @@ const (
 // modelstage's dispatch-once protocol, reading each task's parse through
 // client.
 func NewHandler(port modelport.Port, client *worker.Client, settings modelstage.Settings, log *slog.Logger) worker.Handler {
+	return newHandler(Capability, port, client, settings, log)
+}
+
+// NewArmHandler is the worker handler that runs the arm's tasks the same way.
+// Each asks for the model that its task names, at the gate's effort.
+func NewArmHandler(port modelport.Port, client *worker.Client, settings modelstage.Settings, log *slog.Logger) worker.Handler {
+	return newHandler(ArmCapability, port, client, settings, log)
+}
+
+func newHandler(stage string, port modelport.Port, client *worker.Client, settings modelstage.Settings, log *slog.Logger) worker.Handler {
 	settings.Model, settings.Effort = cmp.Or(settings.Model, DefaultModel), cmp.Or(settings.Effort, DefaultEffort)
 	return modelstage.NewHandler(port, modelstage.Stage{
-		Name: Capability, Producer: Producer,
+		Name: stage, Producer: Producer,
 		Prompt: func(worker.Task) (prompts.Prompt, error) { return prompts.Quality, nil },
 		Data: func(ctx context.Context, task worker.Task) (any, error) {
 			return opening(ctx, client, task)

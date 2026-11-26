@@ -46,9 +46,12 @@ type Task struct {
 	// Destination names the destination that a deliver task writes its item
 	// to, and is nil for every other task.
 	Destination *string `json:"destination"`
-	Stage       string  `json:"stage"`
-	Capability  string  `json:"capability"`
-	State       string  `json:"state"`
+	// Model names the model that a measurement arm's task asks its run for,
+	// and is nil for every other task.
+	Model      *string `json:"model"`
+	Stage      string  `json:"stage"`
+	Capability string  `json:"capability"`
+	State      string  `json:"state"`
 	// HeldBy names the connector whose first fill holds this model stage's
 	// task. No claim takes it until a person releases the fill.
 	HeldBy *string `json:"held_by"`
@@ -87,7 +90,7 @@ func DeliverCapability(deliverer string) string { return StageDeliver + ":" + de
 
 // modelStages are the stages that read an item with a model, where a
 // connector's first fill holds every item after the first to reach one.
-var modelStages = []string{StageQuality, StageModelRead}
+var modelStages = []string{StageQuality, StageQualityArm, StageModelRead}
 
 // Enqueue adds a queued task for task's item or connector, stage and
 // capability, and answers it as written. A model stage's task for an item that

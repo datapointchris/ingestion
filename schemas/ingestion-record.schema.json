@@ -30,7 +30,7 @@
       "enum": ["outside", "owner"]
     },
     "sha256": {"description": "A SHA-256, in lowercase hex.", "type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "stage": {"description": "A stage that writes an output or holds a task. A poll's task fetches a connector's source before any item lands.", "enum": ["poll", "land", "parse", "scan", "quality", "model-read", "deliver"]},
+    "stage": {"description": "A stage that writes an output or holds a task. A poll's task fetches a connector's source before any item lands. quality-arm is the quality gate's prompt asked of the model that its task names, as a measurement, and sits on no item's line.", "enum": ["poll", "land", "parse", "scan", "quality", "quality-arm", "model-read", "deliver"]},
     "timestamp": {"type": "string", "format": "date-time"},
     "severity": {"description": "A scan finding's severity, from least to most severe.", "enum": ["info", "low", "medium", "high", "critical"]},
     "finding": {
@@ -184,7 +184,8 @@
         "stage": {"$ref": "#/$defs/stage"},
         "connector": {"description": "The connector whose sightings selected the items, and null for every connector.", "type": ["string", "null"]},
         "item_key": {"description": "The one item the replay selected, and null for every item.", "anyOf": [{"$ref": "#/$defs/item_key"}, {"type": "null"}]},
-        "placed_by": {"description": "person where the replay ran only over the items whose side a person placed, as a measurement of the stage against each placement, and null where it ran over every item it selected.", "enum": ["person", null]},
+        "placed_by": {"description": "person where the replay ran only over the labeled items, each that a person placed after the gates sent it to review, as a measurement of the stage against each placement, and null where it ran over every item it selected.", "enum": ["person", null]},
+        "model": {"description": "The model that a measurement arm's replay asked each task's run for, and null for every other replay.", "type": ["string", "null"]},
         "items": {"description": "How many items the replay queued a task for.", "type": "integer", "minimum": 0},
         "requested_by": {"description": "Who asked: person:<login> or service:<client id>.", "type": "string"},
         "requested_ts": {"$ref": "#/$defs/timestamp"}
@@ -252,6 +253,7 @@
         "item_key": {"anyOf": [{"$ref": "#/$defs/item_key"}, {"type": "null"}]},
         "connector": {"description": "The connector a poll's task fetches for.", "type": ["string", "null"]},
         "destination": {"description": "The destination a deliver task writes its item to, and null for every other task.", "type": ["string", "null"]},
+        "model": {"description": "The model that a measurement arm's task asks its run for, and null for every other task.", "type": ["string", "null"]},
         "stage": {"$ref": "#/$defs/stage"},
         "capability": {"description": "What a worker needs to claim the task: poll:<source> for a poll, parse:<extractor> for a parse and deliver:<deliverer> for a delivery.", "type": "string"},
         "state": {"enum": ["queued", "leased", "done", "failed"]},

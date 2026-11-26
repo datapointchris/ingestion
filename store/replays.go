@@ -78,7 +78,7 @@ func (s *Store) Replay(ctx context.Context, r Replay, queue ReplayQueue) (Replay
 		}
 		if found {
 			if held.Stage != r.Stage || deref(held.Connector) != deref(r.Connector) || deref(held.ItemKey) != deref(r.ItemKey) ||
-				deref(held.PlacedBy) != deref(r.PlacedBy) {
+				deref(held.PlacedBy) != deref(r.PlacedBy) || deref(held.Model) != deref(r.Model) {
 				return fmt.Errorf("replay %s: %w", r.ID, ErrReplayDiffers)
 			}
 			r = held

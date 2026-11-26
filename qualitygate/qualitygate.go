@@ -12,6 +12,10 @@
 // done, the service appends the gate's decision: pass, drop where the model
 // dropped the item at or above DropFloor, or review. The side gate then reads
 // that decision and the side guess.
+//
+// The arm asks the same prompt of another model, over items a person placed
+// from review, and keeps each answer at its own stage. It decides nothing, so
+// `ingestion gates agreement` can set two models' answers side by side.
 package qualitygate
 
 import (
@@ -31,6 +35,9 @@ import (
 const (
 	// Capability is the capability of every quality task.
 	Capability = store.StageQuality
+	// ArmCapability is the capability of every arm task: the gate's prompt
+	// asked of the model that the task names, as a measurement.
+	ArmCapability = store.StageQualityArm
 	// Producer names the quality gate's outputs, whose version is the
 	// prompt's.
 	Producer = "quality-gate"
@@ -174,26 +181,45 @@ func DecideAfterAnswer(ctx context.Context, tx *store.Tx, task store.Task) error
 
 // due says whether a replay runs the gate on an item: the gate is unanswered,
 // and the item's side decision, where it has one, is provisional.
-func due(outputs []store.Output, side store.Decision, sided, open bool) bool {
-	return unanswered(outputs, open) && (!sided || route.Provisional(side))
+func due(r store.ItemRecords, open bool) bool {
+	side, sided := r.NewestDecision(store.GateSide)
+	return unanswered(r.Outputs, open) && (!sided || route.Provisional(side))
 }
 
 // measurementDue says whether a measurement replay runs the gate on an item:
-// the gate is unanswered, and a person made the item's newest side decision.
-// The answer measures the gate against that placement.
-func measurementDue(outputs []store.Output, side store.Decision, sided, open bool) bool {
-	return unanswered(outputs, open) && sided && side.ByPerson()
+// the gate is unanswered, and the item is labeled, as a person placed it after
+// the gates sent it to review. The answer measures the gate against that
+// placement.
+func measurementDue(r store.ItemRecords, open bool) bool {
+	_, labeled := r.ReviewPlacement()
+	return unanswered(r.Outputs, open) && labeled
+}
+
+// armDue says whether the arm runs on an item: the item is labeled, the gate
+// answered it under the prompt in force, and no arm has. So each arm answer
+// sits beside the gate's answer to the same prompt.
+func armDue(r store.ItemRecords, open bool) bool {
+	if open || !store.NewestParseScanned(r.Outputs) {
+		return false
+	}
+	if _, labeled := r.ReviewPlacement(); !labeled {
+		return false
+	}
+	return answered(r.Outputs, store.StageQuality) && !answered(r.Outputs, store.StageQualityArm)
 }
 
 // unanswered says whether the gate may run on an item: its newest parse is
 // scanned, no quality task of it is open, and it holds no done answer of the
 // prompt in force.
 func unanswered(outputs []store.Output, open bool) bool {
-	if open || !store.NewestParseScanned(outputs) {
-		return false
-	}
-	return !slices.ContainsFunc(outputs, func(o store.Output) bool {
-		return o.Stage == store.StageQuality && o.Producer == Producer && o.ProducerVersion == prompts.Quality.Version && o.State == store.OutputDone
+	return !open && store.NewestParseScanned(outputs) && !answered(outputs, store.StageQuality)
+}
+
+// answered says whether outputs hold a done answer of the prompt in force at
+// stage.
+func answered(outputs []store.Output, stage string) bool {
+	return slices.ContainsFunc(outputs, func(o store.Output) bool {
+		return o.Stage == stage && o.Producer == Producer && o.ProducerVersion == prompts.Quality.Version && o.State == store.OutputDone
 	})
 }
 
@@ -202,42 +228,51 @@ func unanswered(outputs []store.Output, open bool) bool {
 // would run on and the median tokens by kind of the stage's newest stored
 // runs, times that count, and queues only once a person confirms.
 //
-// Its PlacedByPerson runs the gate over the items whose side a person placed,
-// which the gate otherwise never judges again. Its answer and its decision are
-// kept, and the side gate leaves the placement, its delivery and its model
-// read as they are, because a person's placement is final.
+// Its PlacedByPerson runs the gate over the labeled items, which the gate
+// otherwise never judges again. Its answer and its decision are kept, and the
+// side gate leaves the placement, its delivery and its model read as they
+// are, because a person's placement is final.
 func Replayable(st *store.Store) server.Replayable {
-	measured := replayable(st, measurementDue)
-	r := replayable(st, due)
+	measured := replayable(st, store.StageQuality, nil, measurementDue)
+	r := replayable(st, store.StageQuality, nil, due)
 	r.PlacedByPerson = &measured
 	return r
 }
 
-// replayable is the gate's replay over each item that isDue says it runs on.
-func replayable(st *store.Store, isDue func(outputs []store.Output, side store.Decision, sided, open bool) bool) server.Replayable {
+// ArmReplayable is the arm as a replay runs it: the gate's prompt, asked of
+// the model that the replay names, over each labeled item that the gate
+// answered under that prompt. Each answer is kept at the arm's own stage
+// beside the gate's, and appends no decision, so the item's phase, placement
+// and delivery stay as they are. One arm answers an item under each prompt.
+func ArmReplayable(st *store.Store) server.Replayable {
+	return server.Replayable{OnModel: func(model string) server.Replayable {
+		return replayable(st, store.StageQualityArm, &model, armDue)
+	}}
+}
+
+// replayable is a replay at stage over each item that isDue says it runs on,
+// each task asking for model where it is set.
+func replayable(st *store.Store, stage string, model *string, isDue func(r store.ItemRecords, open bool) bool) server.Replayable {
 	return server.Replayable{
-		Capability: func(store.Item) (string, bool) { return Capability, true },
+		Capability: func(store.Item) (string, bool) { return stage, true },
 		Queue: func(ctx context.Context, tx *store.Tx, item store.Item) (bool, error) {
 			outputs, err := tx.Outputs(ctx, item.Key)
 			if err != nil {
 				return false, err
 			}
-			side, sided, err := tx.NewestDecision(ctx, item.Key, store.GateSide)
+			decisions, err := tx.Decisions(ctx, item.Key)
 			if err != nil {
 				return false, err
 			}
-			_, open, err := tx.OpenTask(ctx, item.Key, store.StageQuality)
-			if err != nil || !isDue(outputs, side, sided, open) {
+			_, open, err := tx.OpenTask(ctx, item.Key, stage)
+			if err != nil || !isDue(store.ItemRecords{Outputs: outputs, Decisions: decisions}, open) {
 				return false, err
 			}
-			_, err = tx.Enqueue(ctx, store.Task{ItemKey: &item.Key, Stage: store.StageQuality, Capability: Capability})
+			_, err = tx.Enqueue(ctx, store.Task{ItemKey: &item.Key, Stage: stage, Capability: stage, Model: model})
 			return err == nil, err
 		},
 		Estimate: func(ctx context.Context, items []store.Item) (int, *store.Tokens, error) {
-			return modelstage.Estimate(ctx, st, store.StageQuality, items, func(r store.ItemRecords, open bool) bool {
-				side, sided := r.NewestDecision(store.GateSide)
-				return isDue(r.Outputs, side, sided, open)
-			})
+			return modelstage.Estimate(ctx, st, stage, items, isDue)
 		},
 	}
 }

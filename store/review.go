@@ -91,16 +91,18 @@ func (s *Store) ReviewQueue(ctx context.Context) ([]Waiting, error) {
 	return out, nil
 }
 
-// personPlaced selects every item whose newest side decision a person made.
-const personPlaced = `
+// reviewPlaced selects every item whose newest side decision a person made
+// and that holds a review, as a superset that ReviewPlacement narrows.
+const reviewPlaced = `
 SELECT d.item_key FROM decisions d
 WHERE d.gate = 'side' AND d.decided_by LIKE 'person:%'
-	AND d.sequence = (SELECT max(x.sequence) FROM decisions x WHERE x.item_key = d.item_key AND x.gate = 'side')`
+	AND d.sequence = (SELECT max(x.sequence) FROM decisions x WHERE x.item_key = d.item_key AND x.gate = 'side')
+	AND EXISTS (SELECT 1 FROM decisions r WHERE r.item_key = d.item_key AND r.verdict = 'review')`
 
-// PersonPlacedItems reads every item whose newest side decision a person
-// made, with its records, oldest first.
-func (s *Store) PersonPlacedItems(ctx context.Context) ([]ItemRecords, error) {
-	keys, err := s.selectKeys(ctx, personPlaced, "select the items a person placed")
+// ReviewPlacedItems reads every labeled item, each one that a person placed
+// after the gates sent it to review, with its records, oldest first.
+func (s *Store) ReviewPlacedItems(ctx context.Context) ([]ItemRecords, error) {
+	keys, err := s.selectKeys(ctx, reviewPlaced, "select the items a person placed from review")
 	if err != nil || len(keys) == 0 {
 		return []ItemRecords{}, err
 	}
@@ -108,7 +110,17 @@ func (s *Store) PersonPlacedItems(ctx context.Context) ([]ItemRecords, error) {
 	if err != nil {
 		return nil, err
 	}
-	return recordsOf(ctx, s.read, items)
+	records, err := recordsOf(ctx, s.read, items)
+	if err != nil {
+		return nil, err
+	}
+	labeled := records[:0]
+	for _, r := range records {
+		if _, ok := r.ReviewPlacement(); ok {
+			labeled = append(labeled, r)
+		}
+	}
+	return labeled, nil
 }
 
 // reviewCandidateKeys reads the key of each item that may wait in review.

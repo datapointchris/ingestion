@@ -485,12 +485,27 @@ tag, a rule, a person or a confident guess placed is left as it is. The replay f
 many items it would run on, and the median tokens by kind of the stage's newest stored runs times
 that count. It queues only with `--yes`.
 
-`--placed-by person` runs the replay instead over each item whose side a person placed, which the
-gate otherwise never judges again. The answer measures the gate against the placement. Its output
+`--placed-by person` runs the replay instead over each labeled item, one that a person placed
+after the gates sent it to review, which the gate otherwise never judges again. The answer
+measures the gate against the placement. Its output
 and the gate's decision are kept. The side gate leaves the placement, its delivery and its model
 read as they are, so even a confident drop moves nothing. While the run waits, and where it fails,
 the item's phase stays where the placement took it. `ingestion gates agreement` then counts how
 often the gate agreed.
+
+`--stage quality-arm --model <model>` asks the gate's prompt of another model, as an arm of a
+measurement. It runs over each labeled item that the gate answered under the prompt in force, and
+that no arm has answered, so each arm answer sits beside the gate's answer to the same prompt.
+The task carries the model, and the worker asks for it at the quality gate's effort. The answer is
+kept at the `quality-arm` stage, which is on no item's line. So it appends no decision, and the
+item's phase, placement and delivery stay as they are. One arm answers an item under each prompt.
+Its estimate is the median of the arm's own stored runs, of any model, so the first arm call
+prints none.
+
+```text
+$ ingestion items replay --stage quality-arm --model sonnet --key reddit/t3_bb2 --yes
+Queued quality-arm (sonnet) on 1 items.
+```
 
 A scan that ended under a release without the quality gate queued no quality task, so its item
 waits in review as `no-guess`. The replay is what runs the gate over such items.
@@ -587,9 +602,13 @@ exits as `review list` would, 4 where the server gave no answer.
 
 ### `gates agreement` counts how often each gate's answer matched a person's placement
 
-A person's placement is the label: each item whose newest side decision is `person:<login>`.
-`ingestion gates agreement` reads `GET /api/v1/gates/agreement` and sets every done answer of the
-quality gate on such an item beside the placement.
+The label is a person's placement of an item that the gates sent to review first. The item's
+newest side decision is `person:<login>`, and an earlier side decision, or the quality gate's
+decision before it, was a review. A placement that no review came before labels nothing, such as
+one made before the gates ran, or one that carried over a judgment made somewhere else. The item's
+own decisions say which it is, so no list of keys decides it. `ingestion gates agreement` reads
+`GET /api/v1/gates/agreement` and sets every done answer of the quality gate on a labeled item
+beside the placement.
 
 - **The quality gate's verdict** agrees where it passed an item that the person placed on a side,
   or dropped one that the person dropped.
@@ -602,13 +621,17 @@ quality gate on such an item beside the placement.
   selective classification.
 
 Each gate breaks down by confidence band, connector, model and prompt version. An item that two
-prompt versions answered counts once under each. A person who placed an item before the gate
-answered it leaves it with no answer, which `items replay --stage quality --placed-by person`
-asks for. `--json` prints `schemas/gate-agreement.schema.json`.
+prompt versions answered counts once under each. A labeled item that the gate never answered,
+such as one it sent to review for want of a rule, holds no answer, which `items replay --stage
+quality --placed-by person` asks for. `--json` prints `schemas/gate-agreement.schema.json`.
+
+Each arm prints after the gate, by model. Its tables count the arm's answers and then the gate's
+answers to the same prompt versions on the same items, so two models compare over one set of
+labels. The gate's own tables count only the gate's answers.
 
 ```text
 $ ingestion gates agreement
-2 items a person placed: 2 personal, 0 fleet, 0 dropped. 0 hold no quality answer.
+2 items a person placed from review: 2 personal, 0 fleet, 0 dropped. 0 hold no quality answer.
 
 quality gate, drop floor 0.80
 BY                        COMPARED  AGREED  DISAGREED  UNSURE  AGREEMENT  ANSWER BY PLACEMENT

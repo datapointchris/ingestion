@@ -70,7 +70,7 @@
         "additionalProperties": false,
         "required": ["stage", "producer", "producer_version", "state"],
         "properties": {
-          "stage": {"enum": ["parse", "scan", "quality", "model-read"]},
+          "stage": {"enum": ["parse", "scan", "quality", "quality-arm", "model-read"]},
           "producer": {"type": "string"},
           "producer_version": {"type": "string"},
           "lens": {"type": ["string", "null"]},

@@ -42,6 +42,12 @@ const (
 	StageDeliver   = "deliver"
 )
 
+// StageQualityArm is the quality gate's prompt answered by a model that its
+// task names, as a measurement against each label beside the gate's own
+// answer. It sits on no item's line, so its tasks and outputs move no item's
+// phase, decision or delivery.
+const StageQualityArm = "quality-arm"
+
 // Gates, each deciding by an appended decision.
 const (
 	GateQuality = "quality"
@@ -148,7 +154,7 @@ type ParseUnit struct {
 }
 
 // PlacedByPerson is the placed_by of a replay that runs a stage only over the
-// items whose side a person placed.
+// labeled items, each one that a person placed from review.
 const PlacedByPerson = "person"
 
 // Replay is one replay that queued a stage again over the items its connector
@@ -159,10 +165,12 @@ type Replay struct {
 	Stage     string  `json:"stage"`
 	Connector *string `json:"connector"`
 	ItemKey   *string `json:"item_key"`
-	// PlacedBy is PlacedByPerson where the replay ran only over the items
-	// whose side a person placed, and nil where it ran over every item it
-	// selected.
+	// PlacedBy is PlacedByPerson where the replay ran only over the labeled
+	// items, and nil where it ran over every item it selected.
 	PlacedBy *string `json:"placed_by"`
+	// Model is the model that a measurement arm's replay asked each task's
+	// run for, and nil for every other replay.
+	Model *string `json:"model"`
 	// Items counts the tasks queued, one per item.
 	Items       int    `json:"items"`
 	RequestedBy string `json:"requested_by"`
@@ -280,6 +288,34 @@ type Decision struct {
 // ByPerson says whether a person made d, as its decided_by person:<login>
 // records.
 func (d Decision) ByPerson() bool { return strings.HasPrefix(d.DecidedBy, "person:") }
+
+// ReviewPlacement is the label among decisions, one item's at every gate: the
+// newest side decision, where a person made it after the gates sent the item
+// to review. The gates sent it there where an earlier side decision was a
+// review, or where the quality gate's review came before the placement. A
+// placement that no review came before labels nothing, as one made before the
+// gates ran, or one carried over from a judgment made elsewhere.
+func ReviewPlacement(decisions []Decision) (Decision, bool) {
+	var placement Decision
+	sided := false
+	for _, d := range decisions {
+		if d.Gate == GateSide && (!sided || d.Sequence > placement.Sequence) {
+			placement, sided = d, true
+		}
+	}
+	if !sided || !placement.ByPerson() {
+		return Decision{}, false
+	}
+	for _, d := range decisions {
+		if d.Verdict != "review" {
+			continue
+		}
+		if (d.Gate == GateSide && d.Sequence < placement.Sequence) || (d.Gate == GateQuality && d.DecidedTS < placement.DecidedTS) {
+			return placement, true
+		}
+	}
+	return Decision{}, false
+}
 
 // Delivery outcomes.
 const (

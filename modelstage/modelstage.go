@@ -105,7 +105,7 @@ func (h handler) Run(ctx context.Context, task worker.Task) worker.Result {
 		return worker.Result{Outcome: server.OutcomeFailed, Error: &reason}
 	}
 	own := h.own(task, prompt)
-	model, effort := h.settings.Model, h.settings.Effort
+	model, effort := h.model(task), h.settings.Effort
 	var progress modelport.Progress
 	switch {
 	case own != nil && own.State == store.OutputDone:
@@ -190,8 +190,14 @@ func (h handler) request(ctx context.Context, task worker.Task, prompt prompts.P
 	}
 	return modelport.Request{
 		ItemKey: deref(task.ItemKey), Stage: h.stage.Name, PromptVersion: prompt.Version, NoteDigest: deref(store.NoteDigest(task.Note)),
-		Prompt: text, Schema: prompt.Schema, Model: h.settings.Model, Effort: h.settings.Effort,
+		Prompt: text, Schema: prompt.Schema, Model: h.model(task), Effort: h.settings.Effort,
 	}, nil
+}
+
+// model is the model that the task's run is asked for: the task's own where
+// it names one, as a measurement arm's does, else the stage's setting.
+func (h handler) model(task worker.Task) string {
+	return cmp.Or(deref(task.Model), h.settings.Model)
 }
 
 // output is the output that prompt names for the task's note, asked of model
