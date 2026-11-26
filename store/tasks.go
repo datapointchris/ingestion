@@ -213,11 +213,11 @@ type Claim struct {
 
 // Leased is a leased task with its item's row, so a worker runs the task
 // holding no scope to read items. A poll task has no item, so its Item is
-// empty. A deliver task carries its delivery's row too, whose title and URL
-// every attempt sends. A model stage's task carries the item's outputs at its
-// stage, so a task whose run is already dispatched reads that run rather than
-// starting another. A model read's task carries the item's newest read
-// decision, whose lens and note the read answers.
+// empty. A deliver task carries its delivery's row too, whose title, URL and
+// source time every attempt sends. A model stage's task carries the item's
+// outputs at its stage, so a task whose run is already dispatched reads that
+// run rather than starting another. A model read's task carries the item's
+// newest read decision, whose lens and note the read answers.
 type Leased struct {
 	Task
 	Item     Item

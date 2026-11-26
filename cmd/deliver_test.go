@@ -314,12 +314,20 @@ func TestASavePlacedOnLifesReadingListIsSavedThereOnceUnderItsKey(t *testing.T) 
 		t.Errorf("life went from %d articles and %d creates to %d and %d, want no change", articles, creates, a, c)
 	}
 
+	if saved := life.find(func(a *standInArticle) bool { return text(a.sourceKey) == "reddit/t3_aa1" }); saved == nil ||
+		saved.saveDate != "2019-07-11T19:06:40Z" {
+		t.Errorf("life holds reddit/t3_aa1 as %+v, want it saved on its post's time, 2019-07-11T19:06:40Z", saved)
+	}
 	client := (&clientcredentials.Config{
 		ClientID: lifeClient, ClientSecret: lifeSecret, TokenURL: p.provider.URL + "/token", Scopes: deliver.LifeArticlesScopes,
 	}).Client(t.Context())
 	item := p.shown(t, "reddit/t3_aa1").Item
-	repeat := deliver.NewLifeArticles(life.URL, client).Deliver(t.Context(),
-		deliver.Item{Key: item.Key, Zone: item.Zone, Title: item.Title, URL: item.URL, LandedTS: item.CreatedTS})
+	if text(item.SourceTS) != redditPosted {
+		t.Errorf("reddit/t3_aa1 holds source time %s, want its post's, %s", text(item.SourceTS), redditPosted)
+	}
+	repeat := deliver.NewLifeArticles(life.URL, client).Deliver(t.Context(), deliver.Item{
+		Key: item.Key, Zone: item.Zone, Title: item.Title, URL: item.URL, LandedTS: item.CreatedTS, SourceTS: item.SourceTS,
+	})
 	if a, _ := life.counts(); repeat.Outcome != store.DeliveryDelivered || text(repeat.DestinationID) != "3" || a != articles {
 		t.Errorf("the same body again answered %s as %s and left %d articles, want delivered as 3 and %d",
 			repeat.Outcome, text(repeat.DestinationID), a, articles)

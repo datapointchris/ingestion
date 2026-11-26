@@ -92,10 +92,14 @@ func redditExport(saves ...string) []byte {
 	return []byte(`{"kind":"reddit-saved","complete":true,"exported_at":"2026-10-30T19:18:39Z","items":[` + strings.Join(saves, ",") + `]}`)
 }
 
+// redditPosted is when every post that redditSave makes was posted, as a
+// store stamp.
+const redditPosted = "2019-07-11T19:06:40.000Z"
+
 // redditSave is one self post saved from subreddit, as an export holds it.
 func redditSave(name, subreddit string) string {
 	post := `{"kind":"t3","data":{"name":"` + name + `","author":"op","subreddit":"` + subreddit + `","title":"A post","selftext":"Its body","is_self":true,` +
-		`"permalink":"/r/` + subreddit + `/comments/` + name[3:] + `/a_post/"}}`
+		`"created_utc":1562872000.0,"permalink":"/r/` + subreddit + `/comments/` + name[3:] + `/a_post/"}}`
 	return `{"child":` + post + `,"thread":[{"data":{"children":[` + post + `]}},{"data":{"children":[]}}]}`
 }
 

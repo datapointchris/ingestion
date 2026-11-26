@@ -23,7 +23,7 @@ never ahead of it. A stage's code goes in its own package:
 | --- | --- |
 | `store` | the SQLite store: items, sightings, blobs, each stage's outputs and decisions, deliveries, task leases, connector cursors, the declaration sets applied, and each keyed request's answer |
 | `itemkey` | the one component that derives an item's key from any form of its artifact |
-| `landing` | an artifact's bytes written under their SHA-256 or referenced under a named root, the item and one sighting per connector, and the report of blobs and rows that disagree |
+| `landing` | an artifact's bytes written under their SHA-256 or referenced under a named root, the item and one sighting per connector, each item's source time and the fill that reads it from bytes already landed, and the report of blobs and rows that disagree |
 | `redditexport` | the Reddit bookmarklet's export, as a store keeps it, split into one save each and landed as an item with a child per save, registered as the drop format `reddit-export`; and in `bookmarklet/`, the bookmarklet and the command that writes the page installing it |
 | `extract` | one extractor per media type, each writing versioned text and units |
 | `isolatedprocess` | the one door that starts a program over outsider bytes, in a temporary directory of its own with an environment that holds no secret |
@@ -98,8 +98,15 @@ land → parse → scan → quality gate → side → read → model read → de
 - **A delivery writes through the destination's own API, and ingestion never queues a settled one
   again.** The destination keeps the item's key as its record's source key. A destination may
   later forget a record it held, so its own conflict answer cannot be the guard against a second
-  copy. The `deliveries` row is that guard. It keeps the title and URL that the item had when the
-  delivery was first queued, and every attempt sends those, so a retry repeats the first request.
+  copy. The `deliveries` row is that guard. It keeps the title, URL and source time that the item
+  had when the delivery was first queued, and every attempt sends those, so a retry repeats the
+  first request.
+- **An item's source time is when its artifact was made at its source**, such as a Reddit post's
+  creation. A destination's own date, such as life's save date, takes it, and takes the landing
+  time where the source gives none. Reddit's saved listing holds no time of the save, so a save is
+  dated by its post, the earliest it could have been saved. A source registers the reader of its
+  bytes' time with `landing.RegisterSourceTime`, and `serve` fills each item that landed without
+  one once it listens.
 
 ## The zone records who wrote the content, and the strictest sighting wins
 

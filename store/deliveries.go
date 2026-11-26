@@ -19,11 +19,11 @@ func (t *Tx) Delivery(ctx context.Context, key, destination string) (Delivery, b
 
 // QueueDelivery queues the task that writes item to destination through
 // deliverer, and records the delivery pending where it is new, with the
-// item's title and URL as every attempt sends them. It queues nothing where
-// the delivery is settled, because a destination can forget a record it held,
-// so a second write could save the item again. It queues nothing where a
-// deliver task for the item and destination is queued or leased. It answers
-// whether it queued.
+// item's title, URL and source time as every attempt sends them. It queues
+// nothing where the delivery is settled, because a destination can forget a
+// record it held, so a second write could save the item again. It queues
+// nothing where a deliver task for the item and destination is queued or
+// leased. It answers whether it queued.
 func (t *Tx) QueueDelivery(ctx context.Context, item Item, destination, deliverer string) (bool, error) {
 	key := item.Key
 	held, ok, err := t.Delivery(ctx, key, destination)
@@ -35,7 +35,9 @@ func (t *Tx) QueueDelivery(ctx context.Context, item Item, destination, delivere
 		return false, err
 	}
 	if !ok {
-		if err := t.PutDelivery(ctx, Delivery{ItemKey: key, Destination: destination, Outcome: DeliveryPending, Title: item.Title, URL: item.URL}); err != nil {
+		if err := t.PutDelivery(ctx, Delivery{
+			ItemKey: key, Destination: destination, Outcome: DeliveryPending, Title: item.Title, URL: item.URL, SourceTS: item.SourceTS,
+		}); err != nil {
 			return false, err
 		}
 	}

@@ -60,6 +60,9 @@ type Item struct {
 	ParentFlowID *string `json:"parent_flow_id"`
 	Title        *string `json:"title"`
 	URL          *string `json:"url"`
+	// SourceTS is when the artifact was made at its source, such as a Reddit
+	// post's creation, as a store stamp, and nil where the source gives none.
+	SourceTS *string `json:"source_ts"`
 	// Phase is what the write's settle decides before it commits, replacing
 	// any value that a put carried. A put of an item with no phase leaves the
 	// column as it was.
@@ -294,10 +297,11 @@ type Delivery struct {
 	Outcome       string  `json:"outcome"`
 	Attempts      int     `json:"attempts"`
 	LastError     *string `json:"last_error"`
-	// Title and URL are the item's when the delivery was first queued, which
-	// every attempt sends.
+	// Title, URL and SourceTS are the item's when the delivery was first
+	// queued, which every attempt sends.
 	Title     *string `json:"title"`
 	URL       *string `json:"url"`
+	SourceTS  *string `json:"source_ts"`
 	UpdatedTS string  `json:"updated_ts"`
 }
 

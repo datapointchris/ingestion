@@ -88,21 +88,23 @@ type lifeConflict struct {
 // delivered-to-existing. Where life answers 409 naming an article, the
 // delivery is refused. A 5xx, 408 or 429 leaves it pending to try again, and
 // any other answer fails the task, since sending the same request cannot mend
-// it. The save date is when the item first landed, and the title and URL are
-// the delivery's as first queued, so a repeat sends the same body.
+// it. The save date is when the item was made at its source, such as a Reddit
+// post's creation, or when it first landed where its source gave no time. The
+// title, URL and source time are the delivery's as first queued, so a repeat
+// sends the same body.
 func (l lifeArticles) Deliver(ctx context.Context, item Item) Outcome {
 	if err := lifeTakes(store.Item{URL: item.URL}); err != nil {
 		return permanent("the item " + err.Error())
 	}
-	landed, err := time.Parse(store.StampLayout, item.LandedTS)
+	saved, err := saveDate(item)
 	if err != nil {
-		return permanent(fmt.Sprintf("the item's landing time %q is not a store stamp", item.LandedTS))
+		return permanent(err.Error())
 	}
 	title := *item.URL
 	if item.Title != nil && strings.TrimSpace(*item.Title) != "" {
 		title = *item.Title
 	}
-	body, err := json.Marshal(lifeArticle{Title: title, URL: *item.URL, SaveDate: landed.UTC().Format(time.RFC3339), SourceKey: item.Key})
+	body, err := json.Marshal(lifeArticle{Title: title, URL: *item.URL, SaveDate: saved.Format(time.RFC3339), SourceKey: item.Key})
 	if err != nil {
 		return permanent(err.Error())
 	}
@@ -150,6 +152,22 @@ func (l lifeArticles) Deliver(ctx context.Context, item Item) Outcome {
 		return pending(fmt.Sprintf("life answered %d: %s", resp.StatusCode, quoted(raw)))
 	}
 	return permanent(fmt.Sprintf("life answered %d, which the same request cannot mend: %s", resp.StatusCode, quoted(raw)))
+}
+
+// saveDate is the item's source time, else its landing time, in UTC.
+func saveDate(item Item) (time.Time, error) {
+	if item.SourceTS != nil {
+		at, err := time.Parse(store.StampLayout, *item.SourceTS)
+		if err != nil {
+			return at, fmt.Errorf("the item's source time %q is not a store stamp", *item.SourceTS)
+		}
+		return at.UTC(), nil
+	}
+	at, err := time.Parse(store.StampLayout, item.LandedTS)
+	if err != nil {
+		return at, fmt.Errorf("the item's landing time %q is not a store stamp", item.LandedTS)
+	}
+	return at.UTC(), nil
 }
 
 func pending(why string) Outcome { return Outcome{Outcome: store.DeliveryPending, Error: &why} }

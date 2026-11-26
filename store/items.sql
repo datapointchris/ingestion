@@ -5,7 +5,9 @@
 -- save's subreddit, which a routing rule matches. title, url, external_key,
 -- fields and path are outsider-written, so the outbox ships them as
 -- ingestion.text. An item's phase is what ItemRecords.Phase decides from its
--- records, which every write that touches the item settles.
+-- records, which every write that touches the item settles. source_ts is when
+-- the artifact was made at its source, such as a Reddit post's creation, and
+-- null where the source gives no time. Landing writes it as a store stamp.
 
 CREATE TABLE IF NOT EXISTS items (
     key            TEXT PRIMARY KEY,
@@ -17,6 +19,7 @@ CREATE TABLE IF NOT EXISTS items (
     parent_flow_id TEXT,
     title          TEXT,
     url            TEXT,
+    source_ts      TEXT,
     phase          TEXT,
     created_ts     TEXT NOT NULL,
     updated_ts     TEXT NOT NULL
