@@ -1,7 +1,7 @@
 // Package route holds the side gate and the read gate. The side gate places
 // an item by the first rung that decides it: every sighting's tags, then a
 // routing rule, then the quality gate, else review. A rule placed before the
-// model always wins over it: the gate still answers a ruled item, and its
+// model always wins over it: the gate answers a ruled item too, and its
 // answer moves nothing. The quality gate's rung sends to review an item that
 // the gate dropped, marked gate-would-drop, unless every family of the item
 // has earned hiding it, where it drops the item. It sends to review an item
@@ -48,8 +48,8 @@ import (
 // The side gate's verdicts beyond the two sides. An item placed on a
 // destination that takes no side is dropped, softly: it keeps its row.
 const (
-	VerdictReview = "review"
-	VerdictDrop   = "drop"
+	VerdictReview = store.VerdictReview
+	VerdictDrop   = store.VerdictDrop
 )
 
 // Causes that the gates write. A person's decision carries the aspect the
@@ -127,22 +127,22 @@ const GuessFloor = 0.7
 // Who decided, as decided_by spells it, beside rule:<name>, model:<run> and
 // person:<login>.
 const (
-	ByTag = "tag"
+	ByTag = store.DecidedByTag
 	// ByGate is the side gate itself, where no rung placed the item.
-	ByGate = "gate"
+	ByGate = store.DecidedByGate
 )
 
 // ByPerson is a person's decision, under their login.
-func ByPerson(login string) string { return "person:" + login }
+func ByPerson(login string) string { return store.DecidedByPerson(login) }
 
 // ByParent is a decision that an item took from its parent, under the
 // parent's key.
-func ByParent(key string) string { return "parent:" + key }
+func ByParent(key string) string { return store.DecidedByParent(key) }
 
-func byRule(name string) string { return "rule:" + name }
+func byRule(name string) string { return store.DecidedByRule(name) }
 
 // ByModel is a model's decision, under the run that answered.
-func ByModel(run string) string { return "model:" + run }
+func ByModel(run string) string { return store.DecidedByModel(run) }
 
 // sideDefaults is how an item on each side is read where no connector's read
 // rule decides.
@@ -368,7 +368,7 @@ func AfterApply(log *slog.Logger) connectors.AfterApply {
 // next stage or apply runs the gate again.
 func Gate(ctx context.Context, tx *store.Tx, key string, log *slog.Logger) ([]store.Decision, error) {
 	newest, sided, err := tx.NewestDecision(ctx, key, store.GateSide)
-	if err != nil || (sided && !Provisional(newest)) {
+	if err != nil || (sided && !newest.Provisional()) {
 		return nil, err
 	}
 	outputs, err := tx.Outputs(ctx, key)
@@ -432,7 +432,7 @@ func byQuality(ctx context.Context, tx *store.Tx, key string, side store.Decisio
 // byTrust is the side decision on an item that the quality gate dropped: a
 // review marked gate-would-drop where a family of the item shows the drop,
 // and a drop marked gate where every family hides it, as gatetrust.Shows
-// decides. It decides once for each answer of the gate, so a family that
+// decides from the answer. It decides once for each answer of the gate, so a family that
 // climbs or falls later moves no item already shown or hidden. A sighting
 // that arrives after a hidden drop shows the item where its own family shows
 // it, so a connector whose family stands lower still reaches the person.
@@ -452,7 +452,7 @@ func byTrust(ctx context.Context, tx *store.Tx, key string, quality store.Decisi
 		}
 	}
 	d := store.Decision{Gate: store.GateSide, DecidedBy: quality.DecidedBy, Confidence: quality.Confidence}
-	shows, err := gatetrust.Shows(ctx, tx, key, gatetrust.PromptVersion(outputs, quality), gatetrust.Connectors(read))
+	shows, err := gatetrust.Shows(ctx, tx, quality.DecidedBy, gatetrust.PromptVersion(outputs, quality), gatetrust.Connectors(read))
 	if err != nil {
 		return d, err
 	}
@@ -472,17 +472,6 @@ func inputs(ctx context.Context, tx *store.Tx, key string) (connectors.Set, []st
 	}
 	sightings, err := tx.Sightings(ctx, key)
 	return set, sightings, err
-}
-
-// Provisional says whether a side decision waits on a later input: a review
-// that the gate wrote for want of a rule or a guess, or for an error, and a
-// model's review or drop. A rule that a later set adds, or a later answer of
-// the quality gate, then decides the item again. Every other side decision,
-// by a tag, a rule, a person or a model's confident guess, is final, and no
-// later answer of the quality gate moves it.
-func Provisional(d store.Decision) bool {
-	return (d.Verdict == VerdictReview && d.DecidedBy == ByGate) ||
-		((d.Verdict == VerdictReview || d.Verdict == VerdictDrop) && strings.HasPrefix(d.DecidedBy, ByModel("")))
 }
 
 // sameDecision says whether b decides what a decides, by the same hand.
@@ -938,7 +927,7 @@ func (e *ChapterError) Error() string {
 // gate's decision follows it. A person can place any item, including one that
 // a rule already placed. A placement that repeats the newest side decision
 // appends nothing, and answers the decisions it made. A placement on a
-// destination of an item that waits as gate-would-drop disagrees with the
+// destination of an item whose drop the gate showed or hid disagrees with the
 // gate, which returns each family of its answer to rung 0. Place answers
 // store.ErrNoItem where the store holds no such item, a NotDeclaredError
 // for a destination that the set in force does not declare, and a
@@ -985,11 +974,18 @@ func Place(ctx context.Context, tx *store.Tx, key string, p Placement) ([]store.
 		return nil, err
 	}
 	made, err := decide(ctx, tx, key, side, set, sightings, p.Note)
-	if err != nil || !sided || held.Cause != CauseGateWouldDrop || p.Destination == "" {
+	if err != nil || !sided || p.Destination == "" || !gateDropped(held) {
 		return made, err
 	}
-	_, err = gatetrust.Disagree(ctx, tx, key)
+	_, err = gatetrust.Disagree(ctx, tx, key, side.DecidedBy, p.ClientID)
 	return made, err
+}
+
+// gateDropped says whether side is the side gate's decision on a drop of the
+// quality gate's, shown in review or hidden.
+func gateDropped(side store.Decision) bool {
+	_, byModel := side.ModelRun()
+	return byModel && (side.Cause == CauseGateWouldDrop || side.Cause == CauseGateDrop)
 }
 
 // repeated answers the decisions that an earlier copy of side made, and is

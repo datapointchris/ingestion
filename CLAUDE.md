@@ -21,7 +21,7 @@ never ahead of it. A stage's code goes in its own package:
 
 | Package | Holds |
 | --- | --- |
-| `store` | the SQLite store: items, sightings, blobs, each stage's outputs and decisions, each book's sections, deliveries, task leases, connector cursors, the declaration sets applied, each keyed request's answer, each person's mark on an item, and each gate family's trust |
+| `store` | the SQLite store: items, sightings, blobs, each stage's outputs and decisions, each book's sections, deliveries, task leases, connector cursors, the declaration sets applied, each keyed request's answer, each person's mark on an item, and each gate family's decisions and the trust read from them |
 | `itemkey` | the one component that derives an item's key from any form of its artifact |
 | `landing` | an artifact's bytes written under their SHA-256 or referenced under a named root, the item and one sighting per connector, in a write of its own or in a caller's, with the hook that a new sighting of a held item runs, each item's source time and the fill that reads it from bytes already landed, and the report of blobs and rows that disagree |
 | `redditexport` | the Reddit bookmarklet's export, as a store keeps it, split into one save each and landed as an item with a child per save, registered as the drop format `reddit-export`; and in `bookmarklet/`, the bookmarklet and the command that writes the page installing it |
@@ -31,7 +31,7 @@ never ahead of it. A stage's code goes in its own package:
 | `isolatedprocess` | the one door that starts a program over outsider bytes, in a temporary directory of its own with an environment that holds no secret |
 | `scan` | the scanner, which runs YARA-X's `yr` over a parse's text or over one sentence, its stored findings, and `build-rules`, which converts Agent Threat Rules and tests each by its own examples |
 | `qualitygate` | the model stage that reads the opening of every item that no person placed, a tag's or rule's included, and answers its quality, genre, domains, themes, a one-line idea, a sentence of reason on its verdict and a side guess: the write after the scan that queues its task, its prompt's data and answer for `modelstage`'s handler, and the decision that its answer appends, in the write that starts each sighting connector's family; and its arm, the same prompt asked of the model that a replay names, over labeled items, kept at the `quality-arm` stage off the item's line, which decides nothing |
-| `gatetrust` | each connector's family under one version of the quality gate's prompt, and the trust it earns on earnedtrust's cautious ladder: a person's `low-quality` or `read` mark and whether it agrees with the gate's answer, a placement of a `gate-would-drop` item that disagrees, a person's promote, and `Shows`, the seeded draw that `route` asks whether a drop shows in review or is hidden |
+| `gatetrust` | each connector's family under one version of the quality gate's prompt, declared as an `earnedtrust.Family` at its cautious pace, and the trust it earns: a person's `low-quality` or `read` mark and whether it agrees with the gate's answer, a placement on a destination of a drop the gate showed or hid, which disagrees, a person's promote, the standing that earnedtrust reads from each family's decisions, which `Settle` reads again once serve listens, and `Shows`, which `route` asks whether a drop shows in review or is hidden |
 | `route` | the side gate and the read gate, which serve runs in the write that ends each stage between the parse and them, once the item's reading parse is scanned, in the write that applies a changed set, and in the write that lands another connector's sighting: a sighting's tags, then a rule, then the quality gate's drop, shown in review as `gate-would-drop` or hidden as `gate` as `gatetrust` decides once per answer, its review, or its guess at or above its confidence floor where no connector declares that a person sorts its side, else review, with a person's placement withdrawing the item's queued quality task; `ReviewReasons`, the one table of why an item waits in review, which the CLI's help and the TUI read; a person's placement from review; `Due`, the one predicate for where an item is due a delivery, which holds a chapter until its book's delivery settles, and `ModelReadDue`, the one for where it is due a model read under a lens whose prompt the build holds and that no read answering its note already holds, which each decision's write reconciles, queueing a delivery or a model read and withdrawing either where a drop or a move stops it; and each chapter's copy of its book's newest side and read decisions, which every decision on the book passes on |
 | `modelread` | the model stage that reads a fleet item whole under its read decision's lens and answers its note with a summary, a suggestion sentence, or both: its prompt's data and answer for `modelstage`'s handler, the scan of the suggestion before it is kept, and its replay |
 | `modelstage` | what every model stage's worker handler shares: the dispatch-once protocol, which starts a call once, stores its dispatch and follows it, and a replay's estimate |
@@ -102,11 +102,13 @@ Docling, and the newest done parse otherwise.
   and deliveries run whatever the model budget. An item waits only at a model stage, and a waiting
   item holds no worker slot.
 - **A rule placed before the model always wins over it.** A tag or a routing rule decides first.
-  The quality gate still answers the item, so its connector's family earns trust from every
+  The quality gate answers the item too, so its connector's family earns trust from every
   answer, and the rule's placement stands. The model drops an item only above a high confidence.
 - **The gate hides a drop only where every family of the item has earned it.** A family is one
-  connector under one prompt version. Each starts on rung 0, which shows every drop in review. A
-  person's marks and one promote climb it, and any disagreement returns it to rung 0.
+  connector under one prompt version, declared as an `earnedtrust.Family`. Its standing is what
+  earnedtrust reads from the family's `gate_trust_decisions` and its promotion, and `gate_trust`
+  caches it. Each family starts on rung 0, which shows every drop in review. A person's
+  agreements with its drops and one promote climb it, and any disagreement returns it to rung 0.
 - **A drop is soft.** The item keeps its row and its one-line idea, and a person can still send it
   to a model read.
 - **A push that names its destination skips the quality gate, the side gate and every model

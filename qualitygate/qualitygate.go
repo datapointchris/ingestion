@@ -5,10 +5,10 @@
 // schema are prompts.Quality.
 //
 // The service queues an item's quality task in the write that ends its scan,
-// on every item that no person placed first. A tag or a rule still places
-// first, and its placement stands whatever the gate answers. The gate answers
-// such an item too, because gatetrust earns each family's trust from the
-// gate's answers. A worker holding a model port runs the task. It stores the
+// on every item that no person placed first. A tag or a rule places first,
+// and its placement stands whatever the gate answers. The gate answers such
+// an item too, because gatetrust earns each family's trust from the gate's
+// answers. A worker holding a model port runs the task. It stores the
 // dispatch in the write that ends its lease, and follows the dispatch on each
 // later claim until the run answers, so the task holds no worker slot while
 // the run waits. That dispatch-once protocol is modelstage's. When the task
@@ -52,7 +52,7 @@ const (
 
 // VerdictPass is the gate's decision that an item earns a full read. Its drop
 // and review are the side gate's verdicts of the same names.
-const VerdictPass = "pass"
+const VerdictPass = store.VerdictPass
 
 // The verdicts the model answers.
 const (
@@ -70,7 +70,7 @@ const (
 )
 
 // Answer is the model's answer, as prompts/quality/answer.schema.json holds
-// it. ReadAnswer decodes it.
+// it. ReadAnswer reads one that arrives, and DecodeAnswer one that is stored.
 type Answer struct {
 	Genre             string   `json:"genre"`
 	Domains           []string `json:"domains"`
@@ -85,13 +85,21 @@ type Answer struct {
 	SideConfidence float64 `json:"side_confidence"`
 }
 
-// ReadAnswer checks raw against the answer's schema and decodes it. The
-// schema counts 7.0 as an integer, so quality decodes as a number and is kept
-// whole.
+// ReadAnswer checks raw against the schema of the prompt in force and
+// decodes it. It reads an answer as it arrives from a run of that prompt.
 func ReadAnswer(raw json.RawMessage) (Answer, error) {
 	if err := prompts.Quality.Check(raw); err != nil {
 		return Answer{}, err
 	}
+	return DecodeAnswer(raw)
+}
+
+// DecodeAnswer decodes a stored answer under no schema, because an answer
+// kept under an earlier prompt holds that prompt's fields, and its run's
+// schema checked it when it arrived. A field that its prompt did not ask for
+// decodes empty. The schema counts 7.0 as an integer, so quality decodes as a
+// number and is kept whole.
+func DecodeAnswer(raw json.RawMessage) (Answer, error) {
 	var a struct {
 		Answer
 		Quality float64 `json:"quality"`
@@ -158,7 +166,7 @@ func DecideAfterAnswer(ctx context.Context, tx *store.Tx, task store.Task) error
 	if newest == nil {
 		return nil
 	}
-	a, err := ReadAnswer(newest.Answer)
+	a, err := DecodeAnswer(newest.Answer)
 	if err != nil {
 		return fmt.Errorf("read the quality answer on %s: %w", key, err)
 	}

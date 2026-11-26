@@ -276,7 +276,7 @@ func decider(r *http.Request, login string) (string, string, error) {
 		}
 		return login, caller.ClientID, nil
 	}
-	own := strings.TrimPrefix(requester(caller), "person:")
+	own := strings.TrimPrefix(requester(caller), store.DecidedByPerson(""))
 	if login != "" && login != own {
 		return "", "", fmt.Errorf("%w: this token is %s's, so a body naming %s is refused", errActingForAnother, own, login)
 	}

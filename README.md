@@ -614,8 +614,8 @@ decision on each rule.
 ### The quality gate reads each item's opening before anyone reads it whole
 
 Where no person placed an item first, the write that ends the scan of its reading parse queues one
-task of capability `quality`. A tag or a rule still places first, and its placement stands
-whatever the gate answers. The gate answers such an item too, because each family's trust is
+task of capability `quality`. A tag or a rule places first, and its placement stands whatever
+the gate answers. The gate answers such an item too, because each family's trust is
 earned from the gate's answers on every item it reads. An item gets that task once. The gate runs on it again only through
 a replay, or through `tasks retry` on its failed task. A worker whose config names a `[model]
 adapter` claims it. It reads the item's media type, title, URL and the opening of its parse, up to
@@ -708,29 +708,31 @@ A family is one connector under one version of the gate's prompt, named
 `<connector>@<prompt version>`. A new prompt version starts a new family at rung 0. The gate
 writes a family's row with its first answer on an item that the connector sighted.
 
-The family climbs a ladder, the skip-lot pattern of acceptance sampling. Rung 0 shows every drop
-in review as `gate-would-drop`. Each rung above shows a share of the drops, and drops the rest as
-`gate`:
-
-| Rung | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| Share shown | 25% | 18.75% | 14.06% | 10.55% | 7.91% | 5.93% | 5% |
+The family climbs earnedtrust's ladder at its cautious pace, the skip-lot pattern of acceptance
+sampling. Rung 0 shows every drop in review as `gate-would-drop`. Each rung above shows a lower
+share of the drops, down to a floor, and drops the rest as `gate`. `ingestion gates trust list`
+prints the run that earns asking and each rung's share.
 
 - **A person's mark agrees or disagrees with the gate's answer on the item.** `low-quality`
   agrees with a drop and disagrees with a pass. `read` agrees with a pass and disagrees with a
-  drop. A mark on an `unsure` answer moves no family. A mark counts on any item the gate answered,
+  drop. A mark on an `unsure` answer is neither. A mark counts on any item the gate answered,
   including one that a tag or rule placed. A chapter's mark counts its book's answer.
-- **A mark moves no item.** It counts toward each family that sighted the item, under the prompt
-  version that answered it. A mark that repeats the item's newest, by the same person, appends
-  nothing.
-- **Placing a `gate-would-drop` item on a destination disagrees.** Dropping it counts nothing.
+- **Only an agreement with a drop climbs.** A family earns hiding drops, and a pass shows its
+  item whatever the family's standing. So `read` on a pass is kept as agreed and moves no family.
+  A disagreement on either answer counts.
+- **A mark moves no item.** It counts on each family that sighted the item, under the prompt
+  version that answered it. A mark that repeats the item's newest, by the same hand on the same
+  answer of the gate, appends nothing.
+- **Placing an item on a destination disagrees where the gate showed or hid its drop.** Dropping a
+  `gate-would-drop` item counts nothing. The marks say whether the gate was right.
 - **A disagreement returns the family to rung 0, and resets its straight run.**
-- **Thirty agreeing marks in a row earn asking.** The family's `asks_promotion` turns true. One
-  promote then climbs it to rung 1, and each further run of thirty climbs a rung.
+- **A straight run of agreeing marks earns asking.** The family's `asks_promotion` turns true. One
+  promote then climbs it to rung 1. Each further straight run climbs a rung, counting only drops
+  that the gate answered after the promote.
 - **A promotion stands after a disagreement.** The family climbs again on its own once its run
-  reaches thirty. A promote before the run is earned climbs nothing until it is.
-- **Which drops show is a seeded draw on the family and the item's key.** The same item under
-  the same family always draws the same way, so the share shown is reproducible.
+  reaches the threshold. A promote before the run is earned climbs nothing until it is.
+- **Which drops show is a seeded draw on the family and the gate's answer.** The same answer
+  under the same family always draws the same way, so the share shown is reproducible.
 - **An item shows its drop where any family of its sightings shows it.** Like the strictest
   zone, the lowest-trusted connector decides.
 - **The show or hide is decided once for each answer of the gate.** A family that climbs or falls
@@ -756,9 +758,14 @@ Promoted reddit-exports@v1-<digest> to rung 1, which shows 25% of the gate's dro
 /api/v1/gates/trust` in `schemas/gate-trust-list.schema.json`, under `ingestion.items.read`.
 `gates trust promote` posts to `/api/v1/gates/trust/{family}/promote`, which needs
 `ingestion.trust.promote`, and prints `schemas/gate-trust-promotion.schema.json`. A service
-marking or promoting for a person names the person's `login` in its body, as a placement does.
-Each mark is a row of `marks`, and each family a row of `gate_trust`. Both ship on the record
-channel.
+promoting for a person names the person's `login` in its body, as a placement does. A service
+marking for a person may name one. Without it the mark is decided by `service:<client id>`, and
+counts as the person's word that the service relays.
+
+Each mark is a row of `marks`. Each word that counts on a family is a row of
+`gate_trust_decisions`, and the family's `gate_trust` row holds the standing that earnedtrust reads
+from them. `serve` reads every family's standing again once it listens, so a release that changes
+the ladder places each family again from its decisions. All three ship on the record channel.
 
 ### The side gate places each item, and a person places what it leaves
 
@@ -789,8 +796,8 @@ of the item. Each run passes over an item whose reading parse is not scanned yet
 again an item that the gate sent to review as `no-guess`, `below-floor`, `person-sorts` or
 `gate-error`, or that the quality gate dropped or sent to review. So a guess, a rule, or a second
 sighting's tag that arrives later places it. A person's placement withdraws the item's queued
-quality task. A tag's or a rule's leaves it queued, so the gate still answers, and its answer
-moves nothing. A placed item stays where it is: a later sighting or parse moves nothing, and only a
+quality task. A tag's or a rule's leaves it queued, so the gate answers that item too, and its
+answer moves nothing. A placed item stays where it is: a later sighting or parse moves nothing, and only a
 person's placement moves it. Where the gate cannot read the set in force or the item's sightings,
 it logs why and sends the item to review as `gate-error`, and the scan stands.
 
@@ -1071,10 +1078,11 @@ land → parse → structure → contents → sections → scan → quality gate
   and from a phone is one item, read once and delivered once. Each source's arrival is a sighting
   of that item.
 - **A rule decides before a model does.** A source's tags or a routing rule place an item first.
-  The quality gate's model still answers it, and its placement stands.
+  The quality gate's model answers it too, and its placement stands.
 - **The quality gate earns trust before it hides a drop.** Each connector's drops show in review
-  until a person's marks agree with thirty in a row and the person promotes it. Then a shrinking
-  share shows, and any disagreement shows them all again.
+  until a straight run of a person's marks agrees with them and the person promotes it. Then a
+  shrinking share of its new drops shows, and a disagreement shows every drop that the gate
+  answers after it.
 - **A model reads an item whole only on the fleet side.** It answers the item's note with a
   summary and a suggested change, and the scanner reads the suggestion before it is kept.
 - **A drop is soft.** A dropped item keeps its row and its one-line idea, so a person can still

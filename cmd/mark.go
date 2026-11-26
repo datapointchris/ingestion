@@ -21,10 +21,13 @@ var itemsMarkCmd = &cobra.Command{
 		"\n" +
 		"Each mark reads against the quality gate's newest decision on the item.\n" +
 		"low-quality agrees with a drop and disagrees with a pass, and read the\n" +
-		"other way round. An agreement counts toward each family of that decision,\n" +
-		"one connector under one version of the gate's prompt, and a disagreement\n" +
-		"returns each to rung 0. `ingestion gates trust list` shows where each\n" +
-		"stands. Marking an item again with the mark it holds changes nothing.",
+		"other way round. An agreement with a drop counts toward each family of\n" +
+		"that decision, one connector under one version of the gate's prompt, and\n" +
+		"a disagreement returns each to rung 0. An agreement with a pass is kept\n" +
+		"and moves no family, because a pass shows its item whatever a family's\n" +
+		"standing. `ingestion gates trust list` shows where each stands. Marking\n" +
+		"an item again with the mark it holds changes nothing until the gate\n" +
+		"answers it again.",
 	Example: "  ingestion items mark reddit/t3_1h9xk2 low-quality\n" +
 		"  ingestion items mark youtube/dQw4w9WgXcQ read --json",
 	Args: cobra.ExactArgs(2),
@@ -68,6 +71,10 @@ func markedSentence(a server.MarkAnswer) string {
 	}
 	if m.Agreement == gatetrust.Neither {
 		return fmt.Sprintf("Marked %s %s. The quality gate's %s is neither kept nor dropped, so no family moved.", m.ItemKey, m.Mark, *m.GateVerdict)
+	}
+	if len(a.Families) == 0 {
+		return fmt.Sprintf("Marked %s %s, which %s with the quality gate's %s. A pass shows its item whatever a family's standing, so no family moved.",
+			m.ItemKey, m.Mark, agreementWord(m.Agreement), *m.GateVerdict)
 	}
 	moved := make([]string, 0, len(a.Families))
 	for _, g := range a.Families {

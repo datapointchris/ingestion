@@ -165,6 +165,11 @@ func TestAnItemGainsEachStageRecordAndEachChangeReachesTheCollectorOnce(t *testi
 		}); err != nil {
 			return err
 		}
+		if _, err := tx.AddGateTrustDecision(ctx, store.GateTrustDecision{
+			Family: family, ItemKey: key, Kind: "mark", Agreement: "agreed", DecidedBy: "person:person", GateDecidedBy: run,
+		}); err != nil {
+			return err
+		}
 		if err := tx.AddKeyedRequest(ctx, store.KeyedRequest{
 			Caller: "ingestion-cli-desk person", IdempotencyKey: "drop-1", Route: "drops", Connector: &connector,
 			Fingerprint: strings.Repeat("d", 64), Status: 201, Answer: json.RawMessage(`{"schema_version":1,"items":[]}`),

@@ -34,7 +34,7 @@ type Waiting struct {
 // nobody.
 func (r ItemRecords) WaitsOnPerson() (reason, since string, ok bool) {
 	if side, sided := r.NewestDecision(GateSide); sided {
-		return side.Cause, side.DecidedTS, side.Verdict == "review"
+		return side.Cause, side.DecidedTS, side.Verdict == VerdictReview
 	}
 	if r.NoUsableParse() {
 		since = r.Item.CreatedTS
@@ -45,7 +45,7 @@ func (r ItemRecords) WaitsOnPerson() (reason, since string, ok bool) {
 		}
 		return ReasonNoParse, since, true
 	}
-	if quality, decided := r.NewestDecision(GateQuality); decided && quality.Verdict == "review" {
+	if quality, decided := r.NewestDecision(GateQuality); decided && quality.Verdict == VerdictReview {
 		return ReasonQualityReview, quality.DecidedTS, true
 	}
 	return "", "", false

@@ -6,14 +6,16 @@ import (
 	"net/http"
 	"slices"
 
+	"github.com/datapointchris/goapiauth"
+
 	"github.com/datapointchris/ingestion/gatetrust"
 	"github.com/datapointchris/ingestion/itemkey"
 	"github.com/datapointchris/ingestion/store"
 )
 
-// ScopeMarksWrite admits a caller to mark an item for the person whose login
-// its body names. ScopeTrustPromote admits it to promote a gate family for
-// the person whose login its body names.
+// ScopeMarksWrite admits a caller to mark an item for a person, who its body
+// may name. ScopeTrustPromote admits it to promote a gate family for the
+// person whose login its body names.
 const (
 	ScopeMarksWrite   = "ingestion.marks.write"
 	ScopeTrustPromote = "ingestion.trust.promote"
@@ -24,7 +26,9 @@ const (
 const CodeFamilyNotFound = "family_not_found"
 
 // MarkRequest marks an item low-quality or read. A service marking for a
-// person names the person's Login, since its token carries none.
+// person may name the person's Login, since its token carries none. Without
+// one, the mark is the service's, which relays a person's word under its
+// scope.
 type MarkRequest struct {
 	Mark  string `json:"mark"`
 	Login string `json:"login,omitempty"`
@@ -107,8 +111,14 @@ func (h trustHandlers) mark(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m := gatetrust.Marking{Mark: body.Mark}
-	if !h.decider(w, r, body.Login, &m.Login, &m.ClientID) {
-		return
+	if caller, _ := goapiauth.IdentityFrom(r.Context()); caller.Service && body.Login == "" {
+		m.DecidedBy, m.ClientID = requester(caller), caller.ClientID
+	} else {
+		var login string
+		if !h.decider(w, r, body.Login, &login, &m.ClientID) {
+			return
+		}
+		m.DecidedBy = store.DecidedByPerson(login)
 	}
 	var answer MarkAnswer
 	err = h.store.Update(r.Context(), func(tx *store.Tx) error {

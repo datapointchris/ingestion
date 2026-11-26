@@ -311,7 +311,7 @@ var reached = map[string]string{
 // A failed stage of besideScan fails no phase.
 func (r ItemRecords) Phase() string {
 	side, sided := r.NewestDecision(GateSide)
-	if sided && side.Verdict == "drop" {
+	if sided && side.Verdict == VerdictDrop {
 		return "dropped"
 	}
 	if _, _, waits := r.WaitsOnPerson(); waits {
@@ -323,11 +323,11 @@ func (r ItemRecords) Phase() string {
 	}
 	for stage, t := range newest {
 		if t.State == TaskFailed && slices.Contains(line, stage) && stage != StageParse && !slices.Contains(besideScan, stage) &&
-			(stage != StageQuality || !r.PlacedWithoutTheGate()) {
+			(stage != StageQuality || !r.SideSettled()) {
 			return "failed"
 		}
 	}
-	if quality, decided := r.NewestDecision(GateQuality); decided && !sided && quality.Verdict == "drop" {
+	if quality, decided := r.NewestDecision(GateQuality); decided && !sided && quality.Verdict == VerdictDrop {
 		return "dropped"
 	}
 	phase := ""
@@ -349,13 +349,12 @@ func (r ItemRecords) Phase() string {
 	return phase
 }
 
-// PlacedWithoutTheGate says whether a tag, a rule or a person made the item's
-// newest side decision, as decided_by tag, rule:<name> or person:<login>
-// records. The quality gate still answers such an item, and its run holds and
-// fails nothing, because no answer moves the item.
-func (r ItemRecords) PlacedWithoutTheGate() bool {
+// SideSettled says whether the item's newest side decision is one that no
+// later answer of the quality gate moves, as Decision.Provisional decides it.
+// The gate answers such an item too, and its run holds and fails nothing.
+func (r ItemRecords) SideSettled() bool {
 	side, ok := r.NewestDecision(GateSide)
-	return ok && (side.ByPerson() || side.DecidedBy == "tag" || strings.HasPrefix(side.DecidedBy, "rule:"))
+	return ok && !side.Provisional()
 }
 
 // ReviewPlacement is the item's label, as ReviewPlacement decides it from the
@@ -396,7 +395,7 @@ func (r ItemRecords) condition(step string) (Condition, bool) {
 		if d, ok := r.NewestDecision(GateQuality); ok {
 			return Condition{Type: step, Status: ConditionTrue, Reason: d.Verdict}, true
 		}
-		if r.PlacedWithoutTheGate() {
+		if r.SideSettled() {
 			return Condition{}, false
 		}
 		return r.outputCondition(step)

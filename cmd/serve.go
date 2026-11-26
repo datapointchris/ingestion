@@ -23,6 +23,7 @@ import (
 	"github.com/datapointchris/ingestion/contents"
 	"github.com/datapointchris/ingestion/deliver"
 	"github.com/datapointchris/ingestion/extract"
+	"github.com/datapointchris/ingestion/gatetrust"
 	"github.com/datapointchris/ingestion/landing"
 	"github.com/datapointchris/ingestion/modelread"
 	"github.com/datapointchris/ingestion/outbox"
@@ -196,6 +197,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	go func() { served <- srv.ListenAndServe() }()
 	log.Info("ingestion serves", "listen", listen, "store", stateDir(cfg), "issuer", cfg.Issuer, "version", version)
 	wg.Go(func() { settlePhases(background, st, log) })
+	wg.Go(func() { settleGateFamilies(background, st, log) })
 	wg.Go(func() { fillSourceTimes(background, lander, log) })
 	wg.Go(func() { queueUndeliveredChapters(background, st, log) })
 	select {
@@ -244,6 +246,25 @@ func settlePhases(ctx context.Context, st *store.Store, log *slog.Logger) {
 		return
 	}
 	log.InfoContext(ctx, "settled each item's phase", "items", items, "moved", moved, "took", time.Since(started).String())
+}
+
+// settleGateFamilies reads every gate family's standing again from its
+// decisions once the service listens, so a release that changes the ladder's
+// rule places each family again, and logs how many moved.
+func settleGateFamilies(ctx context.Context, st *store.Store, log *slog.Logger) {
+	var moved int
+	err := st.Update(ctx, func(tx *store.Tx) error {
+		var err error
+		moved, err = gatetrust.Settle(ctx, tx)
+		return err
+	})
+	if err != nil {
+		if ctx.Err() == nil {
+			log.ErrorContext(ctx, "settle each gate family's standing", "error", err)
+		}
+		return
+	}
+	log.InfoContext(ctx, "settled each gate family's standing", "moved", moved)
 }
 
 // queueUndeliveredChapters queues the delivery of each chapter whose book's

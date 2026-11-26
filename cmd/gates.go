@@ -56,15 +56,18 @@ var gatesTrustCmd = &cobra.Command{
 	Short: "Read and promote how far each family of the quality gate is trusted to hide its drops",
 	Long: "A family is one connector under one version of the quality gate's prompt.\n" +
 		"While a family stands on rung 0, every item that the gate drops waits in\n" +
-		"review as gate-would-drop. Your marks move it: low-quality agrees with a\n" +
-		"drop, read agrees with a pass, and either disagrees with the other verdict.\n" +
-		"Placing a gate-would-drop item on a destination disagrees too. Any\n" +
-		"disagreement returns the family to rung 0.\n" +
+		"review as gate-would-drop. Your marks move it. low-quality on a drop agrees\n" +
+		"and climbs. read on a drop, or low-quality on a pass, disagrees. read on a\n" +
+		"pass is kept and moves nothing, because a pass shows its item on any rung.\n" +
+		"Placing on a destination an item that the gate dropped disagrees too,\n" +
+		"whether its drop showed in review or was hidden. Any disagreement returns\n" +
+		"the family to rung 0.\n" +
 		"\n" +
 		"A straight run of agreeing marks earns asking, and one yes promotes the\n" +
-		"family. A promoted family shows its rung's share of the gate's drops, picked\n" +
-		"by a seeded draw over the family and the item key, and drops the rest as\n" +
-		"gate, which keeps their rows. A new prompt version starts every family again.",
+		"family. A promoted family climbs on the drops that the gate answers after\n" +
+		"the yes. It shows its rung's share of the gate's drops, picked by a seeded\n" +
+		"draw over the family and the gate's answer, and drops the rest as gate,\n" +
+		"which keeps their rows. A new prompt version starts every family again.",
 	Example: "  ingestion gates trust list\n" +
 		"  ingestion gates trust promote reddit-exports@1-3f9a0b2c",
 }

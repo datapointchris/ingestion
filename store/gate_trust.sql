@@ -10,7 +10,16 @@
 -- first_share the share that rung 1 shows. asks_promotion is set on a family
 -- not yet promoted whose straight run reached its threshold. promoted_by and
 -- promoted_ts record the person's yes. last_change and last_item_key name what
--- moved the row last.
+-- moved the row last. The row is a cache of the standing that earnedtrust
+-- reads from the family's gate_trust_decisions and its promotion, written
+-- again after each of them.
+--
+-- A gate_trust_decisions row is one person's word that counts on a family's
+-- ladder, appended in its order: a mark that agrees with the gate's drop, a
+-- mark that disagrees with its answer, or a placement on a destination of an
+-- item whose drop the gate showed or hid. promoted records whether the family
+-- was promoted when the gate answered the item, so only a drop that the gate
+-- answered after a person's yes climbs past it.
 
 CREATE TABLE IF NOT EXISTS marks (
     item_key        TEXT NOT NULL REFERENCES items (key),
@@ -48,3 +57,18 @@ CREATE TABLE IF NOT EXISTS gate_trust (
     updated_ts         TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS gate_trust_by_stamp ON gate_trust (updated_ts);
+
+CREATE TABLE IF NOT EXISTS gate_trust_decisions (
+    family          TEXT NOT NULL REFERENCES gate_trust (family),
+    sequence        INTEGER NOT NULL,
+    item_key        TEXT NOT NULL REFERENCES items (key),
+    kind            TEXT NOT NULL CHECK (kind IN ('mark', 'placement')),
+    agreement       TEXT NOT NULL CHECK (agreement IN ('agreed', 'disagreed')),
+    promoted        INTEGER NOT NULL,
+    decided_by      TEXT NOT NULL,
+    client_id       TEXT,
+    gate_decided_by TEXT NOT NULL,
+    decided_ts      TEXT NOT NULL,
+    PRIMARY KEY (family, sequence)
+);
+CREATE INDEX IF NOT EXISTS gate_trust_decisions_by_stamp ON gate_trust_decisions (decided_ts);

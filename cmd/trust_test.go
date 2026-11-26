@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -19,19 +20,27 @@ import (
 	"github.com/datapointchris/ingestion/store"
 )
 
-// The gate drops every save. While its family stands on rung 0, each drop
-// waits in review as gate-would-drop, and a save that a tag placed keeps its
-// placement beside the gate's drop. Placing a gate-would-drop save on a
-// destination disagrees, and returns the family's run to 0. Thirty straight
-// low-quality marks earn asking, a repeated mark counts once, and one promote
-// climbs the family to rung 1. Of the next saves the gate drops, the seeded
-// draw shows its share in review, and the rest drop as gate with their rows
-// and ideas kept. A read on a hidden drop disagrees, which returns the
-// promoted family to rung 0, so the next drop shows whatever its draw.
+// The gate passes a save that a tag placed, whose placement stands, and a
+// read on it agrees and climbs nothing. It drops every other save. While its
+// family stands on rung 0, each drop waits in review as gate-would-drop.
+// Placing a gate-would-drop save on a destination disagrees, and returns the
+// family's run to 0. Thirty straight low-quality marks earn asking, a
+// repeated mark counts once, and one promote climbs the family to rung 1. Of
+// the next saves the gate drops, the seeded draw over each answer shows its
+// share in review, and the rest drop as gate with their rows and ideas kept.
+// Thirty agreeing marks on drops answered after the promote climb it to
+// rung 2. A read on a hidden drop disagrees, which returns the promoted family
+// to rung 0, where every drop shows. Placing a hidden drop on a destination
+// disagrees too.
 func TestAGateFamilyEarnsTrustBeforeItHidesAShareOfItsDrops(t *testing.T) {
 	p := newGatedPipeline(t, mustAbs(t, "../examples/declarations"))
 	stand := newStandInDispatch(t, p.provider)
-	stand.answer = func(string) map[string]any { return judged(qualitygate.AnswerDrop, 0.95, connectors.SidePersonal, 0.4) }
+	stand.answer = func(prompt string) map[string]any {
+		if strings.Contains(prompt, "/comments/tg1/") {
+			return judged(qualitygate.AnswerPass, 0.9, connectors.SidePersonal, 0.4)
+		}
+		return judged(qualitygate.AnswerDrop, 0.95, connectors.SidePersonal, 0.4)
+	}
 	gate := p.qualityGate(t, stand.models(t, "", ""))
 	family := gatetrust.Family("reddit-exports", prompts.Quality.Version)
 	land := func(name string, tags []string, ids ...string) []string {
@@ -64,6 +73,17 @@ func TestAGateFamilyEarnsTrustBeforeItHidesAShareOfItsDrops(t *testing.T) {
 		holdsTo(t, []byte(out), "item-mark.schema.json")
 		return a
 	}
+	answerOf := func(key string) string {
+		t.Helper()
+		all, _, _ := p.decisions(t, key)
+		for _, d := range all {
+			if d.Gate == store.GateQuality {
+				return d.DecidedBy
+			}
+		}
+		t.Fatalf("the gate has not answered %s", key)
+		return ""
+	}
 	standing := func() store.GateTrust {
 		t.Helper()
 		out, err := runCLI(t, "gates", "trust", "list", "--json", "--config", p.config)
@@ -81,7 +101,10 @@ func TestAGateFamilyEarnsTrustBeforeItHidesAShareOfItsDrops(t *testing.T) {
 	}
 	first := land("first", nil, ids(0, 36)...)
 	if _, side, _ := p.decisions(t, tagged); side.DecidedBy != route.ByTag || side.Verdict != connectors.SidePersonal {
-		t.Errorf("the tagged save is %s by %s after the gate dropped it, want its tag's placement standing", side.Verdict, side.DecidedBy)
+		t.Errorf("the tagged save is %s by %s after the gate passed it, want its tag's placement standing", side.Verdict, side.DecidedBy)
+	}
+	if a := mark(tagged, gatetrust.MarkRead); a.Mark.Agreement != gatetrust.Agreed || len(a.Families) != 0 {
+		t.Errorf("read on a pass answered %s, want agreed with no family moved", jsonOf(a))
 	}
 	for _, key := range first {
 		if _, side, _ := p.decisions(t, key); side.Verdict != route.VerdictReview || side.Cause != route.CauseGateWouldDrop {
@@ -123,7 +146,7 @@ func TestAGateFamilyEarnsTrustBeforeItHidesAShareOfItsDrops(t *testing.T) {
 	var hidden []string
 	for _, key := range next {
 		_, side, _ := p.decisions(t, key)
-		if seededhash.Fraction(family, key) < 0.25 {
+		if seededhash.Fraction(family, answerOf(key)) < 0.25 {
 			if side.Verdict != route.VerdictReview || side.Cause != route.CauseGateWouldDrop {
 				t.Errorf("%s falls in the draw's share, and is %s for %s, want review as %s", key, side.Verdict, side.Cause, route.CauseGateWouldDrop)
 			}
@@ -141,6 +164,13 @@ func TestAGateFamilyEarnsTrustBeforeItHidesAShareOfItsDrops(t *testing.T) {
 		t.Errorf("items show on a hidden drop printed %q, %v, want its row and idea kept", out, err)
 	}
 
+	marked := slices.DeleteFunc(slices.Clone(next), func(key string) bool { return slices.Contains(hidden[:2], key) })
+	for _, key := range marked[:30] {
+		mark(key, gatetrust.MarkLowQuality)
+	}
+	if g := standing(); g.Rung != 2 || g.Share != 0.1875 {
+		t.Errorf("after thirty marks on drops answered since the promote the family stands at %s, want rung 2", jsonOf(g))
+	}
 	if a := mark(hidden[0], gatetrust.MarkRead); a.Mark.Agreement != gatetrust.Disagreed {
 		t.Errorf("read on a hidden drop answered %s, want disagreed", jsonOf(a))
 	}
@@ -150,14 +180,18 @@ func TestAGateFamilyEarnsTrustBeforeItHidesAShareOfItsDrops(t *testing.T) {
 	if p.phase(t, hidden[0]) != "dropped" {
 		t.Errorf("the marked drop is %s, want it left where it was", p.phase(t, hidden[0]))
 	}
-	outside := ""
-	for i := 200; outside == ""; i++ {
-		if id := fmt.Sprintf("t3_m%03d", i); seededhash.Fraction(family, "reddit/"+id) >= 0.25 {
-			outside = id
-		}
+	for _, key := range marked[30:] {
+		mark(key, gatetrust.MarkLowQuality)
 	}
-	key := land("third", nil, outside)[0]
-	if _, side, _ := p.decisions(t, key); side.Verdict != route.VerdictReview || side.Cause != route.CauseGateWouldDrop {
-		t.Errorf("back on rung 0 the drop of a save outside the draw's share is %s for %s, want review as %s", side.Verdict, side.Cause, route.CauseGateWouldDrop)
+	if _, err := runCLI(t, "review", "place", hidden[1], "reading-list", "--config", p.config); err != nil {
+		t.Fatal(err)
+	}
+	if g := standing(); g.StraightRun != 0 || g.LastChange != gatetrust.ChangePlacement {
+		t.Errorf("after a hidden drop was placed the family stands at %s, want its run back at 0", jsonOf(g))
+	}
+	for _, key := range land("third", nil, ids(200, 8)...) {
+		if _, side, _ := p.decisions(t, key); side.Verdict != route.VerdictReview || side.Cause != route.CauseGateWouldDrop {
+			t.Errorf("back on rung 0 the drop of %s is %s for %s, want review as %s", key, side.Verdict, side.Cause, route.CauseGateWouldDrop)
+		}
 	}
 }

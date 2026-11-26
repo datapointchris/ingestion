@@ -1,20 +1,25 @@
 // Package gatetrust is how far a person trusts the quality gate's drops. A
 // family is one connector under one version of the gate's prompt, so a new
-// prompt starts every family again at rung 0. A family climbs the earnedtrust
-// ladder on a person's word about the gate's answers. A mark of low-quality
-// agrees with a drop and disagrees with a keep. A mark of read agrees with a
-// keep and disagrees with a drop. A person who places an item that the gate
-// would drop on any destination disagrees with the drop. Any disagreement
-// returns the family to rung 0.
+// prompt starts every family again at rung 0. Each family is an
+// earnedtrust.Family, and its standing is what earnedtrust reads from the
+// family's decisions and its promotion.
+//
+// A mark of low-quality agrees with a drop and disagrees with a pass. A mark
+// of read agrees with a pass and disagrees with a drop. Only an agreement on
+// a drop climbs, because a family earns hiding drops: a pass shows its item
+// whatever the family's standing. A person who places on a destination an
+// item whose drop the gate showed or hid disagrees with the drop. Any
+// disagreement returns the family to rung 0.
 //
 // While its family stands on rung 0, every item that the gate drops waits in
-// review, marked gate-would-drop. A family whose straight run reaches Rule's
-// Run asks a person to promote it, and one yes does. A promoted family shows
-// its rung's share of the gate's drops, picked by a seeded draw over the
-// family and the item key, and the side gate drops the rest with their rows
-// kept. This is a continuous sampling plan, as earnedtrust names it. Its rule
-// is earnedtrust's cautious pace, because a hidden item gives the person no
-// prompt to undo it.
+// review, marked gate-would-drop. A family whose straight run reaches its
+// threshold asks a person to promote it, and one yes does. A promoted family
+// shows its rung's share of the gate's drops, picked by a seeded draw over
+// the family and the gate's answer, and the side gate drops the rest with
+// their rows kept. Only a drop that the gate answered after the yes climbs
+// past it. This is a continuous sampling plan, as earnedtrust names it. Its
+// rule is earnedtrust's cautious pace, because a hidden item gives the person
+// no prompt to undo it.
 package gatetrust
 
 import (
@@ -22,25 +27,21 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 
 	"github.com/datapointchris/earnedtrust"
-	"github.com/datapointchris/earnedtrust/seededhash"
 
 	"github.com/datapointchris/ingestion/store"
 )
 
-// Rule is the ladder that every family climbs, at earnedtrust's cautious
-// pace. A straight run of CostlyUndo agreements by a person earns asking, a
-// person's yes climbs to rung 1, and each rung shows a lower share of the
-// gate's drops. Only a person's word counts, so the gate never promotes
-// itself.
-var Rule = cautiousByPerson()
+// Rule is the ladder that every family climbs: earnedtrust's cautious pace.
+// earnedtrust counts only a person's word on a family, so the gate never
+// promotes itself.
+var Rule = earnedtrust.PaceRule(earnedtrust.PaceCautious)
 
-func cautiousByPerson() earnedtrust.Rule {
-	r := earnedtrust.PaceRule(earnedtrust.PaceCautious)
-	r.ByPerson, r.PersonPromotes = true, true
-	return r
+// familyOf is the earnedtrust family named name. It is sampled, so a
+// promoted family still shows a share of its drops.
+func familyOf(name string) earnedtrust.Family {
+	return earnedtrust.Family{Name: name, Rule: Rule, Sampled: true}
 }
 
 // The words that a person marks an item with.
@@ -61,23 +62,25 @@ const (
 	Neither   = "neither"
 )
 
+// The kinds of a person's word that a family's decisions hold.
+const (
+	KindMark      = "mark"
+	KindPlacement = "placement"
+)
+
 // What moves a family's standing, as its last_change records.
 const (
 	// ChangeGateAnswer is the gate's first answer under the family, which
 	// starts it at rung 0.
 	ChangeGateAnswer = "gate-answer"
 	ChangeMark       = "mark"
-	// ChangePlacement is a person's placement of an item that the gate would
-	// drop.
+	// ChangePlacement is a person's placement on a destination of an item
+	// whose drop the gate showed or hid.
 	ChangePlacement = "placement"
 	ChangePromotion = "promotion"
-)
-
-// The quality gate's verdicts, as its decisions write them. qualitygate and
-// route name the same words.
-const (
-	verdictPass = "pass"
-	verdictDrop = "drop"
+	// ChangeRule is a release whose rule reads the family's decisions to
+	// another standing.
+	ChangeRule = "rule"
 )
 
 // ErrNoFamily is a promotion naming a family the store holds no standing of.
@@ -124,7 +127,10 @@ func JudgmentOn(ctx context.Context, tx *store.Tx, key string) (Judgment, []stri
 // from: the done quality output among outputs whose run d names, and "" where
 // none is.
 func PromptVersion(outputs []store.Output, d store.Decision) string {
-	run, _ := strings.CutPrefix(d.DecidedBy, "model:")
+	run, ok := d.ModelRun()
+	if !ok {
+		return ""
+	}
 	for _, o := range outputs {
 		if o.Stage == store.StageQuality && o.State == store.OutputDone && o.Run() == run {
 			return o.ProducerVersion
@@ -147,12 +153,8 @@ func Connectors(sightings []store.Sighting) []string {
 // Start is a family's standing before any person's word: rung 0, where every
 // drop shows.
 func Start(connector, promptVersion string) store.GateTrust {
-	s := Rule.Start()
-	return store.GateTrust{
-		Family: Family(connector, promptVersion), Connector: connector, PromptVersion: promptVersion,
-		Rung: s.Rung, Run: s.Run, StraightRun: s.StraightRun, Share: s.Share, Threshold: Rule.Run, FirstShare: Rule.ShareAt(1),
-		LastChange: ChangeGateAnswer,
-	}
+	g := store.GateTrust{Family: Family(connector, promptVersion), Connector: connector, PromptVersion: promptVersion, LastChange: ChangeGateAnswer}
+	return withStanding(g, familyOf(g.Family).Standing(nil, false))
 }
 
 // Ensure writes a standing at rung 0 for each family of connectors under
@@ -178,12 +180,13 @@ func Ensure(ctx context.Context, tx *store.Tx, key, promptVersion string, connec
 	return nil
 }
 
-// Shows says whether the gate's drop of the item under key shows in review
-// under the families of connectors at promptVersion. It shows where any of
-// those families has not earned hiding it: one with no standing, one on rung
-// 0, or one whose seeded draw over the family and the key falls within the
-// share its rung shows. The strictest family wins, as the strictest zone does.
-func Shows(ctx context.Context, tx *store.Tx, key, promptVersion string, connectors []string) (bool, error) {
+// Shows says whether the gate's drop in answer, its decided_by, shows in
+// review under the families of connectors at promptVersion. It shows where
+// any of those families has not earned hiding it: one with no standing, or
+// one whose earnedtrust standing puts the answer to a person. The strictest
+// family wins, as the strictest zone does. The review queue holds every drop
+// it is shown, so no drop waits there for room.
+func Shows(ctx context.Context, tx *store.Tx, answer, promptVersion string, connectors []string) (bool, error) {
 	if promptVersion == "" || len(connectors) == 0 {
 		return true, nil
 	}
@@ -192,16 +195,11 @@ func Shows(ctx context.Context, tx *store.Tx, key, promptVersion string, connect
 		if err != nil {
 			return true, err
 		}
-		if !ok || drawn(g, key) {
+		if !ok || standingOf(g).Handle(answer, 0) != earnedtrust.HandlingAlone {
 			return true, nil
 		}
 	}
 	return false, nil
-}
-
-// drawn says whether g's share of drops holds the item under key.
-func drawn(g store.GateTrust, key string) bool {
-	return g.Share >= 1 || seededhash.Fraction(g.Family, key) < g.Share
 }
 
 // Agreement is how mark reads against the gate's verdict: low-quality agrees
@@ -209,47 +207,57 @@ func drawn(g store.GateTrust, key string) bool {
 // or no verdict, is neither.
 func Agreement(mark, verdict string) string {
 	switch {
-	case verdict == verdictDrop && mark == MarkLowQuality, verdict == verdictPass && mark == MarkRead:
+	case verdict == store.VerdictDrop && mark == MarkLowQuality, verdict == store.VerdictPass && mark == MarkRead:
 		return Agreed
-	case verdict == verdictDrop && mark == MarkRead, verdict == verdictPass && mark == MarkLowQuality:
+	case verdict == store.VerdictDrop && mark == MarkRead, verdict == store.VerdictPass && mark == MarkLowQuality:
 		return Disagreed
 	}
 	return Neither
 }
 
-// Marking is a person's mark on one item.
+// counts says whether a word that reads as agreement against the gate's
+// verdict moves a family: any disagreement, and an agreement with a drop.
+func counts(agreement, verdict string) bool {
+	return agreement == Disagreed || (agreement == Agreed && verdict == store.VerdictDrop)
+}
+
+// Marking is one mark on one item. DecidedBy is person:<login>, or
+// service:<client id> where a service holding the marks scope names no
+// person. Either counts as a person's word, since the scope is granted only
+// to a client that relays one.
 type Marking struct {
-	Mark     string
-	Login    string
-	ClientID string
+	Mark      string
+	DecidedBy string
+	ClientID  string
 }
 
 // Mark appends m on the item under key, with the gate's newest decision on it
-// and whether m agrees, and moves the standing of each family of that
-// decision. A mark that repeats the item's newest mark by the same person
-// appends nothing and moves nothing. It answers the mark, each family's
-// standing after it, and store.ErrNoItem where the store holds no such item.
+// and whether m agrees, and appends a decision to each family of that answer
+// where m counts. A mark that repeats the item's newest mark, by the same
+// hand on the same answer of the gate, appends nothing and moves nothing. It
+// answers the mark, each family's standing after it, and store.ErrNoItem
+// where the store holds no such item.
 func Mark(ctx context.Context, tx *store.Tx, key string, m Marking) (store.Mark, []store.GateTrust, error) {
 	if _, ok, err := tx.Item(ctx, key); err != nil {
 		return store.Mark{}, nil, err
 	} else if !ok {
 		return store.Mark{}, nil, fmt.Errorf("%s: %w", key, store.ErrNoItem)
 	}
-	by := "person:" + m.Login
 	judgment, connectors, judged, err := JudgmentOn(ctx, tx, key)
 	if err != nil {
 		return store.Mark{}, nil, err
 	}
+	answered := ""
+	if judged {
+		answered = judgment.DecidedBy
+	}
 	if newest, ok, err := tx.NewestMark(ctx, key); err != nil {
 		return store.Mark{}, nil, err
-	} else if ok && newest.Mark == m.Mark && newest.DecidedBy == by {
+	} else if ok && newest.Mark == m.Mark && newest.DecidedBy == m.DecidedBy && text(newest.GateDecidedBy) == answered {
 		trust, err := standings(ctx, tx, newest.Families)
 		return newest, trust, err
 	}
-	mark := store.Mark{ItemKey: key, Mark: m.Mark, DecidedBy: by, Agreement: Neither, Families: []string{}}
-	if m.ClientID != "" {
-		mark.ClientID = &m.ClientID
-	}
+	mark := store.Mark{ItemKey: key, Mark: m.Mark, DecidedBy: m.DecidedBy, ClientID: orNil(m.ClientID), Agreement: Neither, Families: []string{}}
 	if judged {
 		mark.GateVerdict, mark.GateDecidedBy = &judgment.Verdict, &judgment.DecidedBy
 		if judgment.PromptVersion != "" {
@@ -258,8 +266,9 @@ func Mark(ctx context.Context, tx *store.Tx, key string, m Marking) (store.Mark,
 		mark.Agreement = Agreement(m.Mark, judgment.Verdict)
 	}
 	var trust []store.GateTrust
-	if mark.Agreement != Neither {
-		if trust, err = label(ctx, tx, key, judgment.PromptVersion, connectors, mark.Agreement, ChangeMark); err != nil {
+	if counts(mark.Agreement, judgment.Verdict) {
+		word := store.GateTrustDecision{Kind: KindMark, Agreement: mark.Agreement, DecidedBy: m.DecidedBy, ClientID: mark.ClientID}
+		if trust, err = record(ctx, tx, key, judgment, connectors, word, ChangeMark); err != nil {
 			return store.Mark{}, nil, err
 		}
 		for _, g := range trust {
@@ -270,34 +279,47 @@ func Mark(ctx context.Context, tx *store.Tx, key string, m Marking) (store.Mark,
 	return mark, trust, err
 }
 
-// Disagree moves each family of the gate's newest decision on the item under
-// key back to rung 0, in the write that a person places the item on a
-// destination where the gate would drop it.
-func Disagree(ctx context.Context, tx *store.Tx, key string) ([]store.GateTrust, error) {
+// Disagree appends a disagreement to each family of the gate's newest
+// decision on the item under key, in the write that decidedBy places the
+// item on a destination where the gate showed or hid its drop.
+func Disagree(ctx context.Context, tx *store.Tx, key, decidedBy, clientID string) ([]store.GateTrust, error) {
 	judgment, connectors, judged, err := JudgmentOn(ctx, tx, key)
 	if err != nil || !judged {
 		return nil, err
 	}
-	return label(ctx, tx, key, judgment.PromptVersion, connectors, Disagreed, ChangePlacement)
+	word := store.GateTrustDecision{Kind: KindPlacement, Agreement: Disagreed, DecidedBy: decidedBy, ClientID: orNil(clientID)}
+	return record(ctx, tx, key, judgment, connectors, word, ChangePlacement)
 }
 
-// label moves the standing of each family of connectors under promptVersion
-// by one person's agreement or disagreement, and answers each as written.
-func label(ctx context.Context, tx *store.Tx, key, promptVersion string, connectors []string, agreement, change string) ([]store.GateTrust, error) {
-	if promptVersion == "" {
+// record appends word to each family of connectors under the judgment's
+// prompt version, and writes each family's standing after it. The word climbs
+// past a family's promotion only where the gate answered the item after it.
+func record(ctx context.Context, tx *store.Tx, key string, j Judgment, connectors []string, word store.GateTrustDecision,
+	change string,
+) ([]store.GateTrust, error) {
+	if j.PromptVersion == "" {
 		return nil, nil
 	}
 	out := make([]store.GateTrust, 0, len(connectors))
 	for _, c := range connectors {
-		g, ok, err := tx.GateTrust(ctx, Family(c, promptVersion))
+		g, ok, err := tx.GateTrust(ctx, Family(c, j.PromptVersion))
 		if err != nil {
 			return nil, err
 		}
 		if !ok {
-			g = Start(c, promptVersion)
+			g = Start(c, j.PromptVersion)
+			if err := tx.PutGateTrust(ctx, g); err != nil {
+				return nil, err
+			}
 		}
-		d := earnedtrust.Decision{ByPerson: true, Agreed: agreement == Agreed, Disagreed: agreement == Disagreed, Promoted: g.Promoted()}
-		g = next(g, d)
+		word.Family, word.ItemKey, word.GateDecidedBy = g.Family, key, j.DecidedBy
+		word.Promoted = g.Promoted() && *g.PromotedTS <= j.DecidedTS
+		if _, err := tx.AddGateTrustDecision(ctx, word); err != nil {
+			return nil, err
+		}
+		if g, err = reread(ctx, tx, g); err != nil {
+			return nil, err
+		}
 		g.LastChange, g.LastItemKey = change, &key
 		if err := tx.PutGateTrust(ctx, g); err != nil {
 			return nil, err
@@ -322,28 +344,70 @@ func Promote(ctx context.Context, tx *store.Tx, family, login, clientID string) 
 	if g.Promoted() {
 		return g, nil
 	}
-	by, now := "person:"+login, store.Stamp(tx.Now())
-	g.PromotedBy, g.PromotedTS = &by, &now
-	if clientID != "" {
-		g.PromotedClientID = &clientID
+	by, now := store.DecidedByPerson(login), store.Stamp(tx.Now())
+	g.PromotedBy, g.PromotedTS, g.PromotedClientID = &by, &now, orNil(clientID)
+	if g, err = reread(ctx, tx, g); err != nil {
+		return store.GateTrust{}, err
 	}
-	g = next(g, earnedtrust.Decision{Promoted: true})
 	g.LastChange, g.LastItemKey = ChangePromotion, nil
 	return g, tx.PutGateTrust(ctx, g)
 }
 
-// next is g after d under Rule. A promoted family whose run reached the
-// threshold on rung 0 climbs to rung 1 in the same step, as Rule.Standing
-// climbs it after its last decision.
-func next(g store.GateTrust, d earnedtrust.Decision) store.GateTrust {
-	s := Rule.Next(earnedtrust.Standing{Rung: g.Rung, Run: g.Run, StraightRun: g.StraightRun, Share: g.Share}, d)
-	if g.Promoted() {
-		s = Rule.Next(s, earnedtrust.Decision{Promoted: true})
+// Settle reads every family's standing again from its decisions, and writes
+// each one that differs from its row, as a change of rule. serve runs it
+// once it listens, so a release that changes the pace places every family
+// again from its history. It answers how many families moved.
+func Settle(ctx context.Context, tx *store.Tx) (int, error) {
+	families, err := tx.GateTrusts(ctx)
+	if err != nil {
+		return 0, err
 	}
+	moved := 0
+	for _, held := range families {
+		g, err := reread(ctx, tx, held)
+		if err != nil {
+			return moved, err
+		}
+		if g.Rung == held.Rung && g.Run == held.Run && g.StraightRun == held.StraightRun && g.Share == held.Share &&
+			g.Threshold == held.Threshold && g.FirstShare == held.FirstShare && g.AsksPromotion == held.AsksPromotion {
+			continue
+		}
+		g.LastChange, g.LastItemKey = ChangeRule, nil
+		if err := tx.PutGateTrust(ctx, g); err != nil {
+			return moved, err
+		}
+		moved++
+	}
+	return moved, nil
+}
+
+// reread is g with the standing that earnedtrust reads from g's decisions and
+// its promotion.
+func reread(ctx context.Context, tx *store.Tx, g store.GateTrust) (store.GateTrust, error) {
+	logged, err := tx.GateTrustDecisions(ctx, g.Family)
+	if err != nil {
+		return g, err
+	}
+	decisions := make([]earnedtrust.Decision, len(logged))
+	for i, d := range logged {
+		decisions[i] = earnedtrust.Decision{ByPerson: true, Agreed: d.Agreement == Agreed, Disagreed: d.Agreement == Disagreed, Promoted: d.Promoted}
+	}
+	return withStanding(g, familyOf(g.Family).Standing(decisions, g.Promoted())), nil
+}
+
+// withStanding is g holding s.
+func withStanding(g store.GateTrust, s earnedtrust.FamilyStanding) store.GateTrust {
 	g.Rung, g.Run, g.StraightRun, g.Share = s.Rung, s.Run, s.StraightRun, s.Share
-	g.Threshold, g.FirstShare = Rule.Run, Rule.ShareAt(1)
-	g.AsksPromotion = !g.Promoted() && s.StraightRun >= Rule.Run
+	g.Threshold, g.FirstShare, g.AsksPromotion = s.Threshold, Rule.ShareAt(1), s.Earned
 	return g
+}
+
+// standingOf is the earnedtrust standing that g holds.
+func standingOf(g store.GateTrust) earnedtrust.FamilyStanding {
+	return earnedtrust.FamilyStanding{
+		Family: g.Family, Threshold: g.Threshold, Promoted: g.Promoted(), Earned: g.AsksPromotion, MaxOpen: Rule.MaxOpen,
+		Standing: earnedtrust.Standing{Rung: g.Rung, Run: g.Run, StraightRun: g.StraightRun, Share: g.Share},
+	}
 }
 
 // standings reads each of families' standing that the store holds.
@@ -359,4 +423,18 @@ func standings(ctx context.Context, tx *store.Tx, families []string) ([]store.Ga
 		}
 	}
 	return out, nil
+}
+
+func orNil(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+func text(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
