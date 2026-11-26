@@ -1,12 +1,8 @@
 package contents
 
 import (
-	"regexp"
 	"strconv"
 	"strings"
-	"unicode"
-
-	"golang.org/x/text/unicode/norm"
 
 	"github.com/datapointchris/ingestion/sections"
 	"github.com/datapointchris/ingestion/store"
@@ -21,15 +17,6 @@ const (
 	searchPages = 20
 	// headWords is how many words at the top of a page are read for a title.
 	headWords = 40
-	// titleRunes bounds how much of a title the search matches, so a long
-	// title that the page breaks differently still matches by its opening.
-	titleRunes = 30
-	// identityShare is the share of a book's pages whose label is their PDF
-	// page at or above which its labels are not read.
-	identityShare = 0.9
-	// titleLeast is the fewest letters and digits of a title that the search
-	// looks for.
-	titleLeast = 4
 )
 
 // How an entry's start page was found.
@@ -46,20 +33,18 @@ const (
 	PlacedByNextEntry = "next-entry"
 )
 
-// numbering is a title's numbering before its words, such as Chapter 3, 2.1,
-// Part IV or A.
-var numbering = regexp.MustCompile(`^(?:(?:chapter|part|appendix|section|lecture|lesson|unit|module|book)\s+)?(?:\d+(?:\.\d+)*|[ivxlcdm]+|[a-z])(?:[.:)\-–—]|\s|$)\s*`)
-
 // Place is each of answer's entries on a PDF page of units, a positional
-// parse, in answer's order. A printed page maps to the PDF page whose label
-// is it, else to the page less the book's offset where one is measured. An
-// offset drifts through a scanned book, so the page near the offset's whose
-// top holds the entry's title then places it, the start of a run of such
-// pages, because running heads repeat a chapter's title on its later pages. A printed page that maps to none places its entry at the first
-// page after the entry before it that opens on its title. An entry with no
-// printed page takes the start of the next placed entry. An entry placed none
-// of these ways is left out.
-func Place(answer []AnswerEntry, units []store.Unit) []sections.Entry {
+// parse, in answer's order, and the entries with a printed page that it left
+// out. A printed page maps to the PDF page whose label is it, else to
+// the page less the book's offset where one is measured. An offset drifts
+// through a scanned book, so the page near the offset's whose top holds the
+// entry's title then places it. That is the start of the run of such pages,
+// because running heads repeat a chapter's title on its later pages. A
+// printed page that maps to none places its entry at the first page after the
+// entry before it that opens on its title. An entry with no printed page
+// takes the start of the next placed entry. An entry placed none of these
+// ways is left out.
+func Place(answer []AnswerEntry, units []store.Unit) ([]sections.Entry, []AnswerEntry) {
 	offset, measured := sections.Offset(units)
 	skip := map[int]bool{}
 	last := 0
@@ -73,17 +58,31 @@ func Place(answer []AnswerEntry, units []store.Unit) []sections.Entry {
 			heads[i] = head(u.Text)
 		}
 	}
-	var out []sections.Entry
-	var unpaged []sections.Entry
+	var out, unpaged []sections.Entry
+	var left []AnswerEntry
+	var open []opened
 	after := 0
 	for _, a := range answer {
 		e := sections.Entry{Level: a.Level, Title: strings.TrimSpace(a.Title)}
+		s := search{heads: heads, key: sections.TitleKey(e.Title), after: after}
+		for len(open) > 0 && open[len(open)-1].level >= e.Level {
+			if open[len(open)-1].level == e.Level {
+				s.floor = open[len(open)-1].page
+			}
+			open = open[:len(open)-1]
+		}
+		for _, o := range open {
+			s.enclosing = append(s.enclosing, o.key)
+		}
+		if s.floor == 0 && len(open) > 0 {
+			s.floor = open[len(open)-1].page
+		}
+		open = append(open, opened{level: e.Level, key: s.key})
 		if a.Page == nil || strings.TrimSpace(*a.Page) == "" {
 			unpaged = append(unpaged, e)
 			continue
 		}
 		printed := strings.ToLower(strings.TrimSpace(*a.Page))
-		key := titleKey(e.Title)
 		switch page, ok := labels[printed]; {
 		case ok:
 			e.Page, e.PlacedBy = page, PlacedByLabel
@@ -93,15 +92,16 @@ func Place(answer []AnswerEntry, units []store.Unit) []sections.Entry {
 			}
 		}
 		if e.PlacedBy == PlacedByOffset {
-			if found := near(heads, key, e.Page); found > 0 && found != e.Page {
+			if found := s.near(e.Page); found > 0 && found != e.Page {
 				e.Page, e.PlacedBy = found, PlacedByTitle
 			}
 		} else if e.Page == 0 {
-			if found := firstAfter(heads, key, after); found > 0 {
+			if found := s.firstAfter(); found > 0 {
 				e.Page, e.PlacedBy = found, PlacedByTitle
 			}
 		}
 		if e.Page == 0 {
+			left = append(left, a)
 			continue
 		}
 		for _, u := range unpaged {
@@ -110,63 +110,71 @@ func Place(answer []AnswerEntry, units []store.Unit) []sections.Entry {
 		}
 		unpaged = nil
 		out = append(out, e)
-		after = e.Page
+		after, open[len(open)-1].page = e.Page, e.Page
 	}
-	return out
+	return out, left
 }
 
-// pageLabels maps each page label of units, lowercased, to its PDF page: the
-// first after page after where the label repeats, as one that a book's front
-// matter and its body both use does. It is empty where the labels are each
-// page's PDF page on identityShare of the pages, because such labels say
-// nothing of the numbers that the book prints.
-func pageLabels(units []store.Unit, after int) map[string]int {
-	labels := map[string]int{}
-	identity := 0
-	for i, u := range units {
-		if u.Label == nil {
-			continue
-		}
-		l := strings.ToLower(strings.TrimSpace(*u.Label))
-		if l == "" {
-			continue
-		}
-		if l == strconv.Itoa(i+1) {
-			identity++
-		}
-		if held, ok := labels[l]; !ok || (held <= after && i+1 > after) {
-			labels[l] = i + 1
-		}
-	}
-	if float64(identity) >= identityShare*float64(len(units)) {
-		return map[string]int{}
-	}
-	return labels
+// opened is an entry that holds the entries after it at a deeper level, and
+// the page it was placed on, 0 where it is not.
+type opened struct {
+	level int
+	key   string
+	page  int
 }
 
-// near is the page within searchPages of page whose head holds key, nearest
-// page and the earlier on a tie, moved back to the start of the run of pages
-// around it whose heads hold key, a page apart at most. It is 0 where none
-// does.
-func near(heads []string, key string, page int) int {
-	if len(key) < titleLeast {
+// search looks for one entry's title in a book's page heads.
+type search struct {
+	heads []string
+	key   string
+	// enclosing are the keys of the entries that hold this one, such as its
+	// chapter's. A running head may carry one, and it may hold the key.
+	enclosing []string
+	// after is the page of the entry placed before this one.
+	after int
+	// floor is the page of the entry before this one at its level, else of
+	// the entry that holds it, and 0 where neither is placed.
+	floor int
+}
+
+// holds says whether page p's head holds the key outside every enclosing key
+// that holds the key, so a section titled Errors is not found in a running
+// head of its chapter, Errors and Exceptions.
+func (s search) holds(p int) bool {
+	if p < 1 || p > len(s.heads) {
+		return false
+	}
+	h := s.heads[p-1]
+	for _, k := range s.enclosing {
+		if strings.Contains(k, s.key) {
+			h = strings.ReplaceAll(h, k, "")
+		}
+	}
+	return strings.Contains(h, s.key)
+}
+
+// near is the page within searchPages of page whose head holds the key,
+// nearest page and the earlier on a tie, moved back to the start of the run
+// of pages around it whose heads hold it, a page apart at most, and never
+// before floor. It is 0 where none does.
+func (s search) near(page int) int {
+	if len(s.key) < sections.TitleLeast {
 		return 0
 	}
-	holds := func(p int) bool { return p >= 1 && p <= len(heads) && strings.Contains(heads[p-1], key) }
 	found := 0
 	for d := 0; d <= searchPages && found == 0; d++ {
 		switch {
-		case holds(page - d):
+		case s.holds(page - d):
 			found = page - d
-		case holds(page + d):
+		case s.holds(page + d):
 			found = page + d
 		}
 	}
 	for found > 0 {
 		switch {
-		case holds(found - 1):
+		case found-1 >= s.floor && s.holds(found-1):
 			found--
-		case holds(found - 2):
+		case found-2 >= s.floor && s.holds(found-2):
 			found -= 2
 		default:
 			return found
@@ -175,51 +183,40 @@ func near(heads []string, key string, page int) int {
 	return 0
 }
 
-// firstAfter is the first page after page whose head holds key, and 0 where
-// none does.
-func firstAfter(heads []string, key string, page int) int {
-	if len(key) < titleLeast {
+// firstAfter is the first page after the entry placed before whose head
+// holds the key, and 0 where none does.
+func (s search) firstAfter() int {
+	if len(s.key) < sections.TitleLeast {
 		return 0
 	}
-	for p := page + 1; p <= len(heads); p++ {
-		if strings.Contains(heads[p-1], key) {
+	for p := s.after + 1; p <= len(s.heads); p++ {
+		if s.holds(p) {
 			return p
 		}
 	}
 	return 0
 }
 
-// titleKey is what the search matches of title: its letters and digits,
-// lowercased, after any numbering before its words, up to titleRunes of
-// them. A title that is its numbering alone, such as Chapter 3, is matched
-// whole.
-func titleKey(title string) string {
-	t := strings.ToLower(strings.Join(strings.Fields(title), " "))
-	key := squashed(numbering.ReplaceAllString(t, ""))
-	if len(key) < titleLeast {
-		key = squashed(t)
-	}
-	if r := []rune(key); len(r) > titleRunes {
-		key = string(r[:titleRunes])
-	}
-	return key
-}
-
-// head is the letters and digits of the first headWords words of a page,
-// lowercased.
-func head(text string) string {
-	words := strings.Fields(text)
-	return squashed(strings.Join(words[:min(len(words), headWords)], " "))
-}
-
-// squashed is s folded by NFKC and lowercased, with every rune but its
-// letters and digits left out, so a ligature such as ﬁ reads as fi.
-func squashed(s string) string {
-	var b strings.Builder
-	for _, r := range strings.ToLower(norm.NFKC.String(s)) {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			b.WriteRune(r)
+// pageLabels maps each label that sections.PageLabels reads of units,
+// lowercased, to its PDF page. Where a label repeats, as one that a book's
+// front matter and its body both use does, it maps to its first page after
+// page after, else to its first page.
+func pageLabels(units []store.Unit, after int) map[string]int {
+	labels := map[string]int{}
+	for i, l := range sections.PageLabels(units) {
+		if l == "" {
+			continue
+		}
+		l = strings.ToLower(l)
+		if held, ok := labels[l]; !ok || (held <= after && i+1 > after) {
+			labels[l] = i + 1
 		}
 	}
-	return b.String()
+	return labels
+}
+
+// head is sections.Squashed of the first headWords words of a page.
+func head(text string) string {
+	words := strings.Fields(text)
+	return sections.Squashed(strings.Join(words[:min(len(words), headWords)], " "))
 }

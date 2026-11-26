@@ -428,7 +428,9 @@ The service writes the book's sections in the write that reports the profile, on
   and `Index Structures` is a chapter. An entry on PDF page 1 whose title names the book, as its
   file's name or its PDF's title spells it, is front matter too, as a title page is.
 - **A section ends where the next entry at its level or above begins.** A printed page comes from
-  the page's label, else from the book's offset, else stays empty. The offset is the most common
+  the page's label, else from the book's offset, else stays empty. A book whose labels nearly all
+  restate their PDF pages, at `identityShare` in `sections/outline.go`, reads none of its labels,
+  because they say nothing of the numbers it prints. The offset is the most common
   difference between a PDF page and a number standing alone on its first or last three lines,
   where it holds on 30% of the pages.
 - **A PDF with no usable outline and under 50 pages is one section over the whole file.** A
@@ -446,31 +448,45 @@ A failed profile costs the book its sections and leaves its phase as the other s
 and a line for each chapter. `ingestion items replay --stage structure` profiles each PDF again,
 such as with a new `pdf-structure`. Its sections write beside the old. In a book that already
 holds chapters, a new version's chapter names the chapter item with the same start page and
-title, and a chapter that matches none makes no item.
+title key, as `sections.TitleKey` folds a title, and a chapter that matches none makes no item.
 
 ### A long book with no outline takes its chapters from its printed contents
 
-Where the outline rule writes no sections for a PDF of 50 or more pages, the write that ends its
-structure queues one task of capability `contents`. A book gets that task once. The stage runs
-on it again only through `ingestion items replay --stage contents`, which estimates its tokens
-first, or through `tasks retry` on its failed task. It is a model stage, so a connector's first
-fill holds every book after the first to reach it, until `ingestion connectors release`.
+Where the outline rule in force writes no sections for a PDF of `sections.WholeFilePages` pages
+or more, the write that ends its first structure queues one task of capability `contents`. A
+later structure queues none, so a structure or parse replay starts no model call.
+`ingestion items replay --stage contents` reads such a book once a person confirms its estimate
+of tokens, and `tasks retry` runs a failed task again. It is a model stage, so a connector's
+first fill holds every book after the first to reach it, until `ingestion connectors release`.
 
-- **The prompt quotes the pages that look like contents.** Among the first 30 PDF pages, a page
-  is quoted where at least 3 of its lines, and 30% of them, end in a number. Where none does, the
-  first 30 pages are quoted, and the model may answer that they hold no contents.
+- **The prompt quotes the pages that look like contents.** Among a book's front pages, a page is
+  quoted where enough of its lines end in a number, as `ContentsPages` in `contents/handler.go`
+  counts them. A run of such pages that reaches the last front page is read on past it. Where
+  none looks like contents, the front pages are quoted whole, and the model may answer that they
+  hold no contents.
 - **The answer holds to `prompts/contents/answer.schema.json`**: each entry's title, the page
   that the contents prints beside it or null, and its level.
 - **The service places each entry on a PDF page.** A printed page that a page label names maps to
-  that page. Otherwise the book's offset maps a printed number, and the page within 20 either
-  side that opens on the entry's title places it, at the start of a run of such pages. A printed
-  page that maps to none places its entry at the first page after the entry before it that opens
-  on its title. An entry with no printed page, such as a part's heading, starts where the next
-  placed entry starts. A book whose labels are each page's PDF page reads its labels as absent.
+  that page. Otherwise the book's offset maps a printed number, and the nearby page that opens on
+  the entry's title places it, within `searchPages` in `contents/place.go` of the mapped page.
+  That is the start of a run of such pages, never before the entry ahead of it at its level. A
+  title found only inside the running head of the entry that holds it, such as a chapter's,
+  places nothing. A printed page that maps to none places its entry at the first page after the
+  entry before it that opens on its title. An entry with no printed page, such as a part's
+  heading, starts where the next placed entry starts.
+- **A placement that leaves out many entries writes nothing.** Where it leaves out more than
+  `mostLeftOut` in `contents/contents.go` of the entries with a printed page, the book holds no
+  sections from the answer, and serve logs the counts. An answer whose entries make no usable
+  outline also writes none. The book then stays whole, rather than holding chapters that take in
+  the pages of the ones left out.
 - **The entries then pass the outline rule.** They need a usable level, and they take their
   kinds, their ends and their printed pages as an outline's entries do. They write `sections`
   rows with producer `contents` and a `start_placed_by` of `label`, `offset`, `title` or
   `next-entry`, and each chapter becomes a child item as an outline's does.
+- **A structure replay places each stored answer again, with no model call.** A new placement,
+  outline rule or parse then writes its sections beside the old. A chapter keeps its item where
+  the new version's chapter shares its start page and title key, so a reading that words a
+  title anew keeps the book's chapter items.
 - **A failed or waiting reading costs the book its sections only.** The book waits at `contents`
   while its task is open, and a failed one leaves its phase as the other stages set it.
 

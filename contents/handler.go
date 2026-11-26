@@ -19,13 +19,13 @@ import (
 
 const (
 	// DefaultModel and DefaultEffort are what the stage's run is asked for
-	// where config names neither. Sonnet read two outline-less books'
-	// contents pages and placed 46 of their 48 chapters. Medium runs on a
-	// dispatch service that refuses a lower effort.
+	// where config names neither. A dispatch service may refuse an effort
+	// below medium.
 	DefaultModel  = "sonnet"
 	DefaultEffort = "medium"
 	// frontPages is how many PDF pages at a book's front are read for its
-	// contents pages, and quoted where none looks like one.
+	// contents pages, and quoted where none looks like one. A run of
+	// contents pages that reaches its last page is read on past it.
 	frontPages = 30
 	// numberedShare and numberedLeast are the least share and count of a
 	// page's lines ending in a number that make it look like a contents
@@ -99,12 +99,16 @@ func Quote(title string, units []store.Unit) PromptData {
 	return data
 }
 
-// ContentsPages are the PDF pages among the first frontPages of units that
-// look like contents pages: at least numberedLeast of their lines, and
-// numberedShare of them, end in a number.
+// ContentsPages are the PDF pages of units that look like contents pages:
+// at least numberedLeast of their lines, and numberedShare of them, end in a
+// number. It reads the first frontPages pages, and each page after them that
+// follows one it kept.
 func ContentsPages(units []store.Unit) []int {
 	var pages []int
-	for i := range min(frontPages, len(units)) {
+	for i := range units {
+		if i >= frontPages && (len(pages) == 0 || pages[len(pages)-1] != i) {
+			break
+		}
 		lines, numbered := 0, 0
 		for line := range strings.SplitSeq(units[i].Text, "\n") {
 			if strings.TrimSpace(line) == "" {

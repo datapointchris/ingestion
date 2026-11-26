@@ -25,9 +25,12 @@ import (
 // Serve places each entry: by the offset of the numbers printed at its pages'
 // foot, by a search for its title where a chapter opens two pages after the
 // printed one, a roman page that maps to none at the first page opening on
-// its title, and a part with no printed page where its first chapter starts. The entries make a part, three
-// chapter items, and front and back matter. connectors show prints the first
-// call's tokens, and the release sends the second book.
+// its title, and a part with no printed page where its first chapter starts.
+// The entries make a part, three chapter items, and front and back matter.
+// connectors show prints the first call's tokens, and the release sends the
+// second book. Its answer names two chapters on pages that its PDF lacks, so
+// the placement leaves out a third of its chapters and the book stays whole. A structure replay then
+// places each stored answer again and starts no model call.
 func TestABookWithNoOutlineTakesItsSectionsFromItsPrintedContents(t *testing.T) {
 	ctx := t.Context()
 	dir := t.TempDir()
@@ -89,12 +92,19 @@ func TestABookWithNoOutlineTakesItsSectionsFromItsPrintedContents(t *testing.T) 
 	}
 
 	stand := newStandInDispatch(t, p.provider)
+	calls := 0
 	stand.answer = func(prompt string) map[string]any {
 		if !strings.Contains(prompt, "[PDF page 3]\nContents") || strings.Contains(prompt, "[PDF page 4]") {
 			t.Errorf("the prompt quotes more or less than the contents page:\n%s", prompt)
 		}
 		entry := func(title string, page any, level int) map[string]any {
 			return map[string]any{"title": title, "page": page, "level": level}
+		}
+		if calls++; calls > 1 {
+			return map[string]any{"entries": []any{
+				entry("1 Start", "1", 1), entry("2 Middle", "15", 1), entry("Absent One", "901", 1), entry("3 End", "30", 1),
+				entry("Absent Two", "930", 1), entry("Index", "52", 1),
+			}}
 		}
 		return map[string]any{"entries": []any{
 			entry("Preface", "iv", 1), entry("Part I Beginnings", nil, 1), entry("1 Start", "1", 2), entry("2 Middle", "15", 2),
@@ -142,7 +152,36 @@ func TestABookWithNoOutlineTakesItsSectionsFromItsPrintedContents(t *testing.T) 
 	if n := len(stand.starts()); n != 2 {
 		t.Errorf("the release let %d contents calls through in all, want the second book's too", n)
 	}
-	if n := p.count(t, `SELECT count(*) FROM items WHERE media_type = ?`, store.MediaTypeChapter); n != 6 {
-		t.Errorf("the two books hold %d chapter items, want 3 each", n)
+	stays := func(when string) {
+		t.Helper()
+		if n := p.count(t, `SELECT count(*) FROM sections WHERE item_key != ?`, book); n != 0 {
+			t.Errorf("%s, the second book holds %d sections, want none from an answer that left out a third of its chapters", when, n)
+		}
+		if n := p.count(t, `SELECT count(*) FROM items WHERE media_type = ?`, store.MediaTypeChapter); n != 3 {
+			t.Errorf("%s, the books hold %d chapter items, want the first book's 3", when, n)
+		}
+	}
+	stays("after the release")
+
+	replay := func(stage string) server.ReplayAnswer {
+		t.Helper()
+		out, err := runCLI(t, "items", "replay", "--stage", stage, "--connector", "books-folder", "--json", "--config", p.config)
+		var answer server.ReplayAnswer
+		if err != nil || json.Unmarshal([]byte(out), &answer) != nil {
+			t.Fatalf("items replay --stage %s printed %q, %v", stage, out, err)
+		}
+		holdsTo(t, []byte(out), "replay.schema.json")
+		return answer
+	}
+	replay(store.StageStructure)
+	if n := p.run(t, structure); n != 2 {
+		t.Fatalf("the structure replay ran %d tasks, want 2", n)
+	}
+	if n := p.count(t, `SELECT count(*) FROM tasks WHERE stage = ?`, store.StageContents); n != 2 || len(stand.starts()) != 2 {
+		t.Errorf("after the structure replay the books hold %d contents tasks and %d calls, want each book's first alone", n, len(stand.starts()))
+	}
+	stays("after the structure replay")
+	if a := replay(store.StageContents); a.Items != 0 || a.Queued {
+		t.Errorf("a contents replay answered %+v, want none due: each book holds an answer of the prompt in force", a)
 	}
 }

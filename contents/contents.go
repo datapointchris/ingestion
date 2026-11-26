@@ -1,27 +1,32 @@
 // Package contents is the model stage that reads a book's printed table of
 // contents, for a PDF of sections.WholeFilePages pages or more whose outline
-// gives it no sections. Its prompt and answer schema are prompts.Contents.
+// gives it no sections under the outline rule in force. Its prompt and answer
+// schema are prompts.Contents.
 //
-// The service queues a book's contents task in the write that ends its
-// structure task, where the outline rule wrote the book no sections. A
-// connector's first fill holds every book after the first to reach the stage,
-// as at every model stage. A worker holding a model port runs the task under
-// modelstage's dispatch-once protocol. Its prompt quotes the front pages that
-// look like a contents page, or the first frontPages pages where none does.
-// The model answers each entry's title, printed page and level.
+// The service queues a book's contents task in the write that ends its first
+// structure task, where the outline rule wrote it no sections. A connector's
+// first fill holds every book after the first to reach the stage, as at every
+// model stage. A worker holding a model port runs the task under modelstage's
+// dispatch-once protocol. Its prompt quotes the front pages that look like a
+// contents page, or the first frontPages pages where none does. The model
+// answers each entry's title, printed page and level.
 //
 // When the task ends done, serve places each entry on a PDF page, by the
 // pdf-text parse's page label, else by the book's measured offset, then by a
 // search for the title near that page. The entries then pass the outline rule
 // through sections.FromEntries, and sections.Write writes them under producer
-// contents with a chapter item per chapter, as an outline's are.
+// contents with a chapter item per chapter, as an outline's are. A later
+// structure task places the stored answer again, so a structure replay
+// applies a new placement, outline rule or parse with no model call.
 package contents
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"slices"
+	"strings"
 
 	"github.com/datapointchris/ingestion/modelstage"
 	"github.com/datapointchris/ingestion/prompts"
@@ -37,8 +42,18 @@ const (
 	// prompt's.
 	Producer = "contents-reader"
 	// PlacementVersion names the placement, so a changed placement writes
-	// its sections beside the old.
+	// its sections beside the old once a structure replay places each
+	// stored answer again.
 	PlacementVersion = "1"
+	// mostLeftOut is the largest share of an answer's paged entries at one
+	// level, at or above the chapter level, that the placement may leave out
+	// and still write the book's sections. A left-out chapter leaves its
+	// pages to the one before it, and once the book holds chapters no later
+	// version makes its item. So a placement that leaves out more writes
+	// none, and the book stays whole until a better placement places its
+	// answer again. A left-out section costs no chapter, so sections are not
+	// counted.
+	mostLeftOut = 0.2
 )
 
 // Answer is the model's answer, as prompts/contents/answer.schema.json holds
@@ -75,45 +90,58 @@ func Version(answer, parse store.Output) string {
 		parse.Producer + "@" + parse.ProducerVersion
 }
 
-// QueueAfterStructure queues the book's contents task in the write that ends
-// its structure task done, where the outline rule wrote it no sections and
-// the book never held a contents task. A later structure queues none. The
-// stage runs again only through a replay that a person confirms, or through
-// `tasks retry` on a failed task.
-func QueueAfterStructure(ctx context.Context, tx *store.Tx, task store.Task) error {
-	if task.ItemKey == nil {
-		return nil
-	}
-	key := *task.ItemKey
-	r, err := records(ctx, tx, key)
-	if err != nil || !waitsForContents(r) {
+// AfterStructure is the hook that runs in the write that ends a book's
+// structure task done, where the book waits for its contents. Where the book
+// holds a done answer, it places that answer again. Where it holds none, it
+// queues the book's contents task on the book's first profile. A later
+// profile queues none, so a replay of a model-free stage starts no model
+// call, and `items replay --stage contents` reads such a book once a person
+// confirms its estimate.
+func AfterStructure(log *slog.Logger) server.AfterStage {
+	return func(ctx context.Context, tx *store.Tx, task store.Task) error {
+		if task.ItemKey == nil {
+			return nil
+		}
+		r, err := tx.Records(ctx, *task.ItemKey)
+		if err != nil || !waitsForContents(r) {
+			return err
+		}
+		if store.NewestDone(r.Outputs, store.StageContents) != nil {
+			return place(ctx, tx, r, log)
+		}
+		if slices.ContainsFunc(r.Tasks, func(t store.Task) bool {
+			return t.Stage == store.StageContents || t.Stage == store.StageStructure && t.State == store.TaskDone && t.ID != task.ID
+		}) {
+			return nil
+		}
+		_, err = tx.Enqueue(ctx, store.Task{ItemKey: task.ItemKey, Stage: store.StageContents, Capability: Capability})
 		return err
 	}
-	if held, err := tx.HasTask(ctx, key, store.StageContents); err != nil || held {
-		return err
-	}
-	_, err = tx.Enqueue(ctx, store.Task{ItemKey: &key, Stage: store.StageContents, Capability: Capability})
-	return err
 }
 
-// AfterAnswer runs in the write that ends a book's contents task done. It
-// places the entries of the newest done answer on the book's pdf-text parse,
-// and writes the sections they make through sections.Write. An answer of no
-// entries, or of entries that make no usable outline, writes none.
-func AfterAnswer(ctx context.Context, tx *store.Tx, task store.Task) error {
-	if task.ItemKey == nil {
-		return nil
+// AfterAnswer is the hook that runs in the write that ends a book's contents
+// task done, and places its answer where the book still waits for it.
+func AfterAnswer(log *slog.Logger) server.AfterStage {
+	return func(ctx context.Context, tx *store.Tx, task store.Task) error {
+		if task.ItemKey == nil {
+			return nil
+		}
+		r, err := tx.Records(ctx, *task.ItemKey)
+		if err != nil || !waitsForContents(r) {
+			return err
+		}
+		return place(ctx, tx, r, log)
 	}
-	key := *task.ItemKey
-	item, ok, err := tx.Item(ctx, key)
-	if err != nil || !ok {
-		return err
-	}
-	outputs, err := tx.Outputs(ctx, key)
-	if err != nil {
-		return err
-	}
-	newest := store.NewestDone(outputs, store.StageContents)
+}
+
+// place places the entries of the book's newest done answer on its pdf-text
+// parse, and writes the sections they make through sections.Write. It writes
+// none where the entries make no usable outline, or where it left out more
+// than mostLeftOut of a level's paged entries at or above the chapter level,
+// and logs which.
+func place(ctx context.Context, tx *store.Tx, r store.ItemRecords, log *slog.Logger) error {
+	key := r.Item.Key
+	newest := store.NewestDone(r.Outputs, store.StageContents)
 	if newest == nil {
 		return nil
 	}
@@ -121,7 +149,7 @@ func AfterAnswer(ctx context.Context, tx *store.Tx, task store.Task) error {
 	if err != nil {
 		return fmt.Errorf("read the contents answer on %s: %w", key, err)
 	}
-	profile, _, err := sections.NewestProfile(outputs)
+	profile, _, err := sections.NewestProfile(r.Outputs)
 	if err != nil {
 		return err
 	}
@@ -129,14 +157,61 @@ func AfterAnswer(ctx context.Context, tx *store.Tx, task store.Task) error {
 	if err != nil {
 		return fmt.Errorf("read the parse that %s's contents are placed on: %w", key, err)
 	}
-	book := sections.Book{Pages: len(parse.Units), Titles: []string{deref(item.Title), deref(profile.Title)}, Units: parse.Units}
-	rows := sections.FromEntries(Place(answer.Entries, parse.Units), book, store.SectionsFromContents, Version(*newest, parse.Output))
-	return sections.Write(ctx, tx, item, rows)
+	version := Version(*newest, parse.Output)
+	if slices.ContainsFunc(r.Sections, func(s store.Section) bool {
+		return s.Producer == store.SectionsFromContents && s.ProducerVersion == version
+	}) {
+		return nil
+	}
+	entries, left := Place(answer.Entries, parse.Units)
+	counts := []any{"key", key, "version", version, "entries", len(answer.Entries), "placed", len(entries), "left_out", len(left)}
+	book := sections.Book{Pages: len(parse.Units), Titles: []string{deref(r.Item.Title), deref(profile.Title)}, Units: parse.Units}
+	rows := sections.FromEntries(entries, book, store.SectionsFromContents, version)
+	if rows == nil {
+		log.Warn("the placed contents entries make no usable outline, so the book holds no sections from them", counts...)
+		return nil
+	}
+	if level, ok := tooManyLeftOut(answer.Entries, left, rows); ok {
+		log.Warn("the placement left out too many contents entries at one level, so the book holds no sections from them",
+			append(counts, "level", level)...)
+		return nil
+	}
+	log.Info("placed the book's contents entries", append(counts, "sections", len(rows))...)
+	return sections.Write(ctx, tx, r.Item, rows)
 }
 
-// waitsForContents says whether a book waits for its printed contents: its
-// newest profile counts sections.WholeFilePages pages or more, its pdf-text
-// parse is done, and its outline gave it no sections.
+// tooManyLeftOut is the first level, at or above the chapter level of rows,
+// at which left holds more than mostLeftOut of answer's paged entries, and
+// false where none does.
+func tooManyLeftOut(answer, left []AnswerEntry, rows []store.Section) (int, bool) {
+	chapters := 0
+	for _, s := range rows {
+		if s.Kind == store.SectionChapter {
+			chapters = max(chapters, s.Level)
+		}
+	}
+	paged, out := map[int]int{}, map[int]int{}
+	for _, e := range answer {
+		if e.Page != nil && strings.TrimSpace(*e.Page) != "" {
+			paged[e.Level]++
+		}
+	}
+	for _, e := range left {
+		out[e.Level]++
+	}
+	for level := 1; level <= chapters; level++ {
+		if float64(out[level]) > mostLeftOut*float64(paged[level]) {
+			return level, true
+		}
+	}
+	return 0, false
+}
+
+// waitsForContents says whether a book takes its sections from its printed
+// contents: its newest profile counts sections.WholeFilePages pages or more,
+// its pdf-text parse is done, and the outline rule in force gives it no
+// sections. It asks the rule rather than the sections held, so a book that an
+// older rule outlined waits once the rule in force finds its outline unusable.
 func waitsForContents(r store.ItemRecords) bool {
 	profile, ok, err := sections.NewestProfile(r.Outputs)
 	if err != nil || !ok || profile.Pages < sections.WholeFilePages {
@@ -145,8 +220,7 @@ func waitsForContents(r store.ItemRecords) bool {
 	parsed := slices.ContainsFunc(r.Outputs, func(o store.Output) bool {
 		return o.Stage == store.StageParse && o.Producer == sections.ParsedBy.Name && o.State == store.OutputDone
 	})
-	outlined := slices.ContainsFunc(r.Sections, func(s store.Section) bool { return s.Producer == store.SectionsFromOutline })
-	return parsed && !outlined
+	return parsed && sections.Outline(profile, nil, deref(r.Item.Title), "") == nil
 }
 
 // due says whether a replay runs the stage on a book: the book waits for its
@@ -169,7 +243,7 @@ func Replayable(st *store.Store) server.Replayable {
 	return server.Replayable{
 		Capability: func(store.Item) (string, bool) { return Capability, true },
 		Queue: func(ctx context.Context, tx *store.Tx, item store.Item) (bool, error) {
-			r, err := records(ctx, tx, item.Key)
+			r, err := tx.Records(ctx, item.Key)
 			if err != nil {
 				return false, err
 			}
@@ -184,20 +258,6 @@ func Replayable(st *store.Store) server.Replayable {
 			return modelstage.Estimate(ctx, st, store.StageContents, items, due)
 		},
 	}
-}
-
-// records is the outputs and sections of the item under key, as this write
-// sees them.
-func records(ctx context.Context, tx *store.Tx, key string) (store.ItemRecords, error) {
-	outputs, err := tx.Outputs(ctx, key)
-	if err != nil {
-		return store.ItemRecords{}, err
-	}
-	held, err := tx.Sections(ctx, key)
-	if err != nil {
-		return store.ItemRecords{}, err
-	}
-	return store.ItemRecords{Outputs: outputs, Sections: held}, nil
 }
 
 func deref(s *string) string {
