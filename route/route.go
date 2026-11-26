@@ -76,8 +76,10 @@ const (
 	CauseTheme = "theme"
 )
 
-// GuessFloor is the confidence at or above which the quality gate's side
-// guess places an item. Below it, the item waits in review with its guess.
+// GuessFloor is the confidence at or above which the quality gate's personal
+// guess places an item. A fleet guess places nothing at any confidence: a tag,
+// a rule or a person puts an item on the fleet side, never a guess. Below the
+// floor, and on a fleet guess, the item waits in review with its guess.
 const GuessFloor = 0.7
 
 // Who decided, as decided_by spells it, beside rule:<name>, model:<run> and
@@ -143,7 +145,7 @@ func byGuess(guess *Guess) store.Decision {
 	}
 	confidence := guess.Confidence
 	d := store.Decision{Gate: store.GateSide, DecidedBy: ByModel(guess.Run), Confidence: &confidence}
-	if onASide(guess.Side) && confidence >= GuessFloor {
+	if guess.Side == connectors.SidePersonal && confidence >= GuessFloor {
 		d.Verdict, d.Cause = guess.Side, CauseGuess
 	} else {
 		d.Verdict, d.Cause = VerdictReview, CauseBelowFloor

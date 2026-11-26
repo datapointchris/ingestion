@@ -30,7 +30,7 @@ var columns = []gotermboard.Column{
 // lead, because the reading pane decides them best.
 var reasons = []struct{ reason, title string }{
 	{store.ReasonQualityReview, "the gate asks"},
-	{route.CauseBelowFloor, "guess below its floor"},
+	{route.CauseBelowFloor, "fleet guess, or below its floor"},
 	{route.CauseTagsDisagree, "tags name both sides"},
 	{route.CauseNoGuess, "no rule, no answer"},
 	{route.CauseGateError, "the gate could not read the set or the sightings"},

@@ -583,9 +583,10 @@ places the item by the first rung that decides it:
    sighting carries its `subreddit` field for a rule to match.
 3. **The quality gate.** The item waits at `quality` until the gate answers. A drop drops it as
    `quality-drop`, and an unsure answer sends it to review as `quality-review`. A pass reads the
-   gate's side guess, which places the item where its confidence reaches the floor that
-   `route.GuessFloor` sets. A guess below the floor, or `unsure`, sends it to review as
-   `below-floor`.
+   gate's side guess. A personal guess places the item where its confidence reaches the floor
+   that `route.GuessFloor` sets. A fleet guess places nothing at any confidence, because a tag,
+   a rule or a person puts an item on the fleet side, never a guess. A fleet guess, a guess below
+   the floor, or `unsure` sends the item to review as `below-floor`, with the guess beside it.
 4. **Review.** An item that no tag or rule placed, and that holds no answer of the quality gate,
    waits as `no-guess` once an apply runs the side gate again. That is an item whose quality task
    failed, or whose scan could not read the set in force and so queued none.

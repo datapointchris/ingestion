@@ -32,6 +32,7 @@ func sighting(connector, subreddit string, tags ...string) store.Sighting {
 func TestTheSideGatePlacesEachItemByTheFirstRungThatDecidesIt(t *testing.T) {
 	confident := &route.Guess{Side: connectors.SideFleet, Confidence: 0.9, Run: "run-1"}
 	doubtful := &route.Guess{Side: connectors.SidePersonal, Confidence: 0.4, Run: "run-2"}
+	sure := &route.Guess{Side: connectors.SidePersonal, Confidence: 0.9, Run: "run-3"}
 	for _, c := range []struct {
 		name      string
 		sightings []store.Sighting
@@ -48,7 +49,8 @@ func TestTheSideGatePlacesEachItemByTheFirstRungThatDecidesIt(t *testing.T) {
 			"review", "tag", "tags-disagree",
 		},
 		{"a rule", []store.Sighting{sighting("reddit-exports", "Cooking")}, confident, "personal", "rule:cooking", "rule"},
-		{"a confident guess", []store.Sighting{sighting("reddit-exports", "golang")}, confident, "fleet", "model:run-1", "guess"},
+		{"a confident personal guess", []store.Sighting{sighting("reddit-exports", "golang")}, sure, "personal", "model:run-3", "guess"},
+		{"a confident fleet guess", []store.Sighting{sighting("reddit-exports", "golang")}, confident, "review", "model:run-1", "below-floor"},
 		{"a low-confidence guess", []store.Sighting{sighting("reddit-exports", "golang")}, doubtful, "review", "model:run-2", "below-floor"},
 		{"no guess", []store.Sighting{sighting("reddit-exports", "golang")}, nil, "review", "gate", "no-guess"},
 	} {

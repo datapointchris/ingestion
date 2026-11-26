@@ -280,9 +280,9 @@ func judged(verdict string, sure float64, side string, sideSure float64) map[str
 // save names the setting it lacks. A worker with the queue adapter sends one
 // dispatch per save under the config's model and effort, and none for the
 // save its rule placed. The connector's first fill holds the rest until it is
-// released, and shows the first run's tokens. The gate passes a good save onto
-// its guessed side, drops a confident junk one softly with its idea, and sends
-// an unsure one to review.
+// released, and shows the first run's tokens. The gate holds a good save's
+// confident fleet guess in review, drops a confident junk one softly with its
+// idea, and sends an unsure one to review.
 func TestTheQualityGateJudgesOnlyTheSavesNoRulePlaces(t *testing.T) {
 	p := newGatedPipeline(t, mustAbs(t, "../examples/declarations"))
 	stand := newStandInDispatch(t, p.provider)
@@ -340,9 +340,9 @@ func TestTheQualityGateJudgesOnlyTheSavesNoRulePlaces(t *testing.T) {
 	if _, side, _ := p.decisions(t, "reddit/t3_aa1"); side.DecidedBy != "rule:cooking-subreddits" {
 		t.Errorf("the Cooking save is %s by %s, want placed by its rule", side.Verdict, side.DecidedBy)
 	}
-	if _, side, read := p.decisions(t, "reddit/t3_bb2"); side.Verdict != connectors.SideFleet || !strings.HasPrefix(side.DecidedBy, "model:") ||
-		read.Verdict != connectors.ReadModel {
-		t.Errorf("the passed save is %s by %s and read %s, want fleet by the model's run and read by a model", side.Verdict, side.DecidedBy, read.Verdict)
+	if _, side, _ := p.decisions(t, "reddit/t3_bb2"); side.Verdict != route.VerdictReview || !strings.HasPrefix(side.DecidedBy, "model:") ||
+		side.Cause != route.CauseBelowFloor {
+		t.Errorf("the passed save's fleet guess is %s by %s for %s, want review by the model's run for %s", side.Verdict, side.DecidedBy, side.Cause, route.CauseBelowFloor)
 	}
 	if phase := p.phase(t, "reddit/t3_cc3"); phase != "dropped" {
 		t.Errorf("the junk save's phase is %s, want dropped", phase)
@@ -354,8 +354,8 @@ func TestTheQualityGateJudgesOnlyTheSavesNoRulePlaces(t *testing.T) {
 		!strings.Contains(out, `idea "The drop idea in one line."`) {
 		t.Errorf("items show on the dropped save printed %q, %v, want its idea quoted", out, err)
 	}
-	if c := p.gated(t); !maps.Equal(c.review, map[string]int{store.ReasonQualityReview: 1}) {
-		t.Errorf("the review queue holds %v, want the unsure save as quality-review", c.review)
+	if c := p.gated(t); !maps.Equal(c.review, map[string]int{store.ReasonQualityReview: 1, string(route.CauseBelowFloor): 1}) {
+		t.Errorf("the review queue holds %v, want the unsure save as quality-review and the fleet guess below-floor", c.review)
 	}
 }
 

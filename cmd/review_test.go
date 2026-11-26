@@ -270,13 +270,13 @@ func TestASaveIsPlacedByItsRuleOrWaitsInReviewForAPersonToPlace(t *testing.T) {
 // A save that waits on the gate for want of a rule is placed once a rule or
 // the quality gate's answer arrives after its parse: by the rule of a set
 // applied later, as on a first deploy that applies its set after the first
-// parses, which withdraws its quality task, or by the gate's confident guess.
-// An apply that changes nothing for a save appends nothing to it. A save
-// that the guess places on the fleet side then waits at its model read.
+// parses, which withdraws its quality task, or by the gate's confident
+// personal guess. An apply that changes nothing for a save appends nothing to
+// it. A save that the guess places on the personal side is read as is.
 func TestASaveWaitingOnTheGateIsPlacedByARuleOrGuessThatArrivesLater(t *testing.T) {
 	p := newGatedPipeline(t, "")
 	stand := newStandInDispatch(t, p.provider)
-	stand.answer = answerBy(map[string]map[string]any{"bb2": judged(qualitygate.AnswerPass, 0.9, connectors.SideFleet, 0.95)})
+	stand.answer = answerBy(map[string]map[string]any{"bb2": judged(qualitygate.AnswerPass, 0.9, connectors.SidePersonal, 0.95)})
 	p.landExports(t, map[string][]byte{"first": redditExport(redditSave("t3_aa1", "Cooking"), redditSave("t3_bb2", "golang"))})
 	p.parse(t, extract.Builtin())
 	p.scanFindingNothing(t)
@@ -296,11 +296,11 @@ func TestASaveWaitingOnTheGateIsPlacedByARuleOrGuessThatArrivesLater(t *testing.
 	if n := len(stand.starts()); n != 1 {
 		t.Errorf("the gate sent %d dispatches, want one for the save no rule names and none for the save the apply placed", n)
 	}
-	if _, side, read := p.decisions(t, "reddit/t3_bb2"); side.Verdict != connectors.SideFleet || !strings.HasPrefix(side.DecidedBy, "model:") ||
-		read.Verdict != connectors.ReadModel {
-		t.Errorf("after a confident guess the save is %s by %s and read %s, want fleet by the model's run and read by a model", side.Verdict, side.DecidedBy, read.Verdict)
+	if _, side, read := p.decisions(t, "reddit/t3_bb2"); side.Verdict != connectors.SidePersonal || !strings.HasPrefix(side.DecidedBy, "model:") ||
+		read.Verdict != connectors.ReadAsIs {
+		t.Errorf("after a confident guess the save is %s by %s and read %s, want personal by the model's run and read as is", side.Verdict, side.DecidedBy, read.Verdict)
 	}
-	if c, at := p.gated(t), p.shown(t, "reddit/t3_bb2").Item.WaitingAt; len(c.review) != 0 || c.waiting != 1 || text(at) != store.StageModelRead {
-		t.Errorf("%d saves wait and the review queue holds %v, want the fleet save alone waiting at its model read", c.waiting, c.review)
+	if c := p.gated(t); len(c.review) != 0 {
+		t.Errorf("the review queue holds %v, want nothing", c.review)
 	}
 }
