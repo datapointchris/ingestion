@@ -22,6 +22,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -113,7 +114,8 @@ func dsn(path string, readOnly bool) string {
 // from a scratch database the files are applied to. Where the store already
 // holds tables and the files change one, it first copies the store beside
 // itself, so an earlier release has a store to return to. It rebuilds each
-// table whose column the files make nullable, adds each column a table lacks,
+// table whose column the files make nullable or whose CHECK they change, adds
+// each column a table lacks,
 // applies each file in name order, checks that Tables declares every table the
 // files create, guards each logged table, and starts the stamp clock past the
 // newest stamp in any table.
@@ -200,7 +202,8 @@ func (s *Store) converge(ctx context.Context) error {
 // schemaChanges is what converging the files changes in a store. A CREATE
 // TABLE in a file never changes a table that exists, so a column the table
 // lacks is added with its type, NOT NULL and default and no other constraint,
-// and a table whose column the files make nullable is rebuilt whole.
+// and a table whose column the files make nullable, or whose CHECK they
+// change, is rebuilt whole.
 type schemaChanges struct {
 	// held says the store held tables before this open.
 	held    bool
@@ -245,7 +248,10 @@ func planChanges(ctx context.Context, declared, live *sql.DB) (schemaChanges, er
 		for _, c := range have {
 			notNull[c.name] = c.notNull
 		}
-		loosened := false
+		loosened, err := checksChanged(ctx, declared, live, name)
+		if err != nil {
+			return changes, err
+		}
 		var missing []columnAdd
 		for _, c := range want {
 			was, ok := notNull[c.name]
@@ -265,6 +271,90 @@ func planChanges(ctx context.Context, declared, live *sql.DB) (schemaChanges, er
 	return changes, nil
 }
 
+// checksChanged says whether live holds a CHECK on table that declared does
+// not, such as one the files widen to take a new state. SQLite cannot change a
+// CHECK in place, so such a table is rebuilt. A CHECK the files declare and
+// live lacks is on a column added later, which converge adds with no other
+// constraint, so it changes nothing.
+func checksChanged(ctx context.Context, declared, live *sql.DB, table string) (bool, error) {
+	want, err := tableChecks(ctx, declared, table)
+	if err != nil {
+		return false, err
+	}
+	have, err := tableChecks(ctx, live, table)
+	if err != nil {
+		return false, err
+	}
+	for _, check := range have {
+		if !slices.Contains(want, check) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// tableChecks reads the expression of each CHECK in table's CREATE TABLE, with
+// its runs of whitespace made one space.
+func tableChecks(ctx context.Context, db *sql.DB, table string) ([]string, error) {
+	var create string
+	if err := db.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&create); err != nil {
+		return nil, fmt.Errorf("read how %s is created: %w", table, err)
+	}
+	var checks []string
+	upper := strings.ToUpper(create)
+	for at := 0; ; {
+		found := strings.Index(upper[at:], "CHECK")
+		if found < 0 {
+			return checks, nil
+		}
+		start := at + found
+		at = start + len("CHECK")
+		if start > 0 && isWordByte(upper[start-1]) || at < len(upper) && isWordByte(upper[at]) {
+			continue
+		}
+		open := at + len(upper[at:]) - len(strings.TrimLeft(upper[at:], " \t\r\n"))
+		if open >= len(create) || create[open] != '(' {
+			continue
+		}
+		end, ok := closingParen(create, open)
+		if !ok {
+			return nil, fmt.Errorf("%s's CHECK at byte %d never closes", table, start)
+		}
+		checks = append(checks, strings.Join(strings.Fields(create[open+1:end]), " "))
+		at = end + 1
+	}
+}
+
+// closingParen is the index of the parenthesis that closes the one at open in
+// s, skipping any inside a quoted string or name.
+func closingParen(s string, open int) (int, bool) {
+	depth := 0
+	var quote byte
+	for i := open; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+		case c == '\'' || c == '"' || c == '`':
+			quote = c
+		case c == '(':
+			depth++
+		case c == ')':
+			depth--
+			if depth == 0 {
+				return i, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func isWordByte(c byte) bool {
+	return c == '_' || c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9'
+}
+
 // copyBeside writes a copy of the store beside it, named for the instant it
 // was taken, before converge changes the store's schema. An earlier release
 // refuses or misreads a store a later one converged, so returning to one
@@ -278,7 +368,7 @@ func (s *Store) copyBeside(ctx context.Context) error {
 }
 
 // rebuild remakes table as the files declare it and keeps every row, because
-// SQLite cannot make a column nullable in place. It follows SQLite's
+// SQLite cannot make a column nullable or change a CHECK in place. It follows SQLite's
 // documented procedure: foreign keys off, a new table, the rows copied, the
 // old table dropped and the new one renamed, then a foreign key check, in one
 // transaction. Applying the files and guarding the tables afterwards puts the

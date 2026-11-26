@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -38,11 +39,14 @@ func TestTheClientHoldsWhatYPLsSuiteWrites(t *testing.T) {
 		for _, pattern := range patterns {
 			mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
 				reached[scope] = true
-				if r.Method == http.MethodDelete {
+				switch {
+				case r.Method == http.MethodDelete:
 					w.WriteHeader(http.StatusNoContent)
-					return
+				case strings.HasSuffix(r.URL.Path, "/audio"):
+					_, _ = w.Write([]byte("audio"))
+				default:
+					_, _ = w.Write([]byte("null"))
 				}
-				_, _ = w.Write([]byte("null"))
 			})
 		}
 	}
@@ -62,6 +66,14 @@ func TestTheClientHoldsWhatYPLsSuiteWrites(t *testing.T) {
 	}
 	if err := c.DeletePlaylistItem(ctx, "PLtestcapture", "item0001"); err != nil {
 		t.Error(err)
+	}
+	if _, err := c.Captions(ctx, "testvid0001"); err != nil {
+		t.Error(err)
+	}
+	if audio, err := c.Audio(ctx, "testvid0001"); err != nil {
+		t.Error(err)
+	} else {
+		_ = audio.Body.Close()
 	}
 	if got, want := slices.Sorted(maps.Keys(reached)), slices.Sorted(slices.Values(Scopes)); !slices.Equal(got, want) {
 		t.Errorf("the client's routes need the scopes %v, and Scopes is %v", got, want)

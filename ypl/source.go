@@ -7,7 +7,9 @@
 // source_parameters: a playlist, whose items land as they appear, and a
 // channel, whose new uploads land after a first poll that keeps a baseline.
 // It deletes a landed save from its playlist for a connector that declares
-// after_landing delete, which a playlist polled on a schedule declares.
+// after_landing delete, which a playlist polled on a schedule declares. It
+// parses each video from its captions, and where it has none, from Whisper's
+// transcript of its audio, each read through ypl.
 package ypl
 
 import (
@@ -19,6 +21,7 @@ import (
 
 	"github.com/datapointchris/ingestion/connectors"
 	"github.com/datapointchris/ingestion/deletion"
+	"github.com/datapointchris/ingestion/extract"
 	"github.com/datapointchris/ingestion/polling"
 	"github.com/datapointchris/ingestion/sources"
 )
@@ -51,15 +54,19 @@ const (
 )
 
 // Scopes are what the source's service client asks for: what the poller
-// reads, and what the deleter writes. ypl's route table grants each, and a
-// test holds them to the routes this package calls.
-var Scopes = []string{"ypl.playlists.read", "ypl.channels.read", "ypl.videos.read", "ypl.playlist-items.write"}
+// reads, what the deleter writes, and what the extractors read. ypl's route
+// table grants each, and a test holds them to the routes this package calls.
+var Scopes = []string{
+	"ypl.playlists.read", "ypl.channels.read", "ypl.videos.read", "ypl.playlist-items.write",
+	"ypl.transcripts.read", "ypl.audio.read",
+}
 
 func init() {
 	sources.Register(sources.Registration{
 		Name: Source, Scopes: Scopes, Rules: rules,
-		Poller:  func(api string, client *http.Client) polling.Poller { return NewPoller(NewClient(api, client)) },
-		Deleter: func(api string, client *http.Client) deletion.Deleter { return NewDeleter(NewClient(api, client)) },
+		Poller:     func(api string, client *http.Client) polling.Poller { return NewPoller(NewClient(api, client)) },
+		Deleter:    func(api string, client *http.Client) deletion.Deleter { return NewDeleter(NewClient(api, client)) },
+		Extractors: []extract.Extractor{CaptionsExtractor, WhisperExtractor},
 	})
 }
 

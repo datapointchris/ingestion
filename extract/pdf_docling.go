@@ -25,14 +25,15 @@ const DoclingTimeout = 3 * time.Hour
 // sections.FontShares.CodeHeavyMathLight picks.
 //
 // It is secondary, so landing never queues it. The write that ends such a
-// book's structure task queues it, and its parse writes beside PDFText's. A
-// worker runs one at a time unless [worker.slot_limits] says otherwise. Its
+// book's structure task queues it, and its parse writes beside PDFText's. It
+// runs in SlotGroupHeavy, so a worker runs it alone among that group's parses
+// unless [worker.slot_limits] says otherwise. Its
 // version names Docling's and DoclingPins, so a parse by other libraries or
 // weights writes beside the old one. A change to the program's own reading
 // raises the leading number.
 var PDFDocling = func() Extractor {
 	e := Program("docling", "1+docling-"+DoclingVersion+"-"+DoclingPins, MediaTypePDF, ProgramDir+"/pdf-docling")
-	e.Positional, e.Secondary, e.Timeout, e.SlotLimit = true, true, DoclingTimeout, 1
+	e.Positional, e.Secondary, e.Timeout, e.SlotLimit, e.SlotGroup = true, true, DoclingTimeout, 1, SlotGroupHeavy
 	return e
 }()
 
@@ -40,6 +41,6 @@ var PDFDocling = func() Extractor {
 // release/python-requirements.txt, then every model pin in
 // release/download-docling-models, one a line. Each shapes Docling's
 // markdown, and a test fails until this equals them.
-const DoclingPins = "e919138066e6"
+const DoclingPins = "87e1925f632b"
 
 func init() { store.PreferParse(PDFDocling.Name) }

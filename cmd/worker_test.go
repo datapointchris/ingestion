@@ -14,13 +14,14 @@ import (
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
 	"github.com/datapointchris/ingestion/worker"
+	"github.com/datapointchris/ingestion/ypl"
 )
 
-// A worker on the default config, with no [worker.slot_limits], never runs two
-// Docling parses at once, because the extractor holds one slot. It leases
-// another capability's task on its second slot while one runs, though the
-// Docling tasks are older.
-func TestADoclingParseHoldsOneSlotWhereNoSlotLimitIsConfigured(t *testing.T) {
+// A worker on the default config, with no [worker.slot_limits], never runs a
+// Docling parse and a Whisper parse at once, nor two of either, because both
+// share the heavy slot group's one slot. It leases another capability's task
+// on its other slots while one runs, though the heavy tasks are older.
+func TestDoclingAndWhisperParsesShareOneHeavySlotWhereNoSlotLimitIsConfigured(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	p := newPipeline(t, extract.Builtin(), func(context.Context, *store.Tx, store.Task) error { return nil })
@@ -35,8 +36,11 @@ func TestADoclingParseHoldsOneSlotWhereNoSlotLimitIsConfigured(t *testing.T) {
 		}
 		books = append(books, landed.Key)
 	}
+	doclingCapability, whisperCapability := extract.Capability(extract.PDFDocling), extract.Capability(ypl.WhisperExtractor)
 	if err := p.st.Update(ctx, func(tx *store.Tx) error {
-		for _, stage := range []struct{ name, capability string }{{store.StageParse, "parse:docling"}, {store.StageScan, scan.Capability}} {
+		for _, stage := range []struct{ name, capability string }{
+			{store.StageParse, doclingCapability}, {store.StageParse, whisperCapability}, {store.StageScan, scan.Capability},
+		} {
 			for _, key := range books {
 				if _, err := tx.Enqueue(ctx, store.Task{ItemKey: &key, Stage: stage.name, Capability: stage.capability}); err != nil {
 					return err
@@ -49,10 +53,10 @@ func TestADoclingParseHoldsOneSlotWhereNoSlotLimitIsConfigured(t *testing.T) {
 	}
 
 	var running, most atomic.Int32
-	var besideDocling atomic.Bool
+	var besideHeavy atomic.Bool
 	scanned := make(chan struct{})
 	var scannedOnce sync.Once
-	docling := fakeHandler{capability: extract.Capability(extract.PDFDocling), slotLimit: extract.PDFDocling.SlotLimit, do: func() {
+	heavy := func() {
 		n := running.Add(1)
 		for m := most.Load(); n > m && !most.CompareAndSwap(m, n); m = most.Load() {
 		}
@@ -61,27 +65,29 @@ func TestADoclingParseHoldsOneSlotWhereNoSlotLimitIsConfigured(t *testing.T) {
 		case <-time.After(5 * time.Second):
 		}
 		running.Add(-1)
-	}}
+	}
+	docling := fakeHandler{capability: doclingCapability, slotLimit: extract.PDFDocling.SlotLimit, slotGroup: extract.PDFDocling.SlotGroup, do: heavy}
+	whisper := fakeHandler{capability: whisperCapability, slotLimit: ypl.WhisperExtractor.SlotLimit, slotGroup: ypl.WhisperExtractor.SlotGroup, do: heavy}
 	scanner := fakeHandler{capability: scan.Capability, do: func() {
 		for wait := time.Now().Add(5 * time.Second); running.Load() == 0 && time.Now().Before(wait); {
 			time.Sleep(5 * time.Millisecond)
 		}
 		if running.Load() > 0 {
-			besideDocling.Store(true)
+			besideHeavy.Store(true)
 		}
 		scannedOnce.Do(func() { close(scanned) })
 	}}
 	ran := make(chan error, 1)
 	go func() {
 		ran <- worker.Run(ctx, p.worker, worker.Config{
-			ID: "slots", Version: "test", Slots: 2,
+			ID: "slots", Version: "test", Slots: 3,
 			Lease: time.Minute, Poll: 20 * time.Millisecond, Log: quiet,
-		}, docling, scanner)
+		}, docling, whisper, scanner)
 	}()
 	deadline := time.Now().Add(20 * time.Second)
-	for p.count(t, `SELECT count(*) FROM tasks WHERE state = 'failed'`) < 6 {
+	for p.count(t, `SELECT count(*) FROM tasks WHERE state = 'failed'`) < 9 {
 		if time.Now().After(deadline) {
-			t.Fatal("the worker did not run its six tasks")
+			t.Fatal("the worker did not run its nine tasks")
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -90,10 +96,10 @@ func TestADoclingParseHoldsOneSlotWhereNoSlotLimitIsConfigured(t *testing.T) {
 		t.Fatal(err)
 	}
 	if most.Load() != 1 {
-		t.Errorf("%d Docling parses ran at once, want 1", most.Load())
+		t.Errorf("%d heavy parses ran at once, want 1", most.Load())
 	}
-	if !besideDocling.Load() {
-		t.Error("no scan ran while a Docling parse held its slot")
+	if !besideHeavy.Load() {
+		t.Error("no scan ran while a heavy parse held its slot")
 	}
 }
 
@@ -148,12 +154,15 @@ func TestADeployThatStopsTheWorkerMidParseQueuesItsTaskAgain(t *testing.T) {
 type fakeHandler struct {
 	capability string
 	slotLimit  int
+	slotGroup  string
 	do         func()
 }
 
 func (h fakeHandler) Capability() string { return h.capability }
 
 func (h fakeHandler) SlotLimit() int { return h.slotLimit }
+
+func (h fakeHandler) SlotGroup() string { return h.slotGroup }
 
 func (h fakeHandler) Run(context.Context, worker.Task) worker.Result {
 	h.do()

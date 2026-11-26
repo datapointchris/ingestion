@@ -431,10 +431,11 @@ func (r ItemRecords) NewestDecision(gate string) (Decision, bool) {
 }
 
 // outputCondition is True where any producer's output for stage is done,
-// Unknown where one waits or a model stage's task is queued or leased, and
-// False where every one failed. A model stage's open task holds the item at
-// that stage, whether a first fill holds it, no worker claims it, or its
-// dispatch has not answered. A model stage's waiting output holds it only
+// Unknown where one waits or a model stage's task is queued or leased, False
+// where one failed, and Unknown where the rest deferred, so a parse handed to
+// another extractor reads as pending until that one ends. A model stage's
+// open task holds the item at that stage, whether a first fill holds it, no
+// worker claims it, or its dispatch has not answered. A model stage's waiting output holds it only
 // while that task is open, because a placement that withdraws the task leaves
 // the output as it was.
 func (r ItemRecords) outputCondition(stage string) (Condition, bool) {
@@ -455,6 +456,8 @@ func (r ItemRecords) outputCondition(stage string) (Condition, bool) {
 		return Condition{Type: stage, Status: ConditionUnknown, Reason: OutputWaiting}, true
 	case states[OutputFailed]:
 		return Condition{Type: stage, Status: ConditionFalse, Reason: OutputFailed}, true
+	case states[OutputDeferred]:
+		return Condition{Type: stage, Status: ConditionUnknown, Reason: OutputDeferred}, true
 	}
 	return Condition{}, false
 }

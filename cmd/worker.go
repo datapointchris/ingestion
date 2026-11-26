@@ -224,13 +224,15 @@ var workerRunCmd = &cobra.Command{
 		"  lease  how long each lease runs before a heartbeat extends it (default " + shortDuration(defaultLease) + ")\n" +
 		"  poll   how often an idle worker claims again (default " + shortDuration(defaultPoll) + ")\n" +
 		"\n" +
-		"Its [worker.slot_limits] table caps how many tasks of a capability run at\n" +
-		"once, within slots, so a long task leaves the other slots free. Each key is a\n" +
-		"capability and each value 1 or more. A Docling parse holds one slot unless\n" +
-		"the table names it, and a capability that neither caps may take every slot:\n" +
+		"Its [worker.slot_limits] table caps how many tasks of a capability, or of a\n" +
+		"slot group's capabilities together, run at once, within slots, so a long task\n" +
+		"leaves the other slots free. Each key is a slot group or a capability in no\n" +
+		"group, and each value 1 or more. The " + extract.SlotGroupHeavy + " group holds the Docling and\n" +
+		"Whisper parses, whose runs each hold gigabytes, and runs one at a time unless\n" +
+		"the table names it. A capability that nothing caps may take every slot:\n" +
 		"\n" +
 		"  [worker.slot_limits]\n" +
-		"  \"" + extract.Capability(extract.PDFDocling) + "\" = 1\n" +
+		"  " + extract.SlotGroupHeavy + " = 1\n" +
 		"\n" +
 		"It runs each deliverer that a [deliver.<name>] table opens, where <name> is a\n" +
 		"deliverer this build registers: " + strings.Join(deliver.Names(), ", ") + ". A table names:\n" +

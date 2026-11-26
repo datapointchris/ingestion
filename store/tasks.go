@@ -249,7 +249,12 @@ type Claim struct {
 	// claim leases, within Max. A capability that it does not name is bound
 	// by Max alone.
 	MaxByCapability map[string]int
-	Lease           time.Duration
+	// SlotGroups bound how many tasks the claim leases of each group's
+	// capabilities together, within Max, such as two heavy parses that the
+	// worker's memory holds only one of. A capability sits in one group at
+	// most, and a grouped one takes its group's bound in place of its own.
+	SlotGroups map[string]SlotGroup
+	Lease      time.Duration
 	// Admit, where it is not nil, runs before the claim leases each task. It
 	// answers why the set in force wants the task's work done by nobody, such
 	// as a poll of a connector that the set lacks, and "" otherwise. When it
@@ -260,6 +265,39 @@ type Claim struct {
 	// claim fails a task because its leases lapsed. It gets the reason that
 	// the task keeps.
 	Lapsed func(ctx context.Context, tx *Tx, task Task, reason string) error
+}
+
+// SlotGroup is capabilities that share one bound in a claim.
+type SlotGroup struct {
+	Capabilities []string
+	Max          int
+}
+
+// slotPartitions is the SQL that names each task's bound in a claim, its
+// arguments, and the bound of each partition: a grouped capability's group,
+// and every other capability itself. A group's partition takes a prefix that
+// no capability holds, so a group named like a capability never shares its
+// bound.
+func (c Claim) slotPartitions() (partition string, args []any, bounds map[string]int) {
+	bounds = map[string]int{}
+	for capability, most := range c.MaxByCapability {
+		bounds[capability] = most
+	}
+	partition = "capability"
+	var whens []string
+	for _, name := range slices.Sorted(maps.Keys(c.SlotGroups)) {
+		group := "slot-group " + name
+		bounds[group] = c.SlotGroups[name].Max
+		for _, capability := range c.SlotGroups[name].Capabilities {
+			delete(bounds, capability)
+			whens = append(whens, " WHEN ? THEN ?")
+			args = append(args, capability, group)
+		}
+	}
+	if len(whens) > 0 {
+		partition = "CASE capability" + strings.Join(whens, "") + " ELSE capability END"
+	}
+	return partition, args, bounds
 }
 
 // Leased is a leased task with its item's row, so a worker runs the task
@@ -284,7 +322,8 @@ type Leased struct {
 // Claim records the worker's heartbeat and leases it up to c.Max tasks whose
 // capability it holds, the oldest first: each queued task past its backoff
 // that no first fill holds, and each leased task whose lease lapsed. It leases
-// no more of a capability than c.MaxByCapability names. Every claim runs
+// no more of a capability than c.MaxByCapability names, and no more of a slot
+// group's capabilities together than c.SlotGroups names. Every claim runs
 // through the one writer, so two workers asking at once never lease one task
 // twice.
 func (s *Store) Claim(ctx context.Context, c Claim) ([]Leased, error) {
@@ -305,28 +344,30 @@ func (s *Store) Claim(ctx context.Context, c Claim) ([]Leased, error) {
 		if len(c.Worker.Capabilities) == 0 || c.Max <= 0 {
 			return nil
 		}
-		args := make([]any, 0, len(c.Worker.Capabilities)+2*len(c.MaxByCapability)+4)
+		partition, args, bounds := c.slotPartitions()
 		for _, capability := range c.Worker.Capabilities {
 			args = append(args, capability)
 		}
 		args = append(args, now, now)
-		// Each claimable task's place among its capability's, the oldest
-		// first, which the capability's own bound caps.
+		// Each claimable task's place among its partition's, the oldest
+		// first, which the partition's own bound caps: its slot group's, or
+		// its capability's.
 		bound := "?"
-		if len(c.MaxByCapability) > 0 {
-			bound = "CASE capability" + strings.Repeat(" WHEN ? THEN ?", len(c.MaxByCapability)) + " ELSE ? END"
-			for _, capability := range slices.Sorted(maps.Keys(c.MaxByCapability)) {
-				args = append(args, capability, c.MaxByCapability[capability])
+		if len(bounds) > 0 {
+			bound = "CASE slot" + strings.Repeat(" WHEN ? THEN ?", len(bounds)) + " ELSE ? END"
+			for _, slot := range slices.Sorted(maps.Keys(bounds)) {
+				args = append(args, slot, bounds[slot])
 			}
 		}
 		args = append(args, c.Max, c.Max)
 		ids, err := tx.ids(ctx, `SELECT id FROM (
-				SELECT id, capability, created_ts, rowid AS task_rowid,
-					row_number() OVER (PARTITION BY capability ORDER BY created_ts, rowid) AS place
-				FROM tasks
-				WHERE capability IN (?`+strings.Repeat(", ?", len(c.Worker.Capabilities)-1)+`)
-				AND ((state = 'queued' AND held_by IS NULL AND (not_before_ts IS NULL OR not_before_ts <= ?))
-					OR (state = 'leased' AND lease_expires_ts <= ?)))
+				SELECT id, slot, created_ts, task_rowid,
+					row_number() OVER (PARTITION BY slot ORDER BY created_ts, task_rowid) AS place
+				FROM (SELECT id, `+partition+` AS slot, created_ts, rowid AS task_rowid
+					FROM tasks
+					WHERE capability IN (?`+strings.Repeat(", ?", len(c.Worker.Capabilities)-1)+`)
+					AND ((state = 'queued' AND held_by IS NULL AND (not_before_ts IS NULL OR not_before_ts <= ?))
+						OR (state = 'leased' AND lease_expires_ts <= ?))))
 			WHERE place <= `+bound+`
 			ORDER BY created_ts, task_rowid LIMIT ?`, args...)
 		if err != nil {

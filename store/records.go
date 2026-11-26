@@ -218,6 +218,10 @@ const (
 	OutputWaiting = "waiting"
 	OutputDone    = "done"
 	OutputFailed  = "failed"
+	// OutputDeferred is a parse whose extractor found no text of its own and
+	// handed the item to another, such as a video with no caption track that
+	// Whisper transcribes. The parse reads as Unknown until the other ends.
+	OutputDeferred = "deferred"
 )
 
 // Output is one stage's output for one item from one producer at one version.

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/datapointchris/ingestion/extract"
@@ -120,9 +121,18 @@ func (h handler) failed(task worker.Task, reason string, parse *server.TaskParse
 
 // QueueAfterParse queues a scan of the item in the write that ends its parse
 // task done. So every parsed item is scanned. A parse that failed ends its
-// task failed, so it waits in review unscanned.
+// task failed, so it waits in review unscanned. A parse that deferred to
+// another extractor leaves the item no done parse, so it queues no scan, and
+// the other's parse queues one once it ends.
 func QueueAfterParse(ctx context.Context, tx *store.Tx, task store.Task) error {
-	_, err := tx.Enqueue(ctx, store.Task{ItemKey: task.ItemKey, Stage: store.StageScan, Capability: Capability})
+	outputs, err := tx.Outputs(ctx, *task.ItemKey)
+	if err != nil {
+		return err
+	}
+	if !slices.ContainsFunc(outputs, func(o store.Output) bool { return o.Stage == store.StageParse && o.State == store.OutputDone }) {
+		return nil
+	}
+	_, err = tx.Enqueue(ctx, store.Task{ItemKey: task.ItemKey, Stage: store.StageScan, Capability: Capability})
 	return err
 }
 

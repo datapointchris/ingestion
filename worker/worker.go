@@ -14,7 +14,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
@@ -55,9 +57,17 @@ type Handler interface {
 
 // SlotLimiter is a Handler that caps how many of its tasks run at once by
 // default, such as a parse whose run holds gigabytes. Zero leaves them
-// uncapped, and Config.SlotLimits overrides it.
+// uncapped, and Config.SlotLimits overrides it. A handler in a slot group caps
+// its group's tasks together, at the least limit its group's handlers set.
 type SlotLimiter interface {
 	SlotLimit() int
+}
+
+// SlotGrouper is a Handler whose tasks share one slot limit with every other
+// handler that names the same group, such as two parses whose runs each hold
+// gigabytes. "" names no group.
+type SlotGrouper interface {
+	SlotGroup() string
 }
 
 // Config is how a worker runs.
@@ -68,10 +78,11 @@ type Config struct {
 	Version string
 	// Slots is how many tasks run at once.
 	Slots int
-	// SlotLimits caps how many tasks of a capability run at once, within
-	// Slots, such as one slot for a long parse so that the rest stay free for
-	// every other stage. It overrides a handler's own SlotLimit. A capability
-	// that neither names may take every slot.
+	// SlotLimits caps how many tasks of a capability, or of a slot group's
+	// capabilities together, run at once, within Slots, such as one slot for
+	// a long parse so that the rest stay free for every other stage. A key
+	// names a slot group or an ungrouped capability, and overrides the
+	// handlers' own SlotLimit. One that neither names may take every slot.
 	SlotLimits map[string]int
 	Lease      time.Duration
 	// Poll is how often an idle worker claims again.
@@ -81,15 +92,16 @@ type Config struct {
 
 // Run claims and runs tasks for handlers until ctx ends. A worker with no
 // handler claims nothing, and its claims still record its heartbeat. Each
-// claim asks for no more of a capability than its slot limit leaves free. Run
-// refuses a slot limit under 1.
+// claim asks for no more of a capability, or of a slot group, than its slot
+// limit leaves free. Run refuses a slot limit under 1, and one that names a
+// capability inside a slot group, whose limit is the group's.
 func Run(ctx context.Context, client *Client, cfg Config, handlers ...Handler) error {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
-	for capability, limit := range cfg.SlotLimits {
+	for key, limit := range cfg.SlotLimits {
 		if limit < 1 {
-			return fmt.Errorf("the slot limit of %s is %d, and a limit is 1 or more", capability, limit)
+			return fmt.Errorf("the slot limit of %s is %d, and a limit is 1 or more", key, limit)
 		}
 	}
 	if err := MarkUndumpable(); err != nil {
@@ -104,21 +116,13 @@ func Run(ctx context.Context, client *Client, cfg Config, handlers ...Handler) e
 		byCapability[h.Capability()] = h
 		capabilities = append(capabilities, h.Capability())
 	}
-	limits := map[string]int{}
-	for _, h := range handlers {
-		if limiter, ok := h.(SlotLimiter); ok && limiter.SlotLimit() > 0 {
-			limits[h.Capability()] = limiter.SlotLimit()
-		}
-	}
-	for capability, limit := range cfg.SlotLimits {
-		if _, held := byCapability[capability]; !held {
-			cfg.Log.Warn("a slot limit names a capability that no handler here holds", "capability", capability)
-			continue
-		}
-		limits[capability] = limit
+	slots, err := partitionSlots(handlers, cfg.SlotLimits, cfg.Log)
+	if err != nil {
+		return err
 	}
 	started := store.Stamp(time.Now())
-	cfg.Log.Info("the worker runs", "worker", cfg.ID, "capabilities", capabilities, "slots", cfg.Slots, "slot_limits", limits)
+	cfg.Log.Info("the worker runs", "worker", cfg.ID, "capabilities", capabilities, "slots", cfg.Slots,
+		"slot_limits", slots.limits, "slot_groups", slots.groups)
 
 	var wg sync.WaitGroup
 	defer wg.Wait()
@@ -132,48 +136,113 @@ func Run(ctx context.Context, client *Client, cfg Config, handlers ...Handler) e
 		if len(capabilities) == 0 {
 			free = 0
 		}
-		var bounds map[string]int
-		if len(limits) > 0 {
-			bounds = map[string]int{}
-			for capability, limit := range limits {
-				bounds[capability] = max(limit-running[capability], 0)
-			}
-		}
+		bounds, groups := slots.claimBounds(running)
 		answer, err := client.Claim(ctx, server.ClaimRequest{
 			WorkerID: cfg.ID, Capabilities: capabilities, Version: cfg.Version, StartedTS: started,
-			Max: free, MaxByCapability: bounds, LeaseSeconds: int(cfg.Lease.Seconds()),
+			Max: free, MaxByCapability: bounds, SlotGroups: groups, LeaseSeconds: int(cfg.Lease.Seconds()),
 		})
 		if err != nil && ctx.Err() == nil {
 			cfg.Log.Warn("claim tasks", "error", err)
 		}
 		for _, task := range answer.Tasks {
 			h := byCapability[task.Capability]
+			slot := slots.of(task.Capability)
 			busy++
-			running[task.Capability]++
+			running[slot]++
 			wg.Go(func() {
-				defer func() { freed <- task.Capability }()
+				defer func() { freed <- slot }()
 				runTask(ctx, client, cfg, h, task)
 			})
 		}
 		select {
 		case <-ctx.Done():
 			return nil
-		case capability := <-freed:
+		case slot := <-freed:
 			busy--
-			running[capability]--
+			running[slot]--
 		case <-ticker.C:
 		}
 	drained:
 		for {
 			select {
-			case capability := <-freed:
+			case slot := <-freed:
 				busy--
-				running[capability]--
+				running[slot]--
 			default:
 				break drained
 			}
 		}
 	}
+}
+
+// slotPartitions is how a worker's slot limits fall: each grouped capability's
+// group, and each limit, keyed by a group or an ungrouped capability.
+type slotPartitions struct {
+	grouped map[string]string
+	groups  map[string][]string
+	limits  map[string]int
+}
+
+// partitionSlots reads each handler's slot group and limit, then overrides
+// the limits with configured. It refuses a configured limit that names a
+// grouped capability, and warns of one that names nothing a handler here holds.
+func partitionSlots(handlers []Handler, configured map[string]int, log *slog.Logger) (slotPartitions, error) {
+	p := slotPartitions{grouped: map[string]string{}, groups: map[string][]string{}, limits: map[string]int{}}
+	for _, h := range handlers {
+		slot := h.Capability()
+		if grouper, ok := h.(SlotGrouper); ok && grouper.SlotGroup() != "" {
+			slot = grouper.SlotGroup()
+			p.grouped[h.Capability()] = slot
+			p.groups[slot] = append(p.groups[slot], h.Capability())
+		}
+		if limiter, ok := h.(SlotLimiter); ok && limiter.SlotLimit() > 0 {
+			if held, set := p.limits[slot]; !set || limiter.SlotLimit() < held {
+				p.limits[slot] = limiter.SlotLimit()
+			}
+		}
+	}
+	for _, key := range slices.Sorted(maps.Keys(configured)) {
+		if group, ok := p.grouped[key]; ok {
+			return p, fmt.Errorf("capability %s runs in slot group %s, so its slot limit is the group's: name %s", key, group, group)
+		}
+		if _, isGroup := p.groups[key]; !isGroup && !slices.ContainsFunc(handlers, func(h Handler) bool { return h.Capability() == key }) {
+			log.Warn("a slot limit names a capability or slot group that no handler here holds", "slot", key)
+			continue
+		}
+		p.limits[key] = configured[key]
+	}
+	return p, nil
+}
+
+// of is the slot that capability's tasks count against: its group's, or its
+// own.
+func (p slotPartitions) of(capability string) string {
+	if group, ok := p.grouped[capability]; ok {
+		return group
+	}
+	return capability
+}
+
+// claimBounds bounds the next claim by each limited capability and slot
+// group's free slots, given how many tasks of each run.
+func (p slotPartitions) claimBounds(running map[string]int) (map[string]int, map[string]server.SlotGroup) {
+	var bounds map[string]int
+	var groups map[string]server.SlotGroup
+	for slot, limit := range p.limits {
+		free := max(limit-running[slot], 0)
+		if members, isGroup := p.groups[slot]; isGroup {
+			if groups == nil {
+				groups = map[string]server.SlotGroup{}
+			}
+			groups[slot] = server.SlotGroup{Capabilities: members, Max: free}
+			continue
+		}
+		if bounds == nil {
+			bounds = map[string]int{}
+		}
+		bounds[slot] = free
+	}
+	return bounds, groups
 }
 
 // runTask runs one task, extending its lease while it runs, and reports how it

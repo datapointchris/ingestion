@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -45,14 +47,25 @@ const MaxListed = 1000
 // holds, each leased for LeaseSeconds. MaxByCapability bounds how many of
 // each capability it names the claim leases, such as a worker whose slot
 // limit for one capability holds one of its slots free for the rest.
+// Each of SlotGroups bounds the tasks of its capabilities together, such as
+// two heavy parses where the worker's memory holds one. A capability sits in
+// one group at most, and MaxByCapability names no grouped one.
 type ClaimRequest struct {
-	WorkerID        string         `json:"worker_id"`
-	Capabilities    []string       `json:"capabilities"`
-	Version         string         `json:"version"`
-	StartedTS       string         `json:"started_ts"`
-	Max             int            `json:"max"`
-	MaxByCapability map[string]int `json:"max_by_capability,omitempty"`
-	LeaseSeconds    int            `json:"lease_seconds"`
+	WorkerID        string               `json:"worker_id"`
+	Capabilities    []string             `json:"capabilities"`
+	Version         string               `json:"version"`
+	StartedTS       string               `json:"started_ts"`
+	Max             int                  `json:"max"`
+	MaxByCapability map[string]int       `json:"max_by_capability,omitempty"`
+	SlotGroups      map[string]SlotGroup `json:"slot_groups,omitempty"`
+	LeaseSeconds    int                  `json:"lease_seconds"`
+}
+
+// SlotGroup is the capabilities of one slot group in a claim, and the most of
+// them together that the claim leases.
+type SlotGroup struct {
+	Capabilities []string `json:"capabilities"`
+	Max          int      `json:"max"`
 }
 
 // LeasedTask is one leased task, with the token for every heartbeat and
@@ -364,6 +377,10 @@ func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	groups, ok := slotGroupsOf(w, body)
+	if !ok {
+		return
+	}
 	lease, ok := leaseOf(w, body.LeaseSeconds)
 	if !ok {
 		return
@@ -371,7 +388,7 @@ func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
 	var applied *connectors.Set
 	tasks, err := h.store.Claim(r.Context(), store.Claim{
 		Worker: store.Worker{ID: body.WorkerID, Capabilities: body.Capabilities, Version: body.Version, StartedTS: body.StartedTS},
-		Max:    body.Max, MaxByCapability: body.MaxByCapability, Lease: lease,
+		Max:    body.Max, MaxByCapability: body.MaxByCapability, SlotGroups: groups, Lease: lease,
 		Admit: func(ctx context.Context, tx *store.Tx, task store.Task) (string, error) {
 			if task.Stage != store.StagePoll && task.Stage != store.StageDelete {
 				return "", nil
@@ -437,6 +454,38 @@ func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
 			"worker", body.WorkerID, "token", t.LeaseToken)
 	}
 	JSON(w, http.StatusOK, answer)
+}
+
+// slotGroupsOf is body's slot groups as the store bounds a claim by them. It
+// refuses a group's bound outside 0 to maxClaim, a capability in two groups,
+// and a grouped capability that max_by_capability bounds too. ok is false once
+// it has answered.
+func slotGroupsOf(w http.ResponseWriter, body ClaimRequest) (map[string]store.SlotGroup, bool) {
+	if len(body.SlotGroups) == 0 {
+		return nil, true
+	}
+	groups := map[string]store.SlotGroup{}
+	grouped := map[string]string{}
+	for _, name := range slices.Sorted(maps.Keys(body.SlotGroups)) {
+		g := body.SlotGroups[name]
+		if name == "" || g.Max < 0 || g.Max > maxClaim {
+			Refuse(w, http.StatusBadRequest, CodeInvalidBody, "a slot group has a name and a max from 0 to %d, not %q and %d", maxClaim, name, g.Max)
+			return nil, false
+		}
+		for _, capability := range g.Capabilities {
+			if other, taken := grouped[capability]; taken {
+				Refuse(w, http.StatusBadRequest, CodeInvalidBody, "capability %s sits in slot groups %s and %s, and one holds it at most", capability, other, name)
+				return nil, false
+			}
+			if _, bound := body.MaxByCapability[capability]; bound {
+				Refuse(w, http.StatusBadRequest, CodeInvalidBody, "capability %s sits in slot group %s, so max_by_capability may not name it", capability, name)
+				return nil, false
+			}
+			grouped[capability] = name
+		}
+		groups[name] = store.SlotGroup{Capabilities: g.Capabilities, Max: g.Max}
+	}
+	return groups, true
 }
 
 func (h taskHandlers) heartbeat(w http.ResponseWriter, r *http.Request) {
