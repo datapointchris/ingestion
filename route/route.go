@@ -84,6 +84,30 @@ const (
 	CauseTheme = "theme"
 )
 
+// ReviewReason is one reason an item waits in review: its name, the line
+// that `review list --help` gives it, and its group's heading in the TUI.
+type ReviewReason struct {
+	Name    string
+	Help    string
+	Heading string
+}
+
+// ReviewReasons lists why an item may wait in review, in the order that the
+// TUI groups them. The gate's own doubts lead, because the reading pane
+// decides them best. review-list.schema.json's reason enum holds these names.
+var ReviewReasons = []ReviewReason{
+	{store.ReasonQualityReview, "the quality gate sent it to review", "the gate asks"},
+	{CauseBelowFloor, "the quality gate guessed fleet, or its guess fell below its floor", "fleet guess, or below its floor"},
+	{
+		CausePersonSorts, "a connector that sighted it declares person_sorts, so its guess only shows",
+		"its connector leaves the side to you, the guess beside it",
+	},
+	{CauseTagsDisagree, "its sightings' tags name destinations on two sides", "tags name both sides"},
+	{CauseNoGuess, "no tag or rule placed it, and the quality gate gave no answer", "no rule, no answer"},
+	{CauseGateError, "the side gate could not read the set in force or its sightings", "the gate could not read the set or the sightings"},
+	{store.ReasonNoParse, "no parse of it is usable", "no usable parse"},
+}
+
 // GuessFloor is the confidence at or above which the quality gate's personal
 // guess places an item. A fleet guess places nothing at any confidence: a tag,
 // a rule or a person puts an item on the fleet side, never a guess. Below the
