@@ -36,6 +36,9 @@ const (
 	// bookWordShare the least share of its words that names it otherwise.
 	bookPrefix    = 6
 	bookWordShare = 0.6
+	// identityShare is the share of a book's pages whose label is their PDF
+	// page at or above which PageLabels reads none of its labels.
+	identityShare = 0.9
 )
 
 // How a section's start page was found.
@@ -202,7 +205,7 @@ func matterOf(e Entry, titles []string) string {
 // them, or at least bookWordShare of title's words, two at least, are book's.
 // A file's name such as gobookname reads the same as Go Book Name.
 func namesBook(title, book string) bool {
-	a, b := squashed(title), squashed(book)
+	a, b := Squashed(title), Squashed(book)
 	if len(a) > len(b) {
 		a, b = b, a
 	}
@@ -217,18 +220,6 @@ func namesBook(title, book string) bool {
 		}
 	}
 	return shared >= 2 && float64(shared) >= bookWordShare*float64(len(words))
-}
-
-// squashed is s lowercased with every rune but its letters and digits left
-// out.
-func squashed(s string) string {
-	var b strings.Builder
-	for _, r := range strings.ToLower(s) {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
 }
 
 // wordsOf is the set of s's lowercased words of three letters or digits or
@@ -251,7 +242,8 @@ func deref(s *string) string {
 }
 
 // normalized is title lowercased, its spaces collapsed, and any numbering
-// before it dropped, so Appendix and A. Appendix read alike.
+// before it dropped, so Appendix and A. Appendix read alike. It keeps the Part
+// or Appendix word that TitleKey drops, because the rule reads that word.
 func normalized(title string) string {
 	t := strings.ToLower(strings.Join(strings.Fields(title), " "))
 	return leadingNumber.ReplaceAllString(t, "")
@@ -348,17 +340,38 @@ func endOf(entries []entry, i, pages int) int {
 	return max(entries[i].page, pages)
 }
 
-// printedPages answers each PDF page's printed page: its label where the
-// parse holds one, else the PDF page less the book's offset where one is
-// measured and the result is a page, and nil otherwise.
+// PageLabels is each page's label in units, trimmed, unit n's at index n-1,
+// and empty where it has none. Every one is empty where the labels are their
+// pages' PDF pages on identityShare of the pages, because such labels say
+// nothing of the numbers that the book prints.
+func PageLabels(units []store.Unit) []string {
+	labels := make([]string, len(units))
+	identity := 0
+	for i, u := range units {
+		if u.Label == nil {
+			continue
+		}
+		labels[i] = strings.TrimSpace(*u.Label)
+		if labels[i] == strconv.Itoa(i+1) {
+			identity++
+		}
+	}
+	if len(units) > 0 && float64(identity) >= identityShare*float64(len(units)) {
+		return make([]string, len(units))
+	}
+	return labels
+}
+
+// printedPages answers each PDF page's printed page: its label as PageLabels
+// reads it, else the PDF page less the book's offset where one is measured
+// and the result is a page, and nil otherwise.
 func printedPages(units []store.Unit) func(page int) *string {
 	offset, measured := Offset(units)
+	labels := PageLabels(units)
 	return func(page int) *string {
-		if page >= 1 && page <= len(units) {
-			if label := units[page-1].Label; label != nil && strings.TrimSpace(*label) != "" {
-				l := strings.TrimSpace(*label)
-				return &l
-			}
+		if page >= 1 && page <= len(units) && labels[page-1] != "" {
+			l := labels[page-1]
+			return &l
 		}
 		if !measured || page-offset < 1 {
 			return nil

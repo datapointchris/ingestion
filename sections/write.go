@@ -92,8 +92,9 @@ func AfterStructure(ctx context.Context, tx *store.Tx, task store.Task) error {
 // row becomes a child item, numbered from 1, which takes the book's zone,
 // source time, side and read decisions. Where it holds chapters, a chapter
 // row names the item that an earlier version made for a chapter with the same
-// start page and title. A row that matches none names no item, so a later
-// version renames no chapter and makes none.
+// start page and TitleKey. So where a model words a title anew, the chapter
+// keeps its item. A row that matches none names no item, so a later version
+// renames no chapter and makes none.
 func Write(ctx context.Context, tx *store.Tx, book store.Item, rows []store.Section) error {
 	if len(rows) == 0 {
 		return nil
@@ -143,17 +144,17 @@ func Write(ctx context.Context, tx *store.Tx, book store.Item, rows []store.Sect
 	return route.PassToChapters(ctx, tx, book.Key)
 }
 
-// chapterStart is where a chapter starts and what it is called, which a later
+// chapterStart is where a chapter starts and its title's key, which a later
 // version's chapter must share to name the same chapter item.
 type chapterStart struct {
-	page  int
-	title string
+	page int
+	key  string
 }
 
 func startOf(s store.Section) chapterStart {
 	start := chapterStart{page: s.PDFPageStart}
 	if s.Title != nil {
-		start.title = *s.Title
+		start.key = TitleKey(*s.Title)
 	}
 	return start
 }
