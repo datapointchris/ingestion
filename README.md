@@ -243,7 +243,9 @@ for an editor to check against. A connector names these:
 | `zone` | who wrote what it carries: `outside` for an outsider, `owner` for the owner's own words |
 | `tags` | the tags every item it lands carries |
 | `read_rule` | optional: `as-is` or `model`, in place of the side's default |
-| `schedule` | a poll's or a folder's cron expression, a descriptor such as `@hourly`, or `@every 6h`, read in UTC unless it opens `CRON_TZ=<zone>` |
+| `schedule` | a poll's or a folder's cron expression, a descriptor such as `@hourly`, or `@every 6h`, read in UTC unless it opens `CRON_TZ=<zone>`. A poll may say `once` instead |
+| `after_landing` | optional, for a poll: `delete` removes each item it lands from its source, through the deleter that its source registers |
+| `person_sorts` | optional: `true` leaves the side of what it lands to a person, with the quality gate's guess shown beside it |
 | `freshness` | optional, for a poll or a folder: how long it may go without a delivery before it reads overdue |
 | `due_interval` | a drop's or a push's expected cadence |
 | `root`, `path` | a folder's `[serve.homes]` root, and the directory below it to scan |
@@ -311,10 +313,29 @@ newest task past its parse failed.
 - **A failed run is kept and tried again sooner.** The cursor keeps the error, its time, and the
   runs that failed in a row. The next try waits 5 minutes, doubling after each failure, and comes
   no later than the schedule's next time. `list` marks the failures in DUE, and `show` prints the
-  last error. A run that succeeds clears all three.
+  last error. A run that succeeds clears all three. A poll's run succeeds or fails when its worker
+  reports, rather than when the service makes its task.
 - **A poll's run is a task with no item.** Its stage is `poll` and its capability is
   `poll:<source>`, so only a worker that handles that source leases it. The task names its
-  connector, and a connector never has two polls in flight.
+  connector, and a connector never has two polls in flight. The lease hands the worker the
+  connector's cursor and its declaration.
+- **The service lands what a poll's worker reports, in the write that ends its lease.** A done
+  report carries each item that the poll found past the cursor, and the cursor to keep. Each
+  arrival lands once under its key, sighted under the connector with the tags and zone that the
+  set in force declares for it. An arrival's `metrics`, such as a video's views, are counts by
+  name that ride on its sighting. A later poll's value of a name replaces the one kept. A report naming a
+  connector that the set in force lacks is refused with 409, and an invalid arrival with 422, so
+  nothing in it lands.
+- **A poll scheduled `once` runs until one poll ends done**, then never again. Its worker reports
+  done only once every item that its source holds has been reported. A poll that fails tries again
+  after the backoff, and one whose lease lapsed is due again an hour after it ran. `list` reads
+  `once · finished` with its time, and a finished connector never reads overdue.
+- **`after_landing: delete` queues one `delete` task for each item that a poll lands**, in the same
+  write. Its capability is `delete:<source>`, and its lease hands the worker the sighting to
+  remove. The source registers its deleter, and a set naming `delete` for a source without one is
+  refused. A delete that fails is queued again, 30 seconds later at first, doubling to an hour. A
+  delete already queued for an item is never queued twice. A delete task sits on no item's line,
+  so it never moves an item's phase.
 - **The service scans a folder itself**, since only it holds the `[serve.homes]` roots. Each new
   file lands once by reference. A file whose size and time match its landing is skipped, so a
   rerun lands nothing. A file modified in the last 10 seconds is left for the next scan, so a copy
@@ -672,15 +693,18 @@ places the item by the first rung that decides it:
    that `route.GuessFloor` sets. A fleet guess places nothing at any confidence, because a tag,
    a rule or a person puts an item on the fleet side, never a guess. A fleet guess, a guess below
    the floor, or `unsure` sends the item to review as `below-floor`, with the guess beside it.
+   Where a connector that sighted the item declares `person_sorts: true`, no guess places it, and
+   a pass sends it to review as `person-sorts`, with the guess beside it.
 4. **Review.** An item that no tag or rule placed, and that holds no answer of the quality gate,
    waits as `no-guess` once an apply runs the side gate again. That is an item whose quality task
    failed, or whose scan could not read the set in force and so queued none.
 
 The gate runs again in the write that ends each later stage before it, such as the quality gate,
-and in the write that applies a changed set. Each run passes over an item whose reading parse is
-not scanned yet. Each run decides again an item that the gate sent to
-review as `no-guess`, `below-floor` or `gate-error`, or that the quality gate dropped or sent to
-review, so a guess or a rule that arrives later places it. A tag, a rule or a person that places
+in the write that applies a changed set, and in the write that lands another connector's sighting
+of the item. Each run passes over an item whose reading parse is not scanned yet. Each run decides
+again an item that the gate sent to review as `no-guess`, `below-floor`, `person-sorts` or
+`gate-error`, or that the quality gate dropped or sent to review. So a guess, a rule, or a second
+sighting's tag that arrives later places it. A tag, a rule or a person that places
 an item withdraws its queued quality task, so no model judges an item already placed. A placed item stays where it is: a later sighting or parse moves nothing, and only a
 person's placement moves it. Where the gate cannot read the set in force or the item's sightings,
 it logs why and sends the item to review as `gate-error`, and the scan stands.
@@ -709,7 +733,7 @@ Dropped file/5d41402abc4b2a76, cause title.
 
 `review list` reads `GET /api/v1/review`, the longest waiting first, in
 `schemas/review-list.schema.json`. Each item carries the quality gate's whole answer and each
-sighting's tags and fields. The answer also lists each declared destination with its side, so a
+sighting's tags, fields and metrics. The answer also lists each declared destination with its side, so a
 reader needs no call per item. Where the set in force cannot be read, `destinations` is null and
 the queue still answers. `place` and `drop` post to `/api/v1/review/{key}/place` and
 `…/drop`, and print `schemas/review-placement.schema.json` with `--json`. A placement names a

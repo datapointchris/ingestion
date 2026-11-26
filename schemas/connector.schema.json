@@ -11,7 +11,7 @@
     "mode": {"enum": ["poll", "push", "folder", "drop"]},
     "source": {"description": "The external feed the connector reads, by its name in the data catalog.", "type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
     "contract": {"description": "The contract the source's payloads hold to.", "type": "string"},
-    "schedule": {"description": "A poll's or a folder's schedule: five cron fields, a descriptor such as @hourly, or @every 15m, read in UTC unless a CRON_TZ=<zone> prefix names another zone.", "type": "string"},
+    "schedule": {"description": "A poll's or a folder's schedule: five cron fields, a descriptor such as @hourly, or @every 15m, read in UTC unless a CRON_TZ=<zone> prefix names another zone. A poll's once polls until one poll ends done, having landed every item its source holds, and never polls after it.", "type": "string"},
     "due_interval": {"description": "How long after its last delivery a drop or a push is due again.", "$ref": "#/$defs/interval"},
     "freshness": {"description": "How long a poll or a folder may go without a delivery before it reads overdue.", "$ref": "#/$defs/interval"},
     "tags": {"description": "The tags every item the connector lands carries on its sighting.", "type": "array", "items": {"$ref": "#/$defs/tag"}, "uniqueItems": true},
@@ -19,7 +19,9 @@
     "read_rule": {"description": "How an item the connector landed is read where no tag's rule decides: as-is, or a model read. Left out, the side's default decides.", "enum": ["as-is", "model"]},
     "root": {"description": "The [serve.homes] root a folder connector reads.", "type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
     "path": {"description": "The directory below the root a folder connector reads, with forward slashes. Left out, it reads the whole root.", "type": "string"},
-    "format": {"description": "The drop handler that splits a drop connector's file into items, by the name the build registers it under. Left out, a dropped file lands as one item.", "type": "string", "pattern": "^[a-z][a-z0-9-]*$"}
+    "format": {"description": "The drop handler that splits a drop connector's file into items, by the name the build registers it under. Left out, a dropped file lands as one item.", "type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
+    "after_landing": {"description": "What a poll's source does with each item once it has landed. delete removes it, such as a save from a capture playlist, through the deleter its source registers. Left out, the source keeps it.", "enum": ["delete"]},
+    "person_sorts": {"description": "true keeps the quality gate's side guess from placing an item the connector sighted. The item waits in review as person-sorts, with the guess beside it. A tag or a routing rule still places it first.", "type": "boolean"}
   },
   "allOf": [
     {
@@ -32,8 +34,12 @@
     },
     {
       "if": {"properties": {"mode": {"const": "folder"}}},
-      "then": {"required": ["root"]},
+      "then": {"required": ["root"], "properties": {"schedule": {"not": {"const": "once"}}}},
       "else": {"properties": {"root": false, "path": false}}
+    },
+    {
+      "if": {"properties": {"mode": {"const": "poll"}}},
+      "else": {"properties": {"after_landing": false}}
     },
     {
       "if": {"properties": {"mode": {"const": "drop"}}},

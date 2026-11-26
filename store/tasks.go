@@ -49,10 +49,13 @@ type Task struct {
 	Destination *string `json:"destination"`
 	// Model names the model that a measurement arm's task asks its run for,
 	// and is nil for every other task.
-	Model      *string `json:"model"`
-	Stage      string  `json:"stage"`
-	Capability string  `json:"capability"`
-	State      string  `json:"state"`
+	Model *string `json:"model"`
+	// SightingConnector names the connector whose sighting a delete task
+	// removes from that connector's source, and is nil for every other task.
+	SightingConnector *string `json:"sighting_connector"`
+	Stage             string  `json:"stage"`
+	Capability        string  `json:"capability"`
+	State             string  `json:"state"`
 	// HeldBy names the connector whose first fill holds this model stage's
 	// task. No claim takes it until a person releases the fill.
 	HeldBy *string `json:"held_by"`
@@ -88,6 +91,20 @@ func PollTask(connector, source string) Task {
 // DeliverCapability is the capability of a deliver task that deliverer runs,
 // so a worker claims only the tasks of the deliverers it holds.
 func DeliverCapability(deliverer string) string { return StageDeliver + ":" + deliverer }
+
+// DeleteTask is the task that removes the item under key from the source of
+// connector, which a worker holding the capability delete:<source> claims.
+func DeleteTask(key, connector, source string) Task {
+	return Task{ItemKey: &key, SightingConnector: &connector, Stage: StageDelete, Capability: StageDelete + ":" + source}
+}
+
+// DeleteInFlight says whether a delete of the item under key from
+// connector's source is queued or leased.
+func (t *Tx) DeleteInFlight(ctx context.Context, key, connector string) (bool, error) {
+	_, found, err := first[Task](ctx, t.tx, table("tasks"),
+		`item_key = ? AND stage = ? AND sighting_connector = ? AND state IN ('queued', 'leased')`, key, StageDelete, connector)
+	return found, err
+}
 
 // modelStages are the stages that read an item with a model, where a
 // connector's first fill holds every item after the first to reach one.
@@ -228,13 +245,17 @@ type Claim struct {
 // source time every attempt sends. A model stage's task carries the item's
 // outputs at its stage, so a task whose run is already dispatched reads that
 // run rather than starting another. A model read's task carries the item's
-// newest read decision, whose lens and note the read answers.
+// newest read decision, whose lens and note the read answers. A poll carries
+// its connector's cursor, whose position it reads on from. A delete task
+// carries the sighting whose source it removes the item from.
 type Leased struct {
 	Task
 	Item     Item
 	Delivery *Delivery
 	Outputs  []Output
 	Read     *Decision
+	Cursor   *Cursor
+	Sighting *Sighting
 }
 
 // Claim records the worker's heartbeat and leases it up to c.Max tasks whose
@@ -339,6 +360,24 @@ func (s *Store) Claim(ctx context.Context, c Claim) ([]Leased, error) {
 				}
 				if ok {
 					leased.Delivery = &d
+				}
+			}
+			if task.Stage == StagePoll && task.Connector != nil {
+				cur, ok, err := tx.Cursor(ctx, *task.Connector)
+				if err != nil {
+					return err
+				}
+				if ok {
+					leased.Cursor = &cur
+				}
+			}
+			if task.Stage == StageDelete && task.ItemKey != nil && task.SightingConnector != nil {
+				s, ok, err := tx.Sighting(ctx, *task.ItemKey, *task.SightingConnector)
+				if err != nil {
+					return err
+				}
+				if ok {
+					leased.Sighting = &s
 				}
 			}
 			claimed = append(claimed, leased)

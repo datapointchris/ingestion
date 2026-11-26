@@ -2,6 +2,8 @@ package review
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -53,11 +55,14 @@ func waitedSince(it item) string {
 	return literalLine(at.Local().Format("2006-01-02 15:04 MST")) + ", " + gotermboard.Ago(time.Since(at)) + " ago"
 }
 
-// sightingWords is a connector and what its sighting carries: each field and each tag.
+// sightingWords is a connector and what its sighting carries: each field, each metric and each tag.
 func sightingWords(s server.ReviewSighting) string {
 	parts := []string{s.Connector}
 	for _, name := range sortedKeys(s.Fields) {
 		parts = append(parts, name+" "+s.Fields[name])
+	}
+	for _, name := range slices.Sorted(maps.Keys(s.Metrics)) {
+		parts = append(parts, name+" "+strconv.FormatInt(s.Metrics[name], 10))
 	}
 	if len(s.Tags) > 0 {
 		parts = append(parts, "tags "+strings.Join(s.Tags, ", "))

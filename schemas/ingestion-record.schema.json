@@ -31,7 +31,7 @@
       "enum": ["outside", "owner"]
     },
     "sha256": {"description": "A SHA-256, in lowercase hex.", "type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "stage": {"description": "A stage that writes an output or holds a task. A poll's task fetches a connector's source before any item lands. quality-arm is the quality gate's prompt asked of the model that its task names, as a measurement, and sits on no item's line. structure profiles a PDF's outline, page labels, creation date, title and fonts. contents is a model's reading of the printed contents pages of a PDF whose outline gave it no sections.", "enum": ["poll", "land", "parse", "structure", "contents", "scan", "quality", "quality-arm", "model-read", "deliver"]},
+    "stage": {"description": "A stage that writes an output or holds a task. A poll's task fetches a connector's source before any item lands. quality-arm is the quality gate's prompt asked of the model that its task names, as a measurement, and sits on no item's line. structure profiles a PDF's outline, page labels, creation date, title and fonts. contents is a model's reading of the printed contents pages of a PDF whose outline gave it no sections. delete removes a landed item from the source of a connector that declares after_landing delete, and sits on no item's line.", "enum": ["poll", "land", "parse", "structure", "contents", "scan", "quality", "quality-arm", "model-read", "deliver", "delete"]},
     "timestamp": {"type": "string", "format": "date-time"},
     "severity": {"description": "A scan finding's severity, from least to most severe.", "enum": ["info", "low", "medium", "high", "critical"]},
     "finding": {
@@ -90,6 +90,7 @@
         "tags": {"description": "The tags the connector or its source gave this arrival, which the side gate reads first.", "type": "array", "items": {"type": "string"}},
         "zone": {"$ref": "#/$defs/zone"},
         "cursor_position": {"description": "The connector's cursor where this arrival was read.", "type": ["string", "null"]},
+        "metrics": {"description": "The source's counts by name, such as a video's duration_s, views, likes and comments, as the connector's newest arrival gave them. No outsider wrote them. Absent from a record shipped before the store kept them.", "type": "object", "propertyNames": {"pattern": "^[a-z][a-z0-9_]*$"}, "additionalProperties": {"type": "integer"}},
         "first_seen_ts": {"$ref": "#/$defs/timestamp"},
         "last_seen_ts": {"$ref": "#/$defs/timestamp"}
       }
@@ -236,7 +237,7 @@
         },
         "confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
         "cause": {
-          "description": "What decided. The quality gate writes pass, drop, unsure, or below-drop-floor where it would drop the item below its confidence floor. The side gate writes tags, tags-disagree, rule, guess, below-floor, no-guess, gate-error, quality-drop or quality-review, and the read gate connector or side-default. A person's decision names an aspect, such as subreddit, channel, theme or title, or unstated.",
+          "description": "What decided. The quality gate writes pass, drop, unsure, or below-drop-floor where it would drop the item below its confidence floor. The side gate writes tags, tags-disagree, rule, guess, below-floor, person-sorts, no-guess, gate-error, quality-drop or quality-review, and the read gate connector or side-default. A person's decision names an aspect, such as subreddit, channel, theme or title, or unstated.",
           "type": "string",
           "pattern": "^[a-z][a-z-]{0,63}$"
         },
@@ -283,8 +284,9 @@
         "connector": {"description": "The connector a poll's task fetches for.", "type": ["string", "null"]},
         "destination": {"description": "The destination a deliver task writes its item to, and null for every other task.", "type": ["string", "null"]},
         "model": {"description": "The model that a measurement arm's task asks its run for, and null for every other task.", "type": ["string", "null"]},
+        "sighting_connector": {"description": "The connector whose sighting a delete task removes from that connector's source, and null for every other task. Absent from a record shipped before the store kept it.", "type": ["string", "null"]},
         "stage": {"$ref": "#/$defs/stage"},
-        "capability": {"description": "What a worker needs to claim the task: poll:<source> for a poll, parse:<extractor> for a parse and deliver:<deliverer> for a delivery.", "type": "string"},
+        "capability": {"description": "What a worker needs to claim the task: poll:<source> for a poll, parse:<extractor> for a parse, deliver:<deliverer> for a delivery and delete:<source> for a delete.", "type": "string"},
         "state": {"enum": ["queued", "leased", "done", "failed"]},
         "held_by": {"description": "The connector whose first fill holds this model stage's task. No claim takes it until a person releases the fill.", "type": ["string", "null"]},
         "lease_holder": {"description": "The worker holding the lease.", "type": ["string", "null"]},
@@ -327,6 +329,7 @@
         "failures": {"description": "How many runs in a row failed. The scheduler retries a failed run sooner than its schedule, waiting longer after each.", "type": "integer", "minimum": 0},
         "first_fill": {"description": "none until an item reaches a model stage. held once one has, which keeps every later item at the model stages until a person releases it.", "enum": ["held", "released", "none"]},
         "first_fill_item_key": {"description": "The one item a held first fill ran end to end.", "anyOf": [{"$ref": "#/$defs/item_key"}, {"type": "null"}]},
+        "finished_ts": {"description": "When a connector scheduled once ran a poll that ended done, after which the scheduler never runs it. Null until then and for every other connector, and absent from a record shipped before the store kept it.", "anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
         "created_ts": {"description": "When an apply first declared the connector. A due time with no run or delivery before it counts from here.", "$ref": "#/$defs/timestamp"},
         "updated_ts": {"$ref": "#/$defs/timestamp"}
       }

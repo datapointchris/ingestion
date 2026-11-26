@@ -49,6 +49,7 @@
         "due_at": {"description": "When the scheduler next makes the connector due.", "type": "string", "format": "date-time"},
         "overdue": {"description": "True once due_at has passed with no delivery since, or for a poll or a folder declaring a freshness, once its last delivery is older than that.", "type": "boolean"},
         "overdue_since": {"description": "When the connector went overdue, the earlier of the two instants that overdue rests on, and null while it is not overdue. Absent from a server older than this field.", "type": ["string", "null"], "format": "date-time"},
+        "finished_ts": {"description": "When a connector scheduled once ran a poll that ended done, after which the scheduler never runs it. Null until then and for every other connector, and absent from a server older than this field.", "type": ["string", "null"], "format": "date-time"},
         "first_fill": {
           "description": "Answered on one connector alone.",
           "type": "object",

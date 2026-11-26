@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/datapointchris/ingestion/connectors"
+	"github.com/datapointchris/ingestion/landing"
 	"github.com/datapointchris/ingestion/store"
 )
 
@@ -30,8 +32,9 @@ const (
 var errOutputsWithoutItem = errors.New("a poll's task reports no outputs")
 
 var (
-	errDeliveryOutsideDeliver = errors.New("only a deliver task reports a delivery")
-	errBadDelivery            = errors.New("the delivery is not one the store records")
+	errDeliveryOutsideDeliver  = errors.New("only a deliver task reports a delivery")
+	errBadDelivery             = errors.New("the delivery is not one the store records")
+	errArrivalsOutsideDonePoll = errors.New("only a poll that ends done reports arrivals or a cursor")
 )
 
 // MaxListed is the most tasks one list answers.
@@ -103,6 +106,25 @@ type LeasedTask struct {
 	// model in place of the worker's configured one. Every other task
 	// carries none.
 	Model *string `json:"model,omitempty"`
+	// Cursor and Declaration are a poll's: its connector's position, where an
+	// earlier poll moved it, and the connector's declaration as the set in
+	// force holds it, so the source's handler reads what its connector names.
+	// Declaration is absent where the connector is missing from the set in
+	// force. Every other task carries neither.
+	Cursor      *string         `json:"cursor,omitempty"`
+	Declaration json.RawMessage `json:"declaration,omitempty"`
+	// Sighting is a delete task's: the sighting whose source the task removes
+	// the item from. Every other task carries none.
+	Sighting *LeasedSighting `json:"sighting,omitempty"`
+}
+
+// LeasedSighting is one connector's sighting of a delete task's item, which
+// the task removes from that connector's source: the source's own key for the
+// item, and the fields read from its payload, such as a playlist item's id.
+type LeasedSighting struct {
+	Connector   string            `json:"connector"`
+	ExternalKey string            `json:"external_key"`
+	Fields      map[string]string `json:"fields"`
 }
 
 // StageOutput is one output that a model stage's task carries: which prompt
@@ -138,8 +160,12 @@ const (
 )
 
 // ReportRequest ends a lease. Outputs are the stage's records for the task's
-// item, and Delivery is how a deliver task's write ended, each written in the
-// same transaction that ends the lease.
+// item, and Delivery is how a deliver task's write ended. Arrivals are what a
+// poll that ends done found at its source, in source order, and Cursor the
+// connector's next position, where the poll moves it. Each is written in the
+// same transaction that ends the lease. A poll that ends done has reported
+// every item its source holds past its cursor, so a connector scheduled once
+// never polls after it.
 type ReportRequest struct {
 	Token             int64           `json:"token"`
 	Outcome           string          `json:"outcome"`
@@ -147,6 +173,44 @@ type ReportRequest struct {
 	RetryAfterSeconds int             `json:"retry_after_seconds,omitempty"`
 	Outputs           []ReportOutput  `json:"outputs,omitempty"`
 	Delivery          *ReportDelivery `json:"delivery,omitempty"`
+	Arrivals          []ReportArrival `json:"arrivals,omitempty"`
+	Cursor            *string         `json:"cursor,omitempty"`
+}
+
+// ReportArrival is one item that a poll found at its source. serve lands it
+// under the poll's connector, with the zone and tags that the set in force
+// declares for it. Key or URL names the item, and landing refuses a key that
+// the URL does not derive. Title, ExternalKey and Fields are outsider text
+// where the connector's zone is outside. Metrics are the source's counts by
+// name, which ship on the record channel. SourceTS is when the item was made
+// at its source, in RFC 3339.
+type ReportArrival struct {
+	Key       string `json:"key,omitempty"`
+	URL       string `json:"url,omitempty"`
+	MediaType string `json:"media_type"`
+	Title     string `json:"title,omitempty"`
+	// ExternalKey is the source's own key for the item, such as a playlist
+	// item's id, which a deleter removes.
+	ExternalKey string            `json:"external_key,omitempty"`
+	Fields      map[string]string `json:"fields,omitempty"`
+	Metrics     map[string]int64  `json:"metrics,omitempty"`
+	SourceTS    *string           `json:"source_ts,omitempty"`
+}
+
+// arrival is a as landing takes it. The connector, zone and tags are left for
+// the poll's declaration to fill.
+func (a ReportArrival) arrival() (landing.Arrival, error) {
+	out := landing.Arrival{
+		Key: a.Key, URL: a.URL, MediaType: a.MediaType, Title: a.Title, ExternalKey: a.ExternalKey, Fields: a.Fields, Metrics: a.Metrics,
+	}
+	if a.SourceTS != nil {
+		at, err := time.Parse(time.RFC3339Nano, *a.SourceTS)
+		if err != nil {
+			return out, fmt.Errorf("%w: source_ts is an RFC 3339 time, not %q", landing.ErrInvalidArrival, *a.SourceTS)
+		}
+		out.SourceTime = at
+	}
+	return out, nil
 }
 
 // ReportDelivery is how one write of a deliver task's item ended: its outcome,
@@ -253,13 +317,14 @@ const WorkersHeardWithin = 10 * time.Minute
 type AfterStage func(ctx context.Context, tx *store.Tx, task store.Task) error
 
 // TaskRoutes are the routes for a worker to lease tasks through and read a
-// task's input, and the list for a person to read. after runs in the write
-// that ends each item's task done, and nil runs nothing.
-func TaskRoutes(st *store.Store, log *slog.Logger, after AfterStage) Routes {
+// task's input, and the list for a person to read. lander lands what each poll
+// found, in the write that ends the poll's lease. after runs in the write that
+// ends each item's task done, and nil runs nothing.
+func TaskRoutes(st *store.Store, lander *landing.Lander, log *slog.Logger, after AfterStage) Routes {
 	if log == nil {
 		log = slog.Default()
 	}
-	h := taskHandlers{store: st, log: log, after: after}
+	h := taskHandlers{store: st, lander: lander, log: log, after: after}
 	return func(r *Router) {
 		r.Handle(RouteTaskClaims, h.claim)
 		r.Handle(RouteTaskHeartbeats, h.heartbeat)
@@ -271,9 +336,10 @@ func TaskRoutes(st *store.Store, log *slog.Logger, after AfterStage) Routes {
 }
 
 type taskHandlers struct {
-	store *store.Store
-	log   *slog.Logger
-	after AfterStage
+	store  *store.Store
+	lander *landing.Lander
+	log    *slog.Logger
+	after  AfterStage
 }
 
 func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
@@ -308,6 +374,7 @@ func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	answer := ClaimAnswer{Tasks: []LeasedTask{}}
+	var set *connectors.Set
 	for _, t := range tasks {
 		leased := LeasedTask{
 			ID: t.ID, ItemKey: t.ItemKey, Connector: t.Connector, Stage: t.Stage, Capability: t.Capability, Attempts: t.Attempts,
@@ -326,6 +393,28 @@ func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
 				Producer: o.Producer, ProducerVersion: o.ProducerVersion, NoteDigest: o.NoteDigest, State: o.State, DispatchID: o.DispatchID,
 				Model: o.Model, Effort: o.Effort, Error: o.Error,
 			})
+		}
+		if s := t.Sighting; s != nil {
+			leased.Sighting = &LeasedSighting{Connector: s.Connector, ExternalKey: s.ExternalKey, Fields: s.Fields}
+		}
+		if t.Stage == store.StagePoll && t.Connector != nil {
+			if t.Cursor != nil {
+				leased.Cursor = t.Cursor.Position
+			}
+			if set == nil {
+				applied, err := connectors.AppliedSet(r.Context(), h.store)
+				if err != nil {
+					h.internal(w, r, "read the set in force", err)
+					return
+				}
+				set = &applied
+			}
+			if c, ok := set.Connector(*t.Connector); ok {
+				if leased.Declaration, err = json.Marshal(c); err != nil {
+					h.internal(w, r, "write a connector's declaration", err)
+					return
+				}
+			}
 		}
 		answer.Tasks = append(answer.Tasks, leased)
 	}
@@ -370,9 +459,19 @@ func (h taskHandlers) report(w http.ResponseWriter, r *http.Request) {
 		Refuse(w, http.StatusBadRequest, CodeInvalidBody, "outcome is done, failed or retry, not %q", body.Outcome)
 		return
 	}
+	var polled connectors.PollLanded
 	task, err := h.store.Report(r.Context(), r.PathValue("id"), body.Token, outcome, func(tx *store.Tx, task store.Task) error {
 		if task.ItemKey == nil && len(body.Outputs) > 0 {
 			return errOutputsWithoutItem
+		}
+		if (len(body.Arrivals) > 0 || body.Cursor != nil) && (task.Stage != store.StagePoll || outcome.State != store.TaskDone) {
+			return errArrivalsOutsideDonePoll
+		}
+		if task.Stage == store.StagePoll && task.Connector != nil {
+			var err error
+			if polled, err = h.endPoll(r.Context(), tx, *task.Connector, outcome, body); err != nil {
+				return err
+			}
 		}
 		for _, o := range body.Outputs {
 			if err := tx.PutOutputWithUnits(r.Context(), o.output(task), o.Units); err != nil {
@@ -398,8 +497,38 @@ func (h taskHandlers) report(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.log.Info("a task ended", "task", task.ID, "item", text(task.ItemKey), "connector", text(task.Connector), "stage", task.Stage,
-		"state", task.State, "outputs", len(body.Outputs))
+		"state", task.State, "outputs", len(body.Outputs), "arrivals", polled.Arrivals, "items_added", polled.Items,
+		"sightings_added", polled.Sightings, "deletes_queued", polled.Deletes)
 	JSON(w, http.StatusOK, viewOf(task, h.store.Now()))
+}
+
+// endPoll writes what a poll's report carries to its connector in tx: each
+// arrival landed and its cursor moved where the poll ended done, and the
+// failure kept where it ended failed. A poll sent back to try again changes
+// nothing.
+func (h taskHandlers) endPoll(ctx context.Context, tx *store.Tx, connector string, outcome store.Outcome, body ReportRequest) (connectors.PollLanded, error) {
+	switch outcome.State {
+	case store.TaskFailed:
+		reason := "the poll failed and its worker gave no reason"
+		if body.Error != nil {
+			reason = *body.Error
+		}
+		return connectors.PollLanded{}, connectors.PollFailed(ctx, tx, connector, reason)
+	case store.TaskDone:
+		arrivals := make([]landing.Arrival, 0, len(body.Arrivals))
+		for i, a := range body.Arrivals {
+			arrival, err := a.arrival()
+			if err != nil {
+				return connectors.PollLanded{}, fmt.Errorf("arrival %d: %w", i, err)
+			}
+			arrivals = append(arrivals, arrival)
+		}
+		if h.lander == nil && len(arrivals) > 0 {
+			return connectors.PollLanded{}, errors.New("these routes hold no lander, so a poll's arrivals cannot land")
+		}
+		return connectors.LandPoll(ctx, tx, h.lander, connector, arrivals, body.Cursor)
+	}
+	return connectors.PollLanded{}, nil
 }
 
 // retry queues a failed task again for a person. A model stage's task whose
@@ -552,6 +681,10 @@ func (h taskHandlers) leaseRefused(w http.ResponseWriter, r *http.Request, err e
 		Refuse(w, http.StatusUnprocessableEntity, CodeInvalidBody, "task %s delivers nothing, so it reports no delivery", r.PathValue("id"))
 	case errors.Is(err, errBadDelivery):
 		Refuse(w, http.StatusUnprocessableEntity, CodeInvalidBody, "%v", err)
+	case errors.Is(err, errArrivalsOutsideDonePoll), errors.Is(err, landing.ErrInvalidArrival):
+		Refuse(w, http.StatusUnprocessableEntity, CodeInvalidBody, "task %s: %v", r.PathValue("id"), err)
+	case errors.Is(err, connectors.ErrNotDeclared):
+		Refuse(w, http.StatusConflict, CodeConnectorNotFound, "%v, so what its poll found has no zone or tags to land under", err)
 	case errors.Is(err, store.ErrUnitsOutsideParse), errors.Is(err, store.ErrUnitsOutOfOrder):
 		Refuse(w, http.StatusUnprocessableEntity, CodeInvalidBody, "%v", err)
 	default:

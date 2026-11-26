@@ -40,6 +40,8 @@ var reviewListCmd = &cobra.Command{
 		"\n" +
 		"  tags-disagree   its sightings' tags name destinations on two sides\n" +
 		"  below-floor     the quality gate guessed fleet, or its guess fell below its floor\n" +
+		"  person-sorts    a connector that sighted it declares person_sorts, so its guess\n" +
+		"                  places nothing and shows beside it\n" +
 		"  no-guess        no tag or rule placed it, and the quality gate gave no answer\n" +
 		"  gate-error      the side gate could not read the set in force or its sightings\n" +
 		"  no-parse        no parse of it is usable\n" +

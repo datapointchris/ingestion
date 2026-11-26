@@ -31,6 +31,7 @@ var columns = []gotermboard.Column{
 var reasons = []struct{ reason, title string }{
 	{store.ReasonQualityReview, "the gate asks"},
 	{route.CauseBelowFloor, "fleet guess, or below its floor"},
+	{route.CausePersonSorts, "its connector leaves the side to you, the guess beside it"},
 	{route.CauseTagsDisagree, "tags name both sides"},
 	{route.CauseNoGuess, "no rule, no answer"},
 	{route.CauseGateError, "the gate could not read the set or the sightings"},

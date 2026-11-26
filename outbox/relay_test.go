@@ -53,7 +53,10 @@ func TestAnItemGainsEachStageRecordAndEachChangeReachesTheCollectorOnce(t *testi
 			if err := tx.PutHome(ctx, store.Home{BlobSHA256: sha, Root: "books", PathSHA256: strings.Repeat("c", 64), Path: "shelf/a.pdf"}, false); err != nil {
 				return err
 			}
-			return tx.PutSighting(ctx, store.Sighting{ItemKey: key, Connector: "reddit-exports", Zone: store.Outside, ExternalKey: "https://redd.it/aq7ggd"})
+			return tx.PutSighting(ctx, store.Sighting{
+				ItemKey: key, Connector: "reddit-exports", Zone: store.Outside, ExternalKey: "https://redd.it/aq7ggd",
+				Metrics: map[string]int64{"views": 1200},
+			})
 		}},
 		{"parsed", func(tx *store.Tx) error {
 			return tx.PutOutputWithUnits(ctx, store.Output{
@@ -222,6 +225,11 @@ func TestAnItemGainsEachStageRecordAndEachChangeReachesTheCollectorOnce(t *testi
 		for name := range r.body {
 			if tab.IsText(name) != (r.fleetKind == TextKind) {
 				t.Errorf("%s %s carries column %s", r.fleetKind, r.key(), name)
+			}
+		}
+		if r.fleetKind == RecordKind && r.kind == "sightings" {
+			if metrics, _ := r.body["metrics"].(map[string]any); metrics["views"] != float64(1200) {
+				t.Errorf("%s %s carries metrics %v, want the sighting's views", RecordKind, r.key(), r.body["metrics"])
 			}
 		}
 		if r.fleetKind == RecordKind {

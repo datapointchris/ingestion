@@ -41,7 +41,7 @@ func TestTwoWorkersRaceOneTaskALapsedLeaseReturnsItAndTheStaleReportIsRefused(t 
 	gate := readyGate{provider.Verifier(t, "ingestion-cli-", "ingestion-svc-")}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	api := httptest.NewServer(server.Handler(server.Config{Store: st, Gate: gate, Issuer: provider.URL, Version: "test", Log: log},
-		server.TaskRoutes(st, log, nil)))
+		server.TaskRoutes(st, nil, log, nil)))
 	t.Cleanup(api.Close)
 	service := (&clientcredentials.Config{
 		ClientID: "ingestion-svc-worker", ClientSecret: "worker-secret", TokenURL: provider.URL + "/token",
