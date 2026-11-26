@@ -105,6 +105,10 @@ type Arrival struct {
 	Title          string
 	// URL is the item's own URL, such as a Reddit post's permalink.
 	URL string
+	// SourceTime is when the artifact was made at its source, such as a
+	// Reddit post's creation, and zero where the source gives none. An item
+	// keeps the first that any arrival gives it.
+	SourceTime time.Time
 	// Parent is the key of the item this one was split from, such as the
 	// Reddit export that carried a save.
 	Parent string
@@ -370,6 +374,9 @@ func record(ctx context.Context, tx *store.Tx, a Arrival, key string, w *Written
 	}
 	merged.Title = fill(merged.Title, a.Title)
 	merged.URL = fill(merged.URL, a.URL)
+	if !a.SourceTime.IsZero() {
+		merged.SourceTS = fill(merged.SourceTS, store.Stamp(a.SourceTime))
+	}
 	if !found || !reflect.DeepEqual(merged, existing) {
 		if err := tx.PutItem(ctx, merged); err != nil {
 			return landed, err

@@ -67,13 +67,16 @@ type LeasedTask struct {
 	MediaType  string  `json:"media_type"`
 	BlobSHA256 *string `json:"blob_sha256"`
 	// Zone, Title, URL and LandedTS are the item's too, so a deliverer writes
-	// it holding no scope to read items. A deliver task's Title and URL are
-	// its delivery's, as they were when it was first queued, so a retry sends
-	// what the first attempt sent. A poll carries none of them.
+	// it holding no scope to read items. A deliver task's Title, URL and
+	// SourceTS are its delivery's, as they were when it was first queued, so
+	// a retry sends what the first attempt sent. SourceTS is when the item
+	// was made at its source, and null where its source gave no time. A poll
+	// carries none of them.
 	Zone     store.Zone `json:"zone,omitempty"`
 	Title    *string    `json:"title"`
 	URL      *string    `json:"url"`
 	LandedTS string     `json:"landed_ts,omitempty"`
+	SourceTS *string    `json:"source_ts,omitempty"`
 	// Destination names where a deliver task writes its item, and is null
 	// for every other task.
 	Destination *string `json:"destination"`
@@ -291,7 +294,7 @@ func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
 			Zone: t.Item.Zone, Title: t.Item.Title, URL: t.Item.URL, LandedTS: t.Item.CreatedTS, Destination: t.Destination,
 		}
 		if t.Delivery != nil {
-			leased.Title, leased.URL = t.Delivery.Title, t.Delivery.URL
+			leased.Title, leased.URL, leased.SourceTS = t.Delivery.Title, t.Delivery.URL, t.Delivery.SourceTS
 		}
 		if t.Read != nil {
 			leased.Lens, leased.Note = t.Read.Lens, t.Read.Note

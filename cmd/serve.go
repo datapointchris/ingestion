@@ -172,6 +172,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	go func() { served <- srv.ListenAndServe() }()
 	log.Info("ingestion serves", "listen", listen, "store", stateDir(cfg), "issuer", cfg.Issuer, "version", version)
 	wg.Go(func() { settlePhases(background, st, log) })
+	wg.Go(func() { fillSourceTimes(background, lander, log) })
 	select {
 	case err := <-served:
 		return err
@@ -200,4 +201,18 @@ func settlePhases(ctx context.Context, st *store.Store, log *slog.Logger) {
 		return
 	}
 	log.InfoContext(ctx, "settled each item's phase", "items", items, "moved", moved, "took", time.Since(started).String())
+}
+
+// fillSourceTimes reads a source time from the bytes of each item that landed
+// without one, once the service listens, and logs how many it filled.
+func fillSourceTimes(ctx context.Context, lander *landing.Lander, log *slog.Logger) {
+	started := time.Now()
+	read, filled, err := lander.FillSourceTimes(ctx)
+	if err != nil {
+		if ctx.Err() == nil {
+			log.ErrorContext(ctx, "fill each item's source time", "read", read, "filled", filled, "error", err)
+		}
+		return
+	}
+	log.InfoContext(ctx, "filled each item's source time", "read", read, "filled", filled, "took", time.Since(started).String())
 }

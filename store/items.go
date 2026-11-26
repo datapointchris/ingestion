@@ -46,6 +46,22 @@ func (s *Store) ItemRow(ctx context.Context, key string) (Item, bool, error) {
 	return first[Item](ctx, s.read, table("items"), `key = ?`, key)
 }
 
+// ItemsWithNoSourceTime reads up to limit items that hold bytes and no source
+// time, of one of mediaTypes, whose key sorts after after, in key order.
+func (s *Store) ItemsWithNoSourceTime(ctx context.Context, mediaTypes []string, after string, limit int) ([]Item, error) {
+	if len(mediaTypes) == 0 {
+		return nil, nil
+	}
+	args := []any{after}
+	for _, m := range mediaTypes {
+		args = append(args, m)
+	}
+	args = append(args, limit)
+	where := `key > ? AND source_ts IS NULL AND blob_sha256 IS NOT NULL AND media_type IN (?` +
+		strings.Repeat(`, ?`, len(mediaTypes)-1) + `) ORDER BY key LIMIT ?`
+	return readInto[Item](ctx, s.read, table("items"), where, args...)
+}
+
 // ItemPage asks for up to Limit items, newest first, after the item that the
 // cursor After names.
 type ItemPage struct {

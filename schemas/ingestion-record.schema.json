@@ -71,6 +71,7 @@
         "parent_key": {"description": "The item this one was split from, such as the export a Reddit save came in.", "anyOf": [{"$ref": "#/$defs/item_key"}, {"type": "null"}]},
         "flow_id": {"description": "The flow the item started.", "type": "string"},
         "parent_flow_id": {"description": "The flow of the write that landed the item.", "type": ["string", "null"]},
+        "source_ts": {"description": "When the artifact was made at its source, such as a Reddit post's creation, and null where its source gives no time. Absent from a record shipped before the store kept it.", "anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
         "phase": {"description": "Where the item stands, as the store decides it from the item's records in every write that changes them. A change of phase ships the item again, so a reader counts by this rather than deriving it. Absent from a record shipped before the store kept it.", "$ref": "items-list.schema.json#/$defs/phase"},
         "created_ts": {"$ref": "#/$defs/timestamp"},
         "updated_ts": {"$ref": "#/$defs/timestamp"}
@@ -236,6 +237,7 @@
           "enum": ["pending", "delivered", "delivered-to-existing", "refused"]
         },
         "attempts": {"description": "How many writes of the item the destination answered or failed.", "type": "integer", "minimum": 0},
+        "source_ts": {"description": "The item's source time when the delivery was first queued, which every attempt sends, and null where the item held none then. Absent from a record shipped before the store kept it.", "anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
         "updated_ts": {"$ref": "#/$defs/timestamp"}
       }
     },

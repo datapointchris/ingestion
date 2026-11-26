@@ -197,6 +197,7 @@ type ItemView struct {
 	MediaType  string     `json:"media_type"`
 	Title      *string    `json:"title"`
 	URL        *string    `json:"url"`
+	SourceTS   *string    `json:"source_ts"`
 	BlobSHA256 *string    `json:"blob_sha256"`
 	SizeBytes  *int64     `json:"size_bytes"`
 	MD5        *string    `json:"md5"`
@@ -559,7 +560,7 @@ func itemAnswer(rec store.ItemRecords) ItemAnswer {
 	a := ItemAnswer{
 		SchemaVersion: 1,
 		Item: ItemView{
-			Key: it.Key, Zone: it.Zone, MediaType: it.MediaType, Title: it.Title, URL: it.URL, BlobSHA256: it.BlobSHA256,
+			Key: it.Key, Zone: it.Zone, MediaType: it.MediaType, Title: it.Title, URL: it.URL, SourceTS: it.SourceTS, BlobSHA256: it.BlobSHA256,
 			ParentKey: it.ParentKey, FlowID: it.FlowID, Phase: rec.Phase(), WaitingAt: optional(rec.WaitingAt()), CreatedTS: it.CreatedTS,
 		},
 		Homes: []HomeView{}, Sightings: []SightingView{}, Outputs: []OutputView{}, Decisions: []DecisionView{}, Deliveries: []DeliveryView{},

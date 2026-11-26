@@ -79,6 +79,9 @@ type Item struct {
 	URL   *string
 	// LandedTS is when the item first landed, as a store stamp.
 	LandedTS string
+	// SourceTS is when the item was made at its source, such as a Reddit
+	// post's creation, as a store stamp, and nil where its source gave none.
+	SourceTS *string
 }
 
 // Outcome is how one write of an item ended.
@@ -133,7 +136,9 @@ func (h handler) Run(ctx context.Context, task worker.Task) worker.Result {
 		reason := "a deliver task names its item and its destination"
 		return worker.Result{Outcome: server.OutcomeFailed, Error: &reason}
 	}
-	o := h.deliverer.Deliver(ctx, Item{Key: *task.ItemKey, Zone: task.Zone, Title: task.Title, URL: task.URL, LandedTS: task.LandedTS})
+	o := h.deliverer.Deliver(ctx, Item{
+		Key: *task.ItemKey, Zone: task.Zone, Title: task.Title, URL: task.URL, LandedTS: task.LandedTS, SourceTS: task.SourceTS,
+	})
 	delivery := &server.ReportDelivery{Outcome: o.Outcome, DestinationID: o.DestinationID, Error: o.Error}
 	switch {
 	case o.Outcome != store.DeliveryPending:

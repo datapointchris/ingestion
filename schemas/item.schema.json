@@ -18,6 +18,7 @@
         "media_type": {"type": "string"},
         "title": {"type": ["string", "null"]},
         "url": {"type": ["string", "null"]},
+        "source_ts": {"description": "When the artifact was made at its source, such as a Reddit post's creation, and null where its source gives no time.", "type": ["string", "null"], "format": "date-time"},
         "blob_sha256": {"type": ["string", "null"]},
         "size_bytes": {"type": ["integer", "null"]},
         "md5": {"description": "The bytes' MD5, which a reader such as sioyek keys a book's annotations by.", "type": ["string", "null"]},

@@ -19,6 +19,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"math"
 	"time"
 
 	"github.com/datapointchris/ingestion/connectors"
@@ -37,6 +39,7 @@ const Zone = store.Outside
 
 func init() {
 	connectors.RegisterDropHandler(Format, Zone, landDrop)
+	landing.RegisterSourceTime(MediaTypeSave, saveCreated)
 }
 
 // landDrop lands a dropped file through Land, under the connector's name and
@@ -118,16 +121,41 @@ type listing struct {
 	} `json:"data"`
 }
 
-// thing is as much of a post (t3) or a comment (t1) as a save is named by.
+// thing is as much of a post (t3) or a comment (t1) as a save is named and
+// dated by. CreatedUTC is the Unix seconds when it was posted.
 type thing struct {
 	Kind string `json:"kind"`
 	Data struct {
-		Name      string `json:"name"`
-		Subreddit string `json:"subreddit"`
-		Title     string `json:"title"`
-		LinkTitle string `json:"link_title"`
-		Permalink string `json:"permalink"`
+		Name       string  `json:"name"`
+		Subreddit  string  `json:"subreddit"`
+		Title      string  `json:"title"`
+		LinkTitle  string  `json:"link_title"`
+		Permalink  string  `json:"permalink"`
+		CreatedUTC float64 `json:"created_utc"`
 	} `json:"data"`
+}
+
+// created is when t was posted, and zero where Reddit gave no time.
+func (t thing) created() time.Time {
+	if t.Data.CreatedUTC <= 0 {
+		return time.Time{}
+	}
+	whole, frac := math.Modf(t.Data.CreatedUTC)
+	return time.Unix(int64(whole), int64(frac*1e9)).UTC()
+}
+
+// saveCreated reads a save's bytes, as Save.Bytes holds them, and answers
+// when its post or comment was posted.
+func saveCreated(body io.Reader) (time.Time, error) {
+	var entry saved
+	if err := json.NewDecoder(body).Decode(&entry); err != nil {
+		return time.Time{}, err
+	}
+	var t thing
+	if err := json.Unmarshal(entry.Child, &t); err != nil {
+		return time.Time{}, err
+	}
+	return t.created(), nil
 }
 
 // saved is one entry of a saved export: the save and its thread, which is
@@ -164,6 +192,10 @@ type Save struct {
 	Title string
 	// URL is the thing's permalink on reddit.com.
 	URL string
+	// Created is when the thing was posted, and zero where Reddit gave no
+	// time. Reddit's saved listing holds no time of the save itself, and a
+	// thing is saved no earlier than it was posted.
+	Created time.Time
 	// Bytes is the save as a JSON object of child, the thing as Reddit gave
 	// it, and thread, its thread's listing. A save from a saved export is the
 	// export's entry unchanged.
@@ -258,7 +290,8 @@ type Landed struct {
 // Land lands d as an item of its own, keyed by its bytes, then each save it
 // carries as that item's child under reddit/<fullname>. A save's sighting
 // records the export's key as its cursor, which names the drop it came in,
-// and its subreddit under FieldSubreddit. Every arrival takes Zone. A save
+// and its subreddit under FieldSubreddit. A save's source time is when its
+// thing was posted. Every arrival takes Zone. A save
 // that an earlier export landed keeps that export as its parent, and its first
 // bytes.
 //
@@ -305,7 +338,7 @@ func Land(ctx context.Context, l *landing.Lander, d Drop) (Landed, error) {
 		landed, err := l.Land(ctx, landing.Arrival{
 			Connector: d.Connector, Zone: Zone, Key: key, MediaType: MediaTypeSave,
 			ExternalKey: s.Fullname, Tags: d.Tags, Fields: fields, CursorPosition: out.Export.Key, Title: s.Title, URL: s.URL,
-			Parent: out.Export.Key, Body: bytes.NewReader(s.Bytes),
+			SourceTime: s.Created, Parent: out.Export.Key, Body: bytes.NewReader(s.Bytes),
 		})
 		if err != nil {
 			return out, fmt.Errorf("land %s: %w", key, err)
@@ -327,7 +360,7 @@ func saveOf(child, raw json.RawMessage) (Save, error) {
 	if t.Kind == "t1" {
 		title = t.Data.LinkTitle
 	}
-	s := Save{Fullname: t.Data.Name, Subreddit: t.Data.Subreddit, Title: title, Bytes: raw}
+	s := Save{Fullname: t.Data.Name, Subreddit: t.Data.Subreddit, Title: title, Created: t.created(), Bytes: raw}
 	if t.Data.Permalink != "" {
 		s.URL = "https://www.reddit.com" + t.Data.Permalink
 	}
