@@ -131,6 +131,9 @@ func (t *Tx) PutSighting(ctx context.Context, s Sighting) error {
 	if s.Fields == nil {
 		s.Fields = map[string]string{}
 	}
+	if s.Metrics == nil {
+		s.Metrics = map[string]int64{}
+	}
 	s.FirstSeenTS, s.LastSeenTS = t.stamp(), t.stamp()
 	return t.put(ctx, table("sightings"), s)
 }

@@ -36,10 +36,13 @@ type Result struct {
 	Error      *string
 	RetryAfter time.Duration
 	// Outputs are the stage's records for the task's item, and Delivery is how
-	// a deliver task's write ended. The service writes both in the
-	// transaction that ends the lease.
+	// a deliver task's write ended. Arrivals are what a poll that ends done
+	// found at its source, and Cursor its connector's next position. The
+	// service writes each in the transaction that ends the lease.
 	Outputs  []server.ReportOutput
 	Delivery *server.ReportDelivery
+	Arrivals []server.ReportArrival
+	Cursor   *string
 }
 
 // Handler runs the tasks of one capability.
@@ -222,6 +225,7 @@ func runTask(ctx context.Context, client *Client, cfg Config, h Handler, task Ta
 	err := report(ctx, runCtx, client, cfg, log, task, server.ReportRequest{
 		Token: task.LeaseToken, Outcome: result.Outcome, Error: result.Error,
 		RetryAfterSeconds: int(result.RetryAfter.Seconds()), Outputs: result.Outputs, Delivery: result.Delivery,
+		Arrivals: result.Arrivals, Cursor: result.Cursor,
 	})
 	switch {
 	case errors.Is(err, ErrStaleLease):
@@ -229,7 +233,7 @@ func runTask(ctx context.Context, client *Client, cfg Config, h Handler, task Ta
 	case err != nil:
 		log.Error("a task's result is lost, so a later claim runs it again", "error", err)
 	default:
-		log.Info("reported a task", "outcome", result.Outcome, "outputs", len(result.Outputs))
+		log.Info("reported a task", "outcome", result.Outcome, "outputs", len(result.Outputs), "arrivals", len(result.Arrivals))
 	}
 }
 

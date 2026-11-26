@@ -1,10 +1,13 @@
 package route_test
 
 import (
+	"encoding/json"
+	"slices"
 	"testing"
 
 	"github.com/datapointchris/ingestion/connectors"
 	"github.com/datapointchris/ingestion/route"
+	"github.com/datapointchris/ingestion/schemas"
 	"github.com/datapointchris/ingestion/store"
 )
 
@@ -95,5 +98,38 @@ func TestAModelReadIsDueOnlyUnderALensWhosePromptTheBuildHolds(t *testing.T) {
 		if due := route.ModelReadDue(store.Decision{Verdict: side}, read, nil, false); due != want {
 			t.Errorf("a model read on the %s side under lens %v is due: %v, want %v", side, read.Lens, due, want)
 		}
+	}
+}
+
+// review list --json answers each reason that the help and the TUI name, and
+// no other, so a reason added to one is added to all three.
+func TestTheReviewReasonsAreTheReviewListSchemasReasons(t *testing.T) {
+	raw, err := schemas.Files.ReadFile("review-list.schema.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema struct {
+		Properties struct {
+			Items struct {
+				Items struct {
+					Properties struct {
+						Reason struct {
+							Enum []string `json:"enum"`
+						} `json:"reason"`
+					} `json:"properties"`
+				} `json:"items"`
+			} `json:"items"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, r := range route.ReviewReasons {
+		names = append(names, r.Name)
+	}
+	enum := schema.Properties.Items.Items.Properties.Reason.Enum
+	if !slices.Equal(slices.Sorted(slices.Values(names)), slices.Sorted(slices.Values(enum))) {
+		t.Errorf("route.ReviewReasons names %v, and the schema's reason enum %v", names, enum)
 	}
 }

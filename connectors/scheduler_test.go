@@ -122,7 +122,7 @@ func TestTheSchedulerLandsEachNewFileOnceMakesOnePollTaskAndKeepsAFailedScan(t *
 	// The rerun moved its due time on and delivered nothing, so only its stale
 	// time makes it overdue, since that time.
 	cur, _, err = st.Cursor(ctx, "books-folder")
-	if since, overdue := connectors.OverdueSince(cur, clock()); err != nil || !overdue || since != want {
+	if since, overdue := connectors.OverdueSince(connectors.Connector{Name: "books-folder", Mode: connectors.ModeFolder}, cur, clock()); err != nil || !overdue || since != want {
 		t.Errorf("an hour past its last delivery books-folder reads overdue %t since %q, %v; want overdue since %s", overdue, since, err, want)
 	}
 	write("c.txt", "a new file")

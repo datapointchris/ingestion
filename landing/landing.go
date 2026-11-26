@@ -37,7 +37,14 @@ var ErrBytesMissing = errors.New("the blob's bytes are missing")
 // bytes derive.
 var ErrKeyMismatch = errors.New("the key is not the one its link or bytes derive")
 
-var namePattern = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+// ErrInvalidArrival is an arrival that LandIn refuses before it writes, for
+// what the arrival itself holds.
+var ErrInvalidArrival = errors.New("the arrival is not one that lands")
+
+var (
+	namePattern   = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+	metricPattern = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+)
 
 // Config is what landing writes to.
 type Config struct {
@@ -49,6 +56,10 @@ type Config struct {
 	// QueueParse queues the parse of an item new to the store, in the write
 	// that adds it. Nil queues none.
 	QueueParse func(context.Context, *store.Tx, store.Item) error
+	// Sighted runs in the write that adds a sighting to an item the store
+	// already held, under the item's key, such as the gates run again. Nil
+	// runs nothing.
+	Sighted func(ctx context.Context, tx *store.Tx, key string) error
 }
 
 // Lander lands arrivals.
@@ -57,6 +68,7 @@ type Lander struct {
 	blobs      *Blobs
 	homes      map[string]string
 	queueParse func(context.Context, *store.Tx, store.Item) error
+	sighted    func(context.Context, *store.Tx, string) error
 }
 
 // New is a lander over cfg. It refuses a root whose name is not lowercase
@@ -70,7 +82,7 @@ func New(cfg Config) (*Lander, error) {
 			return nil, fmt.Errorf("home root %s names %q, which is not an absolute directory", name, dir)
 		}
 	}
-	return &Lander{store: cfg.Store, blobs: cfg.Blobs, homes: cfg.Homes, queueParse: cfg.QueueParse}, nil
+	return &Lander{store: cfg.Store, blobs: cfg.Blobs, homes: cfg.Homes, queueParse: cfg.QueueParse, sighted: cfg.Sighted}, nil
 }
 
 // Home is a file that already lives under a named root.
@@ -100,7 +112,10 @@ type Arrival struct {
 	Tags        []string
 	// Fields are values read from the source's payload, such as a Reddit
 	// save's subreddit. A later arrival's value replaces the sighting's.
-	Fields         map[string]string
+	Fields map[string]string
+	// Metrics are the source's counts by name, such as a video's views. A
+	// later arrival's value replaces the sighting's.
+	Metrics        map[string]int64
 	CursorPosition string
 	Title          string
 	// URL is the item's own URL, such as a Reddit post's permalink.
@@ -139,8 +154,10 @@ type Landed struct {
 
 // Land lands the arrival a. Bytes go to the volume, or are hashed in place,
 // before any row names them. The item, its blob row, its home, its sighting
-// and a new item's parse task are then written in one transaction. An item
-// takes the strictest zone of its sightings and its parent.
+// and a new item's parse task are then written in one transaction. A new
+// sighting of an item the store held runs the sighted hook in that
+// transaction. An item takes the strictest zone of its sightings and its
+// parent.
 func (l *Lander) Land(ctx context.Context, a Arrival) (Landed, error) {
 	if err := l.check(a); err != nil {
 		return Landed{}, err
@@ -188,16 +205,62 @@ func (l *Lander) Land(ctx context.Context, a Arrival) (Landed, error) {
 	var landed Landed
 	err = l.store.Update(ctx, func(tx *store.Tx) error {
 		var err error
-		if landed, err = record(ctx, tx, a, key, written, modified); err != nil || !landed.ItemAdded || l.queueParse == nil {
-			return err
-		}
-		item, _, err := tx.Item(ctx, key)
-		if err != nil {
-			return err
-		}
-		return l.queueParse(ctx, tx, item)
+		landed, err = l.write(ctx, tx, a, key, written, modified)
+		return err
 	})
 	return landed, err
+}
+
+// LandIn lands the arrival a in the write tx, such as the one that ends a
+// poll's lease. a carries no bytes and names no home, since bytes reach the
+// volume before any row names them. It refuses an arrival for what it holds
+// with ErrInvalidArrival, before it writes.
+func (l *Lander) LandIn(ctx context.Context, tx *store.Tx, a Arrival) (Landed, error) {
+	key, err := l.keyIn(a)
+	if err != nil {
+		return Landed{}, fmt.Errorf("%w: %w", ErrInvalidArrival, err)
+	}
+	if a.URL != "" {
+		a.URL, _ = itemkey.CanonicalURL(a.URL)
+	}
+	return l.write(ctx, tx, a, key, nil, "")
+}
+
+// keyIn is the key that LandIn lands a under, once a holds what LandIn takes.
+func (l *Lander) keyIn(a Arrival) (string, error) {
+	if a.Body != nil || a.Home != nil {
+		return "", errors.New("an arrival landed in a write already open carries no bytes and names no home")
+	}
+	if err := l.check(a); err != nil {
+		return "", err
+	}
+	if a.URL != "" {
+		canonical, err := itemkey.CanonicalURL(a.URL)
+		if err != nil {
+			return "", err
+		}
+		a.URL = canonical
+	}
+	return linkKey(a)
+}
+
+// write records a under key in tx, then queues a new item's parse, or runs
+// the sighted hook where a adds a sighting to an item the store held.
+func (l *Lander) write(ctx context.Context, tx *store.Tx, a Arrival, key string, w *Written, modified string) (Landed, error) {
+	landed, err := record(ctx, tx, a, key, w, modified)
+	switch {
+	case err != nil:
+		return landed, err
+	case landed.ItemAdded && l.queueParse != nil:
+		item, _, err := tx.Item(ctx, key)
+		if err != nil {
+			return landed, err
+		}
+		return landed, l.queueParse(ctx, tx, item)
+	case landed.SightingAdded && !landed.ItemAdded && l.sighted != nil:
+		return landed, l.sighted(ctx, tx, key)
+	}
+	return landed, nil
 }
 
 // linkKey is the key a names, or where it names none, the key its URL
@@ -257,6 +320,11 @@ func (l *Lander) check(a Arrival) error {
 	if a.Key != "" {
 		if err := itemkey.Check(a.Key); err != nil {
 			return err
+		}
+	}
+	for name := range a.Metrics {
+		if !metricPattern.MatchString(name) {
+			return fmt.Errorf("a metric is named in lowercase letters, digits and underscores, not %q", name)
 		}
 	}
 	if a.Parent != "" {
@@ -396,7 +464,10 @@ func record(ctx context.Context, tx *store.Tx, a Arrival, key string, w *Written
 	}
 	next := sighting
 	if !had {
-		next = store.Sighting{ItemKey: key, Connector: a.Connector, Zone: a.Zone, ExternalKey: key, Tags: []string{}, Fields: map[string]string{}}
+		next = store.Sighting{
+			ItemKey: key, Connector: a.Connector, Zone: a.Zone, ExternalKey: key, Tags: []string{}, Fields: map[string]string{},
+			Metrics: map[string]int64{},
+		}
 	}
 	next.Zone = store.Stricter(next.Zone, a.Zone)
 	next.Tags = union(next.Tags, a.Tags)
@@ -406,6 +477,13 @@ func record(ctx context.Context, tx *store.Tx, a Arrival, key string, w *Written
 			next.Fields = map[string]string{}
 		}
 		maps.Copy(next.Fields, a.Fields)
+	}
+	if len(a.Metrics) > 0 {
+		next.Metrics = maps.Clone(next.Metrics)
+		if next.Metrics == nil {
+			next.Metrics = map[string]int64{}
+		}
+		maps.Copy(next.Metrics, a.Metrics)
 	}
 	if a.ExternalKey != "" {
 		next.ExternalKey = a.ExternalKey

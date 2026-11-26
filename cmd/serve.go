@@ -152,7 +152,9 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	extractors := extract.Builtin()
-	lander, err := landing.New(landing.Config{Store: st, Blobs: blobs, Homes: cfg.Serve.Homes, QueueParse: extractors.QueueParse})
+	lander, err := landing.New(landing.Config{
+		Store: st, Blobs: blobs, Homes: cfg.Serve.Homes, QueueParse: extractors.QueueParse, Sighted: route.AfterSighting(log),
+	})
 	if err != nil {
 		return fmt.Errorf("%s: %w", path, err)
 	}
@@ -174,7 +176,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 	handler := server.Handler(server.Config{
 		Store: st, Gate: gate, Issuer: cfg.Issuer, PublicURL: cfg.Serve.PublicURL, Version: version, Log: log,
-	}, server.TaskRoutes(st, log, afterStage(log)), server.BlobRoutes(lander, log), server.ItemRoutes(st, log),
+	}, server.TaskRoutes(st, lander, log, afterStage(log)), server.BlobRoutes(lander, log), server.ItemRoutes(st, log),
 		server.ConnectorRoutes(server.ConnectorConfig{
 			Store: st, Lander: lander, Scheduler: scheduler, Roots: roots, AfterApply: route.AfterApply(log), Log: log,
 		}),

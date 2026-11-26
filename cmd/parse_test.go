@@ -84,16 +84,18 @@ func newPipelineOver(t *testing.T, extractors *extract.Registry, after server.Af
 	if err != nil {
 		t.Fatal(err)
 	}
-	lander, err := landing.New(landing.Config{Store: st, Blobs: blobs, Homes: homes, QueueParse: extractors.QueueParse})
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	lander, err := landing.New(landing.Config{
+		Store: st, Blobs: blobs, Homes: homes, QueueParse: extractors.QueueParse, Sighted: route.AfterSighting(log),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	provider := authtest.NewProvider(t)
 	provider.Register("ingestion-svc-worker", "worker-secret", server.ScopeTasksClaim)
 	gate := verifiedGate{provider.Verifier(t, "ingestion-cli-", "ingestion-svc-")}
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	api := httptest.NewServer(server.Handler(server.Config{Store: st, Gate: gate, Issuer: provider.URL, Version: "test", Log: log},
-		server.TaskRoutes(st, log, after), server.BlobRoutes(lander, log), server.ItemRoutes(st, log), server.ReviewRoutes(st, log),
+		server.TaskRoutes(st, lander, log, after), server.BlobRoutes(lander, log), server.ItemRoutes(st, log), server.ReviewRoutes(st, log),
 		server.ConnectorRoutes(server.ConnectorConfig{
 			Store: st, Lander: lander, Scheduler: connectors.NewScheduler(st, lander, log),
 			AfterApply: route.AfterApply(log), Log: log,
@@ -154,7 +156,7 @@ func (p *pipeline) run(t *testing.T, workers ...worker.Handler) int {
 			result := handlers[task.Capability].Run(ctx, task)
 			if err := p.worker.Report(ctx, task.ID, server.ReportRequest{
 				Token: task.LeaseToken, Outcome: result.Outcome, Error: result.Error, Outputs: result.Outputs,
-				RetryAfterSeconds: int(result.RetryAfter.Seconds()), Delivery: result.Delivery,
+				RetryAfterSeconds: int(result.RetryAfter.Seconds()), Delivery: result.Delivery, Arrivals: result.Arrivals, Cursor: result.Cursor,
 			}); err != nil {
 				t.Fatal(err)
 			}

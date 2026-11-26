@@ -38,10 +38,17 @@ func ParseInterval(s string) (time.Duration, error) {
 	return time.Duration(n) * unit, nil
 }
 
+// onceRecheck is how long after a once connector's poll was made it is due
+// again, where no report has moved it. So a poll whose lease lapsed until its
+// claims failed it is made again.
+const onceRecheck = time.Hour
+
 // NextDue is when c is next due, from its cursor. A poll or a folder is due at
-// its schedule's next time after its last run. A drop or a push is due its
-// interval after its last delivery. One that never ran or delivered counts
-// from when its cursor was made.
+// its schedule's next time after its last run. A once connector is due at
+// once until its first run, then onceRecheck after its last, and keeps the
+// time it finished once a poll ended done. The scheduler never runs a
+// finished one. A drop or a push is due its interval after its last delivery.
+// One that never ran or delivered counts from when its cursor was made.
 func NextDue(c Connector, cur store.Cursor) (time.Time, error) {
 	created, err := time.Parse(store.StampLayout, cur.CreatedTS)
 	if err != nil {
@@ -57,6 +64,14 @@ func NextDue(c Connector, cur store.Cursor) (time.Time, error) {
 		}
 		return at
 	}
+	switch {
+	case Finished(c, cur):
+		return since(cur.FinishedTS), nil
+	case c.Once() && cur.LastRunTS == nil:
+		return created, nil
+	case c.Once():
+		return since(cur.LastRunTS).Add(onceRecheck), nil
+	}
 	if c.Scheduled() {
 		schedule, err := parseSchedule(c.Schedule)
 		if err != nil {
@@ -71,10 +86,16 @@ func NextDue(c Connector, cur store.Cursor) (time.Time, error) {
 	return since(cur.LastDeliveryTS).Add(interval).UTC(), nil
 }
 
+// Finished says whether c is a connector scheduled once whose poll ended done.
+// A cursor keeps its finished time only while its connector is scheduled once,
+// and this is the one test of it.
+func Finished(c Connector, cur store.Cursor) bool { return c.Once() && cur.FinishedTS != nil }
+
 // StaleAt is when c goes stale from its cursor: its last delivery plus its
-// freshness. It is nil where c declares no freshness or has delivered nothing.
+// freshness. It is nil where c declares no freshness, has delivered nothing,
+// or finished.
 func StaleAt(c Connector, cur store.Cursor) *string {
-	if c.Freshness == "" || cur.LastDeliveryTS == nil {
+	if c.Freshness == "" || cur.LastDeliveryTS == nil || Finished(c, cur) {
 		return nil
 	}
 	freshness, err := ParseInterval(c.Freshness)
@@ -89,11 +110,14 @@ func StaleAt(c Connector, cur store.Cursor) *string {
 	return &at
 }
 
-// OverdueSince is when the connector whose cursor is cur went overdue, and
-// false where it is not overdue at now. It goes overdue once its due time
-// passes with no delivery since, or once its stale time passes, whichever
-// comes first.
-func OverdueSince(cur store.Cursor, now time.Time) (string, bool) {
+// OverdueSince is when c, whose cursor is cur, went overdue, and false where
+// it is not overdue at now. It goes overdue once its due time passes with no
+// delivery since, or once its stale time passes, whichever comes first. A
+// connector that finished is never overdue.
+func OverdueSince(c Connector, cur store.Cursor, now time.Time) (string, bool) {
+	if Finished(c, cur) {
+		return "", false
+	}
 	var delivered time.Time
 	if cur.LastDeliveryTS != nil {
 		delivered, _ = time.Parse(store.StampLayout, *cur.LastDeliveryTS)

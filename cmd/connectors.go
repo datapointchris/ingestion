@@ -339,7 +339,11 @@ func writeConnectors(w io.Writer, applied *string, list []server.ConnectorView, 
 
 // dueText is when c is due as a person reads it: its schedule or interval,
 // any runs failed in a row, then the next due time, or how long it is overdue.
+// A connector scheduled once that finished reads when it finished.
 func dueText(c server.ConnectorView, now time.Time) string {
+	if c.FinishedTS != nil {
+		return "once · finished " + shortTime(*c.FinishedTS)
+	}
 	cadence := ""
 	switch {
 	case c.Schedule != nil:

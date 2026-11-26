@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/datapointchris/ingestion/connectors"
+	"github.com/datapointchris/ingestion/route"
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
 )
@@ -38,18 +39,22 @@ var reviewListCmd = &cobra.Command{
 		"its zone, why it waits, the quality gate's side guess where it gave one,\n" +
 		"when it began to wait, and its title. A reason is one of:\n" +
 		"\n" +
-		"  tags-disagree   its sightings' tags name destinations on two sides\n" +
-		"  below-floor     the quality gate guessed fleet, or its guess fell below its floor\n" +
-		"  no-guess        no tag or rule placed it, and the quality gate gave no answer\n" +
-		"  gate-error      the side gate could not read the set in force or its sightings\n" +
-		"  no-parse        no parse of it is usable\n" +
-		"  quality-review  the quality gate sent it to review\n" +
+		reviewReasonLines() +
 		"\n" +
 		"A title is outsider text where the zone is outside.",
 	Example: "  ingestion review list\n" +
 		"  ingestion review list --json",
 	Args: cobra.NoArgs,
 	RunE: runReviewList,
+}
+
+// reviewReasonLines gives each of route.ReviewReasons its help line.
+func reviewReasonLines() string {
+	var b strings.Builder
+	for _, r := range route.ReviewReasons {
+		fmt.Fprintf(&b, "  %-15s %s\n", r.Name, r.Help)
+	}
+	return b.String()
 }
 
 var reviewPlaceCmd = &cobra.Command{

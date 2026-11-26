@@ -4,7 +4,9 @@
 // model always wins over it, so the model judges only what the rules leave.
 // The quality gate's rung drops the item where the gate dropped it, sends it
 // to review where the gate was unsure, and otherwise places it by the gate's
-// side guess at or above its floor. While the item's quality task is open,
+// side guess at or above its floor. Where a connector that sighted the item
+// declares person_sorts, a guess places nothing and the item waits in review
+// beside it. While the item's quality task is open,
 // the side gate decides nothing, and the item waits at the quality gate. The
 // read gate then chooses whether an item placed on a side is read as is or by
 // a model: by its connector's read rule, else its side's default.
@@ -13,7 +15,8 @@
 // done. The service runs both gates in the write that ends each stage after
 // the parse and before the side gate, so a scan and its side decision commit
 // together, and a parse's end places nothing. It runs them again in the write
-// that applies a changed set. Each run leaves an item that a tag, a rule, a
+// that applies a changed set, and in the write that adds a sighting to an
+// item the store held. Each run leaves an item that a tag, a rule, a
 // model or a person placed as it is. It decides again an item that the gate
 // itself sent to review, or a model's guess below the floor, so a guess or a
 // rule that arrives later reaches it. A person's placement from
@@ -61,6 +64,10 @@ const (
 	// CauseGateError sends to review an item whose gate could not read the
 	// set in force or the item's sightings. The item keeps its parse.
 	CauseGateError = "gate-error"
+	// CausePersonSorts sends to review an item that no tag or rule placed and
+	// that a connector declaring person_sorts sighted, where the quality gate
+	// passed it with a side guess. The review queue shows the guess beside it.
+	CausePersonSorts = "person-sorts"
 	// CauseQualityDrop drops an item that the quality gate dropped, and
 	// CauseQualityReview sends to review one that it was unsure of.
 	CauseQualityDrop   = "quality-drop"
@@ -76,6 +83,30 @@ const (
 	CauseTitle = "title"
 	CauseTheme = "theme"
 )
+
+// ReviewReason is one reason an item waits in review: its name, the line
+// that `review list --help` gives it, and its group's heading in the TUI.
+type ReviewReason struct {
+	Name    string
+	Help    string
+	Heading string
+}
+
+// ReviewReasons lists why an item may wait in review, in the order that the
+// TUI groups them. The gate's own doubts lead, because the reading pane
+// decides them best. review-list.schema.json's reason enum holds these names.
+var ReviewReasons = []ReviewReason{
+	{store.ReasonQualityReview, "the quality gate sent it to review", "the gate asks"},
+	{CauseBelowFloor, "the quality gate guessed fleet, or its guess fell below its floor", "fleet guess, or below its floor"},
+	{
+		CausePersonSorts, "a connector that sighted it declares person_sorts, so its guess only shows",
+		"its connector leaves the side to you, the guess beside it",
+	},
+	{CauseTagsDisagree, "its sightings' tags name destinations on two sides", "tags name both sides"},
+	{CauseNoGuess, "no tag or rule placed it, and the quality gate gave no answer", "no rule, no answer"},
+	{CauseGateError, "the side gate could not read the set in force or its sightings", "the gate could not read the set or the sightings"},
+	{store.ReasonNoParse, "no parse of it is usable", "no usable parse"},
+}
 
 // GuessFloor is the confidence at or above which the quality gate's personal
 // guess places an item. A fleet guess places nothing at any confidence: a tag,
@@ -125,7 +156,16 @@ func Side(set connectors.Set, sightings []store.Sighting, guess *Guess) store.De
 	if d, ok := BeforeModel(set, sightings); ok {
 		return d
 	}
-	return byGuess(guess)
+	return byGuess(guess, personSorts(set, sightings))
+}
+
+// personSorts says whether a connector that sighted the item declares
+// person_sorts under set, so no guess places it.
+func personSorts(set connectors.Set, sightings []store.Sighting) bool {
+	return slices.ContainsFunc(sightings, func(s store.Sighting) bool {
+		c, ok := set.Connector(s.Connector)
+		return ok && c.PersonSorts
+	})
 }
 
 // BeforeModel is the side decision that a sighting's tags or a routing rule
@@ -139,10 +179,13 @@ func BeforeModel(set connectors.Set, sightings []store.Sighting) (store.Decision
 }
 
 // byGuess is the side decision on the quality gate's guess, and review for
-// want of one.
-func byGuess(guess *Guess) store.Decision {
+// want of one. Where a person sorts the item, a guess sends it to review.
+func byGuess(guess *Guess, personSorts bool) store.Decision {
 	if guess == nil {
 		return store.Decision{Gate: store.GateSide, Verdict: VerdictReview, DecidedBy: ByGate, Cause: CauseNoGuess}
+	}
+	if personSorts {
+		return store.Decision{Gate: store.GateSide, Verdict: VerdictReview, DecidedBy: ByGate, Cause: CausePersonSorts}
 	}
 	confidence := guess.Confidence
 	d := store.Decision{Gate: store.GateSide, DecidedBy: ByModel(guess.Run), Confidence: &confidence}
@@ -258,6 +301,19 @@ func AfterStage(log *slog.Logger) func(context.Context, *store.Tx, store.Task) e
 	}
 }
 
+// AfterSighting is the hook that serve's lander runs in the write that adds a
+// sighting to an item the store held. It runs the gates over the item again,
+// so a later sighting's tags, connector or fields decide an item that waits
+// in review, and an item already placed stays where it is.
+func AfterSighting(log *slog.Logger) func(context.Context, *store.Tx, string) error {
+	return func(ctx context.Context, tx *store.Tx, key string) error {
+		if _, err := Gate(ctx, tx, key, log); err != nil {
+			return fmt.Errorf("the side gate on %s: %w", key, err)
+		}
+		return nil
+	}
+}
+
 // AfterApply is the hook that serve runs in the write that applies a changed
 // set. It runs the gates again over each scanned item that no side decision
 // placed, so a rule the set adds places what it matches. It then reconciles
@@ -317,7 +373,7 @@ func Gate(ctx context.Context, tx *store.Tx, key string, log *slog.Logger) ([]st
 		side = store.Decision{Gate: store.GateSide, Verdict: VerdictReview, DecidedBy: ByGate, Cause: CauseGateError}
 	case !ruled:
 		var waits bool
-		if side, waits, err = byQuality(ctx, tx, key, byGuess(GuessOf(outputs))); err != nil || waits {
+		if side, waits, err = byQuality(ctx, tx, key, byGuess(GuessOf(outputs), personSorts(set, sightings))); err != nil || waits {
 			return nil, err
 		}
 	}

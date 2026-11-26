@@ -51,6 +51,12 @@ const (
 	StageDeliver   = "deliver"
 )
 
+// StageDelete removes a landed item from its connector's source, such as a
+// save from the playlist it was captured in, where the connector declares
+// after_landing delete. It sits on no item's line, so its tasks move no
+// item's phase.
+const StageDelete = "delete"
+
 // StageQualityArm is the quality gate's prompt answered by a model that its
 // task names, as a measurement against each label beside the gate's own
 // answer. It sits on no item's line, so its tasks and outputs move no item's
@@ -104,12 +110,15 @@ type Sighting struct {
 	Tags      []string `json:"tags"`
 	// Fields hold the source payload's values by name, such as a Reddit
 	// save's subreddit, for a routing rule to match.
-	Fields         map[string]string `json:"fields"`
-	Zone           Zone              `json:"zone"`
-	CursorPosition *string           `json:"cursor_position"`
-	ExternalKey    string            `json:"external_key"`
-	FirstSeenTS    string            `json:"first_seen_ts"`
-	LastSeenTS     string            `json:"last_seen_ts"`
+	Fields map[string]string `json:"fields"`
+	// Metrics hold the source's counts by name, such as a video's views and
+	// duration. No outsider wrote them, so they ship on the record channel.
+	Metrics        map[string]int64 `json:"metrics"`
+	Zone           Zone             `json:"zone"`
+	CursorPosition *string          `json:"cursor_position"`
+	ExternalKey    string           `json:"external_key"`
+	FirstSeenTS    string           `json:"first_seen_ts"`
+	LastSeenTS     string           `json:"last_seen_ts"`
 }
 
 // Blob is landed bytes, written once.
@@ -421,8 +430,11 @@ type Cursor struct {
 	Failures         int     `json:"failures"`
 	FirstFill        string  `json:"first_fill"`
 	FirstFillItemKey *string `json:"first_fill_item_key"`
-	CreatedTS        string  `json:"created_ts"`
-	UpdatedTS        string  `json:"updated_ts"`
+	// FinishedTS is when a connector scheduled once ran a poll that ended
+	// done, after which it never runs again, and nil until then.
+	FinishedTS *string `json:"finished_ts"`
+	CreatedTS  string  `json:"created_ts"`
+	UpdatedTS  string  `json:"updated_ts"`
 }
 
 // Declarations is one applied set of connectors, routing rules and

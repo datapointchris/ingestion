@@ -86,6 +86,7 @@ type ReviewSighting struct {
 	Connector string            `json:"connector"`
 	Tags      []string          `json:"tags"`
 	Fields    map[string]string `json:"fields"`
+	Metrics   map[string]int64  `json:"metrics"`
 }
 
 // ReviewDestination is a declared destination and the side it gives an item.
@@ -158,7 +159,7 @@ func (h reviewHandlers) list(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, s := range it.Sightings {
 			item.Connectors = append(item.Connectors, s.Connector)
-			item.Sightings = append(item.Sightings, ReviewSighting{Connector: s.Connector, Tags: s.Tags, Fields: s.Fields})
+			item.Sightings = append(item.Sightings, ReviewSighting{Connector: s.Connector, Tags: s.Tags, Fields: s.Fields, Metrics: s.Metrics})
 		}
 		if guess := route.GuessOf(it.Outputs); guess != nil {
 			item.Guess = &ReviewGuess{Side: guess.Side, Confidence: guess.Confidence}

@@ -112,7 +112,7 @@ func (s *Scheduler) Pass(ctx context.Context) (time.Time, error) {
 				failed = append(failed, fmt.Errorf("keep connector %s's stale time: %w", c.Name, err))
 			}
 		}
-		if !c.Scheduled() {
+		if !c.Scheduled() || Finished(c, cur) {
 			continue
 		}
 		due, err := time.Parse(store.StampLayout, cur.DueAt)
@@ -138,7 +138,9 @@ func (s *Scheduler) Pass(ctx context.Context) (time.Time, error) {
 // last_run_ts and makes c due at its schedule's next time. A scan stopped at
 // its budget makes c due at once, to resume. A run that fails leaves
 // last_run_ts, records its error on the cursor, and makes c due again after
-// retryAfter, doubled for each failure in a row.
+// retryAfter, doubled for each failure in a row. A poll's run completes once
+// its worker reports, so making its task leaves the failures in a row for
+// that report to clear or add to.
 func (s *Scheduler) run(ctx context.Context, c Connector) (time.Time, error) {
 	started := s.store.Now()
 	var scanned Scanned
@@ -180,7 +182,9 @@ func (s *Scheduler) run(ctx context.Context, c Connector) (time.Time, error) {
 		default:
 			ran := store.Stamp(started)
 			cur.LastRunTS = &ran
-			cur.LastError, cur.LastErrorTS, cur.Failures = nil, nil, 0
+			if c.Mode != ModePoll {
+				cur.LastError, cur.LastErrorTS, cur.Failures = nil, nil, 0
+			}
 			due, err = NextDue(c, cur)
 		}
 		if err != nil {
@@ -210,7 +214,8 @@ func (s *Scheduler) run(ctx context.Context, c Connector) (time.Time, error) {
 
 // failedRun records runErr on cur at now, and answers when c runs again:
 // retryAfter after its first failure in a row, doubled for each after, and at
-// its next scheduled time at the latest.
+// its next scheduled time at the latest. A once connector has no next time,
+// so it waits onceRecheck at the most.
 func failedRun(c Connector, cur *store.Cursor, runErr error, now time.Time) (time.Time, error) {
 	text := runErr.Error()
 	if len(text) > maxErrorText {
@@ -220,6 +225,9 @@ func failedRun(c Connector, cur *store.Cursor, runErr error, now time.Time) (tim
 	cur.LastError, cur.LastErrorTS = &text, &at
 	cur.Failures++
 	wait := retryAfter << min(cur.Failures-1, 16)
+	if c.Once() {
+		return now.Add(min(wait, onceRecheck)).UTC(), nil
+	}
 	schedule, err := parseSchedule(c.Schedule)
 	if err != nil {
 		return time.Time{}, err

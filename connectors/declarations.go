@@ -34,6 +34,14 @@ const (
 	ModeDrop   = "drop"
 )
 
+// ScheduleOnce is the schedule of a poll that runs until one poll ends done,
+// having landed every item its source holds, and never runs after it.
+const ScheduleOnce = "once"
+
+// AfterLandingDelete is the after_landing of a poll whose source removes each
+// item once it has landed, such as a save from a capture playlist.
+const AfterLandingDelete = "delete"
+
 // Read rules, which choose how an item is read when no tag's rule does.
 const (
 	ReadAsIs  = "as-is"
@@ -63,7 +71,8 @@ type Connector struct {
 	Source string `json:"source" yaml:"source"`
 	// Contract names the contract the source's payloads hold to.
 	Contract string `json:"contract,omitempty" yaml:"contract"`
-	// Schedule is a poll's or a folder's cron expression.
+	// Schedule is a poll's or a folder's cron expression, or a poll's
+	// ScheduleOnce.
 	Schedule string `json:"schedule,omitempty" yaml:"schedule"`
 	// DueInterval is how long after its last delivery a drop or a push is
 	// due again, such as 30d.
@@ -82,12 +91,22 @@ type Connector struct {
 	// items, as RegisterDropHandler registered it. Left out, a dropped file
 	// lands as one item.
 	Format string `json:"format,omitempty" yaml:"format"`
+	// AfterLanding is a poll's AfterLandingDelete, which removes each item
+	// from its source once it has landed. Left out, the source keeps it.
+	AfterLanding string `json:"after_landing,omitempty" yaml:"after_landing"`
+	// PersonSorts keeps the quality gate's side guess from placing an item
+	// the connector sighted, which then waits in review with the guess beside
+	// it. A tag or a rule still places it first.
+	PersonSorts bool `json:"person_sorts,omitempty" yaml:"person_sorts"`
 }
 
 // Scheduled says whether c runs on its schedule, as a poll or a folder does.
 // A drop or a push runs as its items arrive, and is due its due_interval
 // after its last delivery.
 func (c Connector) Scheduled() bool { return c.Mode == ModePoll || c.Mode == ModeFolder }
+
+// Once says whether c polls only until one poll ends done.
+func (c Connector) Once() bool { return c.Mode == ModePoll && c.Schedule == ScheduleOnce }
 
 // RoutingRule names one destination for the items that match it.
 type RoutingRule struct {
@@ -314,9 +333,9 @@ func decodeFile(file string, into any) error {
 // cannot say: that no two declarations of a kind share a name, that a rule's
 // connector and destination are declared, that a tag places an item on one
 // destination, that one destination at most is a side's default, that a
-// schedule parses, that a drop's format and a destination's deliverer are
-// registered, and that a folder's root is one of roots. nil roots skips that
-// check.
+// schedule parses, that a drop's format, a destination's deliverer and the
+// deleter of a poll that deletes after landing are registered, and that a
+// folder's root is one of roots. nil roots skips that check.
 func Validate(s Set, roots []string) []Invalid {
 	compiled, err := compiledSchemas()
 	if err != nil {
@@ -388,12 +407,18 @@ func (c Connector) problems(compiled declarationSchemas, roots []string) []strin
 		if field, ok := strings.CutSuffix(problem, ": false schema"); ok {
 			problem = fmt.Sprintf("%s: a %s connector does not take it", field, c.Mode)
 		}
+		if problem == "schedule: 'not' failed" {
+			problem = "schedule: only a poll runs once, and a folder scans on a cron schedule"
+		}
 		out = append(out, problem)
 	}
-	if c.Scheduled() && c.Schedule != "" {
+	if c.Scheduled() && c.Schedule != "" && c.Schedule != ScheduleOnce {
 		if _, err := parseSchedule(c.Schedule); err != nil {
-			out = append(out, fmt.Sprintf("schedule %q is not a cron expression: %v", c.Schedule, err))
+			out = append(out, fmt.Sprintf("schedule %q is not a cron expression or once: %v", c.Schedule, err))
 		}
+	}
+	if c.AfterLanding == AfterLandingDelete && !deleters[c.Source] {
+		out = append(out, fmt.Sprintf("after_landing: source %s registers no deleter in this build, so nothing would delete what it lands", c.Source))
 	}
 	if c.Format != "" {
 		f, ok := dropFormats[c.Format]

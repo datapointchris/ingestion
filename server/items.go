@@ -225,6 +225,7 @@ type SightingView struct {
 	ExternalKey    string            `json:"external_key"`
 	Tags           []string          `json:"tags"`
 	Fields         map[string]string `json:"fields"`
+	Metrics        map[string]int64  `json:"metrics"`
 	Zone           store.Zone        `json:"zone"`
 	CursorPosition *string           `json:"cursor_position"`
 	FirstSeenTS    string            `json:"first_seen_ts"`
@@ -580,8 +581,8 @@ func itemAnswer(rec store.ItemRecords) ItemAnswer {
 	}
 	for _, s := range rec.Sightings {
 		a.Sightings = append(a.Sightings, SightingView{
-			Connector: s.Connector, ExternalKey: s.ExternalKey, Tags: s.Tags, Fields: s.Fields, Zone: s.Zone, CursorPosition: s.CursorPosition,
-			FirstSeenTS: s.FirstSeenTS, LastSeenTS: s.LastSeenTS,
+			Connector: s.Connector, ExternalKey: s.ExternalKey, Tags: s.Tags, Fields: s.Fields, Metrics: s.Metrics, Zone: s.Zone,
+			CursorPosition: s.CursorPosition, FirstSeenTS: s.FirstSeenTS, LastSeenTS: s.LastSeenTS,
 		})
 	}
 	for _, o := range rec.Outputs {

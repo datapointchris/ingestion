@@ -26,17 +26,6 @@ var columns = []gotermboard.Column{
 	{Title: "SOURCE"}, {Title: "WHY"}, {Title: "GATE"}, {Title: "Q", Right: true}, {Title: "SIDE"}, {Title: "WAITED", Right: true}, {Title: "TITLE"},
 }
 
-// reasons orders the groups by why the items wait, each with its heading. The gate's own doubts
-// lead, because the reading pane decides them best.
-var reasons = []struct{ reason, title string }{
-	{store.ReasonQualityReview, "the gate asks"},
-	{route.CauseBelowFloor, "fleet guess, or below its floor"},
-	{route.CauseTagsDisagree, "tags name both sides"},
-	{route.CauseNoGuess, "no rule, no answer"},
-	{route.CauseGateError, "the gate could not read the set or the sightings"},
-	{store.ReasonNoParse, "no usable parse"},
-}
-
 // Frame is gotermboard.Board's, one frame for a live table and --once alike.
 func (b *Board) Frame(now time.Time, grouping string) gotermboard.Frame {
 	b.writes.SayEnded()
@@ -156,9 +145,9 @@ func (b *Board) grouped(items []item, grouping string, now time.Time) []gotermbo
 	case byReason:
 		var groups []gotermboard.Group
 		known := map[string]bool{}
-		for _, r := range reasons {
-			known[r.reason] = true
-			groups = b.appendGroup(groups, "reason/"+r.reason, r.title, items, func(it item) bool { return it.Reason == r.reason }, now, unread)
+		for _, r := range route.ReviewReasons {
+			known[r.Name] = true
+			groups = b.appendGroup(groups, "reason/"+r.Name, r.Heading, items, func(it item) bool { return it.Reason == r.Name }, now, unread)
 		}
 		return b.appendGroup(groups, "reason/other", "waiting for another reason", items, func(it item) bool { return !known[it.Reason] }, now, unread)
 	case bySource:

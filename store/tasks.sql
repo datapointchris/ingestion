@@ -4,8 +4,12 @@
 -- first fill holds a model stage's task, which no claim takes until a person
 -- releases the fill. destination names the destination a deliver task writes
 -- its item to. model names the model that a measurement arm's task asks its
--- run for. error is outsider-written, because an extractor's stderr can
--- quote the item, so the outbox ships it as ingestion.text.
+-- run for. sighting_connector names the connector whose sighting a delete
+-- task removes from that connector's source. attempts counts every claim, and
+-- lapses the leases in a row that lapsed with no report accepted, which any
+-- accepted report resets. error is outsider-written,
+-- because an extractor's stderr can quote the item, so the outbox ships it as
+-- ingestion.text.
 
 CREATE TABLE IF NOT EXISTS tasks (
     id               TEXT PRIMARY KEY,
@@ -13,6 +17,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     connector        TEXT,
     destination      TEXT,
     model            TEXT,
+    sighting_connector TEXT,
     stage            TEXT NOT NULL,
     capability       TEXT NOT NULL,
     state            TEXT NOT NULL CHECK (state IN ('queued', 'leased', 'done', 'failed')),
@@ -21,6 +26,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     lease_token      INTEGER,
     lease_expires_ts TEXT,
     attempts         INTEGER NOT NULL DEFAULT 0,
+    lapses           INTEGER NOT NULL DEFAULT 0,
     not_before_ts    TEXT,
     error            TEXT,
     created_ts       TEXT NOT NULL,

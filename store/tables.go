@@ -47,7 +47,7 @@ var Tables = []Table{
 		Kept: []string{"created_ts", "flow_id", "parent_flow_id"}, Writes: Upserts,
 	},
 	{
-		Name: "sightings", Key: []string{"item_key", "connector"}, Stamp: []string{"last_seen_ts"}, JSON: []string{"tags", "fields"},
+		Name: "sightings", Key: []string{"item_key", "connector"}, Stamp: []string{"last_seen_ts"}, JSON: []string{"tags", "fields", "metrics"},
 		Text: []string{"external_key", "fields"}, Kept: []string{"first_seen_ts"}, Writes: Upserts,
 	},
 	{Name: "blobs", Key: []string{"sha256"}, Stamp: []string{"created_ts"}, Writes: Appends},
@@ -83,7 +83,7 @@ var Tables = []Table{
 		Kept: []string{"started_ts"}, Writes: Upserts,
 	},
 	{
-		Name: "cursors", Key: []string{"connector"}, Stamp: []string{"updated_ts"}, Text: []string{"last_error"},
+		Name: "cursors", Key: []string{"connector"}, Stamp: []string{"updated_ts"}, Text: []string{"position", "last_error"},
 		Kept: []string{"created_ts"}, Writes: Upserts,
 	},
 	{

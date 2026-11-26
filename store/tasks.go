@@ -19,10 +19,12 @@ const (
 )
 
 const (
-	// LapsedClaimsFail is the claim whose lapsed lease fails its task rather
-	// than return it to the next claim. A run that ends its worker, such as an
+	// LapsedClaimsFail is how many leases in a row may lapse with no report
+	// accepted before the claim that finds the last fails its task rather than
+	// return it to the next claim. A run that ends its worker, such as an
 	// extractor killed for its memory, never reports, and would otherwise take
-	// down a worker every lease.
+	// down a worker every lease. A task that reports a retry, such as a delete
+	// waiting out its source's quota, starts the count again.
 	LapsedClaimsFail = 3
 	// HeartbeatEvery is how often a worker's claims write its row, which is
 	// how fresh a worker's last heartbeat reads.
@@ -49,10 +51,13 @@ type Task struct {
 	Destination *string `json:"destination"`
 	// Model names the model that a measurement arm's task asks its run for,
 	// and is nil for every other task.
-	Model      *string `json:"model"`
-	Stage      string  `json:"stage"`
-	Capability string  `json:"capability"`
-	State      string  `json:"state"`
+	Model *string `json:"model"`
+	// SightingConnector names the connector whose sighting a delete task
+	// removes from that connector's source, and is nil for every other task.
+	SightingConnector *string `json:"sighting_connector"`
+	Stage             string  `json:"stage"`
+	Capability        string  `json:"capability"`
+	State             string  `json:"state"`
 	// HeldBy names the connector whose first fill holds this model stage's
 	// task. No claim takes it until a person releases the fill.
 	HeldBy *string `json:"held_by"`
@@ -63,10 +68,12 @@ type Task struct {
 	LeaseToken     *int64  `json:"lease_token"`
 	LeaseExpiresTS *string `json:"lease_expires_ts"`
 	Attempts       int     `json:"attempts"`
-	NotBeforeTS    *string `json:"not_before_ts"`
-	Error          *string `json:"error"`
-	CreatedTS      string  `json:"created_ts"`
-	UpdatedTS      string  `json:"updated_ts"`
+	// Lapses counts the leases in a row that lapsed with no report accepted.
+	Lapses      int     `json:"lapses"`
+	NotBeforeTS *string `json:"not_before_ts"`
+	Error       *string `json:"error"`
+	CreatedTS   string  `json:"created_ts"`
+	UpdatedTS   string  `json:"updated_ts"`
 }
 
 // Lapsed says whether t is leased and its lease ran out by now, which returns
@@ -82,12 +89,34 @@ func (t Task) Lapsed(now time.Time) bool {
 // PollTask is the task that polls connector once, which a worker holding the
 // capability poll:<source> claims.
 func PollTask(connector, source string) Task {
-	return Task{Connector: &connector, Stage: StagePoll, Capability: "poll:" + source}
+	return Task{Connector: &connector, Stage: StagePoll, Capability: PollCapability(source)}
 }
+
+// PollCapability is the capability of a poll of a source's connector, so a
+// worker claims only the polls of the sources it reads.
+func PollCapability(source string) string { return StagePoll + ":" + source }
 
 // DeliverCapability is the capability of a deliver task that deliverer runs,
 // so a worker claims only the tasks of the deliverers it holds.
 func DeliverCapability(deliverer string) string { return StageDeliver + ":" + deliverer }
+
+// DeleteCapability is the capability of a delete from source, so a worker
+// claims only the deletes of the sources whose deleter it opened.
+func DeleteCapability(source string) string { return StageDelete + ":" + source }
+
+// DeleteTask is the task that removes the item under key from the source of
+// connector, which a worker holding the capability delete:<source> claims.
+func DeleteTask(key, connector, source string) Task {
+	return Task{ItemKey: &key, SightingConnector: &connector, Stage: StageDelete, Capability: DeleteCapability(source)}
+}
+
+// DeleteInFlight says whether a delete of the item under key from
+// connector's source is queued or leased.
+func (t *Tx) DeleteInFlight(ctx context.Context, key, connector string) (bool, error) {
+	_, found, err := first[Task](ctx, t.tx, table("tasks"),
+		`item_key = ? AND stage = ? AND sighting_connector = ? AND state IN ('queued', 'leased')`, key, StageDelete, connector)
+	return found, err
+}
 
 // modelStages are the stages that read an item with a model, where a
 // connector's first fill holds every item after the first to reach one.
@@ -220,6 +249,16 @@ type Claim struct {
 	// by Max alone.
 	MaxByCapability map[string]int
 	Lease           time.Duration
+	// Admit, where it is not nil, runs before the claim leases each task. It
+	// answers why the set in force wants the task's work done by nobody, such
+	// as a poll of a connector that the set lacks, and "" otherwise. When it
+	// answers a reason, the claim ends the task done with that reason as its
+	// error, and leases it to nobody.
+	Admit func(ctx context.Context, tx *Tx, task Task) (string, error)
+	// Lapsed, where it is not nil, runs in the claim's write whenever the
+	// claim fails a task because its leases lapsed. It gets the reason that
+	// the task keeps.
+	Lapsed func(ctx context.Context, tx *Tx, task Task, reason string) error
 }
 
 // Leased is a leased task with its item's row, so a worker runs the task
@@ -228,13 +267,17 @@ type Claim struct {
 // source time every attempt sends. A model stage's task carries the item's
 // outputs at its stage, so a task whose run is already dispatched reads that
 // run rather than starting another. A model read's task carries the item's
-// newest read decision, whose lens and note the read answers.
+// newest read decision, whose lens and note the read answers. A poll carries
+// its connector's cursor, whose position it reads on from. A delete task
+// carries the sighting whose source it removes the item from.
 type Leased struct {
 	Task
 	Item     Item
 	Delivery *Delivery
 	Outputs  []Output
 	Read     *Decision
+	Cursor   *Cursor
+	Sighting *Sighting
 }
 
 // Claim records the worker's heartbeat and leases it up to c.Max tasks whose
@@ -290,21 +333,43 @@ func (s *Store) Claim(ctx context.Context, c Claim) ([]Leased, error) {
 		}
 		expires := Stamp(tx.at.Add(c.Lease))
 		for _, id := range ids {
-			lapsed, err := tx.task(ctx, id)
+			found, err := tx.task(ctx, id)
 			if err != nil {
 				return err
 			}
-			if lapsed.State == TaskLeased && lapsed.Attempts >= LapsedClaimsFail {
-				reason := fmt.Sprintf("its lease lapsed on claim %d with no report, so its run likely ends its worker", lapsed.Attempts)
-				if _, err := tx.tx.ExecContext(ctx, `UPDATE tasks SET state = 'failed', error = ?, updated_ts = ? WHERE id = ?`,
-					reason, now, id); err != nil {
+			if c.Admit != nil {
+				withdraw, err := c.Admit(ctx, tx, found)
+				if err != nil {
+					return err
+				}
+				if withdraw != "" {
+					if _, err := tx.tx.ExecContext(ctx, `UPDATE tasks SET state = 'done', error = ?, updated_ts = ? WHERE id = ?`,
+						withdraw, now, id); err != nil {
+						return fmt.Errorf("withdraw task %s: %w", id, err)
+					}
+					continue
+				}
+			}
+			lapses := found.Lapses
+			if found.State == TaskLeased {
+				lapses++
+			}
+			if lapses >= LapsedClaimsFail {
+				reason := fmt.Sprintf("its lease lapsed %d times in a row with no report accepted", lapses)
+				if _, err := tx.tx.ExecContext(ctx, `UPDATE tasks SET state = 'failed', lapses = ?, error = ?, updated_ts = ? WHERE id = ?`,
+					lapses, reason, now, id); err != nil {
 					return fmt.Errorf("fail task %s: %w", id, err)
+				}
+				if c.Lapsed != nil {
+					if err := c.Lapsed(ctx, tx, found, reason); err != nil {
+						return err
+					}
 				}
 				continue
 			}
 			if _, err := tx.tx.ExecContext(ctx, `UPDATE tasks SET state = 'leased', lease_holder = ?,
-				lease_token = coalesce(lease_token, 0) + 1, lease_expires_ts = ?, attempts = attempts + 1, updated_ts = ?
-				WHERE id = ?`, c.Worker.ID, expires, now, id); err != nil {
+				lease_token = coalesce(lease_token, 0) + 1, lease_expires_ts = ?, attempts = attempts + 1, lapses = ?, updated_ts = ?
+				WHERE id = ?`, c.Worker.ID, expires, lapses, now, id); err != nil {
 				return fmt.Errorf("lease task %s: %w", id, err)
 			}
 			task, err := tx.task(ctx, id)
@@ -339,6 +404,24 @@ func (s *Store) Claim(ctx context.Context, c Claim) ([]Leased, error) {
 				}
 				if ok {
 					leased.Delivery = &d
+				}
+			}
+			if task.Stage == StagePoll && task.Connector != nil {
+				cur, ok, err := tx.Cursor(ctx, *task.Connector)
+				if err != nil {
+					return err
+				}
+				if ok {
+					leased.Cursor = &cur
+				}
+			}
+			if task.Stage == StageDelete && task.ItemKey != nil && task.SightingConnector != nil {
+				s, ok, err := tx.Sighting(ctx, *task.ItemKey, *task.SightingConnector)
+				if err != nil {
+					return err
+				}
+				if ok {
+					leased.Sighting = &s
 				}
 			}
 			claimed = append(claimed, leased)
@@ -400,12 +483,13 @@ type Outcome struct {
 
 // Report ends the lease that token holds on task id, with outcome. write runs
 // in the same transaction before the lease ends, so a stage's records, such
-// as a model stage's dispatch id, are stored exactly when the task ends. The
-// store refuses a token that does not hold the lease with ErrStaleLease, and
-// write never runs. A report repeated under the token that ended the task
-// answers the task as it ended, and write never runs again, so a worker whose
-// answer was lost can send its report again.
-func (s *Store) Report(ctx context.Context, id string, token int64, outcome Outcome, write func(*Tx, Task) error) (Task, error) {
+// as a model stage's dispatch id, are stored exactly when the task ends. write
+// may change the outcome, such as to fail a poll whose report it could land
+// only in part. The store refuses a token that does not hold the lease with
+// ErrStaleLease, and write never runs. A report repeated under the token that
+// ended the task answers the task as it ended, and write never runs again, so
+// a worker whose answer was lost can send its report again.
+func (s *Store) Report(ctx context.Context, id string, token int64, outcome Outcome, write func(*Tx, Task, *Outcome) error) (Task, error) {
 	switch outcome.State {
 	case TaskDone, TaskFailed, TaskQueued:
 	default:
@@ -422,7 +506,7 @@ func (s *Store) Report(ctx context.Context, id string, token int64, outcome Outc
 			return err
 		}
 		if write != nil {
-			if err := write(tx, task); err != nil {
+			if err := write(tx, task, &outcome); err != nil {
 				return err
 			}
 		}
@@ -431,7 +515,7 @@ func (s *Store) Report(ctx context.Context, id string, token int64, outcome Outc
 			at := Stamp(tx.at.Add(outcome.RetryAfter))
 			notBefore = &at
 		}
-		if _, err := tx.tx.ExecContext(ctx, `UPDATE tasks SET state = ?, error = ?, not_before_ts = ?, updated_ts = ? WHERE id = ?`,
+		if _, err := tx.tx.ExecContext(ctx, `UPDATE tasks SET state = ?, error = ?, not_before_ts = ?, lapses = 0, updated_ts = ? WHERE id = ?`,
 			outcome.State, outcome.Error, notBefore, tx.stamp(), id); err != nil {
 			return fmt.Errorf("end task %s: %w", id, err)
 		}
@@ -473,7 +557,7 @@ func (s *Store) RetryTask(ctx context.Context, id string) (Task, error) {
 		case TaskQueued, TaskLeased:
 			return nil
 		}
-		if _, err := tx.tx.ExecContext(ctx, `UPDATE tasks SET state = 'queued', attempts = 0, error = NULL, not_before_ts = NULL,
+		if _, err := tx.tx.ExecContext(ctx, `UPDATE tasks SET state = 'queued', attempts = 0, lapses = 0, error = NULL, not_before_ts = NULL,
 			updated_ts = ? WHERE id = ?`, tx.stamp(), id); err != nil {
 			return fmt.Errorf("queue task %s again: %w", id, err)
 		}

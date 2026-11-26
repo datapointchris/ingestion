@@ -122,6 +122,9 @@ type ConnectorView struct {
 	Overdue     bool    `json:"overdue"`
 	// OverdueSince is when the connector went overdue, and null while it is not.
 	OverdueSince *string `json:"overdue_since"`
+	// FinishedTS is when a connector scheduled once ran a poll that ended
+	// done, after which the scheduler never runs it, and null until then.
+	FinishedTS *string `json:"finished_ts"`
 	// FirstFill is answered on one connector alone.
 	FirstFill *FirstFillView `json:"first_fill,omitempty"`
 }
@@ -384,15 +387,23 @@ func (h connectorHandlers) view(w http.ResponseWriter, r *http.Request, c connec
 	if tags == nil {
 		tags = []string{}
 	}
-	since, overdue := connectors.OverdueSince(cur, h.cfg.Store.Now())
+	since, overdue := connectors.OverdueSince(c, cur, h.cfg.Store.Now())
 	return ConnectorView{
 		Name: c.Name, Mode: c.Mode, Zone: c.Zone, Source: c.Source, Tags: tags, AppliedCommit: commit,
 		LastRunTS: cur.LastRunTS, LastDeliveryTS: cur.LastDeliveryTS,
 		LastError: cur.LastError, LastErrorTS: cur.LastErrorTS, Failures: cur.Failures,
 		Items: n.Items, Waiting: n.Waiting, Review: n.Review, Failed: n.Failed,
 		Schedule: optional(c.Schedule), DueInterval: optional(c.DueInterval), Freshness: optional(c.Freshness),
-		DueAt: cur.DueAt, Overdue: overdue, OverdueSince: optional(since),
+		DueAt: cur.DueAt, Overdue: overdue, OverdueSince: optional(since), FinishedTS: finishedTS(c, cur),
 	}, true
+}
+
+// finishedTS is when c finished, and nil where it has not.
+func finishedTS(c connectors.Connector, cur store.Cursor) *string {
+	if !connectors.Finished(c, cur) {
+		return nil
+	}
+	return cur.FinishedTS
 }
 
 // run makes a poll connector's task now, or makes a folder connector due now
