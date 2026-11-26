@@ -51,7 +51,8 @@ func (h handler) Capability() string { return Capability(h.extractor) }
 
 // Run parses the task's item. A parse that fails, or finds no text, fails
 // its task with the reason kept, so the item waits in review rather than
-// passing a gate on empty text.
+// passing a gate on empty text. A blank unit keeps its place where the
+// extractor is positional, and is dropped otherwise.
 func (h handler) Run(ctx context.Context, task worker.Task) worker.Result {
 	if task.BlobSHA256 == nil {
 		return h.failed("the item holds no bytes to parse")
@@ -79,13 +80,18 @@ func (h handler) Run(ctx context.Context, task worker.Task) worker.Result {
 		return h.failed(err.Error())
 	}
 	numbered := make([]store.Unit, 0, len(units))
+	texts := 0
 	for _, u := range units {
-		if strings.TrimSpace(u.Text) == "" {
+		blank := strings.TrimSpace(u.Text) == ""
+		if !blank {
+			texts++
+		}
+		if blank && !h.extractor.Positional {
 			continue
 		}
 		numbered = append(numbered, store.Unit{N: len(numbered) + 1, Label: u.Label, Text: u.Text})
 	}
-	if len(numbered) == 0 {
+	if texts == 0 {
 		return h.failed(h.extractor.Name + " found no text in the item's bytes")
 	}
 	return worker.Result{Outcome: server.OutcomeDone, Outputs: []server.ReportOutput{{

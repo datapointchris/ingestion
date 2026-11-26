@@ -1,6 +1,8 @@
 package connectors_test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -14,7 +16,8 @@ import (
 )
 
 // A folder connector over a temporary folder lands each new file once when it
-// comes due, and a rerun lands nothing. A poll connector's due time makes one
+// comes due, and a rerun lands nothing. A file that leaves the folder keeps
+// its item, and its home reads gone. A poll connector's due time makes one
 // task, named for its source, and a pass while it is in flight makes no other.
 // A folder whose root is gone, as an unmounted share is, keeps the error on its
 // cursor and its last good run, and comes due again in 5 minutes.
@@ -126,6 +129,35 @@ func TestTheSchedulerLandsEachNewFileOnceMakesOnePollTaskAndKeepsAFailedScan(t *
 	advance(15 * time.Minute)
 	if items, _ := pass(); items != 3 {
 		t.Errorf("a pass after a new file landed to %d items, want 3", items)
+	}
+	// A file that leaves the folder leaves its item, and its home reads gone.
+	// A folder emptied whole, as a share that failed to mount reads, stamps
+	// nothing gone.
+	live := func(name string) bool {
+		t.Helper()
+		sum := sha256.Sum256([]byte(name))
+		homes, err := st.LiveHomesAt(ctx, "books", hex.EncodeToString(sum[:]))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(homes) == 1
+	}
+	if err := os.Remove(filepath.Join(books, "b.md")); err != nil {
+		t.Fatal(err)
+	}
+	advance(15 * time.Minute)
+	if items, _ := pass(); items != 3 || live("b.md") || !live("a.epub") {
+		t.Errorf("after b.md left the folder there are %d items, b.md live %t and a.epub live %t; want 3, false and true",
+			items, live("b.md"), live("a.epub"))
+	}
+	for _, name := range []string{"a.epub", "c.txt"} {
+		if err := os.Remove(filepath.Join(books, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	advance(15 * time.Minute)
+	if pass(); !live("a.epub") || !live("c.txt") {
+		t.Error("a scan of an empty folder stamped its files' homes gone")
 	}
 
 	good, _, err := st.Cursor(ctx, "books-folder")

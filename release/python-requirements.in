@@ -1,0 +1,7 @@
+# The Python libraries the worker image installs for the extractor programs.
+# PyMuPDF 2 requires onnxruntime and a layout model, which page text never
+# uses, so it stays on 1.x. release/python-requirements.txt pins each library
+# with its hashes, written by:
+#   uv pip compile release/python-requirements.in --generate-hashes --python-version 3.13 \
+#     --python-platform x86_64-manylinux_2_28 --no-header -o release/python-requirements.txt
+pymupdf<2

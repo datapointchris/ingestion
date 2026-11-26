@@ -151,7 +151,7 @@ func (s *Scheduler) run(ctx context.Context, c Connector) (time.Time, error) {
 		}
 		s.log.InfoContext(ctx, "scanned a folder", "connector", c.Name, "root", c.Root, "files", scanned.Files,
 			"landed", scanned.Landed, "skipped", scanned.Skipped, "failed", scanned.Failed, "settling", scanned.Settling,
-			"unfinished", scanned.Unfinished)
+			"gone", scanned.Gone, "unfinished", scanned.Unfinished)
 	}
 	var due time.Time
 	err := s.store.Update(ctx, func(tx *store.Tx) error {

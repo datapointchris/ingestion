@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/datapointchris/ingestion/itemkey"
+	"github.com/datapointchris/ingestion/store"
 )
 
 // FolderFile is one regular file below a named root.
@@ -91,4 +92,42 @@ func (l *Lander) Sighted(ctx context.Context, connector, root string, f FolderFi
 		return l.store.Sighted(ctx, key, connector)
 	}
 	return false, nil
+}
+
+// MarkGone stamps gone each live home below dir under root that is missing
+// from listed, because its file left the folder, and answers how many it
+// stamped.
+// Each item stays, with its records. A listing of no files stamps none,
+// because a share that failed to mount lists nothing too.
+func (l *Lander) MarkGone(ctx context.Context, root, dir string, listed []FolderFile) (int, error) {
+	if len(listed) == 0 {
+		return 0, nil
+	}
+	present := make(map[string]bool, len(listed))
+	for _, f := range listed {
+		present[f.Path] = true
+	}
+	below := ""
+	if dir != "" && path.Clean(dir) != "." {
+		below = path.Clean(dir) + "/"
+	}
+	gone := 0
+	err := l.store.Update(ctx, func(tx *store.Tx) error {
+		gone = 0
+		homes, err := tx.LiveHomesUnder(ctx, root)
+		if err != nil {
+			return err
+		}
+		for _, h := range homes {
+			if present[h.Path] || !strings.HasPrefix(h.Path, below) {
+				continue
+			}
+			if err := tx.PutHome(ctx, h, true); err != nil {
+				return err
+			}
+			gone++
+		}
+		return nil
+	})
+	return gone, err
 }

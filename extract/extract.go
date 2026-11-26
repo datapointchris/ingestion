@@ -21,7 +21,7 @@ import (
 )
 
 // builtin is every extractor that ingestion holds.
-var builtin = []Extractor{ThreadText}
+var builtin = []Extractor{ThreadText, PDFText}
 
 // Extractor turns the bytes of one media type into a parse's units.
 type Extractor struct {
@@ -40,6 +40,10 @@ type Extractor struct {
 	// past it fails its task, so a program that hangs on one item's bytes
 	// frees its worker slot and the item waits in review.
 	Timeout time.Duration
+	// Positional keeps a unit with no text in its place, so unit n is the
+	// artifact's own part n, such as a book's PDF page n. Otherwise such a
+	// unit is dropped and the rest are numbered again.
+	Positional bool
 }
 
 // Unit is one part of a parse, as an extractor writes it. The parse numbers

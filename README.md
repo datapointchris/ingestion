@@ -300,6 +300,10 @@ newest task past its parse failed.
   rerun lands nothing. A file modified in the last 10 seconds is left for the next scan, so a copy
   in progress does not land half written. A scan stops after 30 seconds and the folder stays due,
   so a large first scan resumes on the next pass rather than holding up every other connector.
+- **A file that leaves the folder keeps its item.** After each listing, the scan marks gone every
+  home under the connector's path that the listing lacks. The item keeps its parse and its
+  deliveries. A listing that finds no files marks nothing, because a share that failed to mount
+  lists nothing too. An item that lands with no title takes its file name, without the extension.
 - **A drop connector takes a file a person or a job sends.** `ingestion items drop <file>
   --connector <name>` posts it to `/api/v1/connectors/<name>/drops` under an `Idempotency-Key`. A
   retry under that key answers the first landing, and another file under it is refused with 409.
@@ -360,6 +364,11 @@ Landing a new item queues its parse in the same write. A worker runs the extract
 the item's media type, which writes the item's text as numbered units. `thread-text` reads a saved
 Reddit post or comment: the post first, then each comment depth first, each unit labeled with
 its author. A deleted or removed comment is left out, and its replies are kept.
+
+`pdf-text` reads a PDF with PyMuPDF, one unit per PDF page, so unit n is PDF page n. A blank page
+keeps its empty unit in place. A unit's label is the page's printed label where the PDF declares
+page labels, and empty where it declares none. The extractor's version names PyMuPDF's, so a
+library upgrade writes a parse beside the old one.
 
 `GET /api/v1/items/{key}/parse` answers the newest parse: its text, its units and the scan's
 findings, in `schemas/item-parse.schema.json`. The text is the units joined by a blank line.
@@ -809,3 +818,8 @@ land → parse → scan → quality gate → side → read → model read → de
   service holds the SQLite store and the stored bytes. A worker leases tasks by capability under a
   fencing token, and moves bytes through the service, so a heavy extractor never shares memory
   with the writer.
+
+## License
+
+ingestion is MIT licensed, per `LICENSE`, except the extractor programs in `extract/programs/`,
+which import PyMuPDF and so carry AGPL-3.0-or-later, per `LICENSES/AGPL-3.0-or-later.txt`.

@@ -367,8 +367,9 @@ func TestLandedSavesParseOnceEachAndAReplayWritesTheNextVersionBeside(t *testing
 }
 
 // An extractor program reads the item's bytes on stdin and writes a unit per
-// line, and neither inherits nor can read the worker's environment. One that
-// exits non-zero fails its task with its stderr kept, and one that hangs
+// line, and neither inherits nor can read the worker's environment. A
+// positional one keeps a blank unit in its place, as a book's blank page. One
+// that exits non-zero fails its task with its stderr kept, and one that hangs
 // fails at its time limit, and each item waits in review. A replay at an
 // unchanged version whose rerun fails keeps the done parse, and a replay
 // naming an item or connector that is not there is refused.
@@ -393,15 +394,18 @@ func TestAnExtractorProgramThatFailsOrHangsFailsItsTaskAndAFailedRerunKeepsTheDo
 		"cat >/dev/null\n"+`printf '%s\n' '{"label":"page 1","text":"one"}' '' '{"text":"two"}'`+"\n")
 	hangs := extract.Program("hanging", "1", "application/x-hanging", hanging)
 	hangs.Timeout = 200 * time.Millisecond
+	pages := extract.Program("pages", "1", "application/x-pages", script("pages",
+		"cat >/dev/null\n"+`printf '%s\n' '{"label":"i","text":"one"}' '{"label":"ii","text":""}' '{"label":"1","text":"two"}'`+"\n"))
+	pages.Positional = true
 	extractors, err := extract.NewRegistry(
 		extract.Program("failing", "1", "application/x-failing", failing), hangs,
-		extract.Program("working", "1", "application/x-working", working))
+		extract.Program("working", "1", "application/x-working", working), pages)
 	if err != nil {
 		t.Fatal(err)
 	}
 	p := newPipeline(t, extractors, nil)
 	keys := map[string]string{}
-	for _, name := range []string{"failing", "hanging", "working"} {
+	for _, name := range []string{"failing", "hanging", "working", "pages"} {
 		landed, err := p.lander.Land(ctx, landing.Arrival{
 			Connector: "folder", Zone: store.Outside, MediaType: "application/x-" + name, Body: strings.NewReader(name),
 		})
@@ -426,6 +430,9 @@ func TestAnExtractorProgramThatFailsOrHangsFailsItsTaskAndAFailedRerunKeepsTheDo
 	}
 	if parse := p.readParse(t, keys["working"], ""); parse.Text != "one\n\ntwo" || len(parse.Units) != 2 || *parse.Units[0].Label != "page 1" {
 		t.Errorf("the working program's parse is %+v, want its two lines as units", parse)
+	}
+	if parse := p.readParse(t, keys["pages"], ""); len(parse.Units) != 3 || parse.Units[1].Text != "" || parse.Units[2].N != 3 {
+		t.Errorf("the positional program's parse is %+v, want three units with the blank second kept", parse)
 	}
 
 	script("working", "cat >/dev/null\nexit 137\n")

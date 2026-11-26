@@ -39,12 +39,12 @@ FROM debian:trixie-slim
 
 LABEL org.opencontainers.image.source="https://github.com/datapointchris/ingestion" \
       org.opencontainers.image.description="ingestion: lands each item from an outside source once, and delivers it to the one place it belongs" \
-      org.opencontainers.image.licenses="MIT"
+      org.opencontainers.image.licenses="MIT AND AGPL-3.0-or-later"
 
 # A uid of its own, so a file it writes to a mounted volume reads as
 # ingestion's. The store and the blobs live on a volume mounted at
 # /var/lib/ingestion.
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tini \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tini python3 python3-venv \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10600 ingestion \
     && useradd --system --uid 10600 --gid ingestion --no-create-home --shell /usr/sbin/nologin ingestion \
@@ -54,6 +54,21 @@ COPY --from=build /out/ingestion /usr/local/bin/ingestion
 # Where scan.Yr and scan.RulesDir name them.
 COPY --from=build /usr/local/bin/yr /usr/local/bin/yr
 COPY --from=build /out/scan-rules /usr/local/share/ingestion/scan-rules
+
+# The extractor programs' Python libraries, each at the version and hashes
+# release/python-requirements.txt pins, in the venv their shebangs name.
+# PyMuPDF is AGPL-3.0, so its notice and the license's text ship beside
+# ingestion's own MIT license.
+RUN --mount=type=bind,source=release/python-requirements.txt,target=/tmp/python-requirements.txt \
+    python3 -m venv /opt/ingestion/venv \
+    && /opt/ingestion/venv/bin/pip install --no-cache-dir --disable-pip-version-check --require-hashes --only-binary :all: \
+       -r /tmp/python-requirements.txt \
+    && install -d /usr/local/share/ingestion/licenses \
+    && cp /opt/ingestion/venv/lib/python3*/site-packages/pymupdf-*.dist-info/COPYING /usr/local/share/ingestion/licenses/PyMuPDF-COPYING
+COPY LICENSE /usr/local/share/ingestion/licenses/MIT-LICENSE
+COPY LICENSES/AGPL-3.0-or-later.txt /usr/local/share/ingestion/licenses/
+# Where extract.ProgramDir names them.
+COPY extract/programs/ /usr/local/libexec/ingestion/extractors/
 
 # Numeric, so a pod with runAsNonRoot can verify it without reading /etc/passwd.
 USER 10600:10600

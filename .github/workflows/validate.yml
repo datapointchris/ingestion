@@ -586,3 +586,12 @@ jobs:
           [ "$(head -n 1 "$RUNNER_TEMP/found")" = 10600 ]
           grep -q '^r_ingestion_command ' "$RUNNER_TEMP/found"
           grep -q '^r_ATR_' "$RUNNER_TEMP/found"
+
+      # The worker runs pdf-text as the image's user, with the venv's PyMuPDF.
+      # The fixture's three pages carry the labels i, ii and 1, and the second
+      # is blank, so its empty unit stays in place.
+      - name: Read a known PDF with pdf-text in the image
+        run: |
+          docker run --rm --read-only -i --entrypoint /usr/local/libexec/ingestion/extractors/pdf-text ingestion:validate \
+            < extract/testdata/pages.pdf > "$RUNNER_TEMP/pages.jsonl"
+          jq -se 'map(.label) == ["i", "ii", "1"] and .[1].text == "" and (.[2].text | contains("first chapter"))' "$RUNNER_TEMP/pages.jsonl"

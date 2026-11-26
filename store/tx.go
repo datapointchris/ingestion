@@ -102,6 +102,11 @@ func (t *Tx) LiveHomesAt(ctx context.Context, root, pathSHA256 string) ([]Home, 
 	return readInto[Home](ctx, t.tx, table("homes"), `root = ? AND path_sha256 = ? AND gone_ts IS NULL`, root, pathSHA256)
 }
 
+// LiveHomesUnder reads every home at root that is not gone, in path order.
+func (t *Tx) LiveHomesUnder(ctx context.Context, root string) ([]Home, error) {
+	return readInto[Home](ctx, t.tx, table("homes"), `root = ? AND gone_ts IS NULL ORDER BY path, rowid`, root)
+}
+
 // PutItem writes item, keeping the created stamp and flow of a row already
 // there. An item new to the store starts a fresh flow where it names none.
 func (t *Tx) PutItem(ctx context.Context, item Item) error {

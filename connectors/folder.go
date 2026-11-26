@@ -15,6 +15,7 @@ import (
 // bookMediaTypes names the media type of each book format a folder lands, so
 // a folder's media types do not hang on the host's /etc/mime.types.
 var bookMediaTypes = map[string]string{
+	".pdf":  "application/pdf",
 	".epub": "application/epub+zip",
 	".mobi": "application/x-mobipocket-ebook",
 	".azw3": "application/vnd.amazon.ebook",
@@ -37,21 +38,28 @@ type Scanned struct {
 	// Unfinished says the scan stopped at its deadline with files left, which
 	// the next scan picks up.
 	Unfinished bool
+	// Gone counts the homes stamped gone because their file left the folder.
+	Gone int
 }
 
 // ScanFolder lands by reference each file in c's folder that c has not
 // already landed as it is now. A file whose recorded size and modification
 // time still match is skipped unread, so a rerun over an unchanged folder
-// lands nothing and hashes nothing. A file modified after settledBefore may
-// still be being written, so it waits for a later scan. The scan stops landing
-// once until passes. A file that fails to land is named in the error, and the
-// scan goes on to the rest.
+// lands nothing and hashes nothing. Each file lands with its name, less its
+// extension, as the title of an item that has none. A home whose file the
+// listing lacks is stamped gone, and its item stays. A file modified after
+// settledBefore may still be being written, so it waits for a later scan. The
+// scan stops landing once until passes. A file that fails to land is named in
+// the error, and the scan goes on to the rest.
 func ScanFolder(ctx context.Context, l *landing.Lander, c Connector, until, settledBefore time.Time) (Scanned, error) {
 	files, err := l.Folder(c.Root, c.Path)
 	if err != nil {
 		return Scanned{}, err
 	}
 	out := Scanned{Files: len(files)}
+	if out.Gone, err = l.MarkGone(ctx, c.Root, c.Path, files); err != nil {
+		return out, err
+	}
 	var failed []error
 	for _, f := range files {
 		if err := ctx.Err(); err != nil {
@@ -74,7 +82,7 @@ func ScanFolder(ctx context.Context, l *landing.Lander, c Connector, until, sett
 		}
 		landed, err := l.Land(ctx, landing.Arrival{
 			Connector: c.Name, Zone: c.Zone, MediaType: mediaTypeOf(f.Path), ExternalKey: f.Path, Tags: c.Tags,
-			Home: &landing.Home{Root: c.Root, Path: f.Path},
+			Title: titleOf(f.Path), Home: &landing.Home{Root: c.Root, Path: f.Path},
 		})
 		if err != nil {
 			out.Failed++
@@ -89,6 +97,12 @@ func ScanFolder(ctx context.Context, l *landing.Lander, c Connector, until, sett
 		return out, fmt.Errorf("%d of %d files did not land: %w", out.Failed, out.Files, errors.Join(failed...))
 	}
 	return out, nil
+}
+
+// titleOf is a file's name without its extension.
+func titleOf(p string) string {
+	name := path.Base(p)
+	return strings.TrimSuffix(name, path.Ext(name))
 }
 
 func mediaTypeOf(p string) string {
