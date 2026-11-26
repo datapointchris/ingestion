@@ -116,8 +116,9 @@ var gatesProposalsCmd = &cobra.Command{
 		"a placement from review that disagrees with its verdict or side guess, low-quality\n" +
 		"on an item that it passed, or read on one that it dropped. At each time of\n" +
 		"serve's [gates.proposals] schedule, serve projects the misses labeled since the\n" +
-		"last proposal. Where it finds any, it writes a proposal holding them and\n" +
-		"queues one prompt-proposal task. A time that finds none drafts nothing.\n" +
+		"last done proposal, so a failed draft's misses roll into the next. Where it\n" +
+		"finds any, it writes a proposal holding them and queues one prompt-proposal\n" +
+		"task. A time that finds none drafts nothing.\n" +
 		"\n" +
 		"Each miss holds keys, enums, numbers and the person's own words, and never an\n" +
 		"item's title, URL or text, or the gate's domains, themes, idea or reason. So\n" +

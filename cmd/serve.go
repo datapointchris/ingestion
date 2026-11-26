@@ -74,7 +74,7 @@ var serveCmd = &cobra.Command{
 		"  root              the [serve.homes] root its file paths are below, such as books\n" +
 		"\n" +
 		"At each time of its [gates.proposals] schedule, it projects the quality gate's\n" +
-		"misses that a person labeled since the last proposal. Where it finds any, it\n" +
+		"misses that a person labeled since the last done proposal. Where it finds any, it\n" +
 		"writes a prompt proposal holding them and queues one prompt-proposal task, which a\n" +
 		"worker with a [model] adapter drafts. `ingestion gates proposals list` prints\n" +
 		"each proposal:\n" +
