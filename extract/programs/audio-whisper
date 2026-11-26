@@ -50,13 +50,26 @@ def fail(reason):
     sys.exit(1)
 
 
-def chunks(path, ffmpeg):
-    """Yield the audio at path as float32 16 kHz mono, CHUNK_SECONDS at a time."""
-    decoder = subprocess.Popen(
-        [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-i", path,
-         "-f", "s16le", "-ac", "1", "-ar", str(SAMPLE_RATE), "-"],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-    )
+def last_line(path):
+    """The last line of the file at path, read from its last 4 KiB, or "" where it holds none."""
+    with open(path, "rb") as f:
+        f.seek(max(0, os.path.getsize(path) - 4096))
+        lines = f.read().decode("utf-8", "replace").strip().splitlines()
+    return lines[-1] if lines else ""
+
+
+def chunks(path, ffmpeg, log):
+    """Yield the audio at path as float32 16 kHz mono, CHUNK_SECONDS at a time.
+
+    ffmpeg's stderr goes to the file at log rather than a pipe, because damaged
+    audio can make ffmpeg log more than a pipe holds before its stdout ends.
+    """
+    with open(log, "wb") as errors:
+        decoder = subprocess.Popen(
+            [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-i", path,
+             "-f", "s16le", "-ac", "1", "-ar", str(SAMPLE_RATE), "-"],
+            stdout=subprocess.PIPE, stderr=errors,
+        )
     size = CHUNK_SECONDS * SAMPLE_RATE * 2
     try:
         while True:
@@ -66,9 +79,8 @@ def chunks(path, ffmpeg):
             yield np.frombuffer(raw[: len(raw) - len(raw) % 2], dtype=np.int16).astype(np.float32) / 32768.0
     finally:
         decoder.stdout.close()
-        errors = decoder.stderr.read().decode("utf-8", "replace").strip().splitlines()
         if decoder.wait() != 0:
-            fail("ffmpeg could not decode the audio: " + (errors[-1] if errors else f"it exited {decoder.returncode}"))
+            fail("ffmpeg could not decode the audio: " + (last_line(log) or f"it exited {decoder.returncode}"))
 
 
 def main():
@@ -88,7 +100,7 @@ def main():
     model = WhisperModel(args.model, device="cpu", compute_type="int8", cpu_threads=args.threads, local_files_only=True)
     language, probability, decoded, voiced = None, 0.0, 0, 0.0
     segments = []
-    for audio in chunks(path, args.ffmpeg):
+    for audio in chunks(path, args.ffmpeg, os.path.join(workdir, "ffmpeg.log")):
         offset_ms = decoded * 1000 // SAMPLE_RATE
         decoded += len(audio)
         found, info = model.transcribe(audio, language=language, beam_size=1, vad_filter=True)

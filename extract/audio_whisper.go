@@ -70,19 +70,26 @@ type Transcript struct {
 // writes its TranscriptInfo as its first line on stdout, then one Segment a
 // line in order. It runs through isolatedprocess, so it holds none of the
 // worker's credentials. A run that exits non-zero answers an error with the
-// end of its stderr.
+// end of its stderr, and one that exits zero with no info line answers an
+// error of its own.
 func Transcribe(ctx context.Context, program string, audio io.Reader) (Transcript, error) {
 	var t Transcript
+	var seenInfo bool
 	_, err := isolatedprocess.Run(ctx, isolatedprocess.Command{
 		Path: program, Stdin: audio,
-		Stdout: func(r io.Reader) (err error) { t, err = readTranscript(r); return err },
+		Stdout: func(r io.Reader) (err error) { t, seenInfo, err = readTranscript(r); return err },
 	})
+	if err == nil && !seenInfo {
+		return t, errors.New("audio-whisper exited 0 and wrote no transcript info")
+	}
 	return t, err
 }
 
 // readTranscript reads a TranscriptInfo from r's first line and a Segment from
-// each line after, refusing any field that neither holds.
-func readTranscript(r io.Reader) (Transcript, error) {
+// each line after, refusing any field that neither holds. It says whether r
+// held the info line, and a stdout with none is no error of its own, so a run
+// that failed before writing keeps its exit status and stderr.
+func readTranscript(r io.Reader) (Transcript, bool, error) {
 	var t Transcript
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64<<10), lineMax)
@@ -95,22 +102,19 @@ func readTranscript(r io.Reader) (Transcript, error) {
 		decoder.DisallowUnknownFields()
 		if !seenInfo {
 			if err := decoder.Decode(&t.Info); err != nil {
-				return t, fmt.Errorf("line %d, which is not the transcript's info: %w", line, err)
+				return t, false, fmt.Errorf("line %d, which is not the transcript's info: %w", line, err)
 			}
 			seenInfo = true
 			continue
 		}
 		var s Segment
 		if err := decoder.Decode(&s); err != nil {
-			return t, fmt.Errorf("line %d, which is not a segment: %w", line, err)
+			return t, true, fmt.Errorf("line %d, which is not a segment: %w", line, err)
 		}
 		t.Segments = append(t.Segments, s)
 	}
 	if err := scanner.Err(); err != nil {
-		return t, fmt.Errorf("a stdout it could not read: %w", err)
+		return t, seenInfo, fmt.Errorf("a stdout it could not read: %w", err)
 	}
-	if !seenInfo {
-		return t, errors.New("audio-whisper wrote no transcript info")
-	}
-	return t, nil
+	return t, seenInfo, nil
 }

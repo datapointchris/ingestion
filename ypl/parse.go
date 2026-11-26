@@ -7,9 +7,12 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"time"
+
+	"golang.org/x/oauth2"
 
 	"github.com/datapointchris/ingestion/extract"
 	"github.com/datapointchris/ingestion/itemkey"
@@ -48,22 +51,34 @@ func WhisperExtractorAt(program string) extract.Extractor {
 // of known length is bounded sooner, by transcribeBound.
 const WhisperTimeout = 12 * time.Hour
 
-// transcribeBound is how long audio-whisper may take over audio that runs
-// seconds: half an hour for the model's load and the audio's arrival, then
-// the audio's own length again. On four threads it is estimated to take 0.4 to
-// 0.7 of the audio's length, so the bound leaves room past that.
+// transcribeBound is how long a Whisper parse may take over audio that runs
+// seconds, from the audio's request to its transcript: audioWait for ypl to
+// begin its answer, half an hour for the audio's arrival and the model's load,
+// then the audio's own length again. A four-thread run measures well under the
+// audio's length with `/usr/bin/time -v audio-whisper < <the audio>`, so the
+// bound leaves room past it.
 func transcribeBound(seconds int64) time.Duration {
-	return 30*time.Minute + time.Duration(seconds)*time.Second
+	return audioWait + 30*time.Minute + time.Duration(seconds)*time.Second
+}
+
+// shortTranscript says whether a transcript of decodedMs falls well short of
+// a video of seconds, as audio cut off partway does, which ffmpeg may decode
+// with no error.
+func shortTranscript(decodedMs, seconds int64) bool {
+	return decodedMs*10 < seconds*1000*9
 }
 
 // blockSeconds is how long each block of a video with no chapters runs.
 const blockSeconds = 5 * 60
 
-// How long a parse waits before reading again, where ypl was busy and sent
-// no Retry-After, or where the read failed in a way a later read may not.
+// How long a parse waits before reading again: where ypl was busy and sent no
+// Retry-After, where the video has not begun, where ypl gave no answer, and
+// where the read failed in a way a later read may not.
 const (
-	busyRetry   = time.Minute
-	failedRetry = 5 * time.Minute
+	busyRetry       = time.Minute
+	notStartedRetry = time.Hour
+	unansweredRetry = 5 * time.Minute
+	failedRetry     = 5 * time.Minute
 )
 
 // captionsAnswer is what a captions parse keeps as its answer: the track it
@@ -129,22 +144,37 @@ func (w whisperReader) read(ctx context.Context, item extract.Item) (extract.Rea
 	if err != nil {
 		return extract.Read{}, readError(err)
 	}
-	audio, err := w.client.Audio(ctx, id)
-	if err != nil {
-		return extract.Read{}, readError(err)
-	}
-	defer func() { _ = audio.Body.Close() }()
 	runCtx, cancel := ctx, context.CancelFunc(func() {})
 	if captions.DurationSeconds != nil {
 		runCtx, cancel = context.WithTimeout(ctx, transcribeBound(*captions.DurationSeconds))
 	}
 	defer cancel()
-	transcript, err := extract.Transcribe(runCtx, w.program, audio.Body)
+	ranPast := func() error {
+		return fmt.Errorf("the Whisper parse ran past %s over a video of %d seconds", transcribeBound(*captions.DurationSeconds), *captions.DurationSeconds)
+	}
+	audio, err := w.client.Audio(runCtx, id)
 	if err != nil && ctx.Err() == nil && errors.Is(runCtx.Err(), context.DeadlineExceeded) {
-		return extract.Read{}, fmt.Errorf("audio-whisper ran past %s over a video of %d seconds", transcribeBound(*captions.DurationSeconds), *captions.DurationSeconds)
+		return extract.Read{}, ranPast()
 	}
 	if err != nil {
+		return extract.Read{}, readError(err)
+	}
+	defer func() { _ = audio.Body.Close() }()
+	transcript, err := extract.Transcribe(runCtx, w.program, audio.Body)
+	broken := audio.Broken()
+	switch {
+	case (err != nil || broken != nil) && ctx.Err() == nil && errors.Is(runCtx.Err(), context.DeadlineExceeded):
+		return extract.Read{}, ranPast()
+	case broken != nil:
+		return extract.Read{}, &extract.RetryError{Err: fmt.Errorf("the audio's stream from ypl broke: %w", broken), After: failedRetry, Bounded: true}
+	case err != nil:
 		return extract.Read{}, err
+	case captions.DurationSeconds != nil && shortTranscript(transcript.Info.DurationMs, *captions.DurationSeconds):
+		return extract.Read{}, &extract.RetryError{
+			Err: fmt.Errorf("audio-whisper decoded %d s of a video of %d s, so the audio was cut short",
+				transcript.Info.DurationMs/1000, *captions.DurationSeconds),
+			After: failedRetry, Bounded: true,
+		}
 	}
 	answer, err := json.Marshal(whisperAnswer{
 		Model: extract.WhisperModel, TranscriptInfo: transcript.Info,
@@ -165,27 +195,48 @@ func videoID(key string) (string, error) {
 	return id, nil
 }
 
-// readError is how a parse treats err from a read through ypl. Where ypl was
-// busy or paused, or limited the caller, the parse queues again after the
-// Retry-After it sent. Where ypl gave no answer, or failed to read YouTube,
-// it queues again boundedly. Any other refusal, such as a video that no
-// signed-out read reaches, fails it with ypl's refusal kept.
+// readError is how a parse treats err from a read through ypl, by ypl's
+// refusal code. Where ypl was busy, paused, stopping or limiting the caller,
+// the parse waits for the Retry-After it sent. Where ypl gave no answer, as
+// while it restarts or a gateway before it fails, the parse waits too,
+// because nothing about the video failed. Where the video is a premiere or a
+// stream that has not begun, it waits an hour. Where ypl failed to read
+// YouTube, or failed in itself, or the identity provider refused the token, it
+// queues again boundedly. Any other refusal, such as a video that no
+// signed-out read reaches or a ypl that holds no yt-dlp, fails it with ypl's
+// refusal kept.
 func readError(err error) error {
 	var refusal *Error
-	if !errors.As(err, &refusal) {
-		return &extract.RetryError{Err: err, After: failedRetry, Bounded: true}
-	}
+	var token *oauth2.RetrieveError
+	var unanswered *url.Error
 	switch {
-	case refusal.Status == http.StatusServiceUnavailable || refusal.Status == http.StatusTooManyRequests:
+	case errors.As(err, &token):
+		return &extract.RetryError{Err: err, After: failedRetry, Bounded: true}
+	case errors.As(err, &unanswered):
+		return &extract.RetryError{Err: err, After: unansweredRetry}
+	case !errors.As(err, &refusal):
+		return &extract.RetryError{Err: err, After: failedRetry, Bounded: true}
+	case waitCodes[refusal.Code] || refusal.Status == http.StatusTooManyRequests:
 		wait := refusal.RetryAfter
 		if wait <= 0 {
 			wait = busyRetry
 		}
 		return &extract.RetryError{Err: err, After: wait}
-	case refusal.Status == http.StatusRequestTimeout || refusal.Status >= http.StatusInternalServerError:
+	case refusal.Code == "video_not_started":
+		return &extract.RetryError{Err: err, After: notStartedRetry}
+	case refusal.Code == "youtube_read_failed" || refusal.Code == "internal":
 		return &extract.RetryError{Err: err, After: failedRetry, Bounded: true}
+	case refusal.Code == "" && (refusal.Status == http.StatusRequestTimeout || refusal.Status >= http.StatusInternalServerError):
+		return &extract.RetryError{Err: err, After: unansweredRetry}
 	}
 	return err
+}
+
+// waitCodes are ypl's refusals that say to ask again after its Retry-After,
+// because nothing about the video failed.
+var waitCodes = map[string]bool{
+	"youtube_reads_busy": true, "youtube_reads_paused": true, "shutting_down": true,
+	"youtube_rate_limited": true, "youtube_data_api_busy": true, "identity_provider_unavailable": true,
 }
 
 // spoken says whether s holds any text.

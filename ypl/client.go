@@ -3,6 +3,7 @@ package ypl
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -10,6 +11,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/datapointchris/ingestion/extract"
@@ -95,20 +98,27 @@ func (v Video) Streaming() bool {
 const MaxVideos = 500
 
 // callTimeout bounds one request to ypl's Data API routes, so a ypl that
-// takes the connection and never answers frees the worker's slot. ypl waits
-// for its turn at YouTube, then for YouTube's answer, and this outlasts both.
+// takes the connection and never answers frees the worker's slot. It sits
+// above the longest that ypl holds such a request, which ypl's Data API
+// client sets.
 const callTimeout = 2 * time.Minute
 
-// captionsTimeout bounds a read of a video's captions. ypl holds the read at
-// its door for up to two minutes, then gives yt-dlp up to three to read the
-// video's tracks and the one it picks, and this outlasts both.
+// captionsTimeout bounds a read of a video's captions. It sits above the
+// longest that ypl holds a captions read, which ypl's door and its captions
+// route set, so a slow ypl still answers within it.
 const captionsTimeout = 6 * time.Minute
 
 // audioWait bounds how long ypl takes to begin answering a read of a video's
-// audio: up to two minutes at its door, then up to thirty for yt-dlp to
-// download the audio, which ypl answers from a file once it has it whole. The
-// answer's body then streams for as long as the caller's context allows.
+// audio. It sits above the longest that ypl's door and its audio route hold a
+// read before it answers. The answer's body then streams for as long as the
+// caller's context allows, while each read of it waits at most audioIdle.
 const audioWait = 35 * time.Minute
+
+// audioIdle is the longest that a read of an audio answer's body waits for a
+// byte before it ends the request, so a stream that stalls frees the worker's
+// slot. ypl sends the audio from a file that it holds whole, so a healthy
+// stream never pauses this long.
+const audioIdle = 2 * time.Minute
 
 // Error is ypl's refusal of a request: its status, its code for a client to
 // branch on, and its sentence for a person. RetryAfter holds the refusal's
@@ -176,6 +186,18 @@ type Audio struct {
 	MediaType string
 	// Size is the audio's length in bytes, and -1 where ypl sent none.
 	Size int64
+	body *audioBody
+}
+
+// Broken is the first error that a read of Body met before the body ended,
+// such as a dropped connection or a stall past audioIdle, and nil where none
+// has. A reader of the audio may report such a read as a failure of its own,
+// so the caller asks Broken first.
+func (a *Audio) Broken() error {
+	if a.body == nil {
+		return nil
+	}
+	return a.body.broken()
 }
 
 // PlaylistItems reads every item of playlist from YouTube now. playlist is a
@@ -233,8 +255,8 @@ func (c *Client) Captions(ctx context.Context, video string) (Captions, error) {
 }
 
 // Audio reads video's best audio through ypl's door. It waits up to audioWait
-// for ypl to begin its answer, and the caller closes Body. ypl refuses as
-// Captions does.
+// for ypl to begin its answer, and each read of Body waits up to audioIdle.
+// The caller closes Body. ypl refuses as Captions does.
 func (c *Client) Audio(ctx context.Context, video string) (*Audio, error) {
 	path := "/api/v1/youtube/videos/" + url.PathEscape(video) + "/audio"
 	ctx, cancel := context.WithCancel(ctx)
@@ -266,18 +288,51 @@ func (c *Client) Audio(ctx context.Context, video string) (*Audio, error) {
 		cancel()
 		return nil, fmt.Errorf("GET %s: ypl answered %d, not %d", path, resp.StatusCode, http.StatusOK)
 	}
-	return &Audio{Body: cancelOnClose{ReadCloser: resp.Body, cancel: cancel}, MediaType: resp.Header.Get("Content-Type"), Size: resp.ContentLength}, nil
+	body := &audioBody{body: resp.Body, cancel: cancel, idle: audioIdle}
+	return &Audio{Body: body, MediaType: resp.Header.Get("Content-Type"), Size: resp.ContentLength, body: body}, nil
 }
 
-// cancelOnClose ends its request's context once its body is closed.
-type cancelOnClose struct {
-	io.ReadCloser
-	cancel context.CancelFunc
+// audioBody is an audio answer's body. A read that waits past idle for a
+// byte ends the request, and the body keeps the first error that a read met
+// before its end. Closing it ends its request's context.
+type audioBody struct {
+	body    io.ReadCloser
+	cancel  context.CancelFunc
+	idle    time.Duration
+	stalled atomic.Bool
+	mu      sync.Mutex
+	err     error
 }
 
-func (c cancelOnClose) Close() error {
-	defer c.cancel()
-	return c.ReadCloser.Close()
+func (b *audioBody) Read(p []byte) (int, error) {
+	timer := time.AfterFunc(b.idle, func() {
+		b.stalled.Store(true)
+		b.cancel()
+	})
+	n, err := b.body.Read(p)
+	timer.Stop()
+	if err != nil && !errors.Is(err, io.EOF) {
+		if b.stalled.Load() {
+			err = fmt.Errorf("ypl sent no byte of the audio for %s", b.idle)
+		}
+		b.mu.Lock()
+		if b.err == nil {
+			b.err = err
+		}
+		b.mu.Unlock()
+	}
+	return n, err
+}
+
+func (b *audioBody) Close() error {
+	defer b.cancel()
+	return b.body.Close()
+}
+
+func (b *audioBody) broken() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.err
 }
 
 // do sends one request bounded by callTimeout, as doWithin does.
