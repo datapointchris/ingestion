@@ -862,7 +862,8 @@ and the prompt tells the model where the text stops. It puts them to the model t
   task reads the same run again after its backoff, so no suggestion is kept unscanned and its
   answer is paid for once. Under the `claude-cli` adapter, which keeps no run to read again, the
   task fails instead, and `tasks retry` runs a new call.
-- **The summary is kept on the item alone.** It is delivered nowhere, and `items show` prints it.
+- **The summary is kept on the item, and no delivery carries it.** `items show` prints it, and
+  `ingestion push --enriched` hands it to psyche.
 - **The output's version is the prompt's, under its lens.** It digests `prompt.tmpl`,
   `answer.schema.json` and the lens's file. The output records the lens and the lens's own
   version beside it. A change to any of the three writes beside the old read.
@@ -914,6 +915,40 @@ only once its book's delivery to the same destination has settled on a record. T
 settles the book queues each of its chapters in order, and so does a replay of the deliver stage
 over the book. When the service starts, it queues each chapter of a delivered book that holds no
 delivery. A refused book delivers no chapter.
+
+### `ingestion push` hands one item's scanned parse to psyche's relate on this machine
+
+psyche relates a source to its reader's own notes. Its `relate --parse -` reads one parsed source
+as JSON on stdin, in the parse-input schema that psyche publishes. `ingestion push` writes that
+document from the service's answers, and runs psyche with it:
+
+```text
+$ ingestion push https://www.reddit.com/r/golang/comments/aq7ggd/ --to psyche --relate
+pushing reddit/t3_aq7ggd to psyche relate: 4 units, 1 finding, 2 suggestions
+…psyche's answer…
+```
+
+- **The document is the item's parse and the findings of the scan that read it**, as
+  `GET /api/v1/items/{key}/parse` answers them. It keeps that route's field names, under the
+  parse-input `schema_version` that `push.SchemaVersion` names.
+- **A finding goes under `suggested` where its rule's file declares `suggests`**, with the kind
+  that the rule names. Every other finding, such as an instruction aimed at a model, stays a
+  finding.
+- **`--enriched` adds the item's current quality gate answer and model read.**
+  `GET /api/v1/items/{key}` serves them as `quality_answer` and `model_read`. The push names each
+  part it left out, and why. A stage may never have answered, may still wait, or may have failed.
+  An answer may also not read in this release.
+- **A suggestion sentence that the scan flagged stays out.** psyche's document holds no place for
+  a finding in the sentence. The summary and the quality gate's words go unscanned. Each restates
+  the text, which psyche reads whole beside its findings.
+- **A push starts no stage in the service**, so no model reads the item there. psyche's relate is
+  its only model call.
+- **It hands on only an item that a connector landed and a scan read.** It exits 2 for an item
+  that the service has not landed yet, and lands nothing. It exits 1 for an item with no done parse, or
+  whose parse no scan has read yet. `ingestion items show <key>` says where that item waits.
+- **psyche runs from `PATH` on the machine that runs the push**, with the push's environment.
+  `--json` asks psyche for its JSON answer. The command exits 4 when the service gives no answer,
+  and psyche never runs then. It exits 1 where psyche fails, after psyche's own message.
 
 Each delivery ends in one outcome, which `items show` prints with the app's id for the record:
 

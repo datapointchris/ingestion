@@ -3,6 +3,7 @@ title: "Code the item suggests"
 id: ingestion.code
 status: stable
 severity: info
+suggests: code
 description: >
   Lists each block of code an item carries: a fenced Markdown block, and an
   HTML script tag. A finding is a list entry, not an attack.

@@ -29,7 +29,7 @@ never ahead of it. A stage's code goes in its own package:
 | `sections` | the structure stage and the sections that serve writes from it: the worker's handler that runs `pdf-structure` over a PDF's bytes, the outline rule and the printed-page offset and page labels, `Squashed` and `TitleKey`, which fold a title for any search or match, `FromEntries`, which kinds any producer's entries by that rule, the write that ends the structure task, which writes one `sections` row per outline entry and the book's source time from its creation date, and queues a Docling parse where the profile is code-heavy and math-light, and `Write`, which any producer of sections calls to write them and to make a chapter item per body chapter that takes its book's decisions through `route.PassToChapters` |
 | `contents` | the model stage that reads the printed contents pages of a long PDF whose outline gives it no sections: the hook after a structure, which queues the task on a book's first profile and places a stored answer again on a later one, its prompt's data for `modelstage`'s handler, and the placement that serve runs on its answer, which maps each entry's printed page to a PDF page by label or offset, the offset voted by the pages its entries' titles open where the book prints no page numbers, searches near it for the title, and writes producer `contents` sections through `sections.Write` |
 | `isolatedprocess` | the one door that starts a program over outsider bytes, in a temporary directory of its own with an environment that holds no secret |
-| `scan` | the scanner, which runs YARA-X's `yr` over a parse's text or over one sentence, its stored findings, and `build-rules`, which converts Agent Threat Rules and tests each by its own examples |
+| `scan` | the scanner, which runs YARA-X's `yr` over a parse's text or over one sentence, its stored findings, `build-rules`, which converts Agent Threat Rules and tests each by its own examples, and `Suggests`, which reads the kind that each of ingestion's own rules declares where its match lists what an item suggests |
 | `qualitygate` | the model stage that reads an item's opening and answers its quality, genre, domains, themes, a one-line idea and a side guess: the write after the scan that queues its task, its prompt's data and answer for `modelstage`'s handler, and the decision that its answer appends; and its arm, the same prompt asked of the model that a replay names, over labeled items, kept at the `quality-arm` stage off the item's line, which decides nothing |
 | `route` | the side gate and the read gate, which serve runs in the write that ends each stage between the parse and them, once the item's reading parse is scanned, in the write that applies a changed set, and in the write that lands another connector's sighting: a sighting's tags, then a rule, then the quality gate's drop, review or guess at or above its confidence floor where no connector declares that a person sorts its side, else review, with a tag, rule or person withdrawing the item's queued quality task; `ReviewReasons`, the one table of why an item waits in review, which the CLI's help and the TUI read; a person's placement from review; `Due`, the one predicate for where an item is due a delivery, which holds a chapter until its book's delivery settles, and `ModelReadDue`, the one for where it is due a model read under a lens whose prompt the build holds and that no read answering its note already holds, which each decision's write reconciles, queueing a delivery or a model read and withdrawing either where a drop or a move stops it; and each chapter's copy of its book's newest side and read decisions, which every decision on the book passes on |
 | `modelread` | the model stage that reads a fleet item whole under its read decision's lens and answers its note with a summary, a suggestion sentence, or both: its prompt's data and answer for `modelstage`'s handler, the scan of the suggestion before it is kept, and its replay |
@@ -43,7 +43,7 @@ never ahead of it. A stage's code goes in its own package:
 | `outbox` | the relay that ships each logged change past its mark, with outsider text on a channel of its own |
 | `server` | the HTTP API that `ingestion serve` answers, and its route table, whose rows name each route's scope and what a repeat does, read by the CLI's retry and the router's key check |
 | `worker` | `ingestion worker run`, which leases tasks by capability under a fencing token, no more of a capability at once than its slot limit |
-| `push` | `ingestion push`, which hands a URL or a key straight to a named destination |
+| `push` | `ingestion push`, which writes an item's scanned parse as the parse-input document that psyche's `relate --parse -` reads, and runs psyche on this machine with it; and in `testdata/`, the copy of psyche's schema that the push's test validates against |
 | `views/review` | the review tab of `ingestion tui`: a reader of the review queue and the parse under the cursor, a renderer of each into a gotermboard frame, and the keys that place or drop an item through a `Service` port, which `cmd/tui.go` fills with the CLI's own calls. Its keys' writes run through gotermboard's `keywrites` queue |
 
 `views/` holds the TUI's tabs, one package each, so a later tab joins as its own package beside
@@ -89,7 +89,8 @@ reading parse: the newest done parse by an extractor that `store.PreferParse` re
 Docling, and the newest done parse otherwise.
 
 - **Each stage writes its own record, and an item's phase is derived from which records exist.** A
-  push skips stages, and a model stage can wait while later model-free work runs elsewhere. A
+  tag, a rule or a person can settle an item before the quality gate reads it, and a model stage
+  can wait while later model-free work runs elsewhere. A
   single status column would misread both. Kubernetes derives status from conditions for the same
   reason.
 - **The store keeps the derived phase on the item's row, so the outbox ships it.** Before
@@ -104,8 +105,9 @@ Docling, and the newest done parse otherwise.
   The model judges only what the rules leave, and drops an item only above a high confidence.
 - **A drop is soft.** The item keeps its row and its one-line idea, and a person can still send it
   to a model read.
-- **A push that names its destination skips the quality gate, the side gate and every model
-  stage.** It still parses and scans the item.
+- **`ingestion push` starts no stage.** It hands psyche an item that the service already holds a
+  scanned parse of, so psyche's relate is its only model call. Only a person runs it, on the
+  machine where psyche runs, and nothing in the service calls psyche.
 - **A delivery writes through the destination's own API, and ingestion never queues a settled one
   again.** The destination keeps the item's key as its record's source key. A destination may
   later forget a record it held, so its own conflict answer cannot be the guard against a second

@@ -3,6 +3,7 @@ title: "A link the item suggests"
 id: ingestion.link
 status: stable
 severity: info
+suggests: link
 description: >
   Lists each web link an item carries, so a person reading a suggestion sees
   where it points before following it. A finding is a list entry, not an

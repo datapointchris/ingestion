@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/datapointchris/ingestion/schemas/item.schema.json",
   "title": "One item and every record it holds",
-  "description": "What GET /api/v1/items/{key} answers and `ingestion items show --json` prints: the item, each home its file lives at, each sighting, each stage's output, each gate decision, each delivery and its latest suggestion.",
+  "description": "What GET /api/v1/items/{key} answers and `ingestion items show --json` prints: the item, each home its file lives at, each sighting, each stage's output, each gate decision, each delivery, its latest suggestion, and the quality gate's and the model read's current answers.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "item", "homes", "sightings", "outputs", "decisions", "deliveries"],
@@ -206,6 +206,14 @@
         {"type": "null"}
       ]
     },
-    "suggestion": {"anyOf": [{"$ref": "suggestion.schema.json"}, {"type": "null"}]}
+    "suggestion": {"anyOf": [{"$ref": "suggestion.schema.json"}, {"type": "null"}]},
+    "quality_answer": {
+      "description": "The quality gate's newest done answer, which GET /api/v1/review serves under the same name, in the shape prompts/quality/answer.schema.json holds. Null where the gate gave none. Its idea and themes are a model's reading of the item, so they take the item's zone.",
+      "type": ["object", "null"]
+    },
+    "model_read": {
+      "description": "The item's newest done model read, with the scanner's findings over its suggestion sentence, and null where no model read is done. Its summary and sentence are a model's reading of the item, so they take the item's zone.",
+      "anyOf": [{"$ref": "#/properties/outputs/items"}, {"type": "null"}]
+    }
   }
 }

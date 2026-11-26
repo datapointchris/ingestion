@@ -6,6 +6,7 @@ title: "A command the item suggests running"
 id: ingestion.command
 status: stable
 severity: info
+suggests: command
 description: >
   Lists each shell command an item suggests: inline code that starts with a
   command, a line after a shell prompt, a pipe into a shell, and a command

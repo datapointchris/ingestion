@@ -79,13 +79,18 @@ type Answer struct {
 	SideConfidence    float64  `json:"side_confidence"`
 }
 
-// ReadAnswer checks raw against the answer's schema and decodes it. The
-// schema counts 7.0 as an integer, so quality decodes as a number and is kept
-// whole.
+// ReadAnswer checks raw against the answer's schema and decodes it.
 func ReadAnswer(raw json.RawMessage) (Answer, error) {
 	if err := prompts.Quality.Check(raw); err != nil {
 		return Answer{}, err
 	}
+	return DecodeAnswer(raw)
+}
+
+// DecodeAnswer decodes a stored answer without checking it against this
+// build's schema, so a CLI reads a service of another release. The schema
+// counts 7.0 as an integer, so quality decodes as a number and is kept whole.
+func DecodeAnswer(raw json.RawMessage) (Answer, error) {
 	var a struct {
 		Answer
 		Quality float64 `json:"quality"`
