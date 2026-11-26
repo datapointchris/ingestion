@@ -110,14 +110,23 @@ func dsn(path string, readOnly bool) string {
 	return "file:" + path + "?" + q.Encode()
 }
 
+// SchemaGeneration is the generation of the schema files. Raise it with any
+// change to them that rebuilds a table: a column made nullable, or a table
+// constraint changed. A store keeps the highest generation that converged it
+// in PRAGMA user_version. A build whose generation is older rebuilds none of
+// its tables, so a release reverted after a later one converged the store
+// keeps that release's columns and constraints.
+const SchemaGeneration = 1
+
 // converge brings the store to what the schema files declare, reading that
 // from a scratch database the files are applied to. Where the store already
 // holds tables and the files change one, it first copies the store beside
 // itself, so an earlier release has a store to return to. It rebuilds each
-// table whose column the files make nullable, adds each column a table lacks,
-// applies each file in name order, checks that Tables declares every table the
-// files create, guards each logged table, and starts the stamp clock past the
-// newest stamp in any table.
+// table whose column the files make nullable or whose table constraints they
+// change, unless a later generation converged the store. It adds each column
+// a table lacks, applies each file in name order, checks that Tables declares
+// every table the files create, guards each logged table, stamps the store's
+// generation, and starts the stamp clock past the newest stamp in any table.
 func (s *Store) converge(ctx context.Context) error {
 	names, err := fs.Glob(schemaFiles, "*.sql")
 	if err != nil {
@@ -154,6 +163,13 @@ func (s *Store) converge(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	var generation int
+	if err := s.write.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&generation); err != nil {
+		return fmt.Errorf("read the store's schema generation: %w", err)
+	}
+	if generation > SchemaGeneration {
+		changes.rebuild = nil
+	}
 	if changes.held && changes.any() {
 		if err := s.copyBeside(ctx); err != nil {
 			return err
@@ -184,6 +200,11 @@ func (s *Store) converge(ctx context.Context) error {
 	for _, t := range Tables {
 		if err := guard(ctx, s.write, t); err != nil {
 			return err
+		}
+	}
+	if generation < SchemaGeneration {
+		if _, err := s.write.ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version = %d`, SchemaGeneration)); err != nil {
+			return fmt.Errorf("stamp the store's schema generation: %w", err)
 		}
 	}
 	for _, t := range Tables {

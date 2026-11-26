@@ -72,7 +72,10 @@ changes a table that exists, so a column added to one converges through the `ALT
 COLUMN` that `converge` runs where the table lacks it, carrying the column's type, `NOT NULL` and
 default and no other constraint. SQLite can neither make a column nullable nor change a table
 constraint, such as a `CHECK`, in place. So a table whose file does either is rebuilt with every
-row kept, after `converge` copies the store's file beside it. A stage declares each table it adds
+row kept, after `converge` copies the store's file beside it. Such a change raises
+`store.SchemaGeneration`. The store keeps the highest generation that converged it in `PRAGMA
+user_version`, and a build of an older generation rebuilds none of its tables, so a reverted
+release keeps a later one's columns. A stage declares each table it adds
 in `store/tables.go`, naming its key, its stamp, its text columns, and whether it appends or
 upserts. `Open` refuses a table that is neither declared there nor listed as unlogged, and the
 outbox ships every declared table. Every write runs through `Store.Update`, and each logged
