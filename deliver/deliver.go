@@ -43,6 +43,11 @@ type Registration struct {
 	// table names, and each attempt sends that home's path as the delivery
 	// first kept it.
 	FilePath bool
+	// Chapters says the deliverer writes a book's chapter as part of its
+	// book's record. Its chapter's delivery waits for the book's to settle,
+	// and each attempt sends that record's id and the chapter's pages as the
+	// delivery first kept them. Takes reads no chapter.
+	Chapters bool
 	// Open is the deliverer that writes to the app at api through client,
 	// which carries the service client's token.
 	Open func(api string, client *http.Client) Deliverer
@@ -50,11 +55,11 @@ type Registration struct {
 
 var registered = map[string]Registration{}
 
-// Register records r, and records its name, Takes and FilePath with
-// connectors.RegisterDeliverer, so each name a set may give is one a worker
-// can open.
+// Register records r, and records its name, Takes, FilePath and Chapters
+// with connectors.RegisterDeliverer, so each name a set may give is one a
+// worker can open.
 func Register(r Registration) {
-	connectors.RegisterDeliverer(r.Name, r.Takes, r.FilePath)
+	connectors.RegisterDeliverer(r.Name, connectors.Writes{Takes: r.Takes, FilePath: r.FilePath, Chapters: r.Chapters})
 	registered[r.Name] = r
 }
 
@@ -90,6 +95,9 @@ type Item struct {
 	// Path is the item's file below its deliverer's root, as the delivery
 	// first kept it, and nil for a deliverer that writes no file.
 	Path *string
+	// Chapter is where a book's chapter sits in its book's record, as the
+	// delivery first kept it, and nil for every other item.
+	Chapter *store.ChapterInBook
 }
 
 // Outcome is how one write of an item ended.
@@ -146,7 +154,7 @@ func (h handler) Run(ctx context.Context, task worker.Task) worker.Result {
 	}
 	o := h.deliverer.Deliver(ctx, Item{
 		Key: *task.ItemKey, Zone: task.Zone, Title: task.Title, URL: task.URL, LandedTS: task.LandedTS, SourceTS: task.SourceTS,
-		Path: task.Path,
+		Path: task.Path, Chapter: task.Chapter,
 	})
 	delivery := &server.ReportDelivery{Outcome: o.Outcome, DestinationID: o.DestinationID, Error: o.Error}
 	switch {

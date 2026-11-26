@@ -17,15 +17,22 @@ func (t *Tx) Delivery(ctx context.Context, key, destination string) (Delivery, b
 	return first[Delivery](ctx, t.tx, table("deliveries"), `item_key = ? AND destination = ?`, key, destination)
 }
 
+// Deliveries reads each of the item's deliveries, one per destination.
+func (t *Tx) Deliveries(ctx context.Context, key string) ([]Delivery, error) {
+	return readInto[Delivery](ctx, t.tx, table("deliveries"), `item_key = ? ORDER BY destination`, key)
+}
+
 // QueueDelivery queues the task that writes item to destination through
 // deliverer, and records the delivery pending where it is new, with the
-// item's title, URL and source time and path as every attempt sends them.
-// path is the item's file below the deliverer's root, and nil for a deliverer
-// that writes no file. It queues nothing where the delivery is settled,
-// because a destination can forget a record it held, so a second write could
-// save the item again. It queues nothing where a deliver task for the item and
-// destination is queued or leased. It answers whether it queued.
-func (t *Tx) QueueDelivery(ctx context.Context, item Item, path *string, destination, deliverer string) (bool, error) {
+// item's title, URL and source time, path and chapter as every attempt sends
+// them. path is the item's file below the deliverer's root, and nil for a
+// deliverer that writes no file. chapter is where a book's chapter sits in its
+// book's record, and nil for every other item. It queues nothing where the
+// delivery is settled, because a destination can forget a record it held, so
+// a second write could save the item again. It queues nothing where a deliver
+// task for the item and destination is queued or leased. It answers whether
+// it queued.
+func (t *Tx) QueueDelivery(ctx context.Context, item Item, path *string, chapter *ChapterInBook, destination, deliverer string) (bool, error) {
 	key := item.Key
 	held, ok, err := t.Delivery(ctx, key, destination)
 	if err != nil || (ok && held.Settled()) {
@@ -36,10 +43,15 @@ func (t *Tx) QueueDelivery(ctx context.Context, item Item, path *string, destina
 		return false, err
 	}
 	if !ok {
-		if err := t.PutDelivery(ctx, Delivery{
+		d := Delivery{
 			ItemKey: key, Destination: destination, Outcome: DeliveryPending, Title: item.Title, URL: item.URL, SourceTS: item.SourceTS,
 			Path: path,
-		}); err != nil {
+		}
+		if chapter != nil {
+			d.BookDestinationID, d.PDFPageStart, d.PDFPageEnd = &chapter.BookDestinationID, &chapter.PDFPageStart, &chapter.PDFPageEnd
+			d.PrintedPageStart, d.PrintedPageEnd = chapter.PrintedPageStart, chapter.PrintedPageEnd
+		}
+		if err := t.PutDelivery(ctx, d); err != nil {
 			return false, err
 		}
 	}
@@ -114,15 +126,41 @@ func (t *Tx) RecordDelivery(ctx context.Context, task Task, a DeliveryAttempt) e
 
 // UnsettledKeysReadAs reads the key of each item whose newest read decision
 // has verdict and that holds no settled delivery: each item that a changed set
-// may now send to a destination.
+// may now send to a destination. A book's chapters follow each other in their
+// order, so #2 comes before #10.
 func (t *Tx) UnsettledKeysReadAs(ctx context.Context, verdict string) ([]string, error) {
 	rows, err := t.tx.QueryContext(ctx, `
 SELECT i.key FROM items i
 WHERE (SELECT d.verdict FROM decisions d WHERE d.item_key = i.key AND d.gate = ? ORDER BY d.sequence DESC LIMIT 1) = ?
 	AND NOT EXISTS (SELECT 1 FROM deliveries x WHERE x.item_key = i.key AND x.outcome != ?)
-ORDER BY i.key`, GateRead, verdict, DeliveryPending)
+ORDER BY coalesce(i.parent_key, i.key), length(i.key), i.key`, GateRead, verdict, DeliveryPending)
 	if err != nil {
 		return nil, fmt.Errorf("select the items read %s that hold no settled delivery: %w", verdict, err)
+	}
+	defer func() { _ = rows.Close() }()
+	var keys []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		keys = append(keys, key)
+	}
+	return keys, rows.Err()
+}
+
+// UndeliveredChapterKeys reads the key of each book's chapter that holds no
+// delivery while its book holds one delivered or delivered to existing, each
+// book's chapters in their order.
+func (t *Tx) UndeliveredChapterKeys(ctx context.Context) ([]string, error) {
+	rows, err := t.tx.QueryContext(ctx, `
+SELECT c.key FROM items c
+WHERE c.media_type = ? AND c.parent_key IS NOT NULL
+	AND NOT EXISTS (SELECT 1 FROM deliveries x WHERE x.item_key = c.key)
+	AND EXISTS (SELECT 1 FROM deliveries b WHERE b.item_key = c.parent_key AND b.outcome IN (?, ?))
+ORDER BY c.parent_key, length(c.key), c.key`, MediaTypeChapter, DeliveryDelivered, DeliveryDeliveredToExisting)
+	if err != nil {
+		return nil, fmt.Errorf("select the chapters of delivered books that hold no delivery: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 	var keys []string

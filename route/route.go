@@ -22,7 +22,8 @@
 // model read in line in the same write: a read as is queues its delivery, a
 // read by a model queues its model read, and a drop or a move withdraws
 // either where it has not run. The same write passes the item's decisions to
-// each of its chapters, which no gate decides.
+// each of its chapters, which no gate decides. A chapter's delivery waits for
+// its book's to settle, and the write that settles the book's queues it.
 package route
 
 import (
@@ -562,37 +563,175 @@ func reconcileModelRead(ctx context.Context, tx *store.Tx, key string, side, rea
 	return err
 }
 
-// Due is where an item's newest side and read decisions send it for delivery
-// under set, and false where they send it nowhere: the side decision places
-// it on no side, or the read decision reads it other than as is. Where true,
-// it is the destination whose deliverer writes the item, or why none does.
-// homes are the item's homes, whose live ones a deliverer writing by file
-// path reads. The queue, a replay, an apply and items show each ask it.
-func Due(set connectors.Set, item store.Item, homes []store.Home, side, read store.Decision) (connectors.Destination, *connectors.Undelivered, bool) {
-	if !onASide(side.Verdict) || read.Verdict != connectors.ReadAsIs {
-		return connectors.Destination{}, nil, false
-	}
-	d, undelivered := set.DeliveryTo(side, item, homes)
-	return d, undelivered, true
+// DueReader reads what Due decides from beside an item's decisions: its
+// bytes' live homes, and its book's deliveries where it is a book's chapter.
+// A write's Tx and the store's reader each are one.
+type DueReader interface {
+	LiveHomes(ctx context.Context, sum string) ([]store.Home, error)
+	Deliveries(ctx context.Context, key string) ([]store.Delivery, error)
 }
 
-// QueueDelivery brings the item under key's deliveries in line with what Due
-// answers for its newest decisions under the set in force. It answers whether
-// it queued a delivery.
+// DueDelivery is where Due sends an item: the destination whose deliverer
+// writes it, or why none does. Path is the item's file below the deliverer's
+// root, for a deliverer that writes by file. BookDestinationID is the
+// destination's id for a chapter's book's record. Each is empty where the
+// item reaches no deliverer, or where it does not apply.
+type DueDelivery struct {
+	Destination       connectors.Destination
+	Undelivered       *connectors.Undelivered
+	Path              *string
+	BookDestinationID string
+}
+
+// Due is where an item's newest side and read decisions send it for delivery
+// under set, and false where they send it nowhere: the side decision places
+// it on no side, or the read decision reads it other than as is. It reads the
+// item's live homes and its book's deliveries through r. A chapter names its
+// book's record, so it is due only once its book's delivery to the same
+// destination settled on one. The queue, a replay, an apply and items show
+// each ask it.
+func Due(ctx context.Context, r DueReader, set connectors.Set, item store.Item, side, read store.Decision) (DueDelivery, bool, error) {
+	if !onASide(side.Verdict) || read.Verdict != connectors.ReadAsIs {
+		return DueDelivery{}, false, nil
+	}
+	var homes []store.Home
+	var err error
+	if item.BlobSHA256 != nil {
+		if homes, err = r.LiveHomes(ctx, *item.BlobSHA256); err != nil {
+			return DueDelivery{}, false, err
+		}
+	}
+	var due DueDelivery
+	due.Destination, due.Undelivered = set.DeliveryTo(side, item, homes)
+	switch {
+	case due.Undelivered != nil:
+	case item.PlacedThroughParent():
+		book, err := r.Deliveries(ctx, *item.ParentKey)
+		if err != nil {
+			return DueDelivery{}, false, err
+		}
+		due.BookDestinationID, due.Undelivered = bookRecord(due.Destination, side, book)
+	default:
+		if due.Path, err = connectors.FilePath(due.Destination.Deliverer, homes); err != nil {
+			return DueDelivery{}, false, err
+		}
+	}
+	return due, true, nil
+}
+
+// bookRecord is the id of the record at d that holds a chapter's book, from
+// the book's settled delivery there. Where the book's delivery to d has not
+// settled on an id, or d refused the book, it is why the chapter waits.
+func bookRecord(d connectors.Destination, side store.Decision, book []store.Delivery) (string, *connectors.Undelivered) {
+	i := slices.IndexFunc(book, func(b store.Delivery) bool { return b.Destination == d.Name })
+	switch {
+	case i >= 0 && book[i].Outcome == store.DeliveryRefused:
+		return "", &connectors.Undelivered{Reason: connectors.UndeliveredBookRefused, Side: side.Verdict, Destination: d.Name}
+	case i < 0 || !book[i].Settled() || text(book[i].DestinationID) == "":
+		return "", &connectors.Undelivered{Reason: connectors.UndeliveredBookUnsettled, Side: side.Verdict, Destination: d.Name}
+	}
+	return *book[i].DestinationID, nil
+}
+
+// QueueDelivery brings the deliveries of the item under key, and of each of
+// its chapters, in line with what Due answers for their newest decisions
+// under the set in force. So a replay of one book reaches its chapters. It
+// answers whether it queued a delivery.
 func QueueDelivery(ctx context.Context, tx *store.Tx, key string) (bool, error) {
 	item, ok, err := tx.Item(ctx, key)
 	if err != nil || !ok {
 		return false, err
 	}
-	side, _, err := tx.NewestDecision(ctx, key, store.GateSide)
+	set, err := connectors.AppliedSet(ctx, tx)
 	if err != nil {
 		return false, err
 	}
-	read, _, err := tx.NewestDecision(ctx, key, store.GateRead)
+	queued, err := queueDeliveryUnder(ctx, tx, set, item)
 	if err != nil {
 		return false, err
+	}
+	chapters, err := queueChapterDeliveries(ctx, tx, set, key)
+	return queued || chapters > 0, err
+}
+
+// AfterDelivery is the hook that serve runs in the write that ends a deliver
+// task done. It brings the delivery of each chapter of the task's item in
+// line, so a book whose delivery settled queues its chapters' in that write,
+// and a refused book queues none.
+func AfterDelivery(ctx context.Context, tx *store.Tx, task store.Task) error {
+	if task.ItemKey == nil {
+		return nil
 	}
 	set, err := connectors.AppliedSet(ctx, tx)
+	if err != nil {
+		return err
+	}
+	_, err = queueChapterDeliveries(ctx, tx, set, *task.ItemKey)
+	return err
+}
+
+// QueueUndeliveredChapters queues the delivery of each chapter that holds
+// none while its book's delivery settled on a record, and answers how many
+// it queued. serve runs it once it listens. So the chapters of a book
+// delivered before its deliverer wrote chapters reach the book's record,
+// with no replay asked for.
+func QueueUndeliveredChapters(ctx context.Context, tx *store.Tx) (int, error) {
+	keys, err := tx.UndeliveredChapterKeys(ctx)
+	if err != nil || len(keys) == 0 {
+		return 0, err
+	}
+	set, err := connectors.AppliedSet(ctx, tx)
+	if err != nil {
+		return 0, err
+	}
+	queued := 0
+	for _, key := range keys {
+		item, ok, err := tx.Item(ctx, key)
+		if err != nil {
+			return queued, err
+		}
+		if !ok {
+			continue
+		}
+		did, err := queueDeliveryUnder(ctx, tx, set, item)
+		if err != nil {
+			return queued, fmt.Errorf("queue the delivery of %s: %w", key, err)
+		}
+		if did {
+			queued++
+		}
+	}
+	return queued, nil
+}
+
+// queueChapterDeliveries brings the delivery of each chapter of the book
+// under key in line, in the chapters' order, and answers how many it queued.
+func queueChapterDeliveries(ctx context.Context, tx *store.Tx, set connectors.Set, key string) (int, error) {
+	chapters, err := tx.Chapters(ctx, key)
+	if err != nil {
+		return 0, err
+	}
+	queued := 0
+	for _, chapter := range chapters {
+		did, err := queueDeliveryUnder(ctx, tx, set, chapter)
+		if err != nil {
+			return queued, fmt.Errorf("queue the delivery of %s: %w", chapter.Key, err)
+		}
+		if did {
+			queued++
+		}
+	}
+	return queued, nil
+}
+
+// queueDeliveryUnder brings item's deliveries in line under set, as its
+// newest decisions send it.
+func queueDeliveryUnder(ctx context.Context, tx *store.Tx, set connectors.Set, item store.Item) (bool, error) {
+	side, _, err := tx.NewestDecision(ctx, item.Key, store.GateSide)
+	if err != nil {
+		return false, err
+	}
+	read, _, err := tx.NewestDecision(ctx, item.Key, store.GateRead)
 	if err != nil {
 		return false, err
 	}
@@ -604,26 +743,40 @@ func QueueDelivery(ctx context.Context, tx *store.Tx, key string) (bool, error) 
 // Kubernetes controller moves what runs toward what is declared. So a person's
 // drop or move stops a delivery that has not run yet.
 func reconcileDelivery(ctx context.Context, tx *store.Tx, set connectors.Set, item store.Item, side, read store.Decision) (bool, error) {
-	var homes []store.Home
-	if item.BlobSHA256 != nil {
-		var err error
-		if homes, err = tx.LiveHomes(ctx, *item.BlobSHA256); err != nil {
-			return false, err
-		}
+	due, ok, err := Due(ctx, tx, set, item, side, read)
+	if err != nil {
+		return false, err
 	}
-	d, undelivered, due := Due(set, item, homes, side, read)
 	keep := ""
-	if due && undelivered == nil {
-		keep = d.Name
+	if ok && due.Undelivered == nil {
+		keep = due.Destination.Name
 	}
 	if err := tx.WithdrawDeliveries(ctx, item.Key, keep); err != nil || keep == "" {
 		return false, err
 	}
-	path, err := connectors.FilePath(d.Deliverer, homes)
-	if err != nil {
-		return false, err
+	var chapter *store.ChapterInBook
+	if item.PlacedThroughParent() {
+		if chapter, err = chapterInBook(ctx, tx, item.Key, due.BookDestinationID); err != nil {
+			return false, err
+		}
 	}
-	return tx.QueueDelivery(ctx, item, path, d.Name, d.Deliverer)
+	return tx.QueueDelivery(ctx, item, due.Path, chapter, due.Destination.Name, due.Destination.Deliverer)
+}
+
+// chapterInBook is where the chapter under key sits in the record book: at
+// the pages of the newest sections that name the chapter.
+func chapterInBook(ctx context.Context, tx *store.Tx, key, book string) (*store.ChapterInBook, error) {
+	s, ok, err := tx.ChapterSection(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("no section names the chapter %s, so it has no pages to deliver", key)
+	}
+	return &store.ChapterInBook{
+		BookDestinationID: book, PDFPageStart: s.PDFPageStart, PDFPageEnd: s.PDFPageEnd,
+		PrintedPageStart: s.PrintedPageStart, PrintedPageEnd: s.PrintedPageEnd,
+	}, nil
 }
 
 // Placement is a person's decision on an item.

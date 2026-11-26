@@ -859,6 +859,16 @@ learning's `/api/v1/resources` as a book whose copy is that PDF. It sends the it
 type `book`, the copy `pdf`, its key as `source_key`, and its file as `file_path`: the path of its
 live home below the `[serve.homes]` root that `[deliver.learning-resources]` names as `root`.
 
+A book's chapter takes its book's placement, so it goes where its book goes. `learning-resources`
+posts it as type `chapter`, `part_of` the resource that its book's delivery settled on. It sends
+the chapter's title, its key as `source_key`, and its PDF and printed pages. The pages are those of
+the book's newest sections when the chapter's delivery was first queued, and every attempt sends
+them. It sends the printed pages only where the book prints both ends. A chapter's delivery is due
+only once its book's delivery to the same destination has settled on a record. The write that
+settles the book queues each of its chapters in order, and so does a replay of the deliver stage
+over the book. When the service starts, it queues each chapter of a delivered book that holds no
+delivery. A refused book delivers no chapter.
+
 Each delivery ends in one outcome, which `items show` prints with the app's id for the record:
 
 ```text
@@ -884,8 +894,10 @@ delivery  none: no destination in the set in force is default_for_side personal,
   The delivery then stays pending with that answer.
 - **`delivery  none:`** marks an item read as is that no deliverer takes. Its side has no default,
   its destination names no deliverer or is not declared, or the deliverer cannot take the item,
-  as `life-articles` cannot take one with no URL, and `learning-resources` one that is no PDF or
-  has no live home below its root. An apply that changes any of these queues each such item.
+  as `life-articles` cannot take one with no URL or a book's chapter, and `learning-resources`
+  one that is neither a PDF nor a book's chapter, or a book with no live home below its root. An
+  apply that changes any of these queues each such item. A chapter also reads `none:` while its
+  book's delivery has not settled, and for good where the app refused its book.
 
 Where no worker heard from lately claims a pending delivery's task, `items show` names the task's
 capability, as the sixth line shows. So a destination that failed reads apart from a deliverer

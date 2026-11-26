@@ -469,7 +469,11 @@ func (h itemHandlers) undelivered(ctx context.Context, rec store.ItemRecords) (*
 	}
 	side, _ := rec.NewestDecision(store.GateSide)
 	read, _ := rec.NewestDecision(store.GateRead)
-	_, u, _ := route.Due(set, rec.Item, rec.Homes, side, read)
+	due, _, err := route.Due(ctx, h.store, set, rec.Item, side, read)
+	if err != nil {
+		return nil, err
+	}
+	u := due.Undelivered
 	if u == nil {
 		return nil, nil
 	}

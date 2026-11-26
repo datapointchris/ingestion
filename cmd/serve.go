@@ -93,6 +93,7 @@ func afterStage(log *slog.Logger) server.AfterStage {
 		store.StageContents:  {contents.AfterAnswer(log)},
 		store.StageScan:      {qualitygate.QueueAfterScan},
 		store.StageQuality:   {qualitygate.DecideAfterAnswer},
+		store.StageDeliver:   {route.AfterDelivery},
 	}
 	gates := route.AfterStage(log)
 	return func(ctx context.Context, tx *store.Tx, task store.Task) error {
@@ -194,6 +195,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	log.Info("ingestion serves", "listen", listen, "store", stateDir(cfg), "issuer", cfg.Issuer, "version", version)
 	wg.Go(func() { settlePhases(background, st, log) })
 	wg.Go(func() { fillSourceTimes(background, lander, log) })
+	wg.Go(func() { queueUndeliveredChapters(background, st, log) })
 	select {
 	case err := <-served:
 		return err
@@ -240,6 +242,27 @@ func settlePhases(ctx context.Context, st *store.Store, log *slog.Logger) {
 		return
 	}
 	log.InfoContext(ctx, "settled each item's phase", "items", items, "moved", moved, "took", time.Since(started).String())
+}
+
+// queueUndeliveredChapters queues the delivery of each chapter whose book's
+// delivery settled while the chapter holds none, once the service listens,
+// and logs how many it queued.
+func queueUndeliveredChapters(ctx context.Context, st *store.Store, log *slog.Logger) {
+	started := time.Now()
+	var queued int
+	err := st.Update(ctx, func(tx *store.Tx) error {
+		var err error
+		queued, err = route.QueueUndeliveredChapters(ctx, tx)
+		return err
+	})
+	if err != nil {
+		if ctx.Err() == nil {
+			log.ErrorContext(ctx, "queue the delivery of each undelivered chapter of a delivered book", "error", err)
+		}
+		return
+	}
+	log.InfoContext(ctx, "queued the delivery of each undelivered chapter of a delivered book", "queued", queued,
+		"took", time.Since(started).String())
 }
 
 // fillSourceTimes reads a source time from the bytes of each item that landed

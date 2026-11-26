@@ -97,6 +97,12 @@ func (t *Tx) Chapters(ctx context.Context, key string) ([]Item, error) {
 	return slices.DeleteFunc(children, func(c Item) bool { return !c.PlacedThroughParent() }), nil
 }
 
+// ChapterSection reads the newest section that names the chapter item under
+// key, and false where none does.
+func (t *Tx) ChapterSection(ctx context.Context, key string) (Section, bool, error) {
+	return first[Section](ctx, t.tx, table("sections"), `child_key = ? AND kind = ? ORDER BY created_ts DESC, rowid DESC`, key, SectionChapter)
+}
+
 // Parse reads the done parse of the item under key that pick names, with its
 // units, as this write sees it. It answers ErrNoItem and ErrNoParse as
 // Store.Parse does.

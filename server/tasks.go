@@ -83,6 +83,10 @@ type LeasedTask struct {
 	LandedTS string     `json:"landed_ts,omitempty"`
 	SourceTS *string    `json:"source_ts,omitempty"`
 	Path     *string    `json:"path,omitempty"`
+	// Chapter is a deliver task's of a book's chapter, kept the same way:
+	// the destination's id for its book's record, and where the chapter
+	// sits in the book. Every other task carries none.
+	Chapter *store.ChapterInBook `json:"chapter,omitempty"`
 	// Destination names where a deliver task writes its item, and is null
 	// for every other task.
 	Destination *string `json:"destination"`
@@ -311,8 +315,8 @@ func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
 			Zone: t.Item.Zone, Title: t.Item.Title, URL: t.Item.URL, LandedTS: t.Item.CreatedTS, Destination: t.Destination,
 			Model: t.Model,
 		}
-		if t.Delivery != nil {
-			leased.Title, leased.URL, leased.SourceTS, leased.Path = t.Delivery.Title, t.Delivery.URL, t.Delivery.SourceTS, t.Delivery.Path
+		if d := t.Delivery; d != nil {
+			leased.Title, leased.URL, leased.SourceTS, leased.Path, leased.Chapter = d.Title, d.URL, d.SourceTS, d.Path, d.Chapter()
 		}
 		if t.Read != nil {
 			leased.Lens, leased.Note = t.Read.Lens, t.Read.Note

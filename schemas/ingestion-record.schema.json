@@ -263,6 +263,11 @@
         },
         "attempts": {"description": "How many writes of the item the destination answered or failed.", "type": "integer", "minimum": 0},
         "source_ts": {"description": "The item's source time when the delivery was first queued, which every attempt sends, and null where the item held none then. Absent from a record shipped before the store kept it.", "anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
+        "book_destination_id": {"description": "For a book's chapter, the destination's id for its book's record, from the book's settled delivery when the chapter's was first queued, which every attempt sends. Null for every other item. Absent from a record shipped before the store kept it.", "type": ["string", "null"]},
+        "pdf_page_start": {"description": "For a book's chapter, its first PDF page, from 1, as the newest sections naming it held it when the delivery was first queued, which every attempt sends. Null for every other item. Absent from a record shipped before the store kept it.", "type": ["integer", "null"], "minimum": 1},
+        "pdf_page_end": {"description": "For a book's chapter, its last PDF page, kept as pdf_page_start is.", "type": ["integer", "null"], "minimum": 1},
+        "printed_page_start": {"description": "For a book's chapter, its first page as the book prints it, kept as pdf_page_start is, and null where the book gives no way to tell.", "type": ["string", "null"]},
+        "printed_page_end": {"description": "For a book's chapter, its last page as the book prints it, kept as pdf_page_start is, and null where the book gives no way to tell.", "type": ["string", "null"]},
         "updated_ts": {"$ref": "#/$defs/timestamp"}
       }
     },
