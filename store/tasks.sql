@@ -3,7 +3,8 @@
 -- report under an older token is refused. held_by names the connector whose
 -- first fill holds a model stage's task, which no claim takes until a person
 -- releases the fill. destination names the destination a deliver task writes
--- its item to. error is outsider-written, because an extractor's stderr can
+-- its item to. model names the model that a measurement arm's task asks its
+-- run for. error is outsider-written, because an extractor's stderr can
 -- quote the item, so the outbox ships it as ingestion.text.
 
 CREATE TABLE IF NOT EXISTS tasks (
@@ -11,6 +12,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     item_key         TEXT REFERENCES items (key),
     connector        TEXT,
     destination      TEXT,
+    model            TEXT,
     stage            TEXT NOT NULL,
     capability       TEXT NOT NULL,
     state            TEXT NOT NULL CHECK (state IN ('queued', 'leased', 'done', 'failed')),

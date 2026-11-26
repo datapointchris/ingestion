@@ -238,8 +238,15 @@ func (d *standInDispatch) models(t *testing.T, model, effort string) modelConfig
 // where it opens none.
 func (p *pipeline) qualityGate(t *testing.T, models modelConfig) worker.Handler {
 	t.Helper()
+	return p.modelHandler(t, models, qualitygate.Capability)
+}
+
+// modelHandler is the handler of capability that a worker opens from models,
+// and nil where it opens none.
+func (p *pipeline) modelHandler(t *testing.T, models modelConfig, capability string) worker.Handler {
+	t.Helper()
 	handlers := workerHandlers(p.worker, nil, openModelPort(t.Context(), models, p.provider.URL, quiet), nil, models, quiet)
-	i := slices.IndexFunc(handlers, func(h worker.Handler) bool { return h.Capability() == qualitygate.Capability })
+	i := slices.IndexFunc(handlers, func(h worker.Handler) bool { return h.Capability() == capability })
 	if i < 0 {
 		return nil
 	}

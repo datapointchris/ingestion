@@ -41,8 +41,8 @@ const (
 )
 
 // workerHandlers lists the stage handlers for a worker to run: each
-// extractor's, the scan's where scanner is installed, the quality gate's where
-// port is open, the model read's where both are, and each of deliverers by its
+// extractor's, the scan's where scanner is installed, the quality gate's and
+// its arm's where port is open, the model read's where both are, and each of deliverers by its
 // name. A stage whose work runs in a worker adds its handler here.
 func workerHandlers(client *worker.Client, deliverers map[string]deliver.Deliverer, port modelport.Port, scanner *scan.Scanner,
 	models modelConfig, log *slog.Logger,
@@ -52,8 +52,8 @@ func workerHandlers(client *worker.Client, deliverers map[string]deliver.Deliver
 		handlers = append(handlers, scan.NewHandler(scanner, client, log))
 	}
 	if port != nil {
-		handlers = append(handlers, qualitygate.NewHandler(port, client,
-			modelstage.Settings{Model: models.Quality.Model, Effort: models.Quality.Effort}, log))
+		quality := modelstage.Settings{Model: models.Quality.Model, Effort: models.Quality.Effort}
+		handlers = append(handlers, qualitygate.NewHandler(port, client, quality, log), qualitygate.NewArmHandler(port, client, quality, log))
 	}
 	if port != nil && scanner != nil {
 		handlers = append(handlers, modelread.NewHandler(port, client, scanner,
@@ -189,13 +189,15 @@ var workerRunCmd = &cobra.Command{
 		"The " + deliver.LifeArticles + " client needs the scope " + strings.Join(deliver.LifeArticlesScopes, " ") + ". A table that\n" +
 		"cannot open is logged and left out, and the worker's other stages run on.\n" +
 		"\n" +
-		"It runs the quality gate and the model read through the adapter that the\n" +
-		"[model] table names. It runs the model read only where it also runs the scan,\n" +
-		"because the scanner reads each suggestion before it is kept:\n" +
+		"It runs the quality gate, its arm and the model read through the adapter that\n" +
+		"the [model] table names. An arm's task asks for the model that its replay\n" +
+		"named, at the quality gate's effort. It runs the model read only where it also\n" +
+		"runs the scan, because the scanner reads each suggestion before it is kept:\n" +
 		"\n" +
 		"  [model]\n" +
 		"  adapter            queue or claude-cli. With none, the worker claims no\n" +
-		"                     quality or model-read task, and the item waits there\n" +
+		"                     quality, quality-arm or model-read task, and the item\n" +
+		"                     waits there\n" +
 		"  [model.queue]      an HTTP dispatch service\n" +
 		"  api                its address\n" +
 		"  agent              the kind of run it starts (default " + modelport.DefaultAgent + ")\n" +

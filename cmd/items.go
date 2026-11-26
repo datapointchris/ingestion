@@ -109,10 +109,18 @@ var itemsReplayCmd = &cobra.Command{
 		"in force and whose side waits on a later input: no side decision, review for\n" +
 		"want of a rule or an answer, or a model's drop or review. It leaves out an\n" +
 		"item that a tag, a rule, a person or a confident guess placed.\n" +
-		"--placed-by person runs it only over each item whose side a person placed,\n" +
-		"as a measurement against the placement. Its answer and its decision are kept,\n" +
-		"and the placement, its delivery and its model read stay as they are.\n" +
-		"`ingestion gates agreement` then counts how often the gate agreed.\n" +
+		"--placed-by person runs it only over each labeled item, one that a person\n" +
+		"placed after the gates sent it to review, as a measurement against the\n" +
+		"placement. Its answer and its decision are kept, and the placement, its\n" +
+		"delivery and its model read stay as they are. `ingestion gates agreement`\n" +
+		"then counts how often the gate agreed.\n" +
+		"\n" +
+		"--stage quality-arm asks the quality gate's prompt of the model that --model\n" +
+		"names, over each labeled item that the gate answered under that prompt and no\n" +
+		"arm has. Each answer is kept at its own stage and decides nothing, so the\n" +
+		"item's phase, placement and delivery stay as they are. `ingestion gates\n" +
+		"agreement` prints each arm beside the gate's answers on the same items. Its\n" +
+		"estimate is the median of the arm's own stored runs, of any model.\n" +
 		"\n" +
 		"A deliver replay queues the delivery that each item's placement sends it to,\n" +
 		"where it is not settled: one pending, or one never queued. A delivery that a\n" +
@@ -129,8 +137,11 @@ var itemsReplayCmd = &cobra.Command{
 		"  # one item, by key or by URL\n" +
 		"  ingestion items replay --stage parse --key reddit/t3_aq7ggd\n" +
 		"\n" +
-		"  # measure the quality gate against each placement a person made\n" +
-		"  ingestion items replay --stage quality --connector reddit-exports --placed-by person",
+		"  # measure the quality gate against each placement a person made from review\n" +
+		"  ingestion items replay --stage quality --connector reddit-exports --placed-by person\n" +
+		"\n" +
+		"  # ask the gate's prompt of another model on one labeled item\n" +
+		"  ingestion items replay --stage quality-arm --model sonnet --key reddit/t3_aq7ggd",
 	Args: cobra.NoArgs,
 	RunE: runItemsReplay,
 }
@@ -147,7 +158,8 @@ func init() {
 	itemsReplayCmd.Flags().String("stage", "", "Run this stage again: "+strings.Join(server.ReplayStages, ", "))
 	itemsReplayCmd.Flags().String("connector", "", "Run it over the items this connector sighted")
 	itemsReplayCmd.Flags().String("key", "", "Run it over the item under this key or URL")
-	itemsReplayCmd.Flags().String("placed-by", "", "Run it only over the items whose side this placed: "+store.PlacedByPerson)
+	itemsReplayCmd.Flags().String("placed-by", "", "Run it only over the items that this placed from review: "+store.PlacedByPerson)
+	itemsReplayCmd.Flags().String("model", "", "Ask this model, as "+store.StageQualityArm+" does")
 	itemsReplayCmd.Flags().Bool("yes", false, "Queue a model stage once its estimate is read")
 	itemsReplayCmd.Flags().Bool("json", false, "Print the service's answer as JSON")
 	for _, c := range []*cobra.Command{itemsListCmd, itemsShowCmd, itemsReplayCmd, itemsDropCmd} {
@@ -182,6 +194,12 @@ func runItemsReplay(cmd *cobra.Command, _ []string) error {
 	if key = strings.TrimSpace(key); key != "" {
 		req.Key = &key
 	}
+	if model, _ := cmd.Flags().GetString("model"); strings.TrimSpace(model) != "" {
+		model = strings.TrimSpace(model)
+		req.Model = &model
+	} else if stage == store.StageQualityArm {
+		return fmt.Errorf("%w: --stage %s asks the model that --model names, so give one", goclikit.ErrUsage, stage)
+	}
 	body, err := json.Marshal(req)
 	if err != nil {
 		return err
@@ -196,19 +214,23 @@ func runItemsReplay(cmd *cobra.Command, _ []string) error {
 		_, err := w.Write(raw)
 		return err
 	}
+	stageWords := answer.Stage
+	if answer.Model != nil {
+		stageWords += " (" + *answer.Model + ")"
+	}
 	if answer.Items == 0 {
-		_, err = fmt.Fprintf(w, "Queued nothing: %s runs on none of the selected items.\n", answer.Stage)
+		_, err = fmt.Fprintf(w, "Queued nothing: %s runs on none of the selected items.\n", stageWords)
 		return err
 	}
 	if answer.Queued {
-		_, err = fmt.Fprintf(w, "Queued %s on %d items.\n", answer.Stage, answer.Items)
+		_, err = fmt.Fprintf(w, "Queued %s on %d items.\n", stageWords, answer.Items)
 		return err
 	}
 	if e := answer.Estimate; e != nil {
 		_, err = fmt.Fprintf(w, "%s would run on %d items, estimated at uncached input %d, cache write %d, cache read %d and output %d tokens.\n",
-			answer.Stage, answer.Items, e.UncachedInput, e.CacheWrite, e.CacheRead, e.Output)
+			stageWords, answer.Items, e.UncachedInput, e.CacheWrite, e.CacheRead, e.Output)
 	} else {
-		_, err = fmt.Fprintf(w, "%s would run on %d items. No stored run of it gives an estimate of its tokens.\n", answer.Stage, answer.Items)
+		_, err = fmt.Fprintf(w, "%s would run on %d items. No stored run of it gives an estimate of its tokens.\n", stageWords, answer.Items)
 	}
 	if err != nil {
 		return err
@@ -379,7 +401,7 @@ func writeItem(w io.Writer, a server.ItemAnswer) {
 		if o.Error != nil && o.State == store.OutputFailed {
 			row("", "%s", quoted(*o.Error))
 		}
-		if o.Stage == store.StageQuality && o.State == store.OutputDone {
+		if (o.Stage == store.StageQuality || o.Stage == store.StageQualityArm) && o.State == store.OutputDone {
 			writeQualityAnswer(row, o.Answer)
 		}
 		if o.Stage == store.StageModelRead && o.State == store.OutputDone {

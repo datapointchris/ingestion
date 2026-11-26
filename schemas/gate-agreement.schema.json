@@ -2,14 +2,14 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/datapointchris/ingestion/schemas/gate-agreement.schema.json",
   "title": "How often each gate's answer agrees with a person's placement",
-  "description": "What GET /api/v1/gates/agreement answers and `ingestion gates agreement --json` prints. The label is each item whose newest side decision a person made. Each done answer of the quality gate on such an item is one comparison, read as the model gave it, before a floor turns a drop or a guess into review. A pass agrees with a placement on a side and a drop with a person's drop. The side guess agrees where it names the person's side, and a person's drop gives it nothing to compare. An unsure answer neither agrees nor disagrees.",
+  "description": "What GET /api/v1/gates/agreement answers and `ingestion gates agreement --json` prints. The label is a person's placement of an item that the gates sent to review first: the item's newest side decision is the person's, and an earlier side decision or the quality gate's decision before it was a review. A placement that no review came before labels nothing. Each done answer of the quality gate on such an item is one comparison, read as the model gave it, before a floor turns a drop or a guess into review. A pass agrees with a placement on a side and a drop with a person's drop. The side guess agrees where it names the person's side, and a person's drop gives it nothing to compare. An unsure answer neither agrees nor disagrees.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "labels", "unanswered", "quality", "side"],
+  "required": ["schema_version", "labels", "unanswered", "quality", "side", "arms"],
   "properties": {
-    "schema_version": {"const": 1},
+    "schema_version": {"const": 2},
     "labels": {
-      "description": "The items a person placed, by where the person placed each.",
+      "description": "The labeled items, by where the person placed each.",
       "type": "object",
       "additionalProperties": false,
       "required": ["items", "personal", "fleet", "drop"],
@@ -20,11 +20,35 @@
         "drop": {"type": "integer", "minimum": 0}
       }
     },
-    "unanswered": {"description": "The items a person placed that hold no done answer of the quality gate.", "type": "integer", "minimum": 0},
+    "unanswered": {"description": "The labeled items that hold no done answer of the quality gate.", "type": "integer", "minimum": 0},
     "quality": {"description": "The quality gate's verdict, pass, drop or unsure, beside the placement.", "$ref": "#/$defs/gate"},
-    "side": {"description": "The quality gate's side guess, personal, fleet or unsure, beside the side a person placed an item on.", "$ref": "#/$defs/gate"}
+    "side": {"description": "The quality gate's side guess, personal, fleet or unsure, beside the side a person placed an item on.", "$ref": "#/$defs/gate"},
+    "arms": {
+      "description": "Each arm, the quality gate's prompt asked of another model at the quality-arm stage, by model in ascending order. Each arm's answers sit beside the gate's answers to the same prompt version on the same labeled items.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["model", "items", "arm", "gate"],
+        "properties": {
+          "model": {"description": "The model that answered the arm, else the one it asked for.", "type": "string"},
+          "items": {"description": "The labeled items that the arm answered.", "type": "integer", "minimum": 0},
+          "arm": {"description": "The arm's answers.", "$ref": "#/$defs/answers"},
+          "gate": {"description": "The quality gate's own answers to the same prompt versions on the same items.", "$ref": "#/$defs/answers"}
+        }
+      }
+    }
   },
   "$defs": {
+    "answers": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["quality", "side"],
+      "properties": {
+        "quality": {"description": "The verdict beside the placement.", "$ref": "#/$defs/gate"},
+        "side": {"description": "The side guess beside the side a person placed an item on.", "$ref": "#/$defs/gate"}
+      }
+    },
     "gate": {
       "type": "object",
       "additionalProperties": false,

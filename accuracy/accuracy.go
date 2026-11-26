@@ -1,9 +1,14 @@
 // Package accuracy measures how often the quality gate's and the side gate's
-// answers agree with a person's placement. A person's placement is the label:
-// an item whose newest side decision a person made, as decided_by
-// person:<login> records. Each done answer of the quality gate on such an item
-// is one comparison, so an item that two prompt versions answered counts once
+// answers agree with a person's placement. The label is a person's placement
+// of an item that the gates sent to review first, as store.ReviewPlacement
+// reads it from the item's decisions. A placement that no review came before
+// labels nothing. Each done answer of the quality gate on a labeled item is
+// one comparison, so an item that two prompt versions answered counts once
 // under each.
+//
+// An arm is the gate's prompt asked of another model, kept at its own stage.
+// Each arm is reported by its model, beside the gate's answers to the same
+// prompt on the same items, so two models compare over one set of labels.
 //
 // A comparison reads the model's answer as it gave it, before any floor
 // turns a drop or a guess into review, so the counts by confidence band show
@@ -38,9 +43,28 @@ type Report struct {
 	Unanswered int  `json:"unanswered"`
 	Quality    Gate `json:"quality"`
 	Side       Gate `json:"side"`
+	// Arms are each arm's answers by model, the first model first.
+	Arms []Arm `json:"arms"`
 }
 
-// Labels counts the items a person placed, by where the person placed each.
+// Arm is one model's answers to the gate's prompt, beside the gate's own.
+type Arm struct {
+	Model string `json:"model"`
+	// Items counts the labeled items that the arm answered.
+	Items int `json:"items"`
+	// Arm is the arm's answers, and Gate the gate's answers to the same
+	// prompt versions on the same items.
+	Arm  Answers `json:"arm"`
+	Gate Answers `json:"gate"`
+}
+
+// Answers is one set of answers measured as each gate reads them.
+type Answers struct {
+	Quality Gate `json:"quality"`
+	Side    Gate `json:"side"`
+}
+
+// Labels counts the labeled items, by where the person placed each.
 type Labels struct {
 	Items    int `json:"items"`
 	Personal int `json:"personal"`
@@ -124,14 +148,22 @@ type comparison struct {
 	model, promptVersion   string
 }
 
-// Measure is the report over records, each an item whose newest side
-// decision a person made.
+// SchemaVersion is the version of schemas/gate-agreement.schema.json that a
+// report holds to.
+const SchemaVersion = 2
+
+// Measure is the report over records, of which it counts each labeled item.
 func Measure(records []store.ItemRecords) Report {
-	report := Report{SchemaVersion: 1}
+	report := Report{SchemaVersion: SchemaVersion, Arms: []Arm{}}
 	var quality, side []comparison
+	type armComparisons struct {
+		items                                map[string]bool
+		quality, side, gateQuality, gateSide []comparison
+	}
+	arms := map[string]*armComparisons{}
 	for _, r := range records {
-		placement, ok := r.NewestDecision(store.GateSide)
-		if !ok || !placement.ByPerson() {
+		placement, ok := r.ReviewPlacement()
+		if !ok {
 			continue
 		}
 		label := placement.Verdict
@@ -148,33 +180,81 @@ func Measure(records []store.ItemRecords) Report {
 		for _, s := range r.Sightings {
 			names = append(names, s.Connector)
 		}
+		gateAnswers := map[string][2][]comparison{}
 		answered := false
-		for _, o := range r.Outputs {
-			if o.Stage != store.StageQuality || o.Producer != qualitygate.Producer || o.State != store.OutputDone {
-				continue
-			}
-			var a qualitygate.Answer
-			if json.Unmarshal(o.Answer, &a) != nil {
-				continue
-			}
+		for _, o := range answersAt(r.Outputs, store.StageQuality) {
+			q, s := compare(o, label, names)
 			answered = true
-			base := comparison{label: label, connectors: names, model: modelOf(o), promptVersion: o.ProducerVersion}
-			q := base
-			q.answer, q.confidence, q.outcome = a.Verdict, a.VerdictConfidence, qualityOutcome(a.Verdict, label)
-			quality = append(quality, q)
-			if label == connectors.SidePersonal || label == connectors.SideFleet {
-				s := base
-				s.answer, s.confidence, s.outcome = a.Side, a.SideConfidence, sideOutcome(a.Side, label)
-				side = append(side, s)
-			}
+			quality, side = append(quality, q), append(side, s...)
+			gateAnswers[o.ProducerVersion] = [2][]comparison{{q}, s}
 		}
 		if !answered {
 			report.Unanswered++
 		}
+		for _, o := range answersAt(r.Outputs, store.StageQualityArm) {
+			theGate, ok := gateAnswers[o.ProducerVersion]
+			if !ok {
+				continue
+			}
+			model := modelOf(o)
+			arm := arms[model]
+			if arm == nil {
+				arm = &armComparisons{items: map[string]bool{}}
+				arms[model] = arm
+			}
+			q, s := compare(o, label, names)
+			arm.items[r.Item.Key] = true
+			arm.quality, arm.side = append(arm.quality, q), append(arm.side, s...)
+			arm.gateQuality, arm.gateSide = append(arm.gateQuality, theGate[0]...), append(arm.gateSide, theGate[1]...)
+		}
 	}
 	report.Quality = gate(qualitygate.DropFloor, quality)
 	report.Side = gate(route.GuessFloor, side)
+	for _, model := range sortedKeys(arms) {
+		a := arms[model]
+		report.Arms = append(report.Arms, Arm{
+			Model: model, Items: len(a.items),
+			Arm:  Answers{Quality: gate(qualitygate.DropFloor, a.quality), Side: gate(route.GuessFloor, a.side)},
+			Gate: Answers{Quality: gate(qualitygate.DropFloor, a.gateQuality), Side: gate(route.GuessFloor, a.gateSide)},
+		})
+	}
 	return report
+}
+
+// answersAt is each done answer of the gate's prompt among outputs at stage,
+// the quality gate's own or an arm's, that decodes.
+func answersAt(outputs []store.Output, stage string) []store.Output {
+	var out []store.Output
+	for _, o := range outputs {
+		if o.Stage != stage || o.Producer != qualitygate.Producer || o.State != store.OutputDone {
+			continue
+		}
+		if _, err := answerOf(o); err == nil {
+			out = append(out, o)
+		}
+	}
+	return out
+}
+
+func answerOf(o store.Output) (qualitygate.Answer, error) {
+	var a qualitygate.Answer
+	err := json.Unmarshal(o.Answer, &a)
+	return a, err
+}
+
+// compare sets o's verdict beside label, and its side guess where the label
+// is a side.
+func compare(o store.Output, label string, connectorNames []string) (comparison, []comparison) {
+	a, _ := answerOf(o)
+	base := comparison{label: label, connectors: connectorNames, model: modelOf(o), promptVersion: o.ProducerVersion}
+	q := base
+	q.answer, q.confidence, q.outcome = a.Verdict, a.VerdictConfidence, qualityOutcome(a.Verdict, label)
+	if label != connectors.SidePersonal && label != connectors.SideFleet {
+		return q, nil
+	}
+	s := base
+	s.answer, s.confidence, s.outcome = a.Side, a.SideConfidence, sideOutcome(a.Side, label)
+	return q, []comparison{s}
 }
 
 // qualityOutcome compares the quality gate's verdict with a person's
@@ -282,18 +362,17 @@ func sortedKeys[K cmp.Ordered, V any](m map[K]V) []K {
 	return keys
 }
 
-// Routes is the route that reads the gates' agreement with every person's
-// placement.
+// Routes is the route that reads the gates' agreement with every label.
 func Routes(st *store.Store, log *slog.Logger) server.Routes {
 	if log == nil {
 		log = slog.Default()
 	}
 	return func(r *server.Router) {
 		r.Handle(server.RouteGateAgreement, func(w http.ResponseWriter, req *http.Request) {
-			records, err := st.PersonPlacedItems(req.Context())
+			records, err := st.ReviewPlacedItems(req.Context())
 			if err != nil {
-				log.ErrorContext(req.Context(), "read the items a person placed", "error", err)
-				server.Refuse(w, http.StatusInternalServerError, server.CodeInternal, "the server could not read the items a person placed")
+				log.ErrorContext(req.Context(), "read the items a person placed from review", "error", err)
+				server.Refuse(w, http.StatusInternalServerError, server.CodeInternal, "the server could not read the items a person placed from review")
 				return
 			}
 			server.JSON(w, http.StatusOK, Measure(records))

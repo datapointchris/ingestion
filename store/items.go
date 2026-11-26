@@ -247,10 +247,10 @@ var reached = map[string]string{
 
 // Phase is the item's phase in the words of schemas/items-list.schema.json:
 // dropped where the newest side decision drops it, review where WaitsOnPerson
-// says it waits, failed where another stage's newest task failed, dropped
-// where the quality gate drops it before any side decision, waiting where a
-// model stage holds it, and
-// otherwise the furthest stage whose condition is True. A person can place an
+// says it waits, failed where another stage on the line holds a newest task
+// that failed, dropped where the quality gate drops it before any side
+// decision, waiting where a model stage holds it, and otherwise the furthest
+// stage whose condition is True. A person can place an
 // item whose parse or quality gate failed, which moves it on from that stage.
 func (r ItemRecords) Phase() string {
 	side, sided := r.NewestDecision(GateSide)
@@ -265,7 +265,7 @@ func (r ItemRecords) Phase() string {
 		newest[t.Stage] = t
 	}
 	for stage, t := range newest {
-		if t.State == TaskFailed && stage != StageParse && (stage != StageQuality || !r.PersonPlaced()) {
+		if t.State == TaskFailed && slices.Contains(line, stage) && stage != StageParse && (stage != StageQuality || !r.PersonPlaced()) {
 			return "failed"
 		}
 	}
@@ -291,12 +291,15 @@ func (r ItemRecords) Phase() string {
 	return phase
 }
 
-// PersonPlaced says whether a person made the item's newest side decision. A
-// person's placement is the label that each gate's answer is measured against.
+// PersonPlaced says whether a person made the item's newest side decision.
 func (r ItemRecords) PersonPlaced() bool {
 	side, ok := r.NewestDecision(GateSide)
 	return ok && side.ByPerson()
 }
+
+// ReviewPlacement is the item's label, as ReviewPlacement decides it from the
+// item's decisions.
+func (r ItemRecords) ReviewPlacement() (Decision, bool) { return ReviewPlacement(r.Decisions) }
 
 // Side is the newest side decision's verdict where it placed the item on a
 // side, and false where none has.

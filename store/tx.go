@@ -54,6 +54,11 @@ func (t *Tx) NewestDecision(ctx context.Context, key, gate string) (Decision, bo
 	return first[Decision](ctx, t.tx, table("decisions"), `item_key = ? AND gate = ? ORDER BY sequence DESC`, key, gate)
 }
 
+// Decisions reads every decision on the item under key, at every gate.
+func (t *Tx) Decisions(ctx context.Context, key string) ([]Decision, error) {
+	return readInto[Decision](ctx, t.tx, table("decisions"), `item_key = ? ORDER BY gate, sequence`, key)
+}
+
 // Outputs reads every output of the item under key, oldest first, in the order
 // that Store.Outputs reads them.
 func (t *Tx) Outputs(ctx context.Context, key string) ([]Output, error) {

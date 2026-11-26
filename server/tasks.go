@@ -86,6 +86,10 @@ type LeasedTask struct {
 	// answers. Every other task carries neither.
 	Lens *string `json:"lens,omitempty"`
 	Note *string `json:"note,omitempty"`
+	// Model is a measurement arm's task's. The task asks its run for this
+	// model in place of the worker's configured one. Every other task
+	// carries none.
+	Model *string `json:"model,omitempty"`
 }
 
 // StageOutput is one output that a model stage's task carries: which prompt
@@ -200,6 +204,7 @@ type TaskView struct {
 	ItemKey        *string `json:"item_key"`
 	Connector      *string `json:"connector"`
 	Destination    *string `json:"destination"`
+	Model          *string `json:"model"`
 	Stage          string  `json:"stage"`
 	Capability     string  `json:"capability"`
 	State          string  `json:"state"`
@@ -289,6 +294,7 @@ func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
 			ID: t.ID, ItemKey: t.ItemKey, Connector: t.Connector, Stage: t.Stage, Capability: t.Capability, Attempts: t.Attempts,
 			LeaseToken: *t.LeaseToken, LeaseExpiresTS: *t.LeaseExpiresTS, MediaType: t.Item.MediaType, BlobSHA256: t.Item.BlobSHA256,
 			Zone: t.Item.Zone, Title: t.Item.Title, URL: t.Item.URL, LandedTS: t.Item.CreatedTS, Destination: t.Destination,
+			Model: t.Model,
 		}
 		if t.Delivery != nil {
 			leased.Title, leased.URL = t.Delivery.Title, t.Delivery.URL
@@ -499,7 +505,7 @@ func (h taskHandlers) list(w http.ResponseWriter, r *http.Request) {
 
 func viewOf(t store.Task, now time.Time) TaskView {
 	return TaskView{
-		ID: t.ID, ItemKey: t.ItemKey, Connector: t.Connector, Destination: t.Destination, Stage: t.Stage, Capability: t.Capability,
+		ID: t.ID, ItemKey: t.ItemKey, Connector: t.Connector, Destination: t.Destination, Model: t.Model, Stage: t.Stage, Capability: t.Capability,
 		State: t.State, HeldBy: t.HeldBy, Lapsed: t.Lapsed(now),
 		LeaseHolder: t.LeaseHolder, LeaseExpiresTS: t.LeaseExpiresTS, Attempts: t.Attempts, HasError: t.Error != nil,
 		NotBeforeTS: t.NotBeforeTS, CreatedTS: t.CreatedTS, UpdatedTS: t.UpdatedTS,

@@ -95,10 +95,11 @@ func afterStage(log *slog.Logger) server.AfterStage {
 // delivery is not settled.
 func replayableStages(st *store.Store, extractors *extract.Registry) map[string]server.Replayable {
 	return map[string]server.Replayable{
-		store.StageParse:     extractors.Replayable(),
-		store.StageScan:      scan.Replayable(extractors),
-		store.StageQuality:   qualitygate.Replayable(st),
-		store.StageModelRead: modelread.Replayable(st),
+		store.StageParse:      extractors.Replayable(),
+		store.StageScan:       scan.Replayable(extractors),
+		store.StageQuality:    qualitygate.Replayable(st),
+		store.StageQualityArm: qualitygate.ArmReplayable(st),
+		store.StageModelRead:  modelread.Replayable(st),
 		store.StageDeliver: {Queue: func(ctx context.Context, tx *store.Tx, item store.Item) (bool, error) {
 			return route.QueueDelivery(ctx, tx, item.Key)
 		}},
