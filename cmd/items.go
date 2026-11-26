@@ -106,8 +106,9 @@ var itemsReplayCmd = &cobra.Command{
 		"only with --yes. A model-free stage, such as parse, queues at once.\n" +
 		"\n" +
 		"A structure replay profiles each PDF again, such as with a new pdf-structure,\n" +
-		"and its end writes the PDF's sections beside the old. It makes no chapter\n" +
-		"item where the PDF already holds chapters.\n" +
+		"and its end writes the PDF's sections beside the old. Where the PDF already\n" +
+		"holds chapters, a new chapter row names the chapter item with the same start\n" +
+		"page and title, and one that matches none makes no item.\n" +
 		"\n" +
 		"A quality replay runs on each scanned item that holds no answer of the prompt\n" +
 		"in force and whose side waits on a later input: no side decision, review for\n" +

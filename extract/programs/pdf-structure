@@ -10,8 +10,8 @@ PDF page, the page-label rules, the metadata's raw creationDate, and font
 shares. A font share is the share of sampled pages whose fonts include a
 monospace one, or a TeX or math one. Every fifth page is sampled, from the
 first. An outline entry whose target lies outside the document has page null.
-A PDF that cannot be opened, or that needs a password, exits 1 naming why, and
-never quotes the document.
+A PDF that cannot be opened, that needs a password, or whose structure PyMuPDF
+cannot read, exits 1 naming why, and never quotes the document.
 """
 
 import json
@@ -62,6 +62,19 @@ def main() -> int:
     if doc.needs_pass:
         print("pdf-structure: the PDF needs a password", file=sys.stderr)
         return 1
+    try:
+        # ASCII escapes keep a title that holds a lone surrogate, which UTF-8
+        # cannot encode, and stdout is written only once the whole is built.
+        document = json.dumps(profile_of(doc))
+    except Exception as error:  # A broken outline, label tree or font list raises any of several types.
+        print(f"pdf-structure: PyMuPDF could not read the PDF's structure ({type(error).__name__})", file=sys.stderr)
+        return 1
+    sys.stdout.write(document + "\n")
+    sys.stdout.flush()
+    return 0
+
+
+def profile_of(doc):
     outline = [
         {"level": level, "title": title, "page": page if 1 <= page <= doc.page_count else None}
         for level, title, page in doc.get_toc(simple=True)
@@ -75,17 +88,13 @@ def main() -> int:
         }
         for rule in doc.get_page_labels()
     ]
-    profile = {
+    return {
         "pages": doc.page_count,
         "outline": outline,
         "page_labels": labels,
         "creation_date": (doc.metadata or {}).get("creationDate") or None,
         "font_shares": font_shares(doc),
     }
-    json.dump(profile, sys.stdout, ensure_ascii=False)
-    sys.stdout.write("\n")
-    sys.stdout.flush()
-    return 0
 
 
 if __name__ == "__main__":

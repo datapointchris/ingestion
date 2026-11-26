@@ -171,7 +171,7 @@ func sendReview(cmd *cobra.Command, route server.Route, key, verb string, body a
 	asJSON, _ := cmd.Flags().GetBool("json")
 	api, _ := cmd.Flags().GetString("api")
 	answer, raw, err := decideReview(cmd.Context(), configPath(cmd), api, route, key, verb, body)
-	if err := argumentRefusal(err, server.CodeDestinationNotDeclared, server.CodeInvalidBody); err != nil {
+	if err := argumentRefusal(err, server.CodeDestinationNotDeclared, server.CodeChapterOfBook, server.CodeInvalidBody); err != nil {
 		return err
 	}
 	w := cmd.OutOrStdout()

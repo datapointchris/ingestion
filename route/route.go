@@ -448,11 +448,10 @@ func decide(ctx context.Context, tx *store.Tx, key string, side store.Decision, 
 // delivery and model read in line, as decide does for the item. A chapter
 // takes its decisions only from its parent, so the gates never run on it.
 func PassToChapters(ctx context.Context, tx *store.Tx, key string) error {
-	children, err := tx.Children(ctx, key)
+	chapters, err := tx.Chapters(ctx, key)
 	if err != nil {
 		return err
 	}
-	chapters := slices.DeleteFunc(children, func(c store.Item) bool { return c.MediaType != store.MediaTypeChapter })
 	if len(chapters) == 0 {
 		return nil
 	}
@@ -647,18 +646,33 @@ var ErrNotDeclared = errors.New("the destination is not declared")
 
 func (e *NotDeclaredError) Is(target error) bool { return target == ErrNotDeclared }
 
+// ChapterError is a placement of a book's chapter. A chapter takes every
+// decision from its book, so a placement of its own would be undone by the
+// book's next one.
+type ChapterError struct {
+	Chapter string
+	Book    string
+}
+
+func (e *ChapterError) Error() string {
+	return fmt.Sprintf("%s is a chapter of %s and takes its book's placement, so place %s", e.Chapter, e.Book, e.Book)
+}
+
 // Place appends a person's decision on the item under key: on p's destination,
 // or a drop where p names none. Where the destination takes a side, the read
 // gate's decision follows it. A person can place any item, including one that
 // a rule already placed. A placement that repeats the newest side decision
 // appends nothing, and answers the decisions it made. Place answers
-// store.ErrNoItem where the store holds no such item, and a NotDeclaredError
-// for a destination that the set in force does not declare.
+// store.ErrNoItem where the store holds no such item, a NotDeclaredError
+// for a destination that the set in force does not declare, and a
+// ChapterError for a book's chapter.
 func Place(ctx context.Context, tx *store.Tx, key string, p Placement) ([]store.Decision, error) {
-	if _, ok, err := tx.Item(ctx, key); err != nil {
+	if item, ok, err := tx.Item(ctx, key); err != nil {
 		return nil, err
 	} else if !ok {
 		return nil, fmt.Errorf("%s: %w", key, store.ErrNoItem)
+	} else if item.PlacedThroughParent() {
+		return nil, &ChapterError{Chapter: key, Book: *item.ParentKey}
 	}
 	set, err := connectors.AppliedSet(ctx, tx)
 	if err != nil {

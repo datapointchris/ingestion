@@ -29,7 +29,8 @@ const (
 	// Program is where the worker image installs pdf-structure.
 	Program = extract.ProgramDir + "/" + Producer
 	// Timeout bounds one run of pdf-structure, and a run past it fails its
-	// task. A 3,148-page book profiles in under a second.
+	// task. It sits far above any book's run, so it stops only a program
+	// that hangs.
 	Timeout = 10 * time.Minute
 	// blobRetry is how long a structure task waits to read its bytes again
 	// after the service gave no answer.

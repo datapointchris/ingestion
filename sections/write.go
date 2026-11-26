@@ -15,10 +15,15 @@ import (
 	"github.com/datapointchris/ingestion/store"
 )
 
+// parsedBy is the extractor whose items pass the structure stage. Its parse's
+// end queues the stage, a replay selects its media type, and the outline rule
+// reads its parse.
+var parsedBy = extract.PDFText
+
 // QueueAfterParse queues the structure task of a PDF in the write that ends
 // its pdf-text parse done, so every parsed PDF is profiled.
 func QueueAfterParse(ctx context.Context, tx *store.Tx, task store.Task) error {
-	if task.Capability != extract.Capability(extract.PDFText) {
+	if task.Capability != extract.Capability(parsedBy) {
 		return nil
 	}
 	_, err := tx.Enqueue(ctx, store.Task{ItemKey: task.ItemKey, Stage: store.StageStructure, Capability: Capability})
@@ -30,7 +35,7 @@ func QueueAfterParse(ctx context.Context, tx *store.Tx, task store.Task) error {
 // beside the old.
 func Replayable() server.Replayable {
 	return server.Replayable{Capability: func(item store.Item) (string, bool) {
-		return Capability, item.MediaType == extract.MediaTypePDF
+		return Capability, item.MediaType == parsedBy.MediaType
 	}}
 }
 
@@ -43,11 +48,8 @@ func OutlineVersion(structure, parse store.Output) string {
 
 // AfterStructure runs in the write that ends a PDF's structure task done. It
 // reads the newest done profile and the newest done pdf-text parse, and
-// writes the sections that Outline finds from them, once per version. Where
-// the item holds no chapter yet, each chapter becomes a child item, numbered
-// from 1, which takes the item's zone, source time, side and read decisions.
-// A later version writes its sections beside the old, and makes no child.
-// Where the item holds no source time, it takes the PDF's creation date.
+// writes the sections that Outline finds from them through Write. Where the
+// item holds no source time, it takes the PDF's creation date.
 func AfterStructure(ctx context.Context, tx *store.Tx, task store.Task) error {
 	if task.ItemKey == nil {
 		return nil
@@ -78,7 +80,7 @@ func AfterStructure(ctx context.Context, tx *store.Tx, task store.Task) error {
 			}
 		}
 	}
-	parse, err := tx.Parse(ctx, key, store.ParsePick{Extractor: extract.PDFText.Name})
+	parse, err := tx.Parse(ctx, key, store.ParsePick{Extractor: parsedBy.Name})
 	switch {
 	case errors.Is(err, store.ErrNoParse):
 		// The parse's end queues the structure again, which writes them.
@@ -86,27 +88,51 @@ func AfterStructure(ctx context.Context, tx *store.Tx, task store.Task) error {
 	case err != nil:
 		return err
 	}
-	rows := Outline(profile, parse.Units, OutlineVersion(*structure, parse.Output))
-	children, err := chaptersOf(ctx, tx, key)
+	return Write(ctx, tx, item, Outline(profile, parse.Units, OutlineVersion(*structure, parse.Output)))
+}
+
+// Write writes one producer version's sections of book, once, and the
+// chapter items they name. Where the book holds no chapter yet, each chapter
+// row becomes a child item, numbered from 1, which takes the book's zone,
+// source time, side and read decisions. Where it holds chapters, a chapter
+// row names the item that an earlier version made for a chapter with the same
+// start page and title. A row that matches none names no item, so a later
+// version renames no chapter and makes none.
+func Write(ctx context.Context, tx *store.Tx, book store.Item, rows []store.Section) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	chapters, err := tx.Chapters(ctx, book.Key)
+	if err != nil {
+		return err
+	}
+	held, err := chapterKeys(ctx, tx, book.Key)
 	if err != nil {
 		return err
 	}
 	var made []store.Item
 	n := 0
 	for i := range rows {
-		rows[i].ItemKey = key
-		if rows[i].Kind != store.SectionChapter || len(children) > 0 {
+		rows[i].ItemKey = book.Key
+		if rows[i].Kind != store.SectionChapter {
+			continue
+		}
+		if len(chapters) > 0 {
+			if child, ok := held[startOf(rows[i])]; ok {
+				rows[i].ChildKey = &child
+				delete(held, startOf(rows[i]))
+			}
 			continue
 		}
 		n++
-		child, err := itemkey.Child(key, n)
+		child, err := itemkey.Child(book.Key, n)
 		if err != nil {
 			return err
 		}
 		rows[i].ChildKey = &child
 		made = append(made, store.Item{
-			Key: child, MediaType: store.MediaTypeChapter, Zone: item.Zone, ParentKey: &item.Key, ParentFlowID: &item.FlowID,
-			Title: rows[i].Title, SourceTS: item.SourceTS,
+			Key: child, MediaType: store.MediaTypeChapter, Zone: book.Zone, ParentKey: &book.Key, ParentFlowID: &book.FlowID,
+			Title: rows[i].Title, SourceTS: book.SourceTS,
 		})
 	}
 	wrote, err := tx.PutSections(ctx, rows)
@@ -118,19 +144,38 @@ func AfterStructure(ctx context.Context, tx *store.Tx, task store.Task) error {
 			return err
 		}
 	}
-	return route.PassToChapters(ctx, tx, key)
+	return route.PassToChapters(ctx, tx, book.Key)
 }
 
-// chaptersOf reads the chapter items made from the item under key.
-func chaptersOf(ctx context.Context, tx *store.Tx, key string) ([]store.Item, error) {
-	children, err := tx.Children(ctx, key)
-	var chapters []store.Item
-	for _, c := range children {
-		if c.MediaType == store.MediaTypeChapter {
-			chapters = append(chapters, c)
+// chapterStart is where a chapter starts and what it is called, which a later
+// version's chapter must share to name the same chapter item.
+type chapterStart struct {
+	page  int
+	title string
+}
+
+func startOf(s store.Section) chapterStart {
+	start := chapterStart{page: s.PDFPageStart}
+	if s.Title != nil {
+		start.title = *s.Title
+	}
+	return start
+}
+
+// chapterKeys maps each start of a chapter that the book's sections name an
+// item for to that item's key.
+func chapterKeys(ctx context.Context, tx *store.Tx, key string) (map[chapterStart]string, error) {
+	sections, err := tx.Sections(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	keys := map[chapterStart]string{}
+	for _, s := range sections {
+		if s.ChildKey != nil {
+			keys[startOf(s)] = *s.ChildKey
 		}
 	}
-	return chapters, err
+	return keys, nil
 }
 
 // pdfDate is a PDF date, D:YYYYMMDDHHmmSSOHH'mm', each part after the year

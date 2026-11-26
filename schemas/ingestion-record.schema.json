@@ -183,7 +183,7 @@
       "properties": {
         "item_key": {"$ref": "#/$defs/item_key"},
         "producer": {"description": "outline where the rows come from the PDF's own outline, or are one section over the whole of a short PDF that has none. contents where they come from the book's printed contents pages.", "enum": ["outline", "contents"]},
-        "producer_version": {"description": "The version of the rule that wrote the rows and of each output it read, such as 1/pdf-structure@1+pymupdf-1.28.2/pdf-text@1+pymupdf-1.28.2.", "type": "string"},
+        "producer_version": {"description": "The version of the rule that wrote the rows and of each output it read, such as 1/pdf-structure@<version>/pdf-text@<version>, where each version is the producer version of the output the rule read.", "type": "string"},
         "n": {"description": "The entry's place among its version's rows, from 1, in the outline's order.", "type": "integer", "minimum": 1},
         "parent_n": {"description": "The n of the entry that holds this one, and null at the top.", "type": ["integer", "null"], "minimum": 1},
         "level": {"description": "The entry's depth, from 1 at the top.", "type": "integer", "minimum": 1},
@@ -193,7 +193,7 @@
         "printed_page_start": {"description": "The first page as the book prints it: its page label, else the PDF page less the book's measured offset, and null where neither gives one.", "type": ["string", "null"]},
         "printed_page_end": {"description": "The last page as the book prints it, found as printed_page_start is.", "type": ["string", "null"]},
         "start_placed_by": {"description": "How the start page was found: outline from the outline entry's own target, whole-file for one section over a short PDF with no usable outline.", "type": "string"},
-        "child_key": {"description": "The key of the item made for a chapter, which takes the item's side and read decisions, and null on every other row, and on each row of a version written after the item held chapters.", "anyOf": [{"$ref": "#/$defs/item_key"}, {"type": "null"}]},
+        "child_key": {"description": "The key of the item made for a chapter, which takes the item's side and read decisions, and null on every other row. A version written after the item held chapters names the item of the chapter with the same start page and title, and null where none matches.", "anyOf": [{"$ref": "#/$defs/item_key"}, {"type": "null"}]},
         "created_ts": {"$ref": "#/$defs/timestamp"}
       }
     },
@@ -230,9 +230,9 @@
           "enum": ["pass", "drop", "review", "personal", "fleet", "as-is", "model"]
         },
         "decided_by": {
-          "description": "tag, rule:<name>, model:<run id> or person:<login>, or gate where the side gate's rungs ran out with no guess to read. A read decision's rule is a connector's name, or <side>-default.",
+          "description": "tag, rule:<name>, model:<run id> or person:<login>, or gate where the side gate's rungs ran out with no guess to read. A read decision's rule is a connector's name, or <side>-default. parent:<book key> marks a chapter's copy of its book's decision, which keeps the book's verdict, cause and confidence.",
           "type": "string",
-          "pattern": "^(tag|gate|rule:.+|model:.+|person:.+)$"
+          "pattern": "^(tag|gate|rule:.+|model:.+|person:.+|parent:.+)$"
         },
         "confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
         "cause": {

@@ -101,12 +101,17 @@ func TestABooksStructureMakesItsChaptersAndEachTakesTheBooksPlacement(t *testing
 	if n := p.count(t, `SELECT count(*) FROM tasks WHERE stage = ? AND item_key LIKE ?`, store.StageModelRead, book+"#%"); n != 0 {
 		t.Errorf("%d model reads were queued for chapters, which hold no parse of their own", n)
 	}
+	// A person who places a chapter, as from a script, is told to place its book.
+	if out, err := runCLI(t, "review", "place", book+"#1", "reading-list", "--config", p.config); err == nil || !strings.Contains(err.Error(), "so place "+book) {
+		t.Errorf("placing a chapter printed %q, %v, want a refusal naming its book", out, err)
+	}
 
-	if out, err := runCLI(t, "items", "replay", "--stage", "structure", "--key", book, "--config", p.config); err != nil ||
-		out != "Queued structure on 1 items.\n" {
+	if out, err := runCLI(t, "items", "replay", "--stage", "structure", "--key", book, "--config", p.config); err != nil {
 		t.Fatalf("the structure replay printed %q, %v", out, err)
 	}
-	p.run(t, structure)
+	if n := p.run(t, structure); n != 1 {
+		t.Fatalf("the structure replay ran %d tasks, want 1", n)
+	}
 	if n := p.count(t, `SELECT count(*) FROM sections WHERE item_key = ?`, book); n != len(kinds) {
 		t.Errorf("a second profile of one version left %d sections, want the first's %d", n, len(kinds))
 	}

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"slices"
 )
 
 // Producers of an item's sections.
@@ -85,6 +86,15 @@ func (t *Tx) PutSections(ctx context.Context, sections []Section) (bool, error) 
 // order.
 func (t *Tx) Sections(ctx context.Context, key string) ([]Section, error) {
 	return readInto[Section](ctx, t.tx, table("sections"), `item_key = ? ORDER BY created_ts, producer, producer_version, n`, key)
+}
+
+// Chapters reads the chapter items made from the book under key.
+func (t *Tx) Chapters(ctx context.Context, key string) ([]Item, error) {
+	children, err := t.Children(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(children, func(c Item) bool { return !c.PlacedThroughParent() }), nil
 }
 
 // Parse reads the done parse of the item under key that pick names, with its

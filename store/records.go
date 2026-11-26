@@ -87,6 +87,13 @@ type Item struct {
 // its own and takes its parent's side and read decisions.
 const MediaTypeChapter = "application/x-book-chapter"
 
+// PlacedThroughParent says whether the item takes every side and read
+// decision from its parent, as a book's chapter does. A person places its
+// parent instead, so neither the review queue nor a placement takes it.
+func (i Item) PlacedThroughParent() bool {
+	return i.MediaType == MediaTypeChapter && i.ParentKey != nil
+}
+
 // Sighting is one connector's arrival of an item.
 type Sighting struct {
 	ItemKey   string   `json:"item_key"`

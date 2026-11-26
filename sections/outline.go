@@ -13,8 +13,8 @@ const (
 	// writes its sections beside the old.
 	RuleVersion = "1"
 	// WholeFilePages is the page count under which a PDF with no usable
-	// outline takes one section over the whole file. A longer one waits for
-	// the contents stage to read its printed contents.
+	// outline takes one section over the whole file. A longer one gets no
+	// sections from the outline rule.
 	WholeFilePages = 50
 	// minEntries and minPages are the fewest entries, on the fewest distinct
 	// pages, of a usable outline level. minSpan is the least share of the book
@@ -41,27 +41,46 @@ var (
 	partTitle = regexp.MustCompile(`^part\s+([ivxlcdm]+|\d+|one|two|three|four|five|six|seven|eight|nine|ten|[a-z])\b`)
 	// frontMatter and backMatter are the titles of the entries that are no
 	// chapter, as a book's front and back matter name them.
-	frontMatter = regexp.MustCompile(`^(cover|front cover|title( page)?|half[- ]title|copyright|dedication|epigraph|` +
-		`(brief |detailed |table of |short )?contents|contents at a glance|list of (figures|tables|illustrations|listings|examples|abbreviations|symbols)|` +
-		`foreword|preface|prologue|acknowledge?ments?|about (this|the) book|about the (authors?|editors?|cover|technical reviewers?)|` +
-		`praise( for)?|endorsements|front ?matter|how to (use|read) this book|who should read this book|conventions|` +
-		`dear reader|also by|other books|welcome|copyright page|cover page)\b`)
-	backMatter = regexp.MustCompile(`^(index|subject index|author index|bibliography|references|glossary|appendix|appendices|` +
-		`afterword|epilogue|colophon|(end)?notes|further reading|credits|permissions|back cover|back ?matter|` +
-		`about the (authors?|editors?)|answers|solutions)\b`)
+	frontMatter = matterTitle(
+		`front cover|title page|half[- ]title|copyright page|cover page|(?:brief|detailed|short) contents|table of contents|`+
+			`contents at a glance|list of (?:figures|tables|illustrations|listings|examples|abbreviations|symbols)|`+
+			`about (?:this|the) book|about the (?:authors?|editors?|cover|technical reviewers?)|front ?matter|`+
+			`how to (?:use|read) this book|who should read this book|conventions used|dear reader|also by|other books`,
+		`cover|copyright|dedication|epigraph|contents|foreword|preface|prologue|acknowledge?ments?|praise|endorsements|conventions`,
+		`welcome|title`)
+	backMatter = matterTitle(
+		`subject index|author index|appendix(?:es)?|appendices|further reading|back cover|back ?matter|about the (?:authors?|editors?)`,
+		`index|bibliography|references|glossary|afterword|epilogue|colophon|(?:end)?notes|credits|permissions|answers|solutions`,
+		``)
 	// pageNumber is a line holding a page number alone.
 	pageNumber = regexp.MustCompile(`^\d{1,4}$`)
 	// leadingNumber is the numbering before a title, such as 1. or A.
 	leadingNumber = regexp.MustCompile(`^([0-9]+|[ivxlc]+|[a-z])[.:)]\s+`)
 )
 
+// matterTail is what may follow a matter word in a matter title: nothing,
+// punctuation, a word such as of or to, or and before another matter word.
+// So Index of Notation is matter, and Index Structures or References and
+// Pointers is a chapter.
+const matterTail = `(?:$|\s*[:(\[—–.!?-]|\s+(?:of|to|for|by|in|or|page)\b|` +
+	`\s+and\s+(?:further reading|credits|outline|notation|bibliography|references|glossary|index|permissions|acknowledg))`
+
+// matterTitle matches a normalized title that opens on one of phrases,
+// whatever follows it, on one of words before a matterTail, or that is one of
+// bare alone, as the words that open many chapter titles are.
+func matterTitle(phrases, words, bare string) *regexp.Regexp {
+	pattern := `^(?:(?:` + phrases + `)\b|(?:` + words + `)` + matterTail
+	if bare != "" {
+		pattern += `|(?:` + bare + `)[\s!.:]*$`
+	}
+	return regexp.MustCompile(pattern + `)`)
+}
+
 // Outline is the sections that serve writes from p and the units of the
 // PDF's positional parse, under producer version version. Where the outline
-// is usable it is one row per entry, each with its kind: a part above the
-// chapter level, a chapter at it, a section below it, and front or back
-// matter by title at or above it. Where the outline is not usable and the
-// PDF is under WholeFilePages pages, it is one section over the whole file.
-// Otherwise it is none, so the book waits for the contents stage.
+// is usable it is one row per entry, each with its kind as kindOf decides it.
+// Where the outline is not usable and the PDF is under WholeFilePages pages,
+// it is one section over the whole file. Otherwise it is none.
 func Outline(p Profile, units []store.Unit, version string) []store.Section {
 	entries := entriesOf(p)
 	level, usable := chapterLevel(entries, p.Pages)
@@ -83,7 +102,7 @@ func Outline(p Profile, units []store.Unit, version string) []store.Section {
 			parents = parents[:len(parents)-1]
 		}
 		s := store.Section{
-			Producer: store.SectionsFromOutline, ProducerVersion: version, N: i + 1, Level: e.level, Kind: kindOf(e, level),
+			Producer: store.SectionsFromOutline, ProducerVersion: version, N: i + 1, Level: e.level, Kind: kindOf(entries, i, level),
 			PDFPageStart: e.page, PDFPageEnd: endOf(entries, i, p.Pages), StartPlacedBy: PlacedByOutline,
 		}
 		if title := strings.TrimSpace(e.title); title != "" {
@@ -184,18 +203,37 @@ func usable(body []entry, pages int) bool {
 	return len(distinct) >= minPages && float64(last-first+1) >= minSpan*float64(pages)
 }
 
-// kindOf is e's kind where the chapter level is level.
-func kindOf(e entry, level int) string {
+// kindOf is entries[i]'s kind where the chapter level is level: a section
+// below it, front or back matter by title at or above it, and a chapter at
+// it. Above it, an entry is a part where its title names one or it holds an
+// entry at the chapter level, and otherwise a chapter, such as an
+// Introduction before Part I.
+func kindOf(entries []entry, i, level int) string {
+	e := entries[i]
 	switch {
 	case e.level > level:
 		return store.SectionSection
 	case e.matter != "":
 		return e.matter
-	case e.level == level:
+	case e.level == level || !partTitle.MatchString(normalized(e.title)) && !holds(entries, i, level):
 		return store.SectionChapter
 	default:
 		return store.SectionPart
 	}
+}
+
+// holds says whether entries[i] holds an entry at level, before the next
+// entry at its own level or above.
+func holds(entries []entry, i, level int) bool {
+	for _, next := range entries[i+1:] {
+		if next.level <= entries[i].level {
+			return false
+		}
+		if next.level == level {
+			return true
+		}
+	}
+	return false
 }
 
 // endOf is the last PDF page of entries[i]: the page before the next entry at

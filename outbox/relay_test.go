@@ -126,12 +126,26 @@ func TestAnItemGainsEachStageRecordAndEachChangeReachesTheCollectorOnce(t *testi
 		if err := tx.PutCursor(ctx, store.Cursor{Connector: "reddit-exports", DueAt: store.Stamp(time.Now()), FirstFill: "held", FirstFillItemKey: &key}); err != nil {
 			return err
 		}
-		chapter, printed := "Chapter 1", "1"
+		chapter, printed, chapterKey := "Chapter 1", "1", key+"#1"
 		if _, err := tx.PutSections(ctx, []store.Section{{
 			ItemKey: key, Producer: store.SectionsFromOutline, ProducerVersion: "1/pdf-structure@1/pdf-text@1", N: 1, Level: 1,
 			Kind: store.SectionChapter, Title: &chapter, PDFPageStart: 1, PDFPageEnd: 1, PrintedPageStart: &printed, PrintedPageEnd: &printed,
-			StartPlacedBy: "outline", ChildKey: &[]string{key + "#1"}[0],
+			StartPlacedBy: "outline", ChildKey: &chapterKey,
 		}}); err != nil {
+			return err
+		}
+		book, _, err := tx.Item(ctx, key)
+		if err != nil {
+			return err
+		}
+		if err := tx.PutItem(ctx, store.Item{
+			Key: chapterKey, MediaType: store.MediaTypeChapter, Zone: book.Zone, ParentKey: &key, ParentFlowID: &book.FlowID, Title: &chapter,
+		}); err != nil {
+			return err
+		}
+		if _, err := tx.AddDecision(ctx, store.Decision{
+			ItemKey: chapterKey, Gate: store.GateSide, Verdict: "fleet", DecidedBy: "parent:" + key, Confidence: &confidence, Cause: "guess",
+		}); err != nil {
 			return err
 		}
 		connector := "reddit-exports"
@@ -173,8 +187,8 @@ func TestAnItemGainsEachStageRecordAndEachChangeReachesTheCollectorOnce(t *testi
 	}
 	// Each write that moved the item's phase shipped it again. The second read
 	// step and the task writes after delivery left it, so they shipped none.
-	if n := collector.count(RecordKind, "items"); n != 7 {
-		t.Errorf("the items table shipped %d records, want one for each of the 7 phases", n)
+	if n := collector.count(RecordKind, "items"); n != 8 {
+		t.Errorf("the items table shipped %d records, want one for each of the 7 phases and the chapter's", n)
 	}
 	// Each task change ships a version: the enqueue and the claim.
 	if n := collector.count(RecordKind, "tasks"); n != 2 {
