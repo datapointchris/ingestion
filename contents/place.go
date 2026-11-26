@@ -17,13 +17,19 @@ const (
 	searchPages = 20
 	// headWords is how many words at the top of a page are read for a title.
 	headWords = 40
+	// leastAgreeing is the fewest entries whose titles open pages at one
+	// offset from their printed pages, for that offset to place a book that
+	// prints no page numbers.
+	leastAgreeing = 3
 )
 
 // How an entry's start page was found.
 const (
 	// PlacedByLabel is a printed page that a page label names.
 	PlacedByLabel = "label"
-	// PlacedByOffset is a printed page less the book's measured offset.
+	// PlacedByOffset is a printed page less the book's offset, measured from
+	// the page numbers it prints, else from the pages its entries' titles
+	// open.
 	PlacedByOffset = "offset"
 	// PlacedByTitle is the page that opens on the entry's title, found near
 	// the page that the label or offset gave, or after the entry before it.
@@ -43,7 +49,8 @@ const (
 // printed page that maps to none places its entry at the first page after the
 // entry before it that opens on its title. An entry with no printed page
 // takes the start of the next placed entry. An entry placed none of these
-// ways is left out.
+// ways is left out. Where the book prints no page numbers that measure its
+// offset, the entries' titles measure it, as voted does.
 func Place(answer []AnswerEntry, units []store.Unit) ([]sections.Entry, []AnswerEntry) {
 	offset, measured := sections.Offset(units)
 	skip := map[int]bool{}
@@ -57,6 +64,9 @@ func Place(answer []AnswerEntry, units []store.Unit) ([]sections.Entry, []Answer
 		if !skip[i+1] {
 			heads[i] = head(u.Text)
 		}
+	}
+	if !measured {
+		offset, measured = voted(answer, heads)
 	}
 	var out, unpaged []sections.Entry
 	var left []AnswerEntry
@@ -113,6 +123,49 @@ func Place(answer []AnswerEntry, units []store.Unit) ([]sections.Entry, []Answer
 		after, open[len(open)-1].page = e.Page, e.Page
 	}
 	return out, left
+}
+
+// voted is the offset from a printed page to its PDF page that the most
+// entries' titles agree on, nearest 0 on a tie. Each entry with a numbered
+// page votes once for each offset at which a page's head holds its title. The
+// true offset gathers the entries whose pages open on their titles. A title
+// that a running head or the front matter repeats scatters its other votes.
+// It holds where at least leastAgreeing entries agree. A book whose offset
+// steps partway through splits its votes, so no share of them is required,
+// and the search near each mapped page absorbs the step.
+func voted(answer []AnswerEntry, heads []string) (int, bool) {
+	votes := map[int]int{}
+	for _, a := range answer {
+		if a.Page == nil {
+			continue
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(*a.Page))
+		key := sections.TitleKey(a.Title)
+		if err != nil || len(key) < sections.TitleLeast {
+			continue
+		}
+		cast := map[int]bool{}
+		for i, h := range heads {
+			if d := i + 1 - n; !cast[d] && strings.Contains(h, key) {
+				cast[d] = true
+				votes[d]++
+			}
+		}
+	}
+	best, most := 0, 0
+	for d, n := range votes {
+		if n > most || (n == most && (abs(d) < abs(best) || (abs(d) == abs(best) && d < best))) {
+			best, most = d, n
+		}
+	}
+	return best, most >= leastAgreeing
+}
+
+func abs(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
 }
 
 // opened is an entry that holds the entries after it at a deeper level, and
