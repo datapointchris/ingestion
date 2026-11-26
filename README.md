@@ -126,12 +126,14 @@ slots = 4     # tasks leased at once
 lease = "10m" # how long a lease holds without a heartbeat
 poll = "10s"  # how often an idle worker asks for work
 
-# Optional: how many tasks of a capability run at once, within slots, so a long
-# task leaves the other slots to every other stage. A Docling parse holds one
-# slot unless this table names it, as here at its own default. A capability
-# that neither caps may take every slot.
+# Optional: how many tasks run at once, within slots, so a long task leaves the
+# other slots to every other stage. A key names a capability, or a slot group
+# whose capabilities share one bound. Docling and Whisper parses share the group
+# heavy, which holds one slot unless this table names it, as here at its own
+# default. A grouped capability takes its group's bound alone. A capability
+# that nothing caps may take every slot.
 [worker.slot_limits]
-"parse:docling" = 1
+heavy = 1
 
 # A table for each deliverer the worker opens, named for it. This one saves
 # items as life articles, as a client that holds the scope life.articles.write.
@@ -438,8 +440,10 @@ source_parameters:
 ```
 
 A worker reads ypl through its `[source.ypl]` table, as a client that holds the scopes that
-`ingestion worker run --help` names for ypl. The worker holding that table claims `poll:ypl` and
-`delete:ypl`. Each request to ypl gives up after two minutes, and a redirect is a refusal.
+`ingestion worker run --help` names for ypl. The worker holding that table claims `poll:ypl`,
+`delete:ypl` and `parse:youtube-captions`. It claims `parse:youtube-whisper` too where its image
+holds `audio-whisper`. A request to ypl gives up after two minutes, and a captions read after six.
+An audio read gives up after 35 minutes where its answer has not begun. A redirect is a refusal.
 
 - **Each video lands once as `youtube/<video id>`**, with its watch URL, its title and the media
   type `application/x-youtube-video`. Its item holds no bytes. Its sighting carries `channel_id`
@@ -476,6 +480,35 @@ A worker reads ypl through its `[source.ypl]` table, as a client that holds the 
 - **A refusal that ypl asks a wait for sends the poll back for that wait**, such as while the
   day's quota is spent or another caller holds ypl's turn. Any other refusal fails the poll, and
   the connector's backoff makes it due again.
+
+### A video parses from its captions, or Whisper transcribes its audio
+
+A video's item holds no bytes, so its parse reads through ypl. `youtube-captions` reads the caption
+track that ypl picks. That is a manual track in the video's language or English, and otherwise an
+automatic one in its original language or English.
+
+- **The first unit is the video's description.** Each later unit is one chapter, labeled with its
+  start and title, such as `2:00 The middle`. A video with no chapters takes one unit per five
+  minutes that hold speech, labeled with the block's start. Each run of whitespace in a caption
+  reads as one space.
+- **The parse keeps the track it read** in its answer, with the video's language and length.
+- **A video with no caption track writes its captions parse `deferred`.** A deferred parse is
+  neither done nor failed. So nothing after the parse runs on the description alone, and the item
+  does not wait in review. The write that ends that parse queues `youtube-whisper`.
+- **`youtube-whisper` streams the video's audio from ypl into `audio-whisper`.** That program
+  decodes the audio with ffmpeg to 16 kHz mono, ten minutes at a time. It runs faster-whisper's
+  `large-v3-turbo` at int8 on four CPU threads, with beam 1 and the voice-activity filter. It
+  reads the model that the worker image pins, and never the network. Its units take the captions
+  parse's layout: the description, then each chapter or five-minute block.
+- **A Whisper run takes about 0.4 of the audio's length on four threads, and 1.6 GiB.** A run
+  fails past half an hour plus the video's own length.
+- **A busy ypl sends the parse back for the Retry-After that it sent**, however often it answers
+  so. A read that ypl answers late or with a 5xx, or does not answer, runs again up to
+  `extract.ReadAttempts` times. Any other refusal fails the parse with ypl's refusal kept, and the
+  item waits in review. A members-only video fails so, because no signed-out read reaches it.
+- **`ingestion items replay --stage parse` reads each selected video's captions again.** Where the
+  parse defers again, it queues Whisper only where Whisper has not read the video at its version.
+  So a failed Whisper parse runs again, and a done one is kept.
 
 ### Parsing an item, and running a stage again
 
@@ -580,9 +613,9 @@ unit, and a unit's label is the page's printed label, as `pdf-text` reads it.
 - **It runs offline**, from the models that the worker image pins. A run past
   `extract.DoclingTimeout` fails its task. So does a convert that lost a page, so no lost page
   reads as a blank one.
-- **A worker runs one Docling parse at a time** and leaves its other slots to every other stage.
-  A `"parse:docling"` entry in `[worker.slot_limits]` changes that, where the worker's memory
-  holds more runs.
+- **A worker runs one Docling or Whisper parse at a time** and leaves its other slots to every
+  other stage. Each holds gigabytes, so the two share the slot group `heavy`. A `heavy` entry in
+  `[worker.slot_limits]` changes that, where the worker's memory holds more runs.
 
 ### A long book with no outline takes its chapters from its printed contents
 

@@ -110,15 +110,19 @@ spec:
                   optional: true
           # One pdf-docling run at SPAN_PAGES = 10 over a 145 MB, 620-page PDF,
           # the heaviest that sections selected when this was measured, peaked
-          # at 3.5 GiB. One scan of a 61 MiB parse, about the most a parse report
-          # carries, peaked at 336 MiB in the worker and 110 MiB in yr, and wrote
-          # 70 MiB of the text's two views to /tmp. A worker runs one Docling
-          # parse at a time on its two slots, so a Docling run beside a scan
-          # peaks near 3.9 GiB. Two Docling runs at once pass the limit, so a
-          # [worker.slot_limits] entry that raises parse:docling raises it too.
-          # Docling's figure is `/usr/bin/time -v pdf-docling < <the PDF>`, the
-          # worker's is scan.NewHandler's run over a served task-parse answer of
-          # that size, and yr's is
+          # at 3.5 GiB. One audio-whisper run over five minutes of speech peaked
+          # at 1.6 GiB. It decodes longer audio ten minutes at a time, so its
+          # peak stays near that. One scan of a 61 MiB parse, about the most a
+          # parse report carries, peaked at 336 MiB in the worker and 110 MiB in
+          # yr, and wrote 70 MiB of the text's two views to /tmp. Docling and
+          # Whisper share the heavy slot group, so a worker runs one of their
+          # parses at a time on its two slots. A Docling run beside a scan peaks
+          # near 3.9 GiB. Two heavy runs at once can pass the limit, so a
+          # [worker.slot_limits] entry that raises heavy raises it too.
+          # Docling's figure is `/usr/bin/time -v pdf-docling < <the PDF>`,
+          # Whisper's is `/usr/bin/time -v audio-whisper < <the audio>` on four
+          # threads, the worker's is scan.NewHandler's run over a served
+          # task-parse answer of that size, and yr's is
           # `/usr/bin/time -f %M yr scan --compiled-rules rules.yarc <the views>`.
           # The request equals the limit, so the node keeps those 5Gi free for
           # the worker.
