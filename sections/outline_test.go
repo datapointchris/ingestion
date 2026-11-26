@@ -52,12 +52,13 @@ func TestAnUnlabeledBookPrintsByItsOffsetAndAnOutlinelessOneByItsLength(t *testi
 // A book in parts keeps the Introduction and Conclusion beside its parts as
 // chapters, and a chapter whose title opens on a matter word stays a chapter.
 // An entry on PDF page 1 that names the book, as its file's name spells it,
-// is front matter.
+// is front matter. A title that its PDF pads with NULs is read and kept
+// without them.
 func TestAnEntryBesideTheBooksPartsIsAChapterAndSoIsOneTitledLikeMatter(t *testing.T) {
 	page := func(n int) *int { return &n }
 	book := Profile{Pages: 300, Outline: []OutlineEntry{
 		{Level: 1, Title: "Practical Widgets, Second Edition", Page: page(1)},
-		{Level: 1, Title: "Preface", Page: page(5)},
+		{Level: 1, Title: "Preface\x00\x00\x00", Page: page(5)},
 		{Level: 1, Title: "Introduction", Page: page(10)},
 		{Level: 1, Title: "Part I", Page: page(20)},
 		{Level: 2, Title: "1. References and Pointers", Page: page(21)},
@@ -65,14 +66,18 @@ func TestAnEntryBesideTheBooksPartsIsAChapterAndSoIsOneTitledLikeMatter(t *testi
 		{Level: 2, Title: "2. Index Structures", Page: page(101)},
 		{Level: 1, Title: "Part III", Page: page(200)},
 		{Level: 2, Title: "3. Notes on Style", Page: page(201)},
-		{Level: 1, Title: "Conclusion", Page: page(280)},
+		{Level: 1, Title: "Conclusion\x00\x00\x00", Page: page(280)},
 		{Level: 1, Title: "Index of Notation", Page: page(290)},
 	}}
 	var kinds []string
-	for _, s := range Outline(book, nil, "practicalwidgets", "v") {
+	sections := Outline(book, nil, "practicalwidgets", "v")
+	for _, s := range sections {
 		kinds = append(kinds, s.Kind)
 	}
 	if got, want := strings.Join(kinds, " "), "front-matter front-matter chapter part chapter part chapter part chapter chapter back-matter"; got != want {
 		t.Errorf("the book's sections are %s, want %s", got, want)
+	}
+	if got := deref(sections[9].Title); got != "Conclusion" {
+		t.Errorf("the conclusion's title is %q, want it without its NULs", got)
 	}
 }

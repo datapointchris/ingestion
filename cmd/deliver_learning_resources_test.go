@@ -42,7 +42,8 @@ const (
 // ResourceCreated or a CreateConflictResponse. It admits a service token whose
 // scp holds learning.resources.write. A key already held answers first: 200
 // where the body matches the one that made or adopted its resource, and 409
-// source_key otherwise or where that resource is deleted. A chapter is then
+// source_key otherwise or where that resource is deleted. A title holding a
+// NUL answers 500, as the store's text refuses one. A chapter is then
 // created where its part_of names a live book, and refused 422 otherwise. A
 // path that one live resource holds exactly under no key is adopted. A path
 // held under another key, inside a held directory, by two resources, or by
@@ -95,6 +96,12 @@ func newStandInLearning(t *testing.T, provider *authtest.Provider) *standInLearn
 		var body standInCreate
 		if json.NewDecoder(r.Body).Decode(&body) != nil || body.Title == "" || body.SourceKey == "" {
 			writeLearning(w, http.StatusBadRequest, map[string]any{"error": "Bad Request", "message": "title is required"})
+			return
+		}
+		if strings.ContainsRune(body.Title, 0) {
+			writeLearning(w, http.StatusInternalServerError, map[string]any{
+				"error": "Internal Server Error", "message": `creating resource: ERROR: invalid byte sequence for encoding "UTF8": 0x00 (SQLSTATE 22021)`,
+			})
 			return
 		}
 		chapter := body.ResourceType == "chapter"
@@ -378,7 +385,8 @@ func TestEachChapterEntersLearningPartOfItsBookOnceTheBookIsThere(t *testing.T) 
 		return path
 	}
 	// Eleven one-page chapters, so their order as numbers differs from their
-	// keys' order as text. Chapter n is PDF page n+1, printed as page n.
+	// keys' order as text. Chapter n is PDF page n+1, printed as page n. The
+	// index's outline title is padded with NULs, as some PDF writers pad one.
 	const chapters = 11
 	units := []string{`'{"label":"i","text":"Contents"}'`}
 	outline := []string{`{"level":1,"title":"Contents","page":1}`}
@@ -387,7 +395,7 @@ func TestEachChapterEntersLearningPartOfItsBookOnceTheBookIsThere(t *testing.T) 
 		outline = append(outline, fmt.Sprintf(`{"level":1,"title":"Chapter %d","page":%d}`, n, n+1))
 	}
 	units = append(units, fmt.Sprintf(`'{"label":"%d","text":"Index"}'`, chapters+1))
-	outline = append(outline, fmt.Sprintf(`{"level":1,"title":"Index","page":%d}`, chapters+2))
+	outline = append(outline, fmt.Sprintf(`{"level":1,"title":"Index\u0000\u0000","page":%d}`, chapters+2))
 	pdfText := extract.Program(extract.PDFText.Name, extract.PDFText.Version, extract.MediaTypePDF,
 		script("pdf-text", `printf '%s\n' `+strings.Join(units, " ")+"\n"))
 	pdfText.Positional = true

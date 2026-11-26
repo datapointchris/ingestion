@@ -143,6 +143,8 @@ type Book struct {
 func FromEntries(entries []Entry, book Book, producer, version string) []store.Section {
 	es := make([]entry, len(entries))
 	for i, e := range entries {
+		// A PDF writer may pad an outline title with NULs, which hide a matter word and which no text column holds.
+		e.Title = strings.ReplaceAll(e.Title, "\x00", "")
 		es[i] = entry{level: e.Level, title: e.Title, page: e.Page, placedBy: e.PlacedBy, matter: matterOf(e, book.Titles)}
 	}
 	level, usable := chapterLevel(es, book.Pages)

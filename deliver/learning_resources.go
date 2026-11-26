@@ -87,10 +87,19 @@ func bookResource(item Item) (learningResource, error) {
 		return learningResource{}, errors.New("the delivery holds no file path, which a learning book needs")
 	}
 	title := strings.TrimSuffix(path.Base(*item.Path), path.Ext(*item.Path))
-	if item.Title != nil && strings.TrimSpace(*item.Title) != "" {
-		title = *item.Title
+	if t := learningTitle(item.Title); t != "" {
+		title = t
 	}
 	return learningResource{Title: title, ResourceType: "book", BookCopy: "pdf", FilePath: *item.Path, SourceKey: item.Key}, nil
+}
+
+// learningTitle is title as the destination stores it, which holds no NUL,
+// and "" where it holds no other character.
+func learningTitle(title *string) string {
+	if title == nil {
+		return ""
+	}
+	return strings.TrimSpace(strings.ReplaceAll(*title, "\x00", ""))
 }
 
 // chapterResource is the create of the chapter part of its book's resource.
@@ -102,11 +111,12 @@ func chapterResource(item Item) (learningResource, error) {
 	if err != nil || book <= 0 {
 		return learningResource{}, fmt.Errorf("the chapter's book is %q in learning, which names no resource", c.BookDestinationID)
 	}
-	if item.Title == nil || strings.TrimSpace(*item.Title) == "" {
+	title := learningTitle(item.Title)
+	if title == "" {
 		return learningResource{}, errors.New("the chapter holds no title, which a learning resource needs")
 	}
 	r := learningResource{
-		Title: *item.Title, ResourceType: "chapter", SourceKey: item.Key, PartOf: book, PDFPageStart: c.PDFPageStart, PDFPageEnd: c.PDFPageEnd,
+		Title: title, ResourceType: "chapter", SourceKey: item.Key, PartOf: book, PDFPageStart: c.PDFPageStart, PDFPageEnd: c.PDFPageEnd,
 	}
 	if c.PrintedPageStart != nil && *c.PrintedPageStart != "" && c.PrintedPageEnd != nil && *c.PrintedPageEnd != "" {
 		r.PrintedPageStart, r.PrintedPageEnd = c.PrintedPageStart, c.PrintedPageEnd
