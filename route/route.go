@@ -305,7 +305,7 @@ func Gate(ctx context.Context, tx *store.Tx, key string, log *slog.Logger) ([]st
 		return nil, err
 	}
 	outputs, err := tx.Outputs(ctx, key)
-	if err != nil || !store.NewestParseScanned(outputs) {
+	if err != nil || !store.ReadingParseScanned(outputs) {
 		return nil, err
 	}
 	set, sightings, err := inputs(ctx, tx, key)

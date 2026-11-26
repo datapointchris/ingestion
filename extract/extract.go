@@ -7,7 +7,9 @@
 // One whose library is not Go is a Program from the worker image, run through
 // isolatedprocess. Each output is keyed by item, extractor
 // and version, so a changed extractor takes a new version and its outputs
-// write beside the old.
+// write beside the old. A media type holds one primary extractor, which
+// landing queues, and may hold secondary ones, whose parse another stage's
+// write queues and writes beside the primary's.
 package extract
 
 import (
@@ -21,7 +23,7 @@ import (
 )
 
 // builtin is every extractor that ingestion holds.
-var builtin = []Extractor{ThreadText, PDFText}
+var builtin = []Extractor{ThreadText, PDFText, PDFDocling}
 
 // Extractor turns the bytes of one media type into a parse's units.
 type Extractor struct {
@@ -44,6 +46,15 @@ type Extractor struct {
 	// artifact's own part n, such as a book's PDF page n. Otherwise such a
 	// unit is dropped and the rest are numbered again.
 	Positional bool
+	// Secondary marks an extractor that landing never queues and a parse
+	// replay never picks, because another stage's write queues its parse, as
+	// the structure's queues PDFDocling's.
+	Secondary bool
+	// SlotLimit caps the extractor's parses that one worker runs at once,
+	// where [worker.slot_limits] names no limit for it. Zero leaves them
+	// uncapped. A program whose run holds gigabytes sets it, so the worker's
+	// memory holds its runs.
+	SlotLimit int
 }
 
 // Unit is one part of a parse, as an extractor writes it. The parse numbers
@@ -59,14 +70,16 @@ type Unit struct {
 // the tasks of extractors it runs.
 func Capability(e Extractor) string { return store.StageParse + ":" + e.Name }
 
-// Registry picks the extractor for an item by its media type.
+// Registry picks the primary extractor for an item by its media type, and
+// holds every extractor that a worker runs.
 type Registry struct {
 	byType map[string]Extractor
 	all    []Extractor
 }
 
 // NewRegistry registers extractors. It refuses one with no name, version,
-// media type or way to run, and two of one name or one media type.
+// media type or way to run, two of one name, and two primary ones of one
+// media type.
 func NewRegistry(extractors ...Extractor) (*Registry, error) {
 	r := &Registry{byType: map[string]Extractor{}}
 	names := map[string]bool{}
@@ -79,12 +92,15 @@ func NewRegistry(extractors ...Extractor) (*Registry, error) {
 		case names[e.Name]:
 			return nil, fmt.Errorf("two extractors are named %s", e.Name)
 		}
-		if held, taken := r.byType[e.MediaType]; taken {
-			return nil, fmt.Errorf("extractors %s and %s both read %s", held.Name, e.Name, e.MediaType)
-		}
 		names[e.Name] = true
-		r.byType[e.MediaType] = e
 		r.all = append(r.all, e)
+		if e.Secondary {
+			continue
+		}
+		if held, taken := r.byType[e.MediaType]; taken {
+			return nil, fmt.Errorf("extractors %s and %s are both primary for %s", held.Name, e.Name, e.MediaType)
+		}
+		r.byType[e.MediaType] = e
 	}
 	return r, nil
 }
@@ -98,7 +114,8 @@ func Builtin() *Registry {
 	return r
 }
 
-// For is the extractor that reads mediaType, and false where none does.
+// For is the primary extractor that reads mediaType, and false where none
+// does.
 func (r *Registry) For(mediaType string) (Extractor, bool) {
 	e, ok := r.byType[mediaType]
 	return e, ok

@@ -185,6 +185,14 @@ var workerRunCmd = &cobra.Command{
 		"  lease  how long each lease runs before a heartbeat extends it (default " + shortDuration(defaultLease) + ")\n" +
 		"  poll   how often an idle worker claims again (default " + shortDuration(defaultPoll) + ")\n" +
 		"\n" +
+		"Its [worker.slot_limits] table caps how many tasks of a capability run at\n" +
+		"once, within slots, so a long task leaves the other slots free. Each key is a\n" +
+		"capability and each value 1 or more. A Docling parse holds one slot unless\n" +
+		"the table names it, and a capability that neither caps may take every slot:\n" +
+		"\n" +
+		"  [worker.slot_limits]\n" +
+		"  \"" + extract.Capability(extract.PDFDocling) + "\" = 1\n" +
+		"\n" +
 		"It runs each deliverer that a [deliver.<name>] table opens, where <name> is a\n" +
 		"deliverer this build registers: " + strings.Join(deliver.Names(), ", ") + ". A table names:\n" +
 		"\n" +
@@ -266,7 +274,7 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 	_, _ = rand.Read(suffix)
 	run := worker.Config{
 		ID: host + "-" + hex.EncodeToString(suffix), Version: buildVersion(),
-		Slots: cfg.Worker.Slots, Lease: cfg.Worker.Lease.Duration, Poll: cfg.Worker.Poll.Duration,
+		Slots: cfg.Worker.Slots, SlotLimits: cfg.Worker.SlotLimits, Lease: cfg.Worker.Lease.Duration, Poll: cfg.Worker.Poll.Duration,
 		Log: slog.New(slog.NewJSONHandler(os.Stderr, nil)),
 	}
 	if run.Slots <= 0 {

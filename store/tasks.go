@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -213,8 +214,12 @@ type Worker struct {
 type Claim struct {
 	Worker Worker
 	// Max bounds how many tasks the claim leases.
-	Max   int
-	Lease time.Duration
+	Max int
+	// MaxByCapability bounds how many tasks of each capability it names the
+	// claim leases, within Max. A capability that it does not name is bound
+	// by Max alone.
+	MaxByCapability map[string]int
+	Lease           time.Duration
 }
 
 // Leased is a leased task with its item's row, so a worker runs the task
@@ -233,9 +238,11 @@ type Leased struct {
 }
 
 // Claim records the worker's heartbeat and leases it up to c.Max tasks whose
-// capability it holds: each queued task past its backoff that no first fill
-// holds, and each leased task whose lease lapsed. Every claim runs through the
-// one writer, so two workers asking at once never lease one task twice.
+// capability it holds, the oldest first: each queued task past its backoff
+// that no first fill holds, and each leased task whose lease lapsed. It leases
+// no more of a capability than c.MaxByCapability names. Every claim runs
+// through the one writer, so two workers asking at once never lease one task
+// twice.
 func (s *Store) Claim(ctx context.Context, c Claim) ([]Leased, error) {
 	var claimed []Leased
 	err := s.Update(ctx, func(tx *Tx) error {
@@ -254,16 +261,30 @@ func (s *Store) Claim(ctx context.Context, c Claim) ([]Leased, error) {
 		if len(c.Worker.Capabilities) == 0 || c.Max <= 0 {
 			return nil
 		}
-		args := make([]any, 0, len(c.Worker.Capabilities)+3)
+		args := make([]any, 0, len(c.Worker.Capabilities)+2*len(c.MaxByCapability)+4)
 		for _, capability := range c.Worker.Capabilities {
 			args = append(args, capability)
 		}
-		args = append(args, now, now, c.Max)
-		ids, err := tx.ids(ctx, `SELECT id FROM tasks
-			WHERE capability IN (?`+strings.Repeat(", ?", len(c.Worker.Capabilities)-1)+`)
-			AND ((state = 'queued' AND held_by IS NULL AND (not_before_ts IS NULL OR not_before_ts <= ?))
-				OR (state = 'leased' AND lease_expires_ts <= ?))
-			ORDER BY created_ts, rowid LIMIT ?`, args...)
+		args = append(args, now, now)
+		// Each claimable task's place among its capability's, the oldest
+		// first, which the capability's own bound caps.
+		bound := "?"
+		if len(c.MaxByCapability) > 0 {
+			bound = "CASE capability" + strings.Repeat(" WHEN ? THEN ?", len(c.MaxByCapability)) + " ELSE ? END"
+			for _, capability := range slices.Sorted(maps.Keys(c.MaxByCapability)) {
+				args = append(args, capability, c.MaxByCapability[capability])
+			}
+		}
+		args = append(args, c.Max, c.Max)
+		ids, err := tx.ids(ctx, `SELECT id FROM (
+				SELECT id, capability, created_ts, rowid AS task_rowid,
+					row_number() OVER (PARTITION BY capability ORDER BY created_ts, rowid) AS place
+				FROM tasks
+				WHERE capability IN (?`+strings.Repeat(", ?", len(c.Worker.Capabilities)-1)+`)
+				AND ((state = 'queued' AND held_by IS NULL AND (not_before_ts IS NULL OR not_before_ts <= ?))
+					OR (state = 'leased' AND lease_expires_ts <= ?)))
+			WHERE place <= `+bound+`
+			ORDER BY created_ts, task_rowid LIMIT ?`, args...)
 		if err != nil {
 			return fmt.Errorf("find tasks to claim: %w", err)
 		}

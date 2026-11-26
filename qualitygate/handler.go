@@ -60,7 +60,7 @@ type promptData struct {
 // opening is the task's item as the prompt quotes it: its title and the
 // opening of its newest parse.
 func opening(ctx context.Context, client *worker.Client, task worker.Task) (promptData, error) {
-	parse, err := client.TaskParse(ctx, task.ID, task.LeaseToken)
+	parse, err := client.TaskParse(ctx, task.ID, task.LeaseToken, store.ParsePick{})
 	if err != nil {
 		return promptData{}, fmt.Errorf("read the parse: %w", err)
 	}

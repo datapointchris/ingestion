@@ -71,7 +71,7 @@ func (h handler) Capability() string { return Capability }
 // no answer to, or a scan that fails, runs again until the task's claims
 // reach Attempts.
 func (h handler) Run(ctx context.Context, task worker.Task) worker.Result {
-	parse, err := h.client.TaskParse(ctx, task.ID, task.LeaseToken)
+	parse, err := h.client.TaskParse(ctx, task.ID, task.LeaseToken, store.ParsePick{})
 	var refused *worker.StatusError
 	switch {
 	case errors.As(err, &refused) && refused.Code == server.CodeParseNotFound:

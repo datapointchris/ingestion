@@ -38,14 +38,17 @@ var (
 const MaxListed = 1000
 
 // ClaimRequest is a worker asking for up to Max tasks whose capability it
-// holds, each leased for LeaseSeconds.
+// holds, each leased for LeaseSeconds. MaxByCapability bounds how many of
+// each capability it names the claim leases, such as a worker whose slot
+// limit for one capability holds one of its slots free for the rest.
 type ClaimRequest struct {
-	WorkerID     string   `json:"worker_id"`
-	Capabilities []string `json:"capabilities"`
-	Version      string   `json:"version"`
-	StartedTS    string   `json:"started_ts"`
-	Max          int      `json:"max"`
-	LeaseSeconds int      `json:"lease_seconds"`
+	WorkerID        string         `json:"worker_id"`
+	Capabilities    []string       `json:"capabilities"`
+	Version         string         `json:"version"`
+	StartedTS       string         `json:"started_ts"`
+	Max             int            `json:"max"`
+	MaxByCapability map[string]int `json:"max_by_capability,omitempty"`
+	LeaseSeconds    int            `json:"lease_seconds"`
 }
 
 // LeasedTask is one leased task, with the token for every heartbeat and
@@ -282,13 +285,19 @@ func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
 		Refuse(w, http.StatusBadRequest, CodeInvalidBody, "max is from 0 to %d, not %d", maxClaim, body.Max)
 		return
 	}
+	for capability, most := range body.MaxByCapability {
+		if most < 0 || most > maxClaim {
+			Refuse(w, http.StatusBadRequest, CodeInvalidBody, "max_by_capability's %s is from 0 to %d, not %d", capability, maxClaim, most)
+			return
+		}
+	}
 	lease, ok := leaseOf(w, body.LeaseSeconds)
 	if !ok {
 		return
 	}
 	tasks, err := h.store.Claim(r.Context(), store.Claim{
 		Worker: store.Worker{ID: body.WorkerID, Capabilities: body.Capabilities, Version: body.Version, StartedTS: body.StartedTS},
-		Max:    body.Max, Lease: lease,
+		Max:    body.Max, MaxByCapability: body.MaxByCapability, Lease: lease,
 	})
 	if err != nil {
 		h.internal(w, r, "claim tasks", err)
@@ -417,7 +426,8 @@ type TaskRetryAnswer struct {
 
 // parse answers the newest done parse of the item whose task the caller
 // leases, under the lease's token in the token query, so a worker reads the
-// input of a task it holds and of no other.
+// input of a task it holds and of no other. The extractor and version queries
+// narrow it, as on the item's parse route.
 func (h taskHandlers) parse(w http.ResponseWriter, r *http.Request) {
 	token, err := strconv.ParseInt(r.URL.Query().Get("token"), 10, 64)
 	if err != nil {
@@ -432,10 +442,11 @@ func (h taskHandlers) parse(w http.ResponseWriter, r *http.Request) {
 		Refuse(w, http.StatusNotFound, CodeParseNotFound, "task %s is for no item, so it has no parse", task.ID)
 		return
 	}
-	p, err := h.store.Parse(r.Context(), *task.ItemKey, store.ParsePick{})
+	pick := store.ParsePick{Extractor: r.URL.Query().Get("extractor"), Version: r.URL.Query().Get("version")}
+	p, err := h.store.Parse(r.Context(), *task.ItemKey, pick)
 	switch {
 	case errors.Is(err, store.ErrNoParse):
-		Refuse(w, http.StatusNotFound, CodeParseNotFound, "%s holds no done parse", *task.ItemKey)
+		Refuse(w, http.StatusNotFound, CodeParseNotFound, "%s holds no done parse%s", *task.ItemKey, pickWords(pick))
 		return
 	case err != nil:
 		h.internal(w, r, "read a task's parse", err)

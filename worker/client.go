@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/datapointchris/ingestion/server"
+	"github.com/datapointchris/ingestion/store"
 )
 
 // ErrStaleLease is the service refusing a heartbeat or report, because the
@@ -67,15 +68,23 @@ func (c *Client) Report(ctx context.Context, id string, req server.ReportRequest
 	return c.post(ctx, "/api/v1/tasks/"+url.PathEscape(id)+"/reports", req, nil)
 }
 
-// TaskParse reads the newest done parse of the item that task id is for. The
-// worker names its lease by token, and the service answers only while that
-// token holds the lease, refusing with ErrStaleLease otherwise. A task whose
-// item holds no done parse answers a StatusError coded parse_not_found.
-func (c *Client) TaskParse(ctx context.Context, id string, token int64) (server.TaskParseAnswer, error) {
+// TaskParse reads the newest done parse that pick names of the item that task
+// id is for, and the newest of any extractor where pick is empty. The worker
+// names its lease by token, and the service answers only while that token
+// holds the lease, refusing with ErrStaleLease otherwise. A task whose item
+// holds no such parse answers a StatusError coded parse_not_found.
+func (c *Client) TaskParse(ctx context.Context, id string, token int64, pick store.ParsePick) (server.TaskParseAnswer, error) {
 	ctx, cancel := context.WithTimeout(ctx, blobTimeout)
 	defer cancel()
 	path := "/api/v1/tasks/" + url.PathEscape(id) + "/parse"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path+"?token="+strconv.FormatInt(token, 10), http.NoBody)
+	query := url.Values{"token": {strconv.FormatInt(token, 10)}}
+	if pick.Extractor != "" {
+		query.Set("extractor", pick.Extractor)
+	}
+	if pick.Version != "" {
+		query.Set("version", pick.Version)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path+"?"+query.Encode(), http.NoBody)
 	if err != nil {
 		return server.TaskParseAnswer{}, err
 	}
@@ -94,6 +103,12 @@ func (c *Client) TaskParse(ctx context.Context, id string, token int64) (server.
 	var answer server.TaskParseAnswer
 	if err := json.NewDecoder(resp.Body).Decode(&answer); err != nil {
 		return answer, fmt.Errorf("read the answer to GET %s: %w", path, err)
+	}
+	// A service that predates the pick answers its newest parse, which reads
+	// like the one asked for.
+	if (pick.Extractor != "" && answer.Extractor != pick.Extractor) || (pick.Version != "" && answer.ExtractorVersion != pick.Version) {
+		return server.TaskParseAnswer{}, fmt.Errorf("GET %s answered the parse by %s %s rather than the one it asked for, so the service may predate the pick",
+			path, answer.Extractor, answer.ExtractorVersion)
 	}
 	return answer, nil
 }

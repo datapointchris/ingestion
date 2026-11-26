@@ -125,7 +125,7 @@ func Decision(a Answer, run string) store.Decision {
 func QueueAfterScan(ctx context.Context, tx *store.Tx, task store.Task) error {
 	key := *task.ItemKey
 	outputs, err := tx.Outputs(ctx, key)
-	if err != nil || !store.NewestParseScanned(outputs) {
+	if err != nil || !store.ReadingParseScanned(outputs) {
 		return err
 	}
 	if held, err := tx.HasTask(ctx, key, store.StageQuality); err != nil || held {
@@ -199,7 +199,7 @@ func measurementDue(r store.ItemRecords, open bool) bool {
 // answered it under the prompt in force, and no arm has. So each arm answer
 // sits beside the gate's answer to the same prompt.
 func armDue(r store.ItemRecords, open bool) bool {
-	if open || !store.NewestParseScanned(r.Outputs) {
+	if open || !store.ReadingParseScanned(r.Outputs) {
 		return false
 	}
 	if _, labeled := r.ReviewPlacement(); !labeled {
@@ -212,7 +212,7 @@ func armDue(r store.ItemRecords, open bool) bool {
 // scanned, no quality task of it is open, and it holds no done answer of the
 // prompt in force.
 func unanswered(outputs []store.Output, open bool) bool {
-	return !open && store.NewestParseScanned(outputs) && !answered(outputs, store.StageQuality)
+	return !open && store.ReadingParseScanned(outputs) && !answered(outputs, store.StageQuality)
 }
 
 // answered says whether outputs hold a done answer of the prompt in force at
