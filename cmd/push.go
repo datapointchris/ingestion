@@ -31,8 +31,8 @@ var pushCmd = &cobra.Command{
 		"hands on only an item that a connector landed and a scan read. A URL resolves\n" +
 		"to the key of the artifact it names. The command exits 4 when the service gives\n" +
 		"no answer, and psyche never runs then. It exits 2 when it names an item that the\n" +
-		"service never landed, and 1 when the item has no scanned parse yet or psyche\n" +
-		"fails.",
+		"service has not landed yet, and 1 when the item has no scanned parse yet or\n" +
+		"psyche fails.",
 	Example: "  ingestion push reddit/t3_aq7ggd --to psyche --relate\n" +
 		"  ingestion push https://www.reddit.com/r/golang/comments/aq7ggd/ --to psyche --relate --enriched\n" +
 		"  ingestion push reddit/t3_aq7ggd --to psyche --relate --json",
@@ -73,8 +73,8 @@ func runPush(cmd *cobra.Command, args []string) error {
 	case errors.As(err, &refused) && refused.Code == server.CodeParseNotFound:
 		return fmt.Errorf("%s, so there is nothing to hand %s yet. `ingestion items show %s` says where it waits", refused.Message, push.Program, ref)
 	case errors.As(err, &refused) && refused.Code == server.CodeItemNotFound && refused.Status < http.StatusInternalServerError:
-		return fmt.Errorf("%w: %s. The service never landed it, and a push hands on only an item that a connector landed. "+
-			"`ingestion connectors list` names each connector", goclikit.ErrUsage, refused.Message)
+		return fmt.Errorf("%w: %s is not landed yet, so the service holds %s. A push hands on only an item that a connector landed, "+
+			"and `ingestion connectors list` names each connector", goclikit.ErrUsage, ref, refused.Message)
 	}
 	if err := argumentRefusal(err); err != nil {
 		return err

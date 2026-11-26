@@ -944,7 +944,7 @@ pushing reddit/t3_aq7ggd to psyche relate: 4 units, 1 finding, 2 suggestions
 - **A push starts no stage in the service**, so no model reads the item there. psyche's relate is
   its only model call.
 - **It hands on only an item that a connector landed and a scan read.** It exits 2 for an item
-  that the service never landed, and lands nothing. It exits 1 for an item with no done parse, or
+  that the service has not landed yet, and lands nothing. It exits 1 for an item with no done parse, or
   whose parse no scan has read yet. `ingestion items show <key>` says where that item waits.
 - **psyche runs from `PATH` on the machine that runs the push**, with the push's environment.
   `--json` asks psyche for its JSON answer. The command exits 4 when the service gives no answer,
