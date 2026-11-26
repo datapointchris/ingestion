@@ -71,6 +71,14 @@ type ItemAnswer struct {
 	// Suggestion is the item's latest suggestion, and null where no model
 	// read holds a sentence.
 	Suggestion *SuggestionView `json:"suggestion"`
+	// QualityAnswer is the quality gate's newest done answer, as
+	// store.NewestDone picks it and the review route serves it, and null where
+	// the gate gave none.
+	QualityAnswer json.RawMessage `json:"quality_answer"`
+	// ModelRead is the newest done model read, as store.NewestDone picks it,
+	// with the scanner's findings over its sentence, and null where none is
+	// done.
+	ModelRead *OutputView `json:"model_read"`
 }
 
 // SuggestionView is an item's latest suggestion, as
@@ -586,25 +594,14 @@ func itemAnswer(rec store.ItemRecords) ItemAnswer {
 		})
 	}
 	for _, o := range rec.Outputs {
-		view := OutputView{
-			Stage: o.Stage, Producer: o.Producer, ProducerVersion: o.ProducerVersion, Lens: o.Lens, LensVersion: o.LensVersion,
-			NoteDigest: o.NoteDigest, State: o.State, Answer: o.Answer, RunID: o.RunID, DispatchID: o.DispatchID, Model: o.Model, Effort: o.Effort,
-			AnsweredModel: o.AnsweredModel, Tokens: o.Tokens, Error: o.Error, RulesVersion: o.RulesVersion,
-		}
-		if n, ok := rec.UnitCount(o); ok {
-			view.Units = &n
-		}
-		if o.Findings != nil {
-			view.Findings = []FindingView{}
-		}
-		for i, f := range o.Findings {
-			finding := FindingView{Finding: f}
-			if i < len(o.Spans) {
-				finding.Span = &o.Spans[i].Span
-			}
-			view.Findings = append(view.Findings, finding)
-		}
-		a.Outputs = append(a.Outputs, view)
+		a.Outputs = append(a.Outputs, outputView(rec, o))
+	}
+	if quality := store.NewestDone(rec.Outputs, store.StageQuality); quality != nil && len(quality.Answer) > 0 {
+		a.QualityAnswer = quality.Answer
+	}
+	if read := store.NewestDone(rec.Outputs, store.StageModelRead); read != nil {
+		view := outputView(rec, *read)
+		a.ModelRead = &view
 	}
 	for _, d := range rec.Decisions {
 		a.Decisions = append(a.Decisions, decisionView(d))
@@ -623,6 +620,30 @@ func itemAnswer(rec store.ItemRecords) ItemAnswer {
 	}
 	a.Suggestion = suggestion(rec)
 	return a
+}
+
+// outputView is o as the item route lists it, with a parse's units counted
+// and each finding beside its span.
+func outputView(rec store.ItemRecords, o store.Output) OutputView {
+	view := OutputView{
+		Stage: o.Stage, Producer: o.Producer, ProducerVersion: o.ProducerVersion, Lens: o.Lens, LensVersion: o.LensVersion,
+		NoteDigest: o.NoteDigest, State: o.State, Answer: o.Answer, RunID: o.RunID, DispatchID: o.DispatchID, Model: o.Model, Effort: o.Effort,
+		AnsweredModel: o.AnsweredModel, Tokens: o.Tokens, Error: o.Error, RulesVersion: o.RulesVersion,
+	}
+	if n, ok := rec.UnitCount(o); ok {
+		view.Units = &n
+	}
+	if o.Findings != nil {
+		view.Findings = []FindingView{}
+	}
+	for i, f := range o.Findings {
+		finding := FindingView{Finding: f}
+		if i < len(o.Spans) {
+			finding.Span = &o.Spans[i].Span
+		}
+		view.Findings = append(view.Findings, finding)
+	}
+	return view
 }
 
 // SectionView is one entry of an item's sections, as the sections table holds
