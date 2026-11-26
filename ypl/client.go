@@ -105,12 +105,14 @@ const callTimeout = 2 * time.Minute
 
 // captionsTimeout bounds a read of a video's captions. It sits above the
 // longest that ypl holds a captions read, which ypl's door and its captions
-// route set, so a slow ypl still answers within it.
+// route set, so a slow ypl still answers within it. ypl's suite writes that
+// longest to video_read_budgets.json, and wire_test.go holds this above it.
 const captionsTimeout = 6 * time.Minute
 
 // audioWait bounds how long ypl takes to begin answering a read of a video's
 // audio. It sits above the longest that ypl's door and its audio route hold a
-// read before it answers. The answer's body then streams for as long as the
+// read before it answers, which wire_test.go reads from
+// video_read_budgets.json. The answer's body then streams for as long as the
 // caller's context allows, while each read of it waits at most audioIdle.
 const audioWait = 35 * time.Minute
 
@@ -149,7 +151,8 @@ const maxAnswer = 64 << 20
 
 // Captions is a video's captions as ypl read them: its details, its chapters,
 // and the segments of the one caption track that ypl picks. Track is nil
-// where the video has none, which leaves Segments empty.
+// where the video has none, which leaves Segments empty. wire_test.go holds
+// its fields to ypl's captions.json.
 type Captions struct {
 	VideoID     string `json:"video_id"`
 	Title       string `json:"title"`

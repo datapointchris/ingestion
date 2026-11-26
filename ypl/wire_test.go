@@ -1,29 +1,79 @@
 package ypl
 
 import (
+	"bytes"
 	"encoding/json"
 	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
-// wireDocument decodes testdata/wire/<name>.json into into. The documents are
-// ypl's own, which its suite writes from its code under
+// wireDocument decodes testdata/wire/<name>.json into into, refusing a field
+// that into does not declare, and returns the document's bytes. The documents
+// are ypl's own, which its suite writes from its code under
 // api/handlers/testdata/wire, copied here as they stood at one of its
 // commits.
-func wireDocument(t *testing.T, name string, into any) {
+func wireDocument(t *testing.T, name string, into any) []byte {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join("testdata", "wire", name+".json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := json.Unmarshal(raw, into); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(into); err != nil {
 		t.Fatalf("%s: %v", name, err)
+	}
+	return raw
+}
+
+// captionsTimeout and audioWait each outlast the longest that ypl holds such a
+// read before its answer begins. One that ends sooner gives up on a read that
+// ypl goes on making, so every long video fails while ypl still downloads it.
+func TestTheClientWaitsLongerThanYPLHoldsARead(t *testing.T) {
+	var budgets struct {
+		DoorWaitSeconds     int64 `json:"door_wait_seconds"`
+		CaptionsReadSeconds int64 `json:"captions_read_seconds"`
+		AudioReadSeconds    int64 `json:"audio_read_seconds"`
+	}
+	wireDocument(t, "video_read_budgets", &budgets)
+	if budgets.CaptionsReadSeconds == 0 || budgets.AudioReadSeconds == 0 {
+		t.Fatalf("ypl's read budgets name no captions or audio read: %+v", budgets)
+	}
+	if most := time.Duration(budgets.CaptionsReadSeconds) * time.Second; captionsTimeout <= most {
+		t.Errorf("captionsTimeout is %s, and ypl holds a captions read for up to %s", captionsTimeout, most)
+	}
+	if most := time.Duration(budgets.AudioReadSeconds) * time.Second; audioWait <= most {
+		t.Errorf("audioWait is %s, and ypl holds an audio read for up to %s before it answers", audioWait, most)
+	}
+}
+
+// Captions holds every field of ypl's captions answer and no other. A field ypl
+// renames is refused here. A field ypl stops sending would otherwise decode to
+// zero, so the decoded answer has to encode back to the document.
+func TestCaptionsHoldsEveryFieldOfYPLsCaptionsAnswer(t *testing.T) {
+	var captions Captions
+	raw := wireDocument(t, "captions", &captions)
+	encoded, err := json.Marshal(captions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sent, held any
+	if err := json.Unmarshal(raw, &sent); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(encoded, &held); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(sent, held) {
+		t.Errorf("Captions encodes ypl's captions answer as\n%s\nand ypl sent\n%s", encoded, raw)
 	}
 }
 
