@@ -70,7 +70,7 @@
         "additionalProperties": false,
         "required": ["stage", "producer", "producer_version", "state"],
         "properties": {
-          "stage": {"enum": ["parse", "scan", "quality", "quality-arm", "model-read"]},
+          "stage": {"enum": ["parse", "structure", "scan", "quality", "quality-arm", "model-read"]},
           "producer": {"type": "string"},
           "producer_version": {"type": "string"},
           "lens": {"type": ["string", "null"]},
@@ -88,7 +88,7 @@
             }
           },
           "rules_version": {"description": "The scanner rules' version that made the findings: a scan's over its parse, and a model read's over its suggestion sentence.", "type": ["string", "null"]},
-          "answer": {"description": "A model stage's structured answer. A model read's holds its summary and its suggestion sentence.", "type": ["object", "null"]},
+          "answer": {"description": "A model stage's structured answer, and the structure stage's profile of a PDF. A model read's holds its summary and its suggestion sentence.", "type": ["object", "null"]},
           "run_id": {"type": ["string", "null"]},
           "dispatch_id": {"description": "A model stage's dispatch, where the model port started one.", "type": ["string", "null"]},
           "model": {"description": "The model that a model stage asked its run for.", "type": ["string", "null"]},
@@ -141,6 +141,30 @@
           "attempts": {"type": "integer"},
           "last_error": {"description": "The destination's answer to the last write that failed, what a refusal names, or why the delivery was withdrawn.", "type": ["string", "null"]},
           "unclaimed_capability": {"description": "The capability of the delivery's queued task where no worker heard from lately holds it, so nothing here writes to that destination yet, and null otherwise.", "type": ["string", "null"]}
+        }
+      }
+    },
+    "sections": {
+      "description": "The item's sections, each producer version's rows in order, as schemas/ingestion-record.schema.json's sections describe them. A title is outsider text where the zone is outside. Absent from a service that keeps none.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["producer", "producer_version", "n", "level", "kind", "pdf_page_start", "pdf_page_end", "start_placed_by"],
+        "properties": {
+          "producer": {"enum": ["outline", "contents"]},
+          "producer_version": {"type": "string"},
+          "n": {"type": "integer", "minimum": 1},
+          "parent_n": {"type": ["integer", "null"]},
+          "level": {"type": "integer", "minimum": 1},
+          "kind": {"enum": ["part", "chapter", "section", "front-matter", "back-matter"]},
+          "title": {"type": ["string", "null"]},
+          "pdf_page_start": {"type": "integer", "minimum": 1},
+          "pdf_page_end": {"type": "integer", "minimum": 1},
+          "printed_page_start": {"type": ["string", "null"]},
+          "printed_page_end": {"type": ["string", "null"]},
+          "start_placed_by": {"type": "string"},
+          "child_key": {"description": "The chapter's own item, which takes this item's side and read decisions.", "type": ["string", "null"]}
         }
       }
     },

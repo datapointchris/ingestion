@@ -20,6 +20,8 @@ type ItemRecords struct {
 	Decisions  []Decision
 	Deliveries []Delivery
 	Tasks      []Task
+	// Sections are the item's sections, each producer version's in order.
+	Sections []Section
 
 	unitCounts map[parseVersion]int
 }
@@ -156,6 +158,13 @@ func recordsOf(ctx context.Context, db querier, items []Item) ([]ItemRecords, er
 	for _, r := range tasks {
 		out[at[*r.ItemKey]].Tasks = append(out[at[*r.ItemKey]].Tasks, r)
 	}
+	sections, err := readInto[Section](ctx, db, table("sections"), in("item_key", len(keys))+` ORDER BY created_ts, producer, producer_version, n`, keys...)
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range sections {
+		out[at[r.ItemKey]].Sections = append(out[at[r.ItemKey]].Sections, r)
+	}
 	counts, err := unitCounts(ctx, db, keys)
 	if err != nil {
 		return nil, err
@@ -232,7 +241,9 @@ type Condition struct {
 }
 
 // line is every stage and gate, in the order that an item passes them.
-var line = []string{StageLand, StageParse, StageScan, StageQuality, GateSide, GateRead, StageModelRead, StageDeliver}
+var line = []string{
+	StageLand, StageParse, StageStructure, StageSections, StageScan, StageQuality, GateSide, GateRead, StageModelRead, StageDeliver,
+}
 
 // Precedes says whether step comes before later on the line.
 func Precedes(step, later string) bool {
@@ -257,8 +268,16 @@ func (r ItemRecords) Conditions() []Condition {
 // reached names the phase that each stage or gate's True condition reaches,
 // in the words of schemas/items-list.schema.json.
 var reached = map[string]string{
-	StageLand: "landed", StageParse: "parsed", StageScan: "scanned", StageQuality: "gated",
-	GateSide: "placed", GateRead: "read", StageModelRead: "read", StageDeliver: "delivered",
+	StageLand:      "landed",
+	StageParse:     "parsed",
+	StageStructure: "structured",
+	StageSections:  "sectioned",
+	StageScan:      "scanned",
+	StageQuality:   "gated",
+	GateSide:       "placed",
+	GateRead:       "read",
+	StageModelRead: "read",
+	StageDeliver:   "delivered",
 }
 
 // Phase is the item's phase in the words of schemas/items-list.schema.json:
@@ -268,6 +287,7 @@ var reached = map[string]string{
 // decision, waiting where a model stage holds it, and otherwise the furthest
 // stage whose condition is True. A person can place an
 // item whose parse or quality gate failed, which moves it on from that stage.
+// A failed structure profile fails no phase.
 func (r ItemRecords) Phase() string {
 	side, sided := r.NewestDecision(GateSide)
 	if sided && side.Verdict == "drop" {
@@ -281,7 +301,8 @@ func (r ItemRecords) Phase() string {
 		newest[t.Stage] = t
 	}
 	for stage, t := range newest {
-		if t.State == TaskFailed && slices.Contains(line, stage) && stage != StageParse && (stage != StageQuality || !r.PersonPlaced()) {
+		if t.State == TaskFailed && slices.Contains(line, stage) && stage != StageParse && stage != StageStructure &&
+			(stage != StageQuality || !r.PersonPlaced()) {
 			return "failed"
 		}
 	}
@@ -354,6 +375,18 @@ func (r ItemRecords) condition(step string) (Condition, bool) {
 	case GateSide, GateRead:
 		if d, ok := r.NewestDecision(step); ok {
 			return Condition{Type: step, Status: ConditionTrue, Reason: d.Verdict}, true
+		}
+		return Condition{}, false
+	case StageStructure:
+		// A PDF's profile runs beside its scan, so one that failed costs the
+		// book its sections and holds back no other stage.
+		if c, ok := r.outputCondition(step); ok && c.Status != ConditionFalse {
+			return c, true
+		}
+		return Condition{}, false
+	case StageSections:
+		if len(r.Sections) > 0 {
+			return Condition{Type: step, Status: ConditionTrue, Reason: r.Sections[0].Producer}, true
 		}
 		return Condition{}, false
 	case StageDeliver:

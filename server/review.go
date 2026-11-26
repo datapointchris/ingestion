@@ -28,10 +28,12 @@ const (
 
 // CodeDestinationNotDeclared refuses a placement on a destination that the
 // set in force does not declare. CodeActingForAnother refuses a person's
-// token whose body names another person's login.
+// token whose body names another person's login. CodeChapterOfBook refuses a
+// placement of a book's chapter, which takes its book's placement.
 const (
 	CodeDestinationNotDeclared = "destination_not_declared"
 	CodeActingForAnother       = "acting_for_another"
+	CodeChapterOfBook          = "chapter_of_book"
 )
 
 var errActingForAnother = errors.New("a person's token places only as that person")
@@ -236,12 +238,16 @@ func (h reviewHandlers) decide(w http.ResponseWriter, r *http.Request, p route.P
 		return err
 	})
 	var undeclared *route.NotDeclaredError
+	var chapter *route.ChapterError
 	switch {
 	case errors.Is(err, store.ErrNoItem):
 		Refuse(w, http.StatusNotFound, CodeItemNotFound, "no item %s", key)
 		return
 	case errors.As(err, &undeclared):
 		Refuse(w, http.StatusUnprocessableEntity, CodeDestinationNotDeclared, "%v, so nothing was placed", undeclared)
+		return
+	case errors.As(err, &chapter):
+		Refuse(w, http.StatusUnprocessableEntity, CodeChapterOfBook, "%v", chapter)
 		return
 	case err != nil:
 		h.log.ErrorContext(r.Context(), "place an item", "error", err, "item", key)

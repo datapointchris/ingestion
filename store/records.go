@@ -33,9 +33,15 @@ func Stricter(a, b Zone) Zone {
 // Stages, in the order that an item passes them, after the poll that fetches
 // it. A task or an output names one.
 const (
-	StagePoll      = "poll"
-	StageLand      = "land"
-	StageParse     = "parse"
+	StagePoll  = "poll"
+	StageLand  = "land"
+	StageParse = "parse"
+	// StageStructure profiles a PDF's bytes: its outline, page labels,
+	// creation date and fonts.
+	StageStructure = "structure"
+	// StageSections is the write of an item's sections that serve makes from
+	// its structure, which queues no task.
+	StageSections  = "sections"
 	StageScan      = "scan"
 	StageQuality   = "quality"
 	StageModelRead = "model-read"
@@ -75,6 +81,17 @@ type Item struct {
 	Phase     *string `json:"phase,omitempty"`
 	CreatedTS string  `json:"created_ts"`
 	UpdatedTS string  `json:"updated_ts"`
+}
+
+// MediaTypeChapter is a book's chapter: a child item that holds no bytes of
+// its own and takes its parent's side and read decisions.
+const MediaTypeChapter = "application/x-book-chapter"
+
+// PlacedThroughParent says whether the item takes every side and read
+// decision from its parent, as a book's chapter does. A person places its
+// parent instead, so neither the review queue nor a placement takes it.
+func (i Item) PlacedThroughParent() bool {
+	return i.MediaType == MediaTypeChapter && i.ParentKey != nil
 }
 
 // Sighting is one connector's arrival of an item.
@@ -288,6 +305,10 @@ type Decision struct {
 // ByPerson says whether a person made d, as its decided_by person:<login>
 // records.
 func (d Decision) ByPerson() bool { return strings.HasPrefix(d.DecidedBy, "person:") }
+
+// ByParent says whether the item took d from its parent, as its decided_by
+// parent:<key> records.
+func (d Decision) ByParent() bool { return strings.HasPrefix(d.DecidedBy, "parent:") }
 
 // ReviewPlacement is the label among decisions, one item's at every gate: the
 // newest side decision, where a person made it after the gates sent the item

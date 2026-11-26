@@ -64,6 +64,10 @@ var Tables = []Table{
 		Name: "parse_units", Key: []string{"item_key", "extractor", "extractor_version", "n"}, Stamp: []string{"created_ts"},
 		Text: []string{"label", "text"}, Writes: Appends,
 	},
+	{
+		Name: "sections", Key: []string{"item_key", "producer", "producer_version", "n"}, Stamp: []string{"created_ts"},
+		Text: []string{"title"}, Writes: Appends,
+	},
 	{Name: "replays", Key: []string{"id"}, Stamp: []string{"requested_ts"}, Writes: Appends},
 	{Name: "decisions", Key: []string{"item_key", "gate", "sequence"}, Stamp: []string{"decided_ts"}, Writes: Appends},
 	{

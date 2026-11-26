@@ -28,6 +28,7 @@ import (
 	"github.com/datapointchris/ingestion/qualitygate"
 	"github.com/datapointchris/ingestion/route"
 	"github.com/datapointchris/ingestion/scan"
+	"github.com/datapointchris/ingestion/sections"
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
 )
@@ -81,19 +82,20 @@ func init() {
 	rootCmd.AddCommand(serveCmd)
 }
 
-// afterStage runs in the write that ends an item's task done. It queues the
-// stage that follows the one that ended, keyed by the stage that ended, then
-// runs the gates.
+// afterStage runs in the write that ends an item's task done. It runs what
+// follows the stage that ended, keyed by that stage, such as the stages it
+// queues, then runs the gates.
 func afterStage(log *slog.Logger) server.AfterStage {
-	queueNext := map[string]server.AfterStage{
-		store.StageParse:   scan.QueueAfterParse,
-		store.StageScan:    qualitygate.QueueAfterScan,
-		store.StageQuality: qualitygate.DecideAfterAnswer,
+	next := map[string][]server.AfterStage{
+		store.StageParse:     {scan.QueueAfterParse, sections.QueueAfterParse},
+		store.StageStructure: {sections.AfterStructure},
+		store.StageScan:      {qualitygate.QueueAfterScan},
+		store.StageQuality:   {qualitygate.DecideAfterAnswer},
 	}
 	gates := route.AfterStage(log)
 	return func(ctx context.Context, tx *store.Tx, task store.Task) error {
-		if queue, ok := queueNext[task.Stage]; ok {
-			if err := queue(ctx, tx, task); err != nil {
+		for _, run := range next[task.Stage] {
+			if err := run(ctx, tx, task); err != nil {
 				return err
 			}
 		}
@@ -107,6 +109,7 @@ func afterStage(log *slog.Logger) server.AfterStage {
 func replayableStages(st *store.Store, extractors *extract.Registry) map[string]server.Replayable {
 	return map[string]server.Replayable{
 		store.StageParse:      extractors.Replayable(),
+		store.StageStructure:  sections.Replayable(),
 		store.StageScan:       scan.Replayable(extractors),
 		store.StageQuality:    qualitygate.Replayable(st),
 		store.StageQualityArm: qualitygate.ArmReplayable(st),

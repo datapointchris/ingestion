@@ -10,6 +10,7 @@
     {"$ref": "#/$defs/homes"},
     {"$ref": "#/$defs/outputs"},
     {"$ref": "#/$defs/parse_units"},
+    {"$ref": "#/$defs/sections"},
     {"$ref": "#/$defs/replays"},
     {"$ref": "#/$defs/decisions"},
     {"$ref": "#/$defs/deliveries"},
@@ -30,7 +31,7 @@
       "enum": ["outside", "owner"]
     },
     "sha256": {"description": "A SHA-256, in lowercase hex.", "type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "stage": {"description": "A stage that writes an output or holds a task. A poll's task fetches a connector's source before any item lands. quality-arm is the quality gate's prompt asked of the model that its task names, as a measurement, and sits on no item's line.", "enum": ["poll", "land", "parse", "scan", "quality", "quality-arm", "model-read", "deliver"]},
+    "stage": {"description": "A stage that writes an output or holds a task. A poll's task fetches a connector's source before any item lands. quality-arm is the quality gate's prompt asked of the model that its task names, as a measurement, and sits on no item's line. structure profiles a PDF's outline, page labels, creation date and fonts.", "enum": ["poll", "land", "parse", "structure", "scan", "quality", "quality-arm", "model-read", "deliver"]},
     "timestamp": {"type": "string", "format": "date-time"},
     "severity": {"description": "A scan finding's severity, from least to most severe.", "enum": ["info", "low", "medium", "high", "critical"]},
     "finding": {
@@ -173,6 +174,29 @@
         "created_ts": {"$ref": "#/$defs/timestamp"}
       }
     },
+    "sections": {
+      "title": "sections, one row per entry of one item's sections, appended",
+      "description": "ingestion.record.id is <item key>/<producer>/<producer_version>/<n>. One producer version's rows are written once, beside every other version's. A part holds chapters, and a chapter holds sections. Front and back matter, such as a preface or an index, keep their kind and are no chapter. Each title ships as ingestion.text.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["item_key", "producer", "producer_version", "n", "level", "kind", "pdf_page_start", "pdf_page_end", "start_placed_by", "created_ts"],
+      "properties": {
+        "item_key": {"$ref": "#/$defs/item_key"},
+        "producer": {"description": "outline where the rows come from the PDF's own outline, or are one section over the whole of a short PDF that has none. contents where they come from the book's printed contents pages.", "enum": ["outline", "contents"]},
+        "producer_version": {"description": "The version of the rule that wrote the rows and of each output it read, such as 1/pdf-structure@<version>/pdf-text@<version>, where each version is the producer version of the output the rule read.", "type": "string"},
+        "n": {"description": "The entry's place among its version's rows, from 1, in the outline's order.", "type": "integer", "minimum": 1},
+        "parent_n": {"description": "The n of the entry that holds this one, and null at the top.", "type": ["integer", "null"], "minimum": 1},
+        "level": {"description": "The entry's depth, from 1 at the top.", "type": "integer", "minimum": 1},
+        "kind": {"description": "part above the chapter level, chapter at it and section below it. front-matter and back-matter are entries at or above the chapter level whose titles name them, such as contents, a preface, an appendix or an index.", "enum": ["part", "chapter", "section", "front-matter", "back-matter"]},
+        "pdf_page_start": {"description": "The first PDF page, from 1. A positional parse holds PDF page n as unit n.", "type": "integer", "minimum": 1},
+        "pdf_page_end": {"description": "The last PDF page: the page before the next entry at its level or above begins, its own start where that one begins on the same page, or the book's last page.", "type": "integer", "minimum": 1},
+        "printed_page_start": {"description": "The first page as the book prints it: its page label, else the PDF page less the book's measured offset, and null where neither gives one.", "type": ["string", "null"]},
+        "printed_page_end": {"description": "The last page as the book prints it, found as printed_page_start is.", "type": ["string", "null"]},
+        "start_placed_by": {"description": "How the start page was found: outline from the outline entry's own target, whole-file for one section over a short PDF with no usable outline.", "type": "string"},
+        "child_key": {"description": "The key of the item made for a chapter, which takes the item's side and read decisions, and null on every other row. A version written after the item held chapters names the item of the chapter with the same start page and title, and null where none matches.", "anyOf": [{"$ref": "#/$defs/item_key"}, {"type": "null"}]},
+        "created_ts": {"$ref": "#/$defs/timestamp"}
+      }
+    },
     "replays": {
       "title": "replays, one row per replay that queued a stage again, appended",
       "description": "ingestion.record.id is the replay's id, which derives from the caller and its Idempotency-Key. A replay holds no outsider text.",
@@ -206,9 +230,9 @@
           "enum": ["pass", "drop", "review", "personal", "fleet", "as-is", "model"]
         },
         "decided_by": {
-          "description": "tag, rule:<name>, model:<run id> or person:<login>, or gate where the side gate's rungs ran out with no guess to read. A read decision's rule is a connector's name, or <side>-default.",
+          "description": "tag, rule:<name>, model:<run id> or person:<login>, or gate where the side gate's rungs ran out with no guess to read. A read decision's rule is a connector's name, or <side>-default. parent:<book key> marks a chapter's copy of its book's decision, which keeps the book's verdict, cause and confidence.",
           "type": "string",
-          "pattern": "^(tag|gate|rule:.+|model:.+|person:.+)$"
+          "pattern": "^(tag|gate|rule:.+|model:.+|person:.+|parent:.+)$"
         },
         "confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
         "cause": {

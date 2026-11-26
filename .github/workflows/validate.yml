@@ -595,3 +595,13 @@ jobs:
           docker run --rm --read-only -i --entrypoint /usr/local/libexec/ingestion/extractors/pdf-text ingestion:validate \
             < extract/testdata/pages.pdf > "$RUNNER_TEMP/pages.jsonl"
           jq -se 'map(.label) == ["i", "ii", "1"] and .[1].text == "" and (.[2].text | contains("first chapter"))' "$RUNNER_TEMP/pages.jsonl"
+
+      # The worker runs pdf-structure the same way. The fixture's outline opens
+      # pages 1 and 3, and its one sampled page sets a line in Courier.
+      - name: Profile a known PDF with pdf-structure in the image
+        run: |
+          docker run --rm --read-only -i --entrypoint /usr/local/libexec/ingestion/extractors/pdf-structure ingestion:validate \
+            < extract/testdata/pages.pdf > "$RUNNER_TEMP/profile.json"
+          jq -e '.pages == 3 and (.outline | map(.page)) == [1, 3] and (.page_labels | map(.style)) == ["r", "D"]
+            and .creation_date == "D:20261125000000Z" and .font_shares == {"sampled_pages": 1, "monospace": 1, "tex_or_math": 0}' \
+            "$RUNNER_TEMP/profile.json"

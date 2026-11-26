@@ -8,7 +8,7 @@
   "required": ["schema_version", "stage", "items", "queued"],
   "properties": {
     "schema_version": {"const": 1},
-    "stage": {"enum": ["parse", "scan", "quality", "quality-arm", "model-read", "deliver"]},
+    "stage": {"enum": ["parse", "structure", "scan", "quality", "quality-arm", "model-read", "deliver"]},
     "connector": {"type": ["string", "null"]},
     "key": {"type": ["string", "null"]},
     "placed_by": {"description": "person where the replay runs only over the labeled items, each that a person placed after the gates sent it to review, as a measurement of the stage against each placement, and null or absent where it runs over every item it selects.", "enum": ["person", null]},

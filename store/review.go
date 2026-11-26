@@ -26,7 +26,8 @@ type Waiting struct {
 
 // WaitsOnPerson says why the item waits on a person's placement, and since
 // when. It is the one answer that Phase, the review queue and each connector's
-// count read. An item waits where its newest side decision sent it to review,
+// count read. A chapter whose book waits in review waits too, on the book's
+// placement. An item waits where its newest side decision sent it to review,
 // under that decision's cause. Where no side decision holds it, the item waits
 // as no-parse where no parse is usable, and as quality-review where the quality
 // gate's newest decision sent it there. It is false where the item waits on
@@ -52,11 +53,15 @@ func (r ItemRecords) WaitsOnPerson() (reason, since string, ok bool) {
 
 // reviewCandidates selects every item that may wait on a person, as a superset
 // that WaitsOnPerson narrows: each one that a side decision sent to review, and
-// each one that holds no side decision.
+// each one that holds no side decision. It leaves out a book's chapter, as
+// ReviewQueue's PlacedThroughParent check does, so the queue never loads a
+// book's chapters.
 const reviewCandidates = `
 SELECT DISTINCT d.item_key FROM decisions d WHERE d.gate = 'side' AND d.verdict = 'review'
+	AND d.item_key NOT IN (SELECT c.key FROM items c WHERE c.media_type = '` + MediaTypeChapter + `')
 UNION
-SELECT i.key FROM items i WHERE NOT EXISTS (SELECT 1 FROM decisions x WHERE x.item_key = i.key AND x.gate = 'side')`
+SELECT i.key FROM items i WHERE i.media_type != '` + MediaTypeChapter + `'
+	AND NOT EXISTS (SELECT 1 FROM decisions x WHERE x.item_key = i.key AND x.gate = 'side')`
 
 // ReviewQueue reads every item that waits on a person's placement, the
 // longest waiting first.
@@ -78,6 +83,9 @@ func (s *Store) ReviewQueue(ctx context.Context) ([]Waiting, error) {
 	}
 	out := make([]Waiting, 0, len(records))
 	for _, r := range records {
+		if r.Item.PlacedThroughParent() {
+			continue
+		}
 		if reason, since, ok := r.WaitsOnPerson(); ok {
 			out = append(out, Waiting{ItemRecords: r, Reason: reason, Since: since})
 		}

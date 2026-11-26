@@ -105,6 +105,11 @@ var itemsReplayCmd = &cobra.Command{
 		"by kind, the median of its newest stored runs times that count, and queues\n" +
 		"only with --yes. A model-free stage, such as parse, queues at once.\n" +
 		"\n" +
+		"A structure replay profiles each PDF again, such as with a new pdf-structure,\n" +
+		"and its end writes the PDF's sections beside the old. Where the PDF already\n" +
+		"holds chapters, a new chapter row names the chapter item with the same start\n" +
+		"page and title, and one that matches none makes no item.\n" +
+		"\n" +
 		"A quality replay runs on each scanned item that holds no answer of the prompt\n" +
 		"in force and whose side waits on a later input: no side decision, review for\n" +
 		"want of a rule or an answer, or a model's drop or review. It leaves out an\n" +
@@ -411,6 +416,7 @@ func writeItem(w io.Writer, a server.ItemAnswer) {
 			row("finding", "%s", findingLine(f))
 		}
 	}
+	writeSections(row, a.Sections)
 	for _, d := range a.Decisions {
 		decision := d.Verdict
 		if d.Destination != nil {
@@ -447,6 +453,44 @@ func writeItem(w io.Writer, a server.ItemAnswer) {
 		row("waiting", "%s: %s", wt.Reason, wt.Message)
 	}
 	_ = table.Flush()
+}
+
+// writeSections prints a line for each producer version of the item's
+// sections, counting its entries and chapters, then a line for each chapter.
+// A title is outsider text, so it prints quoted.
+func writeSections(row func(label, format string, args ...any), sections []server.SectionView) {
+	for start := 0; start < len(sections); {
+		end := start + 1
+		for end < len(sections) && sections[end].Producer == sections[start].Producer &&
+			sections[end].ProducerVersion == sections[start].ProducerVersion {
+			end++
+		}
+		version := sections[start:end:end]
+		chapters := 0
+		for _, s := range version {
+			if s.Kind == store.SectionChapter {
+				chapters++
+			}
+		}
+		row("sections", "%s %s  %d entries, %d chapters", version[0].Producer, versionWords(version[0].ProducerVersion), len(version), chapters)
+		for _, s := range version {
+			if s.Kind != store.SectionChapter && len(version) > 1 {
+				continue
+			}
+			line := fmt.Sprintf("%s pdf pages %d-%d", s.Kind, s.PDFPageStart, s.PDFPageEnd)
+			if s.PrintedPageStart != nil && s.PrintedPageEnd != nil {
+				line += fmt.Sprintf(", printed %s-%s", *s.PrintedPageStart, *s.PrintedPageEnd)
+			}
+			if s.ChildKey != nil {
+				line += "  " + *s.ChildKey
+			}
+			if s.Title != nil {
+				line += "  " + quoted(*s.Title)
+			}
+			row("", "%s", line)
+		}
+		start = end
+	}
 }
 
 // writeQualityAnswer prints the quality gate's answer. Its idea and themes are

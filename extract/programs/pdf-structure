@@ -1,0 +1,101 @@
+#!/opt/ingestion/venv/bin/python3 -I
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# This program imports PyMuPDF, which is licensed AGPL-3.0, so it is licensed
+# AGPL-3.0-or-later rather than under the repository's MIT license.
+"""Write one JSON document profiling the structure of the PDF read on stdin.
+
+The document holds the page count, every outline entry as its level, title and
+PDF page, the page-label rules, the metadata's raw creationDate, and font
+shares. A font share is the share of sampled pages whose fonts include a
+monospace one, or a TeX or math one. Every fifth page is sampled, from the
+first. An outline entry whose target lies outside the document has page null.
+A PDF that cannot be opened, that needs a password, or whose structure PyMuPDF
+cannot read, exits 1 naming why, and never quotes the document.
+"""
+
+import json
+import re
+import sys
+
+import pymupdf
+
+SAMPLE_EVERY = 5
+
+# A font's name, less any subset prefix such as ABCDEF+. Monospace fonts are
+# matched by name, and so are the TeX fonts: Computer Modern, Latin Modern and
+# the AMS and math faces that formulas set in.
+MONOSPACE = re.compile(
+    r"courier|mono|typewriter|consolas|console|menlo|inconsolata|(?<!uni)code|lettergothic|andale|monaco|^(cmtt|lmtt|sftt|txtt|pcrr)",
+    re.IGNORECASE,
+)
+TEX_OR_MATH = re.compile(
+    r"math|^(cmmi|cmsy|cmex|cmbsy|cmmib|msam|msbm|eufm|eufb|eusm|rsfs|mtmi|mtsy|mtex|stix|xits|txmi|txsy|pxmi|pxsy)"
+    r"|^(cm[a-z]+\d|lm[a-z]+\d|sfrm|ec[a-z]{2}\d)",
+    re.IGNORECASE,
+)
+
+
+def font_shares(doc):
+    sampled = monospace = tex_or_math = 0
+    for number in range(0, doc.page_count, SAMPLE_EVERY):
+        names = [re.sub(r"^[A-Z]{6}\+", "", font[3]).lstrip("*") for font in doc[number].get_fonts()]
+        sampled += 1
+        monospace += any(MONOSPACE.search(name) for name in names)
+        tex_or_math += any(TEX_OR_MATH.search(name) for name in names)
+    return {
+        "sampled_pages": sampled,
+        "monospace": monospace / sampled if sampled else 0.0,
+        "tex_or_math": tex_or_math / sampled if sampled else 0.0,
+    }
+
+
+def main() -> int:
+    pymupdf.TOOLS.mupdf_display_errors(False)
+    pymupdf.TOOLS.mupdf_display_warnings(False)
+    data = sys.stdin.buffer.read()
+    try:
+        doc = pymupdf.open(stream=data, filetype="pdf")
+    except Exception as error:  # PyMuPDF raises several types for a broken file.
+        print(f"pdf-structure: PyMuPDF could not open the bytes as a PDF ({type(error).__name__})", file=sys.stderr)
+        return 1
+    if doc.needs_pass:
+        print("pdf-structure: the PDF needs a password", file=sys.stderr)
+        return 1
+    try:
+        # ASCII escapes keep a title that holds a lone surrogate, which UTF-8
+        # cannot encode, and stdout is written only once the whole is built.
+        document = json.dumps(profile_of(doc))
+    except Exception as error:  # A broken outline, label tree or font list raises any of several types.
+        print(f"pdf-structure: PyMuPDF could not read the PDF's structure ({type(error).__name__})", file=sys.stderr)
+        return 1
+    sys.stdout.write(document + "\n")
+    sys.stdout.flush()
+    return 0
+
+
+def profile_of(doc):
+    outline = [
+        {"level": level, "title": title, "page": page if 1 <= page <= doc.page_count else None}
+        for level, title, page in doc.get_toc(simple=True)
+    ]
+    labels = [
+        {
+            "start_page": rule.get("startpage", 0) + 1,
+            "prefix": rule.get("prefix", ""),
+            "style": rule.get("style", ""),
+            "first_number": rule.get("firstpagenum", 1),
+        }
+        for rule in doc.get_page_labels()
+    ]
+    return {
+        "pages": doc.page_count,
+        "outline": outline,
+        "page_labels": labels,
+        "creation_date": (doc.metadata or {}).get("creationDate") or None,
+        "font_shares": font_shares(doc),
+    }
+
+
+if __name__ == "__main__":
+    sys.exit(main())
