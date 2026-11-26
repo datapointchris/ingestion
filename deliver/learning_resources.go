@@ -104,22 +104,27 @@ func learningTitle(title *string) string {
 
 // chapterResource is the create of the chapter part of its book's resource.
 // learning takes a chapter's printed pages only as a pair, so where the book
-// prints one end and not the other, it sends neither.
+// prints one end and not the other, it sends neither. Its title is the
+// item's, else its pages, as an outline entry with no title leaves it.
 func chapterResource(item Item) (learningResource, error) {
 	c := item.Chapter
 	book, err := strconv.ParseInt(c.BookDestinationID, 10, 64)
 	if err != nil || book <= 0 {
 		return learningResource{}, fmt.Errorf("the chapter's book is %q in learning, which names no resource", c.BookDestinationID)
 	}
-	title := learningTitle(item.Title)
-	if title == "" {
-		return learningResource{}, errors.New("the chapter holds no title, which a learning resource needs")
-	}
 	r := learningResource{
-		Title: title, ResourceType: "chapter", SourceKey: item.Key, PartOf: book, PDFPageStart: c.PDFPageStart, PDFPageEnd: c.PDFPageEnd,
+		Title: learningTitle(item.Title), ResourceType: "chapter", SourceKey: item.Key, PartOf: book,
+		PDFPageStart: c.PDFPageStart, PDFPageEnd: c.PDFPageEnd,
 	}
 	if c.PrintedPageStart != nil && *c.PrintedPageStart != "" && c.PrintedPageEnd != nil && *c.PrintedPageEnd != "" {
 		r.PrintedPageStart, r.PrintedPageEnd = c.PrintedPageStart, c.PrintedPageEnd
+	}
+	switch {
+	case r.Title != "":
+	case r.PrintedPageStart != nil:
+		r.Title = fmt.Sprintf("Pages %s–%s", *r.PrintedPageStart, *r.PrintedPageEnd)
+	default:
+		r.Title = fmt.Sprintf("PDF pages %d–%d", r.PDFPageStart, r.PDFPageEnd)
 	}
 	return r, nil
 }

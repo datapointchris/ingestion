@@ -861,7 +861,8 @@ live home below the `[serve.homes]` root that `[deliver.learning-resources]` nam
 
 A book's chapter takes its book's placement, so it goes where its book goes. `learning-resources`
 posts it as type `chapter`, `part_of` the resource that its book's delivery settled on. It sends
-the chapter's title, its key as `source_key`, and its PDF and printed pages. The pages are those of
+the chapter's title, its key as `source_key`, and its PDF and printed pages. A chapter whose
+outline entry has no title is titled by its pages, such as `Pages 977–998`. The pages are those of
 the book's newest sections when the chapter's delivery was first queued, and every attempt sends
 them. It sends the printed pages only where the book prints both ends. A chapter's delivery is due
 only once its book's delivery to the same destination has settled on a record. The write that
