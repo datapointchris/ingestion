@@ -12,6 +12,7 @@ import (
 	"github.com/datapointchris/ingestion/modelport"
 	"github.com/datapointchris/ingestion/modelstage"
 	"github.com/datapointchris/ingestion/prompts"
+	"github.com/datapointchris/ingestion/sections"
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
 	"github.com/datapointchris/ingestion/worker"
@@ -47,7 +48,7 @@ func NewHandler(port modelport.Port, client *worker.Client, settings modelstage.
 		Name: Capability, Producer: Producer,
 		Prompt: func(worker.Task) (prompts.Prompt, error) { return prompts.Contents, nil },
 		Data: func(ctx context.Context, task worker.Task) (any, error) {
-			parse, err := client.TaskParse(ctx, task.ID, task.LeaseToken)
+			parse, err := client.TaskParse(ctx, task.ID, task.LeaseToken, store.ParsePick{Extractor: sections.ParsedBy.Name})
 			if err != nil {
 				return nil, fmt.Errorf("read the parse: %w", err)
 			}

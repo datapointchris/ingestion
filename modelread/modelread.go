@@ -124,7 +124,7 @@ type promptData struct {
 // read is the task's item as the prompt quotes it: its title, its newest
 // parse's text up to textRunes, and its note.
 func read(ctx context.Context, client *worker.Client, task worker.Task) (promptData, error) {
-	parse, err := client.TaskParse(ctx, task.ID, task.LeaseToken)
+	parse, err := client.TaskParse(ctx, task.ID, task.LeaseToken, store.ParsePick{})
 	if err != nil {
 		return promptData{}, fmt.Errorf("read the parse: %w", err)
 	}

@@ -417,7 +417,8 @@ type TaskRetryAnswer struct {
 
 // parse answers the newest done parse of the item whose task the caller
 // leases, under the lease's token in the token query, so a worker reads the
-// input of a task it holds and of no other.
+// input of a task it holds and of no other. The extractor and version queries
+// narrow it, as on the item's parse route.
 func (h taskHandlers) parse(w http.ResponseWriter, r *http.Request) {
 	token, err := strconv.ParseInt(r.URL.Query().Get("token"), 10, 64)
 	if err != nil {
@@ -432,10 +433,11 @@ func (h taskHandlers) parse(w http.ResponseWriter, r *http.Request) {
 		Refuse(w, http.StatusNotFound, CodeParseNotFound, "task %s is for no item, so it has no parse", task.ID)
 		return
 	}
-	p, err := h.store.Parse(r.Context(), *task.ItemKey, store.ParsePick{})
+	pick := store.ParsePick{Extractor: r.URL.Query().Get("extractor"), Version: r.URL.Query().Get("version")}
+	p, err := h.store.Parse(r.Context(), *task.ItemKey, pick)
 	switch {
 	case errors.Is(err, store.ErrNoParse):
-		Refuse(w, http.StatusNotFound, CodeParseNotFound, "%s holds no done parse", *task.ItemKey)
+		Refuse(w, http.StatusNotFound, CodeParseNotFound, "%s holds no done parse%s", *task.ItemKey, pickWords(pick))
 		return
 	case err != nil:
 		h.internal(w, r, "read a task's parse", err)

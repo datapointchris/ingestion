@@ -68,7 +68,7 @@ type nothingFound struct{ client *worker.Client }
 func (nothingFound) Capability() string { return scan.Capability }
 
 func (h nothingFound) Run(ctx context.Context, task worker.Task) worker.Result {
-	parse, err := h.client.TaskParse(ctx, task.ID, task.LeaseToken)
+	parse, err := h.client.TaskParse(ctx, task.ID, task.LeaseToken, store.ParsePick{})
 	if err != nil {
 		reason := err.Error()
 		return worker.Result{Outcome: server.OutcomeFailed, Error: &reason}
