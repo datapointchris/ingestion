@@ -9,22 +9,6 @@ import (
 	"github.com/datapointchris/ingestion/store"
 )
 
-// deleters holds each source that this build registers a deleter for.
-var deleters = map[string]bool{}
-
-// RegisterDeleter records that this build carries a deleter for source, which
-// removes an item from that source once it has landed. A poll connector of
-// the source may then declare after_landing delete. deletion.Register calls
-// it in the same call that keeps how a worker opens the deleter, so a set
-// names only a deleter that a worker of this build can run. Registering a
-// source twice panics, as a duplicate is a build error.
-func RegisterDeleter(source string) {
-	if deleters[source] {
-		panic("connectors: the deleter of source " + source + " is registered twice")
-	}
-	deleters[source] = true
-}
-
 // ErrNotDeclared is a poll of a connector that is absent from the set in
 // force, so no declaration names the zone and tags of what it found.
 var ErrNotDeclared = errors.New("the set in force does not declare the connector")
@@ -53,7 +37,8 @@ type PollLanded struct {
 // poll's lease done, under connector as the set in force declares it. The
 // declaration gives each arrival its connector, zone and tags, whatever the
 // worker sent. Where the connector deletes after landing, it queues a delete
-// of each arrival's item, unless one is already in flight.
+// of each arrival's item, unless one is queued or leased, or failed and waits
+// for a person to retry it.
 //
 // Where every arrival landed, it moves the connector's cursor to cursor, where
 // the poll gave one, clears the last failure, and finishes a connector
@@ -99,11 +84,11 @@ func LandPoll(ctx context.Context, tx *store.Tx, l *landing.Lander, connector st
 		if c.AfterLanding != AfterLandingDelete {
 			continue
 		}
-		inFlight, err := tx.DeleteInFlight(ctx, landed.Key, c.Name)
+		outstanding, err := tx.DeleteOutstanding(ctx, landed.Key, c.Name)
 		if err != nil {
 			return out, err
 		}
-		if inFlight {
+		if outstanding {
 			continue
 		}
 		if _, err := tx.Enqueue(ctx, store.DeleteTask(landed.Key, c.Name, c.Source)); err != nil {

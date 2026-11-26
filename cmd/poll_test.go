@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -17,18 +18,22 @@ import (
 	"github.com/datapointchris/ingestion/extract"
 	"github.com/datapointchris/ingestion/route"
 	"github.com/datapointchris/ingestion/server"
+	"github.com/datapointchris/ingestion/sources"
 	"github.com/datapointchris/ingestion/store"
 	"github.com/datapointchris/ingestion/worker"
+	"github.com/datapointchris/ingestion/ypl"
 )
 
 // videoSource is the source of the scenarios' connectors, whose deleter the
 // tests register, and videoMediaType the media type its arrivals carry.
 const (
 	videoSource    = "test-videos"
-	videoMediaType = "application/x-youtube-video"
+	videoMediaType = ypl.MediaTypeVideo
 )
 
-func init() { deletion.Register(deletion.Registration{Source: videoSource}) }
+func init() {
+	sources.Register(sources.Registration{Name: videoSource, Deleter: func(string, *http.Client) deletion.Deleter { return nil }})
+}
 
 // videoSet is a declaration set of three connectors of videoSource: a capture
 // that deletes each landed video from its source, a backfill polled once, and

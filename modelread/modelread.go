@@ -11,8 +11,8 @@
 // runs it through modelstage's dispatch-once protocol. Before the answer is
 // kept, the scanner reads its suggestion sentence. The output holds the
 // findings and their spans beside the answer, so the sentence never travels
-// without them. The summary is kept on the output alone and delivered
-// nowhere.
+// without them. The summary is kept on the output, and no delivery carries
+// it.
 package modelread
 
 import (

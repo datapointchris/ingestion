@@ -495,8 +495,8 @@ func writeSections(row func(label, format string, args ...any), sections []serve
 // writeQualityAnswer prints the quality gate's answer. Its idea, reason and
 // themes are a model's words about outsider text, so they print quoted.
 func writeQualityAnswer(row func(label, format string, args ...any), raw json.RawMessage) {
-	var a qualitygate.Answer
-	if json.Unmarshal(raw, &a) != nil {
+	a, err := qualitygate.DecodeAnswer(raw)
+	if err != nil {
 		return
 	}
 	row("", "quality %d  %s at %.2f  %s  side %s at %.2f", a.Quality, a.Verdict, a.VerdictConfidence, a.Genre, a.Side, a.SideConfidence)

@@ -14,10 +14,14 @@ import (
 // Rule is one rule in Agent Threat Rules' YAML shape. ATR's rules and
 // ingestion's own are both read this way, and both carry their own examples.
 type Rule struct {
-	ID        string    `yaml:"id"`
-	Title     string    `yaml:"title"`
-	Status    string    `yaml:"status"`
-	Severity  string    `yaml:"severity"`
+	ID       string `yaml:"id"`
+	Title    string `yaml:"title"`
+	Status   string `yaml:"status"`
+	Severity string `yaml:"severity"`
+	// Suggests is the kind of thing that a match lists for a reader to run,
+	// open or paste: command, link or code. It is empty for a rule whose
+	// match flags an attack.
+	Suggests  string    `yaml:"suggests"`
 	Tags      Tags      `yaml:"tags"`
 	Detection Detection `yaml:"detection"`
 	TestCases TestCases `yaml:"test_cases"`

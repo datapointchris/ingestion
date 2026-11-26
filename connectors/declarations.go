@@ -98,6 +98,10 @@ type Connector struct {
 	// the connector sighted, which then waits in review with the guess beside
 	// it. A tag or a rule still places it first.
 	PersonSorts bool `json:"person_sorts,omitempty" yaml:"person_sorts"`
+	// SourceParameters are the source's own settings for this connector, such
+	// as the playlist that a video source reads. The source names the keys it
+	// takes and checks their values through its Source's Rules.
+	SourceParameters map[string]string `json:"source_parameters,omitempty" yaml:"source_parameters"`
 }
 
 // Scheduled says whether c runs on its schedule, as a poll or a folder does.
@@ -334,8 +338,9 @@ func decodeFile(file string, into any) error {
 // connector and destination are declared, that a tag places an item on one
 // destination, that one destination at most is a side's default, that a
 // schedule parses, that a drop's format, a destination's deliverer and the
-// deleter of a poll that deletes after landing are registered, and that a
-// folder's root is one of roots. nil roots skips that check.
+// deleter of a poll that deletes after landing are registered, that each
+// connector holds to the rules its source registers, and that a folder's root
+// is one of roots. nil roots skips that check.
 func Validate(s Set, roots []string) []Invalid {
 	compiled, err := compiledSchemas()
 	if err != nil {
@@ -417,9 +422,7 @@ func (c Connector) problems(compiled declarationSchemas, roots []string) []strin
 			out = append(out, fmt.Sprintf("schedule %q is not a cron expression or once: %v", c.Schedule, err))
 		}
 	}
-	if c.AfterLanding == AfterLandingDelete && !deleters[c.Source] {
-		out = append(out, fmt.Sprintf("after_landing: source %s registers no deleter in this build, so nothing would delete what it lands", c.Source))
-	}
+	out = append(out, c.sourceProblems()...)
 	if c.Format != "" {
 		f, ok := dropFormats[c.Format]
 		switch {

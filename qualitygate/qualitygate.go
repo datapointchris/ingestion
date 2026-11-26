@@ -94,9 +94,10 @@ func ReadAnswer(raw json.RawMessage) (Answer, error) {
 	return DecodeAnswer(raw)
 }
 
-// DecodeAnswer decodes a stored answer under no schema, because an answer
-// kept under an earlier prompt holds that prompt's fields, and its run's
-// schema checked it when it arrived. A field that its prompt did not ask for
+// DecodeAnswer decodes a stored answer without checking it against this
+// build's schema. An answer kept under an earlier prompt holds that prompt's
+// fields, and a CLI reads a service of another release. Its run's schema
+// checked it when it arrived, and a field that its prompt did not ask for
 // decodes empty. The schema counts 7.0 as an integer, so quality decodes as a
 // number and is kept whole.
 func DecodeAnswer(raw json.RawMessage) (Answer, error) {
