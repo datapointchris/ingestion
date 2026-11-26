@@ -12,6 +12,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+
+	"github.com/datapointchris/ingestion/store"
 )
 
 // profileMax bounds the document that pdf-structure writes. An outline of
@@ -26,8 +28,10 @@ type Profile struct {
 	PageLabels []PageLabel    `json:"page_labels"`
 	// CreationDate is the metadata's creationDate as the PDF writes it, such
 	// as D:20190415093021+02'00', and nil where it holds none.
-	CreationDate *string    `json:"creation_date"`
-	FontShares   FontShares `json:"font_shares"`
+	CreationDate *string `json:"creation_date"`
+	// Title is the metadata's title, and nil where it holds none.
+	Title      *string    `json:"title"`
+	FontShares FontShares `json:"font_shares"`
 }
 
 // OutlineEntry is one entry of a PDF's outline.
@@ -72,6 +76,20 @@ func readProfile(r io.Reader) (Profile, error) {
 		return Profile{}, fmt.Errorf("a profile past %d bytes", profileMax)
 	}
 	return decodeProfile(raw)
+}
+
+// NewestProfile is the profile of the newest done structure output among
+// outputs, and false where none is done.
+func NewestProfile(outputs []store.Output) (Profile, bool, error) {
+	structure := store.NewestDone(outputs, store.StageStructure)
+	if structure == nil {
+		return Profile{}, false, nil
+	}
+	p, err := decodeProfile(structure.Answer)
+	if err != nil {
+		return Profile{}, false, fmt.Errorf("read %s's profile from %s %s: %w", structure.ItemKey, structure.Producer, structure.ProducerVersion, err)
+	}
+	return p, true, nil
 }
 
 // decodeProfile reads raw as a profile, refusing an unknown field and a

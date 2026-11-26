@@ -6,7 +6,7 @@
 """Write one JSON document profiling the structure of the PDF read on stdin.
 
 The document holds the page count, every outline entry as its level, title and
-PDF page, the page-label rules, the metadata's raw creationDate, and font
+PDF page, the page-label rules, the metadata's raw creationDate and title, and font
 shares. A font share is the share of sampled pages whose fonts include a
 monospace one, or a TeX or math one. Every fifth page is sampled, from the
 first. An outline entry whose target lies outside the document has page null.
@@ -93,6 +93,7 @@ def profile_of(doc):
         "outline": outline,
         "page_labels": labels,
         "creation_date": (doc.metadata or {}).get("creationDate") or None,
+        "title": (doc.metadata or {}).get("title") or None,
         "font_shares": font_shares(doc),
     }
 

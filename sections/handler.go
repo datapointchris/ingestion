@@ -21,9 +21,9 @@ import (
 const (
 	// Producer is the program that writes each structure output.
 	Producer = "pdf-structure"
-	// Version names PyMuPDF's, so a library upgrade writes its profile beside
-	// the old one.
-	Version = "1+pymupdf-" + extract.PyMuPDFVersion
+	// Version names the program's number and PyMuPDF's, so a changed program
+	// or a library upgrade writes its profile beside the old one.
+	Version = "2+pymupdf-" + extract.PyMuPDFVersion
 	// Capability is the capability of every structure task.
 	Capability = store.StageStructure + ":" + Producer
 	// Program is where the worker image installs pdf-structure.
