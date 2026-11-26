@@ -90,6 +90,9 @@ type Item struct {
 	// Path is the item's file below its deliverer's root, as the delivery
 	// first kept it, and nil for a deliverer that writes no file.
 	Path *string
+	// Chapter is where a book's chapter sits in its book's record, as the
+	// delivery first kept it, and nil for every other item.
+	Chapter *store.ChapterInBook
 }
 
 // Outcome is how one write of an item ended.
@@ -146,7 +149,7 @@ func (h handler) Run(ctx context.Context, task worker.Task) worker.Result {
 	}
 	o := h.deliverer.Deliver(ctx, Item{
 		Key: *task.ItemKey, Zone: task.Zone, Title: task.Title, URL: task.URL, LandedTS: task.LandedTS, SourceTS: task.SourceTS,
-		Path: task.Path,
+		Path: task.Path, Chapter: chapterOf(task),
 	})
 	delivery := &server.ReportDelivery{Outcome: o.Outcome, DestinationID: o.DestinationID, Error: o.Error}
 	switch {
@@ -156,6 +159,18 @@ func (h handler) Run(ctx context.Context, task worker.Task) worker.Result {
 		return worker.Result{Outcome: server.OutcomeFailed, Error: o.Error, Delivery: delivery}
 	}
 	return worker.Result{Outcome: server.OutcomeRetry, Error: o.Error, RetryAfter: backoff(task.Attempts), Delivery: delivery}
+}
+
+// chapterOf is where the task's chapter sits in its book's record, and nil
+// where the task's delivery keeps none.
+func chapterOf(task worker.Task) *store.ChapterInBook {
+	if task.BookDestinationID == nil || task.PDFPageStart == nil || task.PDFPageEnd == nil {
+		return nil
+	}
+	return &store.ChapterInBook{
+		BookDestinationID: *task.BookDestinationID, PDFPageStart: *task.PDFPageStart, PDFPageEnd: *task.PDFPageEnd,
+		PrintedPageStart: task.PrintedPageStart, PrintedPageEnd: task.PrintedPageEnd,
+	}
 }
 
 // backoff is how long a pending delivery waits after its attempt-th claim.

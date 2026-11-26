@@ -17,15 +17,22 @@ func (t *Tx) Delivery(ctx context.Context, key, destination string) (Delivery, b
 	return first[Delivery](ctx, t.tx, table("deliveries"), `item_key = ? AND destination = ?`, key, destination)
 }
 
+// Deliveries reads each of the item's deliveries, one per destination.
+func (t *Tx) Deliveries(ctx context.Context, key string) ([]Delivery, error) {
+	return readInto[Delivery](ctx, t.tx, table("deliveries"), `item_key = ? ORDER BY destination`, key)
+}
+
 // QueueDelivery queues the task that writes item to destination through
 // deliverer, and records the delivery pending where it is new, with the
-// item's title, URL and source time and path as every attempt sends them.
-// path is the item's file below the deliverer's root, and nil for a deliverer
-// that writes no file. It queues nothing where the delivery is settled,
-// because a destination can forget a record it held, so a second write could
-// save the item again. It queues nothing where a deliver task for the item and
-// destination is queued or leased. It answers whether it queued.
-func (t *Tx) QueueDelivery(ctx context.Context, item Item, path *string, destination, deliverer string) (bool, error) {
+// item's title, URL and source time, path and chapter as every attempt sends
+// them. path is the item's file below the deliverer's root, and nil for a
+// deliverer that writes no file. chapter is where a book's chapter sits in its
+// book's record, and nil for every other item. It queues nothing where the
+// delivery is settled, because a destination can forget a record it held, so
+// a second write could save the item again. It queues nothing where a deliver
+// task for the item and destination is queued or leased. It answers whether
+// it queued.
+func (t *Tx) QueueDelivery(ctx context.Context, item Item, path *string, chapter *ChapterInBook, destination, deliverer string) (bool, error) {
 	key := item.Key
 	held, ok, err := t.Delivery(ctx, key, destination)
 	if err != nil || (ok && held.Settled()) {
@@ -36,10 +43,15 @@ func (t *Tx) QueueDelivery(ctx context.Context, item Item, path *string, destina
 		return false, err
 	}
 	if !ok {
-		if err := t.PutDelivery(ctx, Delivery{
+		d := Delivery{
 			ItemKey: key, Destination: destination, Outcome: DeliveryPending, Title: item.Title, URL: item.URL, SourceTS: item.SourceTS,
 			Path: path,
-		}); err != nil {
+		}
+		if chapter != nil {
+			d.BookDestinationID, d.PDFPageStart, d.PDFPageEnd = &chapter.BookDestinationID, &chapter.PDFPageStart, &chapter.PDFPageEnd
+			d.PrintedPageStart, d.PrintedPageEnd = chapter.PrintedPageStart, chapter.PrintedPageEnd
+		}
+		if err := t.PutDelivery(ctx, d); err != nil {
 			return false, err
 		}
 	}

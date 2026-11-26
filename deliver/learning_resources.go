@@ -19,6 +19,8 @@ import (
 // LearningResources is the deliverer that creates each book as a resource in
 // learning, through learning's POST /api/v1/resources with the item's key as
 // the resource's source_key and its file's path as the resource's file_path.
+// It creates each book's chapter there too, as a chapter resource part of its
+// book's resource, with its pages.
 const LearningResources = "learning-resources"
 
 // LearningResourcesScopes is what the learning client asks its token for: the
@@ -31,14 +33,14 @@ func init() {
 	})
 }
 
-// pdfMediaType is the one media type that learning-resources writes, as a
-// book whose copy is a PDF.
+// pdfMediaType is the media type that learning-resources writes as a book
+// whose copy is a PDF. It writes a book's chapter beside it.
 const pdfMediaType = "application/pdf"
 
-var errNotPDF = errors.New("it is not a PDF, and learning holds a book's file only as its pdf copy")
+var errNotPDF = errors.New("it is not a PDF or a book's chapter, and learning holds a book's file only as its pdf copy")
 
 func learningTakes(item store.Item) error {
-	if item.MediaType != pdfMediaType {
+	if item.MediaType != pdfMediaType && !item.PlacedThroughParent() {
 		return errNotPDF
 	}
 	return nil
@@ -62,13 +64,53 @@ type learningResources struct {
 
 // learningResource is the create's body, following learning's ResourceCreate.
 // It names the type by name, so it needs no type id. It sends no zone, so the
-// item's zone does not reach learning.
+// item's zone does not reach learning. A book sends its copy and path, and a
+// chapter sends its book's id and its pages instead.
 type learningResource struct {
-	Title        string `json:"title"`
-	ResourceType string `json:"resource_type"`
-	BookCopy     string `json:"book_copy"`
-	FilePath     string `json:"file_path"`
-	SourceKey    string `json:"source_key"`
+	Title            string  `json:"title"`
+	ResourceType     string  `json:"resource_type"`
+	BookCopy         string  `json:"book_copy,omitempty"`
+	FilePath         string  `json:"file_path,omitempty"`
+	SourceKey        string  `json:"source_key"`
+	PartOf           int64   `json:"part_of,omitempty"`
+	PDFPageStart     int     `json:"pdf_page_start,omitempty"`
+	PDFPageEnd       int     `json:"pdf_page_end,omitempty"`
+	PrintedPageStart *string `json:"printed_page_start,omitempty"`
+	PrintedPageEnd   *string `json:"printed_page_end,omitempty"`
+}
+
+// bookResource is the create of the book whose pdf copy is the file at path.
+// Its title is the item's, else the file's name.
+func bookResource(item Item) (learningResource, error) {
+	if item.Path == nil || *item.Path == "" {
+		return learningResource{}, errors.New("the delivery holds no file path, which a learning book needs")
+	}
+	title := strings.TrimSuffix(path.Base(*item.Path), path.Ext(*item.Path))
+	if item.Title != nil && strings.TrimSpace(*item.Title) != "" {
+		title = *item.Title
+	}
+	return learningResource{Title: title, ResourceType: "book", BookCopy: "pdf", FilePath: *item.Path, SourceKey: item.Key}, nil
+}
+
+// chapterResource is the create of the chapter part of its book's resource.
+// learning takes a chapter's printed pages only as a pair, so where the book
+// prints one end and not the other, it sends neither.
+func chapterResource(item Item) (learningResource, error) {
+	c := item.Chapter
+	book, err := strconv.ParseInt(c.BookDestinationID, 10, 64)
+	if err != nil || book <= 0 {
+		return learningResource{}, fmt.Errorf("the chapter's book is %q in learning, which names no resource", c.BookDestinationID)
+	}
+	if item.Title == nil || strings.TrimSpace(*item.Title) == "" {
+		return learningResource{}, errors.New("the chapter holds no title, which a learning resource needs")
+	}
+	r := learningResource{
+		Title: *item.Title, ResourceType: "chapter", SourceKey: item.Key, PartOf: book, PDFPageStart: c.PDFPageStart, PDFPageEnd: c.PDFPageEnd,
+	}
+	if c.PrintedPageStart != nil && *c.PrintedPageStart != "" && c.PrintedPageEnd != nil && *c.PrintedPageEnd != "" {
+		r.PrintedPageStart, r.PrintedPageEnd = c.PrintedPageStart, c.PrintedPageEnd
+	}
+	return r, nil
 }
 
 // learningCreated is learning's 200 and 201 answer, its ResourceCreated.
@@ -94,26 +136,26 @@ type learningHolder struct {
 	SourceKey  *string `json:"source_key"`
 }
 
-// Deliver creates item as a book whose pdf copy is the file at its path.
+// Deliver creates item as a book whose pdf copy is the file at its path, or,
+// where it is a book's chapter, as a chapter part of its book's resource.
 // learning answers 201 for a new resource. It answers 200 for a resource it
 // already held: one under no key that held exactly the path and took the key,
 // adopted, or one that the key already names. Either is delivered-to-existing.
 // Where learning answers 409 naming a resource, the delivery is refused with
 // that resource. A 5xx, 408 or 429 leaves it pending to try again, and any
 // other answer fails the task, since sending the same request cannot mend it.
-// The title and path are the delivery's as first queued, so a repeat sends the
-// same body, and learning answers it as the key's own.
+// The title, path, book and pages are the delivery's as first queued, so a
+// repeat sends the same body, and learning answers it as the key's own.
 func (l learningResources) Deliver(ctx context.Context, item Item) Outcome {
-	if item.Path == nil || *item.Path == "" {
-		return permanent("the delivery holds no file path, which a learning book needs")
+	create := bookResource
+	if item.Chapter != nil {
+		create = chapterResource
 	}
-	title := strings.TrimSuffix(path.Base(*item.Path), path.Ext(*item.Path))
-	if item.Title != nil && strings.TrimSpace(*item.Title) != "" {
-		title = *item.Title
+	resource, err := create(item)
+	if err != nil {
+		return permanent(err.Error())
 	}
-	body, err := json.Marshal(learningResource{
-		Title: title, ResourceType: "book", BookCopy: "pdf", FilePath: *item.Path, SourceKey: item.Key,
-	})
+	body, err := json.Marshal(resource)
 	if err != nil {
 		return permanent(err.Error())
 	}
@@ -151,7 +193,7 @@ func (l learningResources) Deliver(ctx context.Context, item Item) Outcome {
 			return pending("learning answered 409 naming no resource: " + quoted(raw))
 		}
 		id := strconv.FormatInt(c.ResourceID, 10)
-		why := learningRefusal(c, *item.Path)
+		why := learningRefusal(c, resource.FilePath)
 		return Outcome{Outcome: store.DeliveryRefused, DestinationID: &id, Error: &why}
 	}
 	if resp.StatusCode >= 500 || resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooManyRequests {

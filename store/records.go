@@ -361,11 +361,27 @@ type Delivery struct {
 	// queued, which every attempt sends. So is Path, for a deliverer that
 	// writes an item by its file: its live home's path below the root that
 	// the deliverer's config names. It is nil for every other deliverer.
-	Title     *string `json:"title"`
-	URL       *string `json:"url"`
-	SourceTS  *string `json:"source_ts"`
-	Path      *string `json:"path"`
-	UpdatedTS string  `json:"updated_ts"`
+	Title    *string `json:"title"`
+	URL      *string `json:"url"`
+	SourceTS *string `json:"source_ts"`
+	Path     *string `json:"path"`
+	// BookDestinationID and the pages are a book's chapter's, kept the same
+	// way from its ChapterInBook, and nil for every other item.
+	BookDestinationID *string `json:"book_destination_id"`
+	PDFPageStart      *int    `json:"pdf_page_start"`
+	PDFPageEnd        *int    `json:"pdf_page_end"`
+	PrintedPageStart  *string `json:"printed_page_start"`
+	PrintedPageEnd    *string `json:"printed_page_end"`
+	UpdatedTS         string  `json:"updated_ts"`
+}
+
+// ChapterInBook is where a book's chapter sits in its destination: the
+// destination's id for its book's record, from the book's settled delivery,
+// and the chapter's pages in the book, from the newest sections that name it.
+type ChapterInBook struct {
+	BookDestinationID                string
+	PDFPageStart, PDFPageEnd         int
+	PrintedPageStart, PrintedPageEnd *string
 }
 
 // A connector's first fill: none until an item reaches a model stage, held

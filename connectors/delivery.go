@@ -90,6 +90,13 @@ const (
 	// UndeliveredNotTaken is an item that the destination's deliverer cannot
 	// write, such as one with no URL for a deliverer that saves links.
 	UndeliveredNotTaken = "not-taken"
+	// UndeliveredBookUnsettled is a book's chapter whose book holds no
+	// settled delivery to the destination. The chapter names its book's
+	// record there, so it waits until the book's delivery settles.
+	UndeliveredBookUnsettled = "book-unsettled"
+	// UndeliveredBookRefused is a book's chapter whose book the destination
+	// refused, so no record there holds the chapter.
+	UndeliveredBookRefused = "book-refused"
 )
 
 // Undelivered is why an item that a side decision placed reaches no
@@ -112,6 +119,10 @@ func (u *Undelivered) Error() string {
 		return fmt.Sprintf("%s is not a destination the set in force declares", u.Destination)
 	case UndeliveredNotTaken:
 		return fmt.Sprintf("%s's deliverer %s cannot take the item: %s", u.Destination, u.Deliverer, u.Why)
+	case UndeliveredBookUnsettled:
+		return fmt.Sprintf("the item is a chapter, and its book's delivery to %s has not settled, so the chapter waits for it", u.Destination)
+	case UndeliveredBookRefused:
+		return fmt.Sprintf("the item is a chapter, and %s refused its book, so the chapter has no book there to be part of", u.Destination)
 	default:
 		return fmt.Sprintf("%s names no deliverer, so nothing writes the items placed there", u.Destination)
 	}
@@ -122,7 +133,8 @@ func (u *Undelivered) Error() string {
 // destination is not declared, names no deliverer, or has a deliverer that
 // cannot take item, and where side names none and its side has no default.
 // homes are the item's homes, whose live ones a deliverer writing by file
-// path reads.
+// path reads. A book's chapter holds no file, so a deliverer writing by file
+// path writes it as part of its book's record instead.
 func (s Set) DeliveryTo(side store.Decision, item store.Item, homes []store.Home) (Destination, *Undelivered) {
 	var d Destination
 	var ok bool
@@ -138,7 +150,7 @@ func (s Set) DeliveryTo(side store.Decision, item store.Item, homes []store.Home
 	}
 	if r, ok := deliverers[d.Deliverer]; ok {
 		err := r.takes(item)
-		if err == nil {
+		if err == nil && !item.PlacedThroughParent() {
 			_, err = FilePath(d.Deliverer, homes)
 		}
 		if err != nil {

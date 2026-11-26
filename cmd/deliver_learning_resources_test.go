@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -21,6 +22,7 @@ import (
 	"github.com/datapointchris/ingestion/deliver"
 	"github.com/datapointchris/ingestion/extract"
 	"github.com/datapointchris/ingestion/itemkey"
+	"github.com/datapointchris/ingestion/sections"
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
 	"github.com/datapointchris/ingestion/worker"
@@ -38,26 +40,32 @@ const (
 // ResourceCreated or a CreateConflictResponse. It admits a service token whose
 // scp holds learning.resources.write. A key already held answers first: 200
 // where the body matches the one that made or adopted its resource, and 409
-// source_key otherwise or where that resource is deleted. A path that one live
-// resource holds exactly under no key is adopted. A path held under another
-// key, inside a held directory, by two resources, or by deleted ones alone
-// answers 409 file_path naming its holders.
+// source_key otherwise or where that resource is deleted. A chapter is then
+// created where its part_of names a live book, and refused 422 otherwise. A
+// path that one live resource holds exactly under no key is adopted. A path
+// held under another key, inside a held directory, by two resources, or by
+// deleted ones alone answers 409 file_path naming its holders.
 type standInLearning struct {
 	*httptest.Server
 	mu        sync.Mutex
 	resources []*standInResource
 	// creates holds each create's body in the order it came.
 	creates []standInCreate
-	// failing counts the creates of each file_path that answer 500 first.
+	// failing counts the creates of each source_key that answer 500 first.
 	failing map[string]int
 }
 
 type standInCreate struct {
-	Title        string `json:"title"`
-	ResourceType string `json:"resource_type"`
-	BookCopy     string `json:"book_copy"`
-	FilePath     string `json:"file_path"`
-	SourceKey    string `json:"source_key"`
+	Title            string `json:"title"`
+	ResourceType     string `json:"resource_type"`
+	BookCopy         string `json:"book_copy"`
+	FilePath         string `json:"file_path"`
+	SourceKey        string `json:"source_key"`
+	PartOf           int64  `json:"part_of"`
+	PDFPageStart     int    `json:"pdf_page_start"`
+	PDFPageEnd       int    `json:"pdf_page_end"`
+	PrintedPageStart string `json:"printed_page_start"`
+	PrintedPageEnd   string `json:"printed_page_end"`
 }
 
 type standInResource struct {
@@ -83,21 +91,26 @@ func newStandInLearning(t *testing.T, provider *authtest.Provider) *standInLearn
 			return
 		}
 		var body standInCreate
-		if json.NewDecoder(r.Body).Decode(&body) != nil || body.Title == "" || body.FilePath == "" || body.SourceKey == "" {
+		if json.NewDecoder(r.Body).Decode(&body) != nil || body.Title == "" || body.SourceKey == "" {
 			writeLearning(w, http.StatusBadRequest, map[string]any{"error": "Bad Request", "message": "title is required"})
 			return
 		}
-		if body.ResourceType != "book" {
+		chapter := body.ResourceType == "chapter"
+		if !chapter && body.ResourceType != "book" {
 			writeLearning(w, http.StatusUnprocessableEntity, map[string]any{
-				"error": "Unprocessable Entity", "message": "resource_type names no resource type", "field": "resource_type", "known": []string{"book"},
+				"error": "Unprocessable Entity", "message": "resource_type names no resource type", "field": "resource_type", "known": []string{"book", "chapter"},
 			})
+			return
+		}
+		if chapter == (body.FilePath != "") || chapter == (body.PartOf == 0) {
+			writeLearning(w, http.StatusBadRequest, map[string]any{"error": "Bad Request", "message": "a book takes a file_path, and a chapter a part_of"})
 			return
 		}
 		l.mu.Lock()
 		defer l.mu.Unlock()
 		l.creates = append(l.creates, body)
-		if l.failing[body.FilePath] > 0 {
-			l.failing[body.FilePath]--
+		if l.failing[body.SourceKey] > 0 {
+			l.failing[body.SourceKey]--
 			writeLearning(w, http.StatusInternalServerError, map[string]any{"error": "Internal Server Error", "message": "connection reset"})
 			return
 		}
@@ -108,6 +121,20 @@ func newStandInLearning(t *testing.T, provider *authtest.Provider) *standInLearn
 				return
 			}
 			l.created(w, http.StatusOK, held, false)
+			return
+		}
+		if chapter {
+			if !slices.ContainsFunc(l.resources, func(res *standInResource) bool {
+				return res.id == body.PartOf && !res.deleted && (res.made == nil || res.made.ResourceType == "book")
+			}) {
+				writeLearning(w, http.StatusUnprocessableEntity, map[string]any{
+					"error": "Unprocessable Entity", "message": fmt.Sprintf("%d names no live book", body.PartOf), "field": "part_of",
+				})
+				return
+			}
+			res := &standInResource{id: int64(len(l.resources) + 1), sourceKey: &body.SourceKey, made: &body}
+			l.resources = append(l.resources, res)
+			l.created(w, http.StatusCreated, res, false)
 			return
 		}
 		var live, deleted []*standInResource
@@ -245,7 +272,7 @@ func TestABookPlacedAtLearningIsCreatedThereUnderItsKeyAtItsPath(t *testing.T) {
 	p.apply(t, declarations)
 	learning := newStandInLearning(t, p.provider)
 	byHand, series, gone := learning.hold("shelf/by-hand.pdf", false), learning.hold("series", false), learning.hold("gone.pdf", true)
-	learning.failing["flaky.pdf"] = 1
+	learning.failing[keys["flaky.pdf"]] = 1
 
 	cfg := fileConfig{Deliver: map[string]deliverTable{deliver.LearningResources: {
 		serviceClient: serviceClient{API: learning.URL, ClientID: learningClient}, Root: "books",
@@ -327,5 +354,131 @@ func TestABookPlacedAtLearningIsCreatedThereUnderItsKeyAtItsPath(t *testing.T) {
 	}
 	if d := p.shown(t, keys["flaky.pdf"]).Deliveries; len(d) != 1 || d[0].Outcome != store.DeliveryDelivered || text(d[0].DestinationID) != "5" {
 		t.Errorf("flaky.pdf holds deliveries %s after its retry, want delivered as 5", jsonOf(d))
+	}
+}
+
+// Each chapter of a book placed at learning is created there as a chapter part
+// of its book's resource, with its PDF and printed pages, once the book's
+// delivery has settled. A book that learning fails first holds its chapters
+// back, and the write that delivers it queues them. A refused book delivers no
+// chapter. A chapter that learning fails first sends its first body again. A
+// replay of every delivery then queues nothing.
+func TestEachChapterEntersLearningPartOfItsBookOnceTheBookIsThere(t *testing.T) {
+	ctx := t.Context()
+	dir, books := t.TempDir(), t.TempDir()
+	script := func(name, body string) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte("#!/bin/sh\ncat >/dev/null\n"+body), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	pdfText := extract.Program(extract.PDFText.Name, extract.PDFText.Version, extract.MediaTypePDF, script("pdf-text",
+		`printf '%s\n' '{"label":"i","text":"Contents"}' '{"label":"1","text":"One"}' '{"label":"2","text":"Two"}' `+
+			`'{"label":"3","text":"Three"}' '{"label":"4","text":"Four"}' '{"label":"5","text":"Index"}'`+"\n"))
+	pdfText.Positional = true
+	extractors, err := extract.NewRegistry(pdfText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pdfStructure := script("pdf-structure", `printf '%s\n' '{"pages":6,"outline":[`+
+		`{"level":1,"title":"Contents","page":1},{"level":1,"title":"Chapter 1","page":2},{"level":1,"title":"Chapter 2","page":4},`+
+		`{"level":1,"title":"Chapter 3","page":5},{"level":1,"title":"Index","page":6}],"page_labels":[],`+
+		`"font_shares":{"sampled_pages":2,"monospace":0,"tex_or_math":0}}'`+"\n")
+	keys := map[string]string{}
+	for name, body := range map[string]string{"flaky.pdf": "a book learning fails once", "series/part-1.pdf": "a part of a series"} {
+		path := filepath.Join(books, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256([]byte(body))
+		if keys[name], err = itemkey.FromFileSHA256(hex.EncodeToString(sum[:])); err != nil {
+			t.Fatal(err)
+		}
+	}
+	flaky, refused := keys["flaky.pdf"], keys["series/part-1.pdf"]
+
+	p := newPipelineOver(t, extractors, afterStage(quiet), map[string]string{"books": books})
+	declarations := lifeSet(t, withLife+"  - name: learning\n    side: personal\n    tags: [book]\n    deliverer: learning-resources\n")
+	p.apply(t, declarations)
+	learning := newStandInLearning(t, p.provider)
+	learning.hold("series", false)
+	learning.failing[flaky], learning.failing[flaky+"#2"] = 1, 1
+	cfg := fileConfig{Deliver: map[string]deliverTable{deliver.LearningResources: {
+		serviceClient: serviceClient{API: learning.URL, ClientID: learningClient}, Root: "books",
+	}}}
+	cfg.Serve.Homes = map[string]string{"books": books}
+	if err := setDelivererRoots(cfg); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(deliverSecretEnv(deliver.LearningResources), learningSecret)
+	handlers := workerHandlers(p.worker, openDeliverers(ctx, cfg, p.provider.URL, quiet), nil, nil, modelConfig{}, quiet)
+	learningResources := handlers[slices.IndexFunc(handlers, func(h worker.Handler) bool {
+		return h.Capability() == store.DeliverCapability(deliver.LearningResources)
+	})]
+	set, err := connectors.Read(declarations, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	folder, _ := set.Connector("books-folder")
+	if _, err := connectors.ScanFolder(ctx, p.lander, folder, time.Now().Add(time.Minute), time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	p.parse(t, extractors)
+	if n := p.run(t, sections.NewHandler(pdfStructure, p.worker, quiet)); n != 2 {
+		t.Fatalf("ran %d structure tasks, want one for each book", n)
+	}
+	p.scanFindingNothing(t)
+
+	if ran := p.run(t, learningResources); ran != 2 {
+		t.Fatalf("the worker ran %d deliveries, want the two books' and no chapter's", ran)
+	}
+	for key, reason := range map[string]string{flaky + "#1": connectors.UndeliveredBookUnsettled, refused + "#1": connectors.UndeliveredBookRefused} {
+		if u := p.shown(t, key).Undelivered; u == nil || u.Reason != reason {
+			t.Errorf("%s waits undelivered %s, want %s", key, jsonOf(u), reason)
+		}
+	}
+
+	p.advance(time.Hour)
+	if ran := p.run(t, learningResources); ran != 4 {
+		t.Fatalf("after its backoff, the worker ran %d deliveries, want the book's retry and its 3 chapters", ran)
+	}
+	p.advance(time.Hour)
+	if ran := p.run(t, learningResources); ran != 1 {
+		t.Fatalf("after its backoff, the worker ran %d deliveries, want the second chapter's retry", ran)
+	}
+	book, err := strconv.ParseInt(text(p.shown(t, flaky).Deliveries[0].DestinationID), 10, 64)
+	if err != nil {
+		t.Fatalf("the book's delivery names learning's resource %v", err)
+	}
+	for n, pages := range []struct {
+		pdf     [2]int
+		printed [2]string
+	}{{[2]int{2, 3}, [2]string{"1", "2"}}, {[2]int{4, 4}, [2]string{"3", "3"}}, {[2]int{5, 5}, [2]string{"4", "4"}}} {
+		key := fmt.Sprintf("%s#%d", flaky, n+1)
+		want := standInCreate{
+			Title: fmt.Sprintf("Chapter %d", n+1), ResourceType: "chapter", SourceKey: key, PartOf: book,
+			PDFPageStart: pages.pdf[0], PDFPageEnd: pages.pdf[1], PrintedPageStart: pages.printed[0], PrintedPageEnd: pages.printed[1],
+		}
+		attempts := 1
+		if n == 1 {
+			attempts = 2
+		}
+		sent := learning.sent(key)
+		if len(sent) != attempts || slices.ContainsFunc(sent, func(c standInCreate) bool { return c != want }) {
+			t.Errorf("learning was sent %+v for %s, want each attempt to create %+v", sent, key, want)
+		}
+		if d := p.shown(t, key).Deliveries; len(d) != 1 || d[0].Outcome != store.DeliveryDelivered || d[0].DestinationID == nil {
+			t.Errorf("%s holds deliveries %s, want one delivered", key, jsonOf(d))
+		}
+	}
+	if sent := learning.sent(refused + "#1"); len(sent) != 0 {
+		t.Errorf("learning was sent %+v for a chapter of the refused book, want nothing", sent)
+	}
+	if queued := p.replayDeliveries(t); queued != 0 {
+		t.Errorf("a replay of every delivery queued %d, want none, as each is settled or waits on a refused book", queued)
 	}
 }

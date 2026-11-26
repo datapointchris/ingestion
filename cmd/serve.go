@@ -93,6 +93,7 @@ func afterStage(log *slog.Logger) server.AfterStage {
 		store.StageContents:  {contents.AfterAnswer(log)},
 		store.StageScan:      {qualitygate.QueueAfterScan},
 		store.StageQuality:   {qualitygate.DecideAfterAnswer},
+		store.StageDeliver:   {route.AfterDelivery},
 	}
 	gates := route.AfterStage(log)
 	return func(ctx context.Context, tx *store.Tx, task store.Task) error {
