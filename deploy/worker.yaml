@@ -116,8 +116,8 @@ spec:
           # parse report carries, peaked at 336 MiB in the worker and 110 MiB in
           # yr, and wrote 70 MiB of the text's two views to /tmp. Docling and
           # Whisper share the heavy slot group, so a worker runs one of their
-          # parses at a time on its two slots. A Docling run beside a scan peaks
-          # near 3.9 GiB. Two heavy runs at once can pass the limit, so a
+          # parses at a time on its three slots. A Docling run beside two scans
+          # peaks near 4.4 GiB. Two heavy runs at once can pass the limit, so a
           # [worker.slot_limits] entry that raises heavy raises it too.
           # Docling's figure is `/usr/bin/time -v pdf-docling < <the PDF>`,
           # Whisper's is `/usr/bin/time -v audio-whisper < <the audio>` on four

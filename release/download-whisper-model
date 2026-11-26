@@ -29,9 +29,11 @@ fi
 directory=$1
 
 # Each line is a repository, its commit, a file's path in it and the file's
-# SHA-256. The repository is the CTranslate2 conversion of Whisper
-# large-v3-turbo that faster-whisper itself names for large-v3-turbo, and
-# Whisper's weights are MIT licensed.
+# SHA-256. The repository is a CTranslate2 conversion of Whisper
+# large-v3-turbo, and Whisper's weights are MIT licensed. It is the one that
+# faster-whisper's own name for the model,
+# mobiuslabsgmbh/faster-whisper-large-v3-turbo, redirected to when these pins
+# were taken.
 pins='
 dropbox-dash/faster-whisper-large-v3-turbo 0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf config.json b0253ea6c0d3bea6b1e19e91a02acfd3b53f4467362efcb5a3e6b16c9b3a9b7e
 dropbox-dash/faster-whisper-large-v3-turbo 0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf preprocessor_config.json 7ccc62c6f2765af1f3b46c00c9b5894426835a05021c8b9c01eecb6dfb542711

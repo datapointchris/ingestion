@@ -25,7 +25,7 @@ never ahead of it. A stage's code goes in its own package:
 | `itemkey` | the one component that derives an item's key from any form of its artifact |
 | `landing` | an artifact's bytes written under their SHA-256 or referenced under a named root, the item and one sighting per connector, in a write of its own or in a caller's, with the hook that a new sighting of a held item runs, each item's source time and the fill that reads it from bytes already landed, and the report of blobs and rows that disagree |
 | `redditexport` | the Reddit bookmarklet's export, as a store keeps it, split into one save each and landed as an item with a child per save, registered as the drop format `reddit-export`; and in `bookmarklet/`, the bookmarklet and the command that writes the page installing it |
-| `extract` | one primary extractor per media type, which landing queues, and the secondary ones that another stage queues, each writing versioned text and units, a positional one keeping each blank unit in place; an extractor that a source registers, which reads its item through the source's client because the item holds no bytes, and may write its parse deferred to another extractor, which `QueueDeferredParse` queues; `SlotGroupHeavy`, the slot group that Docling and Whisper share; `Transcribe`, which runs `audio-whisper`; and in `programs/`, the Python programs that the image installs at `ProgramDir`: `pdf-text`, which writes one unit per PDF page, `pdf-docling`, which writes Docling's markdown of each PDF page from the image's pinned models, `pdf-structure`, which writes a PDF's profile for `sections`, and `audio-whisper`, which decodes audio with the image's ffmpeg and transcribes it with faster-whisper from the image's pinned model |
+| `extract` | one primary extractor per media type, which landing queues, and the secondary ones that another stage queues, each writing versioned text and units, a positional one keeping each blank unit in place; an extractor that a source registers, which reads its item through the source's client because the item holds no bytes, and may write its parse deferred to another extractor, whose parse `QueueDeferredParse` queues; `SlotGroupHeavy`, the slot group that Docling and Whisper share; `Transcribe`, which runs `audio-whisper`; and in `programs/`, the Python programs that the image installs at `ProgramDir`: `pdf-text`, which writes one unit per PDF page, `pdf-docling`, which writes Docling's markdown of each PDF page from the image's pinned models, `pdf-structure`, which writes a PDF's profile for `sections`, and `audio-whisper`, which decodes audio with the image's ffmpeg and transcribes it with faster-whisper from the image's pinned model; `AfterParse`, which routes the write that ends a parse on the output it wrote; and `SlotGroups`, each slot group's default limit |
 | `sections` | the structure stage and the sections that serve writes from it: the worker's handler that runs `pdf-structure` over a PDF's bytes, the outline rule and the printed-page offset and page labels, `Squashed` and `TitleKey`, which fold a title for any search or match, `FromEntries`, which kinds any producer's entries by that rule, the write that ends the structure task, which writes one `sections` row per outline entry and the book's source time from its creation date, and queues a Docling parse where the profile is code-heavy and math-light, and `Write`, which any producer of sections calls to write them and to make a chapter item per body chapter that takes its book's decisions through `route.PassToChapters` |
 | `contents` | the model stage that reads the printed contents pages of a long PDF whose outline gives it no sections: the hook after a structure, which queues the task on a book's first profile and places a stored answer again on a later one, its prompt's data for `modelstage`'s handler, and the placement that serve runs on its answer, which maps each entry's printed page to a PDF page by label or offset, the offset voted by the pages its entries' titles open where the book prints no page numbers, searches near it for the title, and writes producer `contents` sections through `sections.Write` |
 | `isolatedprocess` | the one door that starts a program over outsider bytes, in a temporary directory of its own with an environment that holds no secret |
@@ -90,7 +90,9 @@ contents stage. A PDF whose profile is code-heavy and math-light takes a second 
 Docling, which its structure queues and which writes beside `pdf-text`'s. A video's parse reads
 ypl's captions. Where the video has no caption track, that parse ends `deferred`, which the parse
 condition reads as Unknown, so nothing after the parse runs on the description alone. The write
-that ends it queues the Whisper parse, which writes beside it. Sections and contents
+that ends it queues the Whisper parse, which writes beside it. `extract.AfterParse` routes that
+write on the parse's own output, so a deferral queues the Whisper parse and a done parse queues
+the scan. Once no parse task is open and one failed, a deferral reads False. Sections and contents
 read `pdf-text`'s parse alone, and a delivery reads none. Every other reader reads the item's
 reading parse: the newest done parse by an extractor that `store.PreferParse` registered, such as
 Docling, and the newest done parse otherwise.
@@ -215,10 +217,17 @@ the prompt's version, and gets back the structured answer.
   registers such an extractor in its `sources.Registration`, and the worker opens it on the
   source's client. The Whisper extractor streams ypl's audio into `audio-whisper`, which runs
   through `isolatedprocess` as every program does.
-- **Docling and Whisper share the slot group `heavy`, with one slot by default.** Each holds
-  gigabytes, so a worker runs one of their parses at a time and leaves its other slots to every
-  other stage. A `[worker.slot_limits]` key names a group or an ungrouped capability, and the
-  claim bounds a group's capabilities together.
+- **Docling and Whisper share the slot group `heavy`, whose default `extract.SlotGroups` holds.**
+  Each holds gigabytes, so a worker runs one of their parses at a time and leaves its other slots
+  to every other stage. A grouped extractor sets no `SlotLimit` of its own. A `[worker.slot_limits]`
+  key names a group or an ungrouped capability, and the claim bounds a group's capabilities
+  together. A group with one capability on a worker travels as that capability's bound, so a
+  service that reads no slot group still answers the claim.
+- **A retry that waits on the far end spends no attempt.** A handler sets `worker.Result.Wait` where
+  the far end asked for the wait, and a stopping worker sets it on each task it hands back. The
+  store takes that claim back off `attempts` and stamps `waiting_since_ts`. The next claim answers
+  `waited_seconds`, so a handler can cap a far end's total wait, as `extract.ReadWaitCeiling`
+  does.
 - **The scan runs `yr` from the worker image over a parse's units, joined as the parse's text
   joins them.** It scans the text as written and again as ATR's engine normalizes it: NFKC, no
   zero-width or bidirectional controls, homoglyphs folded to Latin. Each view lowers the case of
