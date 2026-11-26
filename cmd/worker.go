@@ -187,8 +187,8 @@ var workerRunCmd = &cobra.Command{
 		"\n" +
 		"Its [worker.slot_limits] table caps how many tasks of a capability run at\n" +
 		"once, within slots, so a long task leaves the other slots free. Each key is a\n" +
-		"capability and each value 1 or more. A capability it does not name may take\n" +
-		"every slot, and with no table none is capped:\n" +
+		"capability and each value 1 or more. A Docling parse holds one slot unless\n" +
+		"the table names it, and a capability that neither caps may take every slot:\n" +
 		"\n" +
 		"  [worker.slot_limits]\n" +
 		"  \"" + extract.Capability(extract.PDFDocling) + "\" = 1\n" +

@@ -1,15 +1,20 @@
 package extract
 
-import "time"
+import (
+	"time"
+
+	"github.com/datapointchris/ingestion/store"
+)
 
 // DoclingVersion is the Docling that release/python-requirements.txt pins,
 // and that the worker image installs for pdf-docling.
 const DoclingVersion = "2.153.0"
 
-// DoclingTimeout bounds one run of pdf-docling. Docling reads about 1.6 s a
-// page on a busy desk of 16 CPUs. The longest book that sections selects, 1,245
-// pages, took 34 minutes there, and a node with half its CPUs takes about
-// twice that.
+// DoclingTimeout bounds one run of pdf-docling. A 1,245-page PDF, the longest
+// that sections selected when this was measured, took 34 minutes under
+// `/usr/bin/time -v pdf-docling < <the PDF>` on a busy desk of 16 CPUs, 1.6 s
+// a page. A node with half those CPUs takes about twice that, and the bound
+// leaves more than twice that again.
 const DoclingTimeout = 3 * time.Hour
 
 // PDFDocling reads a PDF with Docling's standard pipeline, one unit per PDF
@@ -20,12 +25,21 @@ const DoclingTimeout = 3 * time.Hour
 // sections.FontShares.CodeHeavyMathLight picks.
 //
 // It is secondary, so landing never queues it. The write that ends such a
-// book's structure task queues it, and its parse writes beside PDFText's. Its
-// version names Docling's. A new revision of a model that the image pins
-// raises its leading number, so a parse by other weights writes beside the
-// old one.
+// book's structure task queues it, and its parse writes beside PDFText's. A
+// worker runs one at a time unless [worker.slot_limits] says otherwise. Its
+// version names Docling's and DoclingPins, so a parse by other libraries or
+// weights writes beside the old one. A change to the program's own reading
+// raises the leading number.
 var PDFDocling = func() Extractor {
-	e := Program("docling", "1+docling-"+DoclingVersion, MediaTypePDF, ProgramDir+"/pdf-docling")
-	e.Positional, e.Secondary, e.Timeout = true, true, DoclingTimeout
+	e := Program("docling", "1+docling-"+DoclingVersion+"-"+DoclingPins, MediaTypePDF, ProgramDir+"/pdf-docling")
+	e.Positional, e.Secondary, e.Timeout, e.SlotLimit = true, true, DoclingTimeout, 1
 	return e
 }()
+
+// DoclingPins is the first 12 hex digits of the SHA-256 of every pin in
+// release/python-requirements.txt, then every model pin in
+// release/download-docling-models, one a line. Each shapes Docling's
+// markdown, and a test fails until this equals them.
+const DoclingPins = "e919138066e6"
+
+func init() { store.PreferParse(PDFDocling.Name) }

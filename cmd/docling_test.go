@@ -16,7 +16,8 @@ import (
 // The write that ends a book's structure queues a Docling parse where its
 // sampled pages are code-heavy and math-light, and for no other book. The
 // parse writes beside pdf-text's and is scanned, and a structure replay
-// queues none again once it is done at its version.
+// queues none again once it is done at its version. A newer pdf-text parse
+// leaves Docling's as the one that the item's parse route answers.
 func TestTheStructureQueuesADoclingParseForACodeHeavyMathLightBook(t *testing.T) {
 	ctx := t.Context()
 	dir := t.TempDir()
@@ -108,5 +109,25 @@ esac
 	}
 	if got := queued(); len(got) != 0 {
 		t.Errorf("the structure replay queued Docling parses for %v, want none, because the code book's is done", got)
+	}
+
+	newerText := pdfText
+	newerText.Version = pdfText.Version + ".1"
+	newer, err := extract.NewRegistry(newerText, docling)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.st.Update(ctx, func(tx *store.Tx) error {
+		key := keys["a code book"]
+		_, err := tx.Enqueue(ctx, store.Task{ItemKey: &key, Stage: store.StageParse, Capability: extract.Capability(newerText)})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if n := p.parse(t, newer); n != 1 {
+		t.Fatalf("ran %d parses, want the newer pdf-text parse", n)
+	}
+	if got := p.readParse(t, keys["a code book"], ""); got.Extractor != extract.PDFDocling.Name {
+		t.Errorf("after a newer pdf-text parse the item's parse route answers %s %s, want Docling's", got.Extractor, got.ExtractorVersion)
 	}
 }

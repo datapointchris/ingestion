@@ -12,7 +12,7 @@ Docling's artifacts_path reads, so pdf-docling finds every model there and
 never reaches the network.
 
 A bump moves a repository's commit and the SHA-256 of each of its files
-together, and raises the leading number of extract.PDFDocling's version, so a
+together. extract.DoclingPins then takes the digest that its test prints, so a
 parse by the new weights writes beside the old one.
 EOF
 }

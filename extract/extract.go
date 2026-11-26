@@ -50,6 +50,11 @@ type Extractor struct {
 	// replay never picks, because another stage's write queues its parse, as
 	// the structure's queues PDFDocling's.
 	Secondary bool
+	// SlotLimit caps the extractor's parses that one worker runs at once,
+	// where [worker.slot_limits] names no limit for it. Zero leaves them
+	// uncapped. A program whose run holds gigabytes sets it, so the worker's
+	// memory holds its runs.
+	SlotLimit int
 }
 
 // Unit is one part of a parse, as an extractor writes it. The parse numbers

@@ -118,13 +118,38 @@ func ScanVersion(rules, extractor, extractorVersion string) string {
 	return rules + "/" + extractor + "@" + extractorVersion
 }
 
-// NewestParseScanned says whether outputs, oldest first as Tx.Outputs reads
-// them, hold a done scan of the newest done parse among them. The side gate
-// places an item only then, so no item is placed before its scan.
-func NewestParseScanned(outputs []Output) bool {
+// preferredParsers names each extractor that PreferParse registered.
+var preferredParsers []string
+
+// PreferParse registers extractor as preferred: an item's readers take its
+// done parse over any other extractor's, whichever was written later. An extractor
+// that reads a selected item better than its primary one registers so, from
+// its package's init. Every reader of a parse, from the scan to the item's
+// parse route, then reads the same one, and a newer parse by the primary
+// extractor never takes its place.
+func PreferParse(extractor string) {
+	if !slices.Contains(preferredParsers, extractor) {
+		preferredParsers = append(preferredParsers, extractor)
+	}
+}
+
+// readingRank ranks a done parse by its extractor, a preferred one first.
+func readingRank(o Output) int {
+	if slices.Contains(preferredParsers, o.Producer) {
+		return 1
+	}
+	return 0
+}
+
+// ReadingParseScanned says whether outputs, oldest first as Tx.Outputs reads
+// them, hold a done scan of the item's reading parse: its newest done parse
+// by a preferred extractor where it holds one, and its newest done parse
+// otherwise. The side gate places an item only then, so no item is placed
+// before the scan of the parse that its readers read.
+func ReadingParseScanned(outputs []Output) bool {
 	var parse *Output
 	for i := range outputs {
-		if outputs[i].Stage == StageParse && outputs[i].State == OutputDone {
+		if outputs[i].Stage == StageParse && outputs[i].State == OutputDone && (parse == nil || readingRank(outputs[i]) >= readingRank(*parse)) {
 			parse = &outputs[i]
 		}
 	}
@@ -171,7 +196,14 @@ func parseOf(ctx context.Context, tx querier, key string, pick ParsePick) (Parse
 	if pick.Version != "" {
 		where, args = where+` AND producer_version = ?`, append(args, pick.Version)
 	}
-	if p.Output, found, err = first[Output](ctx, tx, table("outputs"), where+` ORDER BY created_ts DESC, rowid DESC`, args...); err != nil {
+	order := ` ORDER BY created_ts DESC, rowid DESC`
+	if len(preferredParsers) > 0 {
+		order = ` ORDER BY producer IN (?` + strings.Repeat(`, ?`, len(preferredParsers)-1) + `) DESC, created_ts DESC, rowid DESC`
+		for _, name := range preferredParsers {
+			args = append(args, name)
+		}
+	}
+	if p.Output, found, err = first[Output](ctx, tx, table("outputs"), where+order, args...); err != nil {
 		return p, err
 	} else if !found {
 		return p, fmt.Errorf("%s: %w", key, ErrNoParse)

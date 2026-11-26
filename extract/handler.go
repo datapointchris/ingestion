@@ -49,6 +49,8 @@ type handler struct {
 
 func (h handler) Capability() string { return Capability(h.extractor) }
 
+func (h handler) SlotLimit() int { return h.extractor.SlotLimit }
+
 // Run parses the task's item. A parse that fails, or finds no text, fails
 // its task with the reason kept, so the item waits in review rather than
 // passing a gate on empty text. A blank unit keeps its place where the

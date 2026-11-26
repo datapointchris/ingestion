@@ -25,6 +25,10 @@ import (
 // Task is one leased task.
 type Task = server.LeasedTask
 
+// stopReportTimeout bounds the report of a task that a stopping worker hands
+// back, within the pod's grace period.
+const stopReportTimeout = 10 * time.Second
+
 // Result is how a handler's run ended.
 type Result struct {
 	// Outcome is server.OutcomeDone, OutcomeFailed or OutcomeRetry.
@@ -46,6 +50,13 @@ type Handler interface {
 	Run(ctx context.Context, task Task) Result
 }
 
+// SlotLimiter is a Handler that caps how many of its tasks run at once by
+// default, such as a parse whose run holds gigabytes. Zero leaves them
+// uncapped, and Config.SlotLimits overrides it.
+type SlotLimiter interface {
+	SlotLimit() int
+}
+
 // Config is how a worker runs.
 type Config struct {
 	// ID names the worker in every claim, and in the lease of each task it
@@ -56,8 +67,8 @@ type Config struct {
 	Slots int
 	// SlotLimits caps how many tasks of a capability run at once, within
 	// Slots, such as one slot for a long parse so that the rest stay free for
-	// every other stage. A capability that it does not name may take every
-	// slot.
+	// every other stage. It overrides a handler's own SlotLimit. A capability
+	// that neither names may take every slot.
 	SlotLimits map[string]int
 	Lease      time.Duration
 	// Poll is how often an idle worker claims again.
@@ -91,6 +102,11 @@ func Run(ctx context.Context, client *Client, cfg Config, handlers ...Handler) e
 		capabilities = append(capabilities, h.Capability())
 	}
 	limits := map[string]int{}
+	for _, h := range handlers {
+		if limiter, ok := h.(SlotLimiter); ok && limiter.SlotLimit() > 0 {
+			limits[h.Capability()] = limiter.SlotLimit()
+		}
+	}
 	for capability, limit := range cfg.SlotLimits {
 		if _, held := byCapability[capability]; !held {
 			cfg.Log.Warn("a slot limit names a capability that no handler here holds", "capability", capability)
@@ -190,6 +206,18 @@ func runTask(ctx context.Context, client *Client, cfg Config, h Handler, task Ta
 	result := run(runCtx, h, task)
 	if runCtx.Err() != nil && ctx.Err() == nil {
 		return
+	}
+	if ctx.Err() != nil {
+		// The worker is stopping, as a deploy stops it, and the stop likely cut
+		// the run short. Such a run hands its task back, so the next worker
+		// claims it at once. Its lease never lapses, and a lapse counts toward
+		// failing a task whose runs end their worker.
+		if result.Outcome != server.OutcomeDone {
+			result = Result{Outcome: server.OutcomeRetry}
+		}
+		stopCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), stopReportTimeout)
+		defer stop()
+		ctx, runCtx = stopCtx, stopCtx
 	}
 	err := report(ctx, runCtx, client, cfg, log, task, server.ReportRequest{
 		Token: task.LeaseToken, Outcome: result.Outcome, Error: result.Error,

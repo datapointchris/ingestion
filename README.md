@@ -127,8 +127,9 @@ lease = "10m" # how long a lease holds without a heartbeat
 poll = "10s"  # how often an idle worker asks for work
 
 # Optional: how many tasks of a capability run at once, within slots, so a long
-# Docling parse leaves the other slots to every other stage. A capability it
-# does not name may take every slot.
+# task leaves the other slots to every other stage. A Docling parse holds one
+# slot unless this table names it, as here at its own default. A capability
+# that neither caps may take every slot.
 [worker.slot_limits]
 "parse:docling" = 1
 
@@ -389,8 +390,10 @@ keeps its empty unit in place. A unit's label is the page's printed label where 
 page labels, and empty where it declares none. The extractor's version names PyMuPDF's, so a
 library upgrade writes a parse beside the old one.
 
-`GET /api/v1/items/{key}/parse` answers the newest parse: its text, its units and the scan's
-findings, in `schemas/item-parse.schema.json`. The text is the units joined by a blank line.
+`GET /api/v1/items/{key}/parse` answers the item's reading parse: its text, its units and the
+scan's findings, in `schemas/item-parse.schema.json`. The reading parse is the newest done parse
+by an extractor that reads better than the primary one, such as Docling's below, and the newest
+done parse otherwise. The scan, the gates and the model read all read it. The text is the units joined by a blank line.
 `?extractor=` and `?version=` read an older parse, and every version stays readable. An extractor
 that finds no text fails its task with the reason, and the item waits in review.
 
@@ -463,20 +466,24 @@ Docling's standard pipeline, OCR off and table structure on, one unit per PDF pa
 page's markdown. A code block is fenced and a table keeps its rows. A blank page keeps its empty
 unit, and a unit's label is the page's printed label, as `pdf-text` reads it.
 
-- **Only a code-heavy, math-light book takes it.** Its profile sets monospace on at least 20% of
-  the sampled pages and TeX or math fonts on under 10%. Docling drops every formula, so a book
-  with both stays `pdf-text`'s alone.
+- **Only a code-heavy, math-light book takes it.** Its profile's monospace share must reach
+  `sections.DoclingMonospaceLeast`, and its TeX-or-math share must stay under
+  `sections.DoclingTeXOrMathUnder`. Docling drops every formula, so a book with both stays
+  `pdf-text`'s alone.
 - **The write that ends the book's structure queues the parse**, of capability `parse:docling`.
-  The parse writes beside `pdf-text`'s and is scanned like it. It becomes the item's newest
-  parse, which `GET /api/v1/items/{key}/parse` and the model read answer.
+  The parse writes beside `pdf-text`'s and is scanned like it. It becomes the item's reading
+  parse, and stays so when a later `pdf-text` version parses the book again.
 - **Nothing waits on it.** The book's sections and its contents stage keep reading `pdf-text`'s
-  parse, and a delivery reads no parse. The side gate leaves a book that a tag, a rule or a
-  person placed as it is, so the later parse moves no gate.
+  parse, and a delivery reads no parse. A placed book stays placed, as the side gate's rules
+  below say.
 - **`ingestion items replay --stage structure` queues it for each selected book** that Docling
   has not read at its version. A book whose Docling parse failed is read again.
-- **It runs offline, about 1.4 s a page.** The worker image holds Docling's models at pinned
-  commits. A run past 3 hours fails its task. Set `"parse:docling" = 1` in
-  `[worker.slot_limits]` so a long run holds one slot and leaves the rest to every other stage.
+- **It runs offline**, from the models that the worker image pins. A run past
+  `extract.DoclingTimeout` fails its task. So does a convert that lost a page, so no lost page
+  reads as a blank one.
+- **A worker runs one Docling parse at a time** and leaves its other slots to every other stage.
+  A `"parse:docling"` entry in `[worker.slot_limits]` changes that, where the worker's memory
+  holds more runs.
 
 ### A long book with no outline takes its chapters from its printed contents
 
@@ -563,7 +570,7 @@ decision on each rule.
 
 ### The quality gate reads each item's opening before anyone reads it whole
 
-Where no tag or rule places an item, the write that ends the scan of its newest parse queues one
+Where no tag or rule places an item, the write that ends the scan of its reading parse queues one
 task of capability `quality`. An item gets that task once. The gate runs on it again only through
 a replay, or through `tasks retry` on its failed task. A worker whose config names a `[model]
 adapter` claims it. It reads the item's media type, title, URL and the opening of its parse, up to
@@ -651,7 +658,7 @@ waits in review as `no-guess`. The replay is what runs the gate over such items.
 
 ### The side gate places each item, and a person places what it leaves
 
-When the scan of an item's newest parse is done, the service runs the side gate in the same
+When the scan of an item's reading parse is done, the service runs the side gate in the same
 write. A parse's end alone places nothing, so no item reaches a side before its scan. The gate
 places the item by the first rung that decides it:
 
@@ -670,7 +677,7 @@ places the item by the first rung that decides it:
    failed, or whose scan could not read the set in force and so queued none.
 
 The gate runs again in the write that ends each later stage before it, such as the quality gate,
-and in the write that applies a changed set. Each run passes over an item whose newest parse is
+and in the write that applies a changed set. Each run passes over an item whose reading parse is
 not scanned yet. Each run decides again an item that the gate sent to
 review as `no-guess`, `below-floor` or `gate-error`, or that the quality gate dropped or sent to
 review, so a guess or a rule that arrives later places it. A tag, a rule or a person that places
