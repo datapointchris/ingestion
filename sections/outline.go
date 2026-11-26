@@ -46,8 +46,8 @@ var (
 			`contents at a glance|list of (?:figures|tables|illustrations|listings|examples|abbreviations|symbols)|`+
 			`about (?:this|the) book|about the (?:authors?|editors?|cover|technical reviewers?)|front ?matter|`+
 			`how to (?:use|read) this book|who should read this book|conventions used|dear reader|also by|other books`,
-		`cover|copyright|dedication|epigraph|contents|foreword|preface|prologue|acknowledge?ments?|praise|endorsements|conventions`,
-		`welcome|title`)
+		`cover|copyright|dedication|epigraph|contents|foreword|preface|prologue|acknowledge?ments?|praise|endorsements|conventions|welcome`,
+		`title`)
 	backMatter = matterTitle(
 		`subject index|author index|appendix(?:es)?|appendices|further reading|back cover|back ?matter|about the (?:authors?|editors?)`,
 		`index|bibliography|references|glossary|afterword|epilogue|colophon|(?:end)?notes|credits|permissions|answers|solutions`,
@@ -59,10 +59,10 @@ var (
 )
 
 // matterTail is what may follow a matter word in a matter title: nothing,
-// punctuation, a word such as of or to, or and before another matter word.
-// So Index of Notation is matter, and Index Structures or References and
-// Pointers is a chapter.
-const matterTail = `(?:$|\s*[:(\[—–.!?-]|\s+(?:of|to|for|by|in|or|page)\b|` +
+// punctuation, a number, a word such as of or to, or and before another
+// matter word. So Index of Notation and Foreword 2 are matter, and Index
+// Structures or References and Pointers is a chapter.
+const matterTail = `(?:$|\s*[:(\[—–.!?-]|\s+(?:\d{1,3}|[ivxlc]{1,6})$|\s+(?:of|to|for|by|in|or|page)\b|` +
 	`\s+and\s+(?:further reading|credits|outline|notation|bibliography|references|glossary|index|permissions|acknowledg))`
 
 // matterTitle matches a normalized title that opens on one of phrases,
