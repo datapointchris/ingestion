@@ -54,7 +54,7 @@ func NewHandler(port modelport.Port, client *worker.Client, settings modelstage.
 			}
 			return Quote(deref(task.Title), parse.Units), nil
 		},
-		Keep: func(_ context.Context, _ prompts.Prompt, raw json.RawMessage, _ *server.ReportOutput) ([]any, error) {
+		Keep: func(_ context.Context, _ worker.Task, _ prompts.Prompt, raw json.RawMessage, _ *server.ReportOutput) ([]any, error) {
 			answer, err := ReadAnswer(raw)
 			if err != nil {
 				return nil, err

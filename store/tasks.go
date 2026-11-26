@@ -39,9 +39,9 @@ var (
 	ErrStaleLease = errors.New("the task's lease is not held under this token")
 )
 
-// Task is one stage's work on one item, or one poll of a connector, which a
-// worker holding its capability leases. A task names its item or its
-// connector, never both.
+// Task is one stage's work on one item, one poll of a connector, or the draft
+// of one prompt proposal, which a worker holding its capability leases. A
+// task names exactly one of its item, its connector and its proposal.
 type Task struct {
 	ID        string  `json:"id"`
 	ItemKey   *string `json:"item_key"`
@@ -55,9 +55,12 @@ type Task struct {
 	// SightingConnector names the connector whose sighting a delete task
 	// removes from that connector's source, and is nil for every other task.
 	SightingConnector *string `json:"sighting_connector"`
-	Stage             string  `json:"stage"`
-	Capability        string  `json:"capability"`
-	State             string  `json:"state"`
+	// ProposalID names the prompt proposal that a prompt-proposal task drafts, and is
+	// nil for every other task.
+	ProposalID *string `json:"proposal_id"`
+	Stage      string  `json:"stage"`
+	Capability string  `json:"capability"`
+	State      string  `json:"state"`
 	// HeldBy names the connector whose first fill holds this model stage's
 	// task. No claim takes it until a person releases the fill.
 	HeldBy *string `json:"held_by"`
@@ -131,12 +134,18 @@ var modelStages = []string{StageContents, StageQuality, StageQualityArm, StageMo
 // ModelStages are the stages that read an item with a model.
 func ModelStages() []string { return slices.Clone(modelStages) }
 
-// Enqueue adds a queued task for task's item or connector, stage and
-// capability, and answers it as written. A model stage's task for an item that
-// a connector's first fill holds is held by that connector.
+// Enqueue adds a queued task for task's item, connector or proposal, stage
+// and capability, and answers it as written. A model stage's task for an item
+// that a connector's first fill holds is held by that connector.
 func (t *Tx) Enqueue(ctx context.Context, task Task) (Task, error) {
-	if (task.ItemKey == nil) == (task.Connector == nil) {
-		return task, fmt.Errorf("a %s task names its item or its connector, and not both", task.Stage)
+	named := 0
+	for _, subject := range []*string{task.ItemKey, task.Connector, task.ProposalID} {
+		if subject != nil {
+			named++
+		}
+	}
+	if named != 1 {
+		return task, fmt.Errorf("a %s task names one of its item, its connector and its proposal", task.Stage)
 	}
 	task.ID = randomHex(16)
 	task.State, task.Attempts = TaskQueued, 0
@@ -313,7 +322,8 @@ func (c Claim) slotPartitions() (partition string, args []any, bounds map[string
 // run rather than starting another. A model read's task carries the item's
 // newest read decision, whose lens and note the read answers. A poll carries
 // its connector's cursor, whose position it reads on from. A delete task
-// carries the sighting whose source it removes the item from.
+// carries the sighting whose source it removes the item from. A prompt-proposal task
+// carries the prompt proposal that it drafts, which holds its run's dispatch.
 type Leased struct {
 	Task
 	Item     Item
@@ -322,6 +332,7 @@ type Leased struct {
 	Read     *Decision
 	Cursor   *Cursor
 	Sighting *Sighting
+	Proposal *PromptProposal
 }
 
 // Claim records the worker's heartbeat and leases it up to c.Max tasks whose
@@ -407,6 +418,11 @@ func (s *Store) Claim(ctx context.Context, c Claim) ([]Leased, error) {
 					lapses, reason, now, id); err != nil {
 					return fmt.Errorf("fail task %s: %w", id, err)
 				}
+				if found.ProposalID != nil {
+					if err := tx.failProposalRun(ctx, *found.ProposalID, reason); err != nil {
+						return err
+					}
+				}
 				if c.Lapsed != nil {
 					if err := c.Lapsed(ctx, tx, found, reason); err != nil {
 						return err
@@ -469,6 +485,15 @@ func (s *Store) Claim(ctx context.Context, c Claim) ([]Leased, error) {
 				}
 				if ok {
 					leased.Sighting = &s
+				}
+			}
+			if task.ProposalID != nil {
+				p, ok, err := tx.PromptProposal(ctx, *task.ProposalID)
+				if err != nil {
+					return err
+				}
+				if ok {
+					leased.Proposal = &p
 				}
 			}
 			claimed = append(claimed, leased)
@@ -596,10 +621,36 @@ func (t *Tx) WithdrawQueued(ctx context.Context, key, stage, why string) error {
 // instead.
 var ErrTaskDone = errors.New("the task ended done")
 
+// ErrTaskSuperseded is a retry of a failed draft whose misses a later prompt
+// proposal reads, so a retry would draft them twice.
+var ErrTaskSuperseded = errors.New("a later prompt proposal reads its misses")
+
+// ErrRunWithoutSubject is a run reported for a task that names no item and no
+// prompt proposal, such as a poll's.
+var ErrRunWithoutSubject = errors.New("the task names no item or prompt proposal to keep a run on")
+
+// KeepRun writes a run that task's worker reported where its subject keeps
+// it: an item's run as the item's output at the task's stage, with the units
+// a parse wrote, and a prompt proposal's run on the proposal.
+func (t *Tx) KeepRun(ctx context.Context, task Task, o Output, units []Unit) error {
+	switch {
+	case task.ItemKey != nil:
+		o.ItemKey, o.Stage = *task.ItemKey, task.Stage
+		return t.PutOutputWithUnits(ctx, o, units)
+	case task.ProposalID != nil:
+		if len(units) > 0 {
+			return fmt.Errorf("%w: a %s run carries %d units", ErrUnitsOutsideParse, task.Stage, len(units))
+		}
+		return t.keepProposalRun(ctx, *task.ProposalID, o.StageRun)
+	}
+	return ErrRunWithoutSubject
+}
+
 // RetryTask queues the failed task id again, with its attempts and backoff
 // cleared, and answers it. A task that is queued or leased is answered as it
 // is, so a retry sent twice queues it once. It answers ErrNoTask where there
-// is no such task, and ErrTaskDone where it ended done.
+// is no such task, ErrTaskDone where it ended done, and ErrTaskSuperseded
+// where it drafts a proposal that a later one replaced.
 func (s *Store) RetryTask(ctx context.Context, id string) (Task, error) {
 	var task Task
 	err := s.Update(ctx, func(tx *Tx) error {
@@ -612,6 +663,15 @@ func (s *Store) RetryTask(ctx context.Context, id string) (Task, error) {
 			return fmt.Errorf("task %s: %w", id, ErrTaskDone)
 		case TaskQueued, TaskLeased:
 			return nil
+		}
+		if task.ProposalID != nil {
+			newest, ok, err := tx.NewestPromptProposal(ctx)
+			if err != nil {
+				return err
+			}
+			if ok && newest.ID != *task.ProposalID {
+				return fmt.Errorf("task %s drafts proposal %s, and proposal %s reads its misses: %w", id, *task.ProposalID, newest.ID, ErrTaskSuperseded)
+			}
 		}
 		if _, err := tx.tx.ExecContext(ctx, `UPDATE tasks SET state = 'queued', attempts = 0, lapses = 0, waiting_since_ts = NULL, error = NULL,
 			not_before_ts = NULL, updated_ts = ? WHERE id = ?`, tx.stamp(), id); err != nil {

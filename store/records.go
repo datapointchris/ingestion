@@ -224,41 +224,50 @@ const (
 	OutputDeferred = "deferred"
 )
 
+// StageRun is how one producer's run of a stage over its subject went, as
+// both a subject's tables hold it: an outputs row for an item, and a
+// prompt_proposals row for a draft. The modelstage protocol reads and writes
+// these columns alone, so a column it adds is added here once.
+type StageRun struct {
+	Producer        string `json:"producer"`
+	ProducerVersion string `json:"producer_version"`
+	// State is OutputWaiting, OutputDone or OutputFailed.
+	State      string  `json:"state"`
+	DispatchID *string `json:"dispatch_id"`
+	RunID      *string `json:"run_id"`
+	// Model and Effort are what a model stage asked its run for, and
+	// AnsweredModel the model that its run reports answering on.
+	Model         *string         `json:"model"`
+	Effort        *string         `json:"effort"`
+	AnsweredModel *string         `json:"answered_model"`
+	Tokens        *Tokens         `json:"tokens"`
+	Answer        json.RawMessage `json:"answer"`
+	Error         *string         `json:"error"`
+}
+
 // Output is one stage's output for one item from one producer at one version.
 type Output struct {
-	ItemKey         string  `json:"item_key"`
-	Stage           string  `json:"stage"`
-	Producer        string  `json:"producer"`
-	ProducerVersion string  `json:"producer_version"`
-	Lens            *string `json:"lens"`
-	LensVersion     *string `json:"lens_version"`
+	ItemKey string `json:"item_key"`
+	Stage   string `json:"stage"`
+	StageRun
+	Lens        *string `json:"lens"`
+	LensVersion *string `json:"lens_version"`
 	// NoteDigest is NoteDigest of the note that a model read answered.
 	NoteDigest *string `json:"note_digest"`
 	// InputProducer and InputVersion name the parse a later stage read, such
 	// as the parse a scan's findings index the units of.
-	InputProducer *string `json:"input_producer"`
-	InputVersion  *string `json:"input_version"`
-	State         string  `json:"state"`
-	BlobSHA256    *string `json:"blob_sha256"`
-	DispatchID    *string `json:"dispatch_id"`
-	RunID         *string `json:"run_id"`
-	// Model and Effort are what a model stage asked its run for, and
-	// AnsweredModel the model that its run reports answering on.
-	Model         *string   `json:"model"`
-	Effort        *string   `json:"effort"`
-	AnsweredModel *string   `json:"answered_model"`
-	Tokens        *Tokens   `json:"tokens"`
+	InputProducer *string   `json:"input_producer"`
+	InputVersion  *string   `json:"input_version"`
+	BlobSHA256    *string   `json:"blob_sha256"`
 	Findings      []Finding `json:"findings"`
 	// RulesVersion is the scanner rules' version that made Findings.
-	RulesVersion   *string         `json:"rules_version"`
-	Quality        *int            `json:"quality"`
-	SideGuess      *string         `json:"side_guess"`
-	SideConfidence *float64        `json:"side_confidence"`
-	Spans          []Span          `json:"spans"`
-	Answer         json.RawMessage `json:"answer"`
-	Error          *string         `json:"error"`
-	CreatedTS      string          `json:"created_ts"`
-	UpdatedTS      string          `json:"updated_ts"`
+	RulesVersion   *string  `json:"rules_version"`
+	Quality        *int     `json:"quality"`
+	SideGuess      *string  `json:"side_guess"`
+	SideConfidence *float64 `json:"side_confidence"`
+	Spans          []Span   `json:"spans"`
+	CreatedTS      string   `json:"created_ts"`
+	UpdatedTS      string   `json:"updated_ts"`
 }
 
 // NoteDigest is the hex SHA-256 of a read decision's note, trimmed, and nil
@@ -401,12 +410,29 @@ func ReviewPlacement(decisions []Decision) (Decision, bool) {
 	if !sided || !placement.ByPerson() {
 		return Decision{}, false
 	}
-	for _, d := range decisions {
-		if d.Verdict != VerdictReview {
-			continue
+	if _, ok := ReviewBefore(decisions, placement); !ok {
+		return Decision{}, false
+	}
+	return placement, true
+}
+
+// ReviewBefore is the review among decisions that sent the item to the person
+// who made placement: the newest side review before it, else the newest
+// quality review before it, and false where neither came before it.
+func ReviewBefore(decisions []Decision, placement Decision) (Decision, bool) {
+	var side, quality *Decision
+	for i, d := range decisions {
+		switch {
+		case d.Verdict != VerdictReview:
+		case d.Gate == GateSide && d.Sequence < placement.Sequence && (side == nil || d.Sequence > side.Sequence):
+			side = &decisions[i]
+		case d.Gate == GateQuality && d.DecidedTS < placement.DecidedTS && (quality == nil || d.Sequence > quality.Sequence):
+			quality = &decisions[i]
 		}
-		if (d.Gate == GateSide && d.Sequence < placement.Sequence) || (d.Gate == GateQuality && d.DecidedTS < placement.DecidedTS) {
-			return placement, true
+	}
+	for _, d := range []*Decision{side, quality} {
+		if d != nil {
+			return *d, true
 		}
 	}
 	return Decision{}, false

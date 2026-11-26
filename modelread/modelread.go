@@ -96,7 +96,7 @@ func NewHandler(port modelport.Port, client *worker.Client, scanner Scanner, set
 		Data: func(ctx context.Context, task worker.Task) (any, error) {
 			return read(ctx, client, task)
 		},
-		Keep: func(ctx context.Context, p prompts.Prompt, raw json.RawMessage, out *server.ReportOutput) ([]any, error) {
+		Keep: func(ctx context.Context, _ worker.Task, p prompts.Prompt, raw json.RawMessage, out *server.ReportOutput) ([]any, error) {
 			return keep(ctx, scanner, p, raw, out)
 		},
 	}, settings, log)

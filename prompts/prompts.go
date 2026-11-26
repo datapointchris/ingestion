@@ -28,6 +28,7 @@ import (
 //go:embed quality/prompt.tmpl quality/answer.schema.json
 //go:embed contents/prompt.tmpl contents/answer.schema.json
 //go:embed model-read/prompt.tmpl model-read/answer.schema.json model-read/lenses/*.tmpl
+//go:embed prompt-proposal/prompt.tmpl prompt-proposal/answer.schema.json
 var files embed.FS
 
 // Prompt is one stage's prompt and answer schema at one version.
@@ -38,6 +39,7 @@ type Prompt struct {
 	// Lens names how the prompt reads an item, and is nil for a stage that
 	// reads through no lens.
 	Lens     *Lens
+	text     string
 	template *template.Template
 	// Schema is the answer's JSON Schema as the file holds it.
 	Schema json.RawMessage
@@ -56,6 +58,10 @@ var Quality = load("quality", "1", nil)
 
 // Contents is the contents stage's prompt.
 var Contents = load("contents", "1", nil)
+
+// PromptProposal is the prompt that drafts a change to another stage's
+// prompt from the quality gate's misses.
+var PromptProposal = load("prompt-proposal", "1", nil)
 
 // ModelRead is the model read's prompt under each lens, by the lens's name.
 var ModelRead = loadLenses("model-read", "1", map[string]string{"fleet": "1"})
@@ -101,7 +107,7 @@ func load(stage, number string, lens *lensFile) Prompt {
 		digested = append(append(digested, 0), lens.text...)
 	}
 	sum := sha256.Sum256(digested)
-	p := Prompt{Stage: stage, Version: number + "-" + hex.EncodeToString(sum[:4]), Schema: schema}
+	p := Prompt{Stage: stage, Version: number + "-" + hex.EncodeToString(sum[:4]), Schema: schema, text: string(text)}
 	if p.template, err = template.New(stage).Option("missingkey=error").Parse(string(text)); err != nil {
 		panic(fmt.Sprintf("prompts/%s/prompt.tmpl: %v", stage, err))
 	}
@@ -131,6 +137,10 @@ func load(stage, number string, lens *lensFile) Prompt {
 	}
 	return p
 }
+
+// Text is the prompt's template as its file holds it, before any field is in
+// place.
+func (p Prompt) Text() string { return p.text }
 
 // Render is the prompt with data's fields in place.
 func (p Prompt) Render(data any) (string, error) {

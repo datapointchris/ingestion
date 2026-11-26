@@ -59,6 +59,11 @@ effort = "medium"
 [model.model-read]
 model = "haiku"
 effort = "medium"
+
+# What a prompt proposal's weekly draft asks its run for.
+[model.prompt-proposal]
+model = "sonnet"
+effort = "medium"
 ```
 
 With no adapter named, ingestion still lands, parses, scans and routes every item by its rules.
@@ -1025,6 +1030,56 @@ side guess, floor 0.70
 ...
 ```
 
+### Each week's misses draft one proposed change to the quality gate's prompt
+
+A miss is one done answer of the quality gate that a person's word went against. The word is a
+placement from review that `gates agreement` counts as disagreeing with the verdict or the side
+guess. It is also a `low-quality` mark on an item that the gate passed, or a `read` mark on one
+that it dropped.
+
+At each time of its `[gates.proposals]` schedule, `serve` projects the misses labeled since the
+last done proposal. Where it finds any, it writes one `prompt_proposals` row. The row holds the
+misses and the text of the prompt that the draft changes. `serve` queues one `prompt-proposal`
+task, which a worker with a `[model]` adapter drafts, and keeps the draft on the row. A time that
+finds no miss drafts nothing, and so does a time whose last draft has not ended.
+
+```toml
+[gates.proposals]
+schedule = "0 6 * * 1"  # cron, in UTC unless a CRON_TZ=<zone> prefix names another; the default
+```
+
+- **A projected miss reads no outsider's text.** It holds keys, enums, numbers and the person's
+  own words: the connector, media type, the gate's verdict and side with their confidences, its
+  quality and genre, the prompt version, model and effort that answered, and the person's label,
+  destination, cause and note. It never holds a title, URL, the item's text, the gate's domains,
+  themes, idea or reason, or a sighting's fields. So the proposal is in the `owner` zone, and the
+  outbox ships it whole as `ingestion.record`.
+- **The draft names exact edits.** Each edit quotes a passage of the prompt as `before`, which has
+  to occur once, and gives its `after`. A draft whose edits do not apply, or that answers a miss
+  the proposal does not hold, fails. A draft may name no edit, where the misses show no change
+  worth making.
+- **A failed draft's misses roll into the next.** The next time's proposal reads them again beside
+  its own. `tasks retry` runs a failed draft again until then, and afterward refuses it as
+  `task_superseded`.
+- **Nothing here changes a prompt.** A person who accepts a proposal edits the prompt's file, and
+  the build that carries it answers under a new prompt version. A draft reads the prompt's text
+  from its row, so a worker of another build drafts against the same text.
+
+`ingestion gates proposals list` reads `GET /api/v1/gates/proposals`, the newest first. `--json`
+prints `schemas/prompt-proposals-list.schema.json`.
+
+```text
+$ ingestion gates proposals list
+Proposal 3f0c9a2e41b7d8c5e6f1a0b9c8d7e6f5 changes the quality prompt at v1-<digest>, from 3 misses labeled through 2026-03-02 01:00:00 EST.
+  drafted by sonnet at medium
+  pattern  The gate passed thin posts and guessed fleet for personal ones.
+  change   Ask what an item adds before a pass.
+  edit 1
+    - - themes: two to four short phrases naming what the item argues or explores.
+    + - themes: two to four short phrases naming what the item argues or explores. Name what the item adds.
+  answers  3 of 3 misses: 1, 2, 3
+```
+
 ### A model read answers a fleet item's note with a summary and a suggestion
 
 Where the read gate reads an item by a model, under a lens whose prompt this build holds, the same
@@ -1197,13 +1252,15 @@ sets `[deliver.life-articles]` with a `client_id`, the cluster also supplies the
 holding `[model.queue]`'s client secret under `secret`.
 
 **An upgrade that changes a table copies the store first.** Before `serve` changes the store's
-tables, it writes a copy beside the store, named `ingestion.db.before-<UTC time>`. A column that
-SQLite cannot change in place, such as one a release makes nullable, is rebuilt in one transaction
-that keeps every row. `serve` leaves alone a table that its own schema files do not create, so a
-table that a later release added does not stop an earlier one opening the store. v0.5.0 and
-earlier refuse such a table. A rollback to one of them stops `serve`, puts the copy back as
-`ingestion.db`, and starts the older release. The copy holds nothing landed after the upgrade, and
-stays until a person deletes it.
+tables, it writes a copy beside the store, named `ingestion.db.before-<UTC time>`. A table that
+SQLite cannot change in place, such as one whose column a release makes nullable or whose `CHECK`
+it changes, is rebuilt in one transaction that keeps every row. The store keeps the schema
+generation of the newest release that converged it. A release whose generation is older rebuilds
+none of its tables, so it keeps a later release's columns and constraints. `serve` leaves alone a
+table that its own schema files do not create, so a table that a later release added does not stop
+an earlier one opening the store. v0.5.0 and earlier refuse such a table. A rollback to one of
+them stops `serve`, puts the copy back as `ingestion.db`, and starts the older release. The copy
+holds nothing landed after the upgrade, and stays until a person deletes it.
 
 ### Every change leaves through the outbox
 

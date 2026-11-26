@@ -3,8 +3,9 @@
 // the prompt it reads an item under, what that prompt quotes, and how the
 // run's answer becomes the output.
 //
-// A task's call is started once, under an idempotency key of the item, the
-// stage and the prompt's version. The dispatch is stored on the output in the
+// A task's call is started once, under an idempotency key of its subject, the
+// stage and the prompt's version. The subject is the task's item, or the
+// prompt proposal that a prompt-proposal task drafts. The dispatch is stored on the output in the
 // write that ends the worker's lease, and each later claim follows it until
 // the run answers. So a waiting task holds no worker slot, and a lease that
 // lapsed never pays for a second run. A run that failed is started again only
@@ -66,12 +67,12 @@ type Stage struct {
 	// call starts. An error marked modelport.ErrRefused fails the task, and
 	// any other tries again after a backoff.
 	Data func(ctx context.Context, task worker.Task) (any, error)
-	// Keep fills out from the answer that a run gave to prompt, and returns
-	// the answer's fields that the answered line logs, never outsider text.
-	// An error fails the output, as an answer that breaks prompt's schema
-	// does, and `tasks retry` starts a new run. An error that wraps
+	// Keep fills out from the answer that a run gave to prompt on task, and
+	// returns the answer's fields that the answered line logs, never outsider
+	// text. An error fails the output, as an answer that breaks prompt's
+	// schema does, and `tasks retry` starts a new run. An error that wraps
 	// ErrKeepAgain leaves the output waiting on its dispatch instead.
-	Keep func(ctx context.Context, prompt prompts.Prompt, answer json.RawMessage, out *server.ReportOutput) (logged []any, err error)
+	Keep func(ctx context.Context, task worker.Task, prompt prompts.Prompt, answer json.RawMessage, out *server.ReportOutput) (logged []any, err error)
 }
 
 // NewHandler is the worker handler that runs stage's tasks through port under
@@ -98,6 +99,9 @@ func (h handler) Capability() string { return h.stage.Name }
 // dispatches again under a key that names the failed dispatch.
 func (h handler) Run(ctx context.Context, task worker.Task) worker.Result {
 	log := h.log.With("task", task.ID, "item", deref(task.ItemKey), "stage", h.stage.Name, "adapter", h.port.Adapter())
+	if task.ProposalID != nil {
+		log = log.With("proposal", *task.ProposalID)
+	}
 	prompt, err := h.stage.Prompt(task)
 	if err != nil {
 		reason := err.Error()
@@ -148,7 +152,7 @@ func (h handler) Run(ctx context.Context, task worker.Task) worker.Result {
 		return worker.Result{Outcome: server.OutcomeFailed, Error: &failed, Outputs: []server.ReportOutput{out}}
 	}
 	kept := out
-	logged, err := h.stage.Keep(ctx, prompt, a.Output, &kept)
+	logged, err := h.stage.Keep(ctx, task, prompt, a.Output, &kept)
 	if errors.Is(err, ErrKeepAgain) && progress.Dispatch != "" {
 		reason := err.Error()
 		out.State, out.Error = store.OutputWaiting, &reason
@@ -189,9 +193,15 @@ func (h handler) request(ctx context.Context, task worker.Task, prompt prompts.P
 		return modelport.Request{}, fmt.Errorf("%w: %w", modelport.ErrRefused, err)
 	}
 	return modelport.Request{
-		ItemKey: deref(task.ItemKey), Stage: h.stage.Name, PromptVersion: prompt.Version, NoteDigest: deref(store.NoteDigest(task.Note)),
+		Subject: subject(task), Stage: h.stage.Name, PromptVersion: prompt.Version, NoteDigest: deref(store.NoteDigest(task.Note)),
 		Prompt: text, Schema: prompt.Schema, Model: h.model(task), Effort: h.settings.Effort,
 	}, nil
+}
+
+// subject names what the task's call answers: its item, or the prompt
+// proposal that it drafts.
+func subject(task worker.Task) string {
+	return cmp.Or(deref(task.ItemKey), deref(task.ProposalID))
 }
 
 // model is the model that the task's run is asked for: the task's own where
