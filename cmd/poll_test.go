@@ -19,13 +19,14 @@ import (
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
 	"github.com/datapointchris/ingestion/worker"
+	"github.com/datapointchris/ingestion/ypl"
 )
 
 // videoSource is the source of the scenarios' connectors, whose deleter the
 // tests register, and videoMediaType the media type its arrivals carry.
 const (
 	videoSource    = "test-videos"
-	videoMediaType = "application/x-youtube-video"
+	videoMediaType = ypl.MediaTypeVideo
 )
 
 func init() { deletion.Register(deletion.Registration{Source: videoSource}) }

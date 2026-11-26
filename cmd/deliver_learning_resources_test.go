@@ -291,7 +291,7 @@ func TestABookPlacedAtLearningIsCreatedThereUnderItsKeyAtItsPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv(deliverSecretEnv(deliver.LearningResources), learningSecret)
-	handlers := workerHandlers(p.worker, openDeliverers(ctx, cfg, p.provider.URL, quiet), nil, nil, nil, modelConfig{}, quiet)
+	handlers := workerHandlers(p.worker, openDeliverers(ctx, cfg, p.provider.URL, quiet), openedSources{}, nil, nil, modelConfig{}, quiet)
 	i := slices.IndexFunc(handlers, func(h worker.Handler) bool {
 		return h.Capability() == store.DeliverCapability(deliver.LearningResources)
 	})
@@ -446,7 +446,7 @@ func TestEachChapterEntersLearningPartOfItsBookOnceTheBookIsThere(t *testing.T) 
 		t.Fatal(err)
 	}
 	t.Setenv(deliverSecretEnv(deliver.LearningResources), learningSecret)
-	handlers := workerHandlers(p.worker, openDeliverers(ctx, cfg, p.provider.URL, quiet), nil, nil, nil, modelConfig{}, quiet)
+	handlers := workerHandlers(p.worker, openDeliverers(ctx, cfg, p.provider.URL, quiet), openedSources{}, nil, nil, modelConfig{}, quiet)
 	learningResources := handlers[slices.IndexFunc(handlers, func(h worker.Handler) bool {
 		return h.Capability() == store.DeliverCapability(deliver.LearningResources)
 	})]

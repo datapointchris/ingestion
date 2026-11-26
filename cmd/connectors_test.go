@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -88,15 +89,19 @@ func TestConnectorsApplyTheExampleSetAndAnInvalidSetChangesNothing(t *testing.T)
 	git("commit", "-q", "-m", "declarations")
 	commit := git("rev-parse", "--short=7", "HEAD")
 
+	declared, err := filepath.Glob(filepath.Join(library, "connectors", "*.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	out, err := runCLI(t, "connectors", "apply", library, "--config", config)
-	if want := "Applied " + commit + ": 4 connectors, 2 routing rules, 3 destinations.\n"; err != nil || out != want {
+	if want := fmt.Sprintf("Applied %s: %d connectors, 2 routing rules, 3 destinations.\n", commit, len(declared)); err != nil || out != want {
 		t.Fatalf("connectors apply printed %q, %v; want %q", out, err, want)
 	}
 	listed := func() {
 		t.Helper()
 		out, err := runCLI(t, "connectors", "list", "--config", config)
-		if err != nil || strings.Count(out, " "+commit+" ") != 4 {
-			t.Errorf("connectors list printed %q, %v; want commit %s on each of 4 connectors", out, err, commit)
+		if err != nil || strings.Count(out, " "+commit+" ") != len(declared) {
+			t.Errorf("connectors list printed %q, %v; want commit %s on each of %d connectors", out, err, commit, len(declared))
 		}
 	}
 	listed()

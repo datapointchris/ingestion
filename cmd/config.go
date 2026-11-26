@@ -42,8 +42,8 @@ func deliverSecretEnv(name string) string {
 
 // sourceSecretEnv is the variable that holds the secret of the service client
 // that the [source.<name>] table names, such as
-// INGESTION_SOURCE_VIDEO_PLAYLISTS_CLIENT_SECRET for video-playlists. It is
-// read from the environment alone, as clientSecretEnv is.
+// INGESTION_SOURCE_YPL_CLIENT_SECRET for ypl. It is read from the environment
+// alone, as clientSecretEnv is.
 func sourceSecretEnv(name string) string {
 	return "INGESTION_SOURCE_" + strings.ToUpper(strings.ReplaceAll(name, "-", "_")) + "_CLIENT_SECRET"
 }
@@ -75,7 +75,7 @@ type fileConfig struct {
 	// each one's root.
 	Deliver map[string]deliverTable `toml:"deliver"`
 	// Sources holds a table for each source that a worker reaches, under the
-	// source's name, such as for the deleter that its source registers.
+	// source's name, for the poller and the deleter that the source registers.
 	Sources map[string]serviceClient `toml:"source"`
 	// Model names the adapter that carries every model call, its settings,
 	// and what each model stage asks its run for, read by worker run.

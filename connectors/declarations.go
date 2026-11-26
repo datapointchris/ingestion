@@ -98,6 +98,10 @@ type Connector struct {
 	// the connector sighted, which then waits in review with the guess beside
 	// it. A tag or a rule still places it first.
 	PersonSorts bool `json:"person_sorts,omitempty" yaml:"person_sorts"`
+	// SourceParameters are the source's own settings for this connector, such
+	// as the playlist that a video source reads. The source names the keys it
+	// takes and checks their values through RegisterSourceRules.
+	SourceParameters map[string]string `json:"source_parameters,omitempty" yaml:"source_parameters"`
 }
 
 // Scheduled says whether c runs on its schedule, as a poll or a folder does.
@@ -334,8 +338,9 @@ func decodeFile(file string, into any) error {
 // connector and destination are declared, that a tag places an item on one
 // destination, that one destination at most is a side's default, that a
 // schedule parses, that a drop's format, a destination's deliverer and the
-// deleter of a poll that deletes after landing are registered, and that a
-// folder's root is one of roots. nil roots skips that check.
+// deleter of a poll that deletes after landing are registered, that each
+// connector holds to the rules its source registers, and that a folder's root
+// is one of roots. nil roots skips that check.
 func Validate(s Set, roots []string) []Invalid {
 	compiled, err := compiledSchemas()
 	if err != nil {
@@ -420,6 +425,11 @@ func (c Connector) problems(compiled declarationSchemas, roots []string) []strin
 	if c.AfterLanding == AfterLandingDelete && !deleters[c.Source] {
 		out = append(out, fmt.Sprintf("after_landing: source %s registers no deleter in this build, so nothing would delete what it lands", c.Source))
 	}
+	if rules, ok := sourceRules[c.Source]; ok {
+		out = append(out, rules(c)...)
+	} else if len(c.SourceParameters) > 0 {
+		out = append(out, fmt.Sprintf("source_parameters: source %s registers no rules in this build, so nothing would read them", c.Source))
+	}
 	if c.Format != "" {
 		f, ok := dropFormats[c.Format]
 		switch {
@@ -438,6 +448,22 @@ func (c Connector) problems(compiled declarationSchemas, roots []string) []strin
 		}
 	}
 	return out
+}
+
+// sourceRules holds the rules that each source registers for its connectors.
+var sourceRules = map[string]func(Connector) []string{}
+
+// RegisterSourceRules records the rules that every connector of source holds
+// to beside its schema, such as the source_parameters it takes and a field it
+// cannot honor. rules answers why a connector breaks them, one problem each,
+// and Validate refuses the set for any. A connector that names source_parameters of a
+// source that registers no rules is refused, because nothing would read them.
+// Registering a source twice panics, as a duplicate is a build error.
+func RegisterSourceRules(source string, rules func(Connector) []string) {
+	if _, taken := sourceRules[source]; taken {
+		panic("connectors: the rules of source " + source + " are registered twice")
+	}
+	sourceRules[source] = rules
 }
 
 // Decode reads the set back from an applied declarations row.

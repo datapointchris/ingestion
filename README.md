@@ -149,12 +149,14 @@ api = "https://learning.example.com"
 client_id = "learning-svc-ingestion"
 root = "books"
 
-# A table for each source whose deleter the worker opens, named for the source.
-# It takes api, client_id, token_command and issuer as a [deliver.<name>] table
-# does.
-# [source.video-playlists]
-# api = "https://videos.example.com"
-# client_id = "videos-svc-ingestion"
+# A table for each source whose poller and deleter the worker opens, named for
+# the source. It takes api, client_id, token_command and issuer as a
+# [deliver.<name>] table does. This one reads YouTube through ypl, as a client
+# that holds the scopes ypl.playlists.read, ypl.channels.read, ypl.videos.read
+# and ypl.playlist-items.write.
+[source.ypl]
+api = "https://ypl.example.com"
+client_id = "ypl-svc-ingestion"
 ```
 
 `ingestion serve --help` and `ingestion worker run --help` print each setting's default.
@@ -167,8 +169,9 @@ root = "books"
   as one whose secret is unset, and runs on without that deliverer. Its other stages are
   unaffected.
 - **`INGESTION_SOURCE_<NAME>_CLIENT_SECRET`** is the secret of the client that a
-  `[source.<name>]` table names by `client_id`. The worker opens the deleter that the source
-  registers only where its table opens, and leaves that source's deletes queued otherwise.
+  `[source.<name>]` table names by `client_id`, such as `INGESTION_SOURCE_YPL_CLIENT_SECRET`. The
+  worker opens the poller and the deleter that the source registers only where its table opens,
+  and leaves that source's polls and deletes queued otherwise.
 - **`NODE_NAME`**, where set, names the node in each shipped record's resource.
 - **The access token decides what a caller reaches.** A person's token reaches every route. A
   service token reaches only the routes its scopes grant. A worker needs `ingestion.tasks.claim`,
@@ -256,6 +259,7 @@ for an editor to check against. A connector names these:
 | `schedule` | a poll's or a folder's cron expression, a descriptor such as `@hourly`, or `@every 6h`, read in UTC unless it opens `CRON_TZ=<zone>`. A poll may say `once` instead |
 | `after_landing` | optional, for a poll: `delete` removes each item it lands from its source, through the deleter that its source registers |
 | `person_sorts` | optional: `true` leaves the side of what it lands to a person, with the quality gate's guess shown beside it |
+| `source_parameters` | optional: the source's own settings as names and values, such as the playlist that a `ypl` connector reads. The source names the keys it takes and checks each, and a set that names any for a source that takes none is refused |
 | `freshness` | optional, for a poll or a folder: how long it may go without a delivery before it reads overdue |
 | `due_interval` | a drop's or a push's expected cadence |
 | `root`, `path` | a folder's `[serve.homes]` root, and the directory below it to scan |
@@ -418,6 +422,48 @@ Dropped reddit-saved-2026-11-25.json into reddit-exports: it holds 51 items, 51 
 - **A file that is not a whole export is refused**, and nothing of it lands. That covers a file of
   another kind, and an export that the bookmarklet did not finish, such as one Reddit throttled
   partway. The refusal carries the bookmarklet's own error. Export again, and drop the new file.
+
+### A ypl connector lands each video of a playlist, or each new upload of a channel
+
+[ypl](https://github.com/datapointchris/ypl) holds a YouTube channel's credential, prices each
+call against the day's quota, and paces every read. ingestion's YouTube source reads through ypl's
+API and never calls YouTube itself. A poll connector of source `ypl` names what it reads in
+`source_parameters`, one of two keys:
+
+```yaml
+source_parameters:
+  playlist: capture          # a playlist's YouTube id, or the title of one that ypl holds
+# channel: "@somechannel"    # or a channel's id or @handle
+```
+
+A worker reads ypl through its `[source.ypl]` table, as a client that holds the scopes
+`ypl.playlists.read`, `ypl.channels.read`, `ypl.videos.read` and `ypl.playlist-items.write`. The
+worker holding that table claims `poll:ypl` and `delete:ypl`.
+
+- **Each video lands once as `youtube/<video id>`**, with its watch URL, its title and the media
+  type `application/x-youtube-video`. Its item holds no bytes. Its sighting carries `channel_id`
+  and `channel_title`, and its metrics `duration_s`, `views`, `likes` and `comments`. Its source
+  time is when it was published. A poll reads every new video's details in one request per 500
+  ids, which ypl charges a unit per 50.
+- **A playlist's poll reports each available video it holds, in order.** It skips a video that
+  YouTube withholds, such as a deleted or private one, and logs how many. Its sighting keeps the
+  playlist item's id and the playlist's `playlist_id`, which the delete names. It keeps no cursor,
+  because a video it already landed lands as nothing new.
+- **`after_landing: delete` removes each landed video from its playlist** through ypl, which
+  charges the day's quota 50 units a delete. A delete that the day's quota cannot afford waits
+  until ypl's Retry-After, at midnight Pacific. So a capture playlist holds only what has not
+  landed.
+- **A channel's first poll keeps its newest 50 uploads as a baseline and lands none of them**, so
+  a back catalog never floods the review queue. Each later poll reads newest first until it meets
+  an upload from the last poll's 50, and lands each upload before it, oldest first. It reads at
+  most 500 uploads, and logs a gap where it met none of the 50. A connector declared again for
+  another channel takes a new baseline. A channel's connector neither deletes nor runs `once`.
+- **A video on air or scheduled waits until its recording is finished.** A playlist leaves it in
+  place for the next poll, and a channel's cursor holds it. A poll of a playlist scheduled `once`
+  is its last, so it lands such a video rather than leave it behind.
+- **A refusal that ypl asks a wait for sends the poll back for that wait**, such as while the
+  day's quota is spent or another caller holds ypl's turn. Any other refusal fails the poll, and
+  the connector's backoff makes it due again.
 
 ### Parsing an item, and running a stage again
 
