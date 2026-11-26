@@ -44,7 +44,7 @@ const (
 	// PlacementVersion names the placement, so a changed placement writes
 	// its sections beside the old once a structure replay places each
 	// stored answer again.
-	PlacementVersion = "1"
+	PlacementVersion = "2"
 	// mostLeftOut is the largest share of an answer's paged entries at one
 	// level, at or above the chapter level, that the placement may leave out
 	// and still write the book's sections. A left-out chapter leaves its

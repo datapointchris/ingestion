@@ -495,7 +495,9 @@ first fill holds every book after the first to reach it, until `ingestion connec
 - **The answer holds to `prompts/contents/answer.schema.json`**: each entry's title, the page
   that the contents prints beside it or null, and its level.
 - **The service places each entry on a PDF page.** A printed page that a page label names maps to
-  that page. Otherwise the book's offset maps a printed number, and the nearby page that opens on
+  that page. Otherwise the book's offset maps a printed number. A book that prints no page
+  numbers takes its offset from its entries: the offset at which the most entries' titles open
+  pages, where at least `leastAgreeing` in `contents/place.go` agree. The nearby page that opens on
   the entry's title places it, within `searchPages` in `contents/place.go` of the mapped page.
   That is the start of a run of such pages, never before the entry ahead of it at its level. A
   title found only inside the running head of the entry that holds it, such as a chapter's,
@@ -503,10 +505,10 @@ first fill holds every book after the first to reach it, until `ingestion connec
   entry before it that opens on its title. An entry with no printed page, such as a part's
   heading, starts where the next placed entry starts.
 - **A placement that leaves out many entries writes nothing.** Where it leaves out more than
-  `mostLeftOut` in `contents/contents.go` of the entries with a printed page, the book holds no
-  sections from the answer, and serve logs the counts. An answer whose entries make no usable
-  outline also writes none. The book then stays whole, rather than holding chapters that take in
-  the pages of the ones left out.
+  `mostLeftOut` in `contents/contents.go` of one level's entries with a printed page, at or above
+  the chapter level, the book holds no sections from the answer, and serve logs the counts. An
+  answer whose entries make no usable outline also writes none. The book then stays whole,
+  rather than holding chapters that take in the pages of the ones left out.
 - **The entries then pass the outline rule.** They need a usable level, and they take their
   kinds, their ends and their printed pages as an outline's entries do. They write `sections`
   rows with producer `contents` and a `start_placed_by` of `label`, `offset`, `title` or
