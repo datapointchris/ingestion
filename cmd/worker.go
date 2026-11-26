@@ -83,8 +83,7 @@ func openModelPort(ctx context.Context, cfg modelConfig, issuer string, log *slo
 	var err error
 	switch cfg.Adapter {
 	case "":
-		log.Warn("the config names no [model] adapter, so the worker claims no " + contents.Capability + ", " + qualitygate.Capability +
-			" or " + modelread.Capability + " task")
+		log.Warn("the config names no [model] adapter, so the worker claims no model stage's task", "stages", store.ModelStages())
 		return nil
 	case modelport.AdapterQueue:
 		var client *http.Client
@@ -97,7 +96,7 @@ func openModelPort(ctx context.Context, cfg modelConfig, issuer string, log *slo
 		err = fmt.Errorf("adapter %q is none of %s", cfg.Adapter, strings.Join(modelport.Adapters, ", "))
 	}
 	if err != nil {
-		log.Error("[model] cannot open, so the worker claims no "+contents.Capability+", "+qualitygate.Capability+" or "+modelread.Capability+" task",
+		log.Error("[model] cannot open, so the worker claims no model stage's task", "stages", store.ModelStages(),
 			"adapter", cfg.Adapter, "error", err)
 		return nil
 	}
@@ -202,16 +201,14 @@ var workerRunCmd = &cobra.Command{
 		deliver.LearningResources + " client " + strings.Join(deliver.LearningResourcesScopes, " ") + ". A table that\n" +
 		"cannot open is logged and left out, and the worker's other stages run on.\n" +
 		"\n" +
-		"It runs the contents stage, the quality gate, its arm and the model read\n" +
-		"through the adapter that the [model] table names. An arm's task asks for the\n" +
-		"model that its replay named, at the quality gate's effort. It runs the model\n" +
-		"read only where it also runs the scan, because the scanner reads each\n" +
-		"suggestion before it is kept:\n" +
+		"It runs each model stage through the adapter that the [model] table names.\n" +
+		"An arm's task asks for the model that its replay named, at the quality\n" +
+		"gate's effort. It runs the model read only where it also runs the scan,\n" +
+		"because the scanner reads each suggestion before it is kept:\n" +
 		"\n" +
 		"  [model]\n" +
 		"  adapter            queue or claude-cli. With none, the worker claims no\n" +
-		"                     contents, quality, quality-arm or model-read task, and\n" +
-		"                     the item waits there\n" +
+		"                     model stage's task, and the item waits there\n" +
 		"  [model.queue]      an HTTP dispatch service\n" +
 		"  api                its address\n" +
 		"  agent              the kind of run it starts (default " + modelport.DefaultAgent + ")\n" +

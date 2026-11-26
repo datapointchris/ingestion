@@ -28,14 +28,24 @@ type ItemRecords struct {
 
 // Item reads the item under key with its records, or ErrNoItem.
 func (s *Store) Item(ctx context.Context, key string) (ItemRecords, error) {
-	items, err := readInto[Item](ctx, s.read, table("items"), `key = ?`, key)
+	return itemRecords(ctx, s.read, key)
+}
+
+// Records reads the records of the item under key as this write sees them,
+// and ErrNoItem where the store holds none.
+func (t *Tx) Records(ctx context.Context, key string) (ItemRecords, error) {
+	return itemRecords(ctx, t.tx, key)
+}
+
+func itemRecords(ctx context.Context, db querier, key string) (ItemRecords, error) {
+	items, err := readInto[Item](ctx, db, table("items"), `key = ?`, key)
 	if err != nil {
 		return ItemRecords{}, err
 	}
 	if len(items) == 0 {
 		return ItemRecords{}, fmt.Errorf("%s: %w", key, ErrNoItem)
 	}
-	records, err := recordsOf(ctx, s.read, items)
+	records, err := recordsOf(ctx, db, items)
 	if err != nil {
 		return ItemRecords{}, err
 	}
@@ -246,6 +256,10 @@ var line = []string{
 	StageDeliver,
 }
 
+// besideScan are the stages that run beside a PDF's scan, so one that failed
+// costs the book its sections, holds back no other stage and fails no phase.
+var besideScan = []string{StageStructure, StageContents}
+
 // Precedes says whether step comes before later on the line.
 func Precedes(step, later string) bool {
 	i, j := slices.Index(line, step), slices.Index(line, later)
@@ -289,7 +303,7 @@ var reached = map[string]string{
 // decision, waiting where a model stage holds it, and otherwise the furthest
 // stage whose condition is True. A person can place an
 // item whose parse or quality gate failed, which moves it on from that stage.
-// A failed structure profile or contents reading fails no phase.
+// A failed stage of besideScan fails no phase.
 func (r ItemRecords) Phase() string {
 	side, sided := r.NewestDecision(GateSide)
 	if sided && side.Verdict == "drop" {
@@ -303,7 +317,7 @@ func (r ItemRecords) Phase() string {
 		newest[t.Stage] = t
 	}
 	for stage, t := range newest {
-		if t.State == TaskFailed && slices.Contains(line, stage) && stage != StageParse && stage != StageStructure && stage != StageContents &&
+		if t.State == TaskFailed && slices.Contains(line, stage) && stage != StageParse && !slices.Contains(besideScan, stage) &&
 			(stage != StageQuality || !r.PersonPlaced()) {
 			return "failed"
 		}
@@ -361,6 +375,12 @@ func (r ItemRecords) WaitingAt() string {
 }
 
 func (r ItemRecords) condition(step string) (Condition, bool) {
+	if slices.Contains(besideScan, step) {
+		if c, ok := r.outputCondition(step); ok && c.Status != ConditionFalse {
+			return c, true
+		}
+		return Condition{}, false
+	}
 	switch step {
 	case StageLand:
 		return Condition{Type: step, Status: ConditionTrue, Reason: "landed"}, true
@@ -377,14 +397,6 @@ func (r ItemRecords) condition(step string) (Condition, bool) {
 	case GateSide, GateRead:
 		if d, ok := r.NewestDecision(step); ok {
 			return Condition{Type: step, Status: ConditionTrue, Reason: d.Verdict}, true
-		}
-		return Condition{}, false
-	case StageStructure, StageContents:
-		// A PDF's profile and its contents reading run beside its scan, so
-		// one that failed costs the book its sections and holds back no
-		// other stage.
-		if c, ok := r.outputCondition(step); ok && c.Status != ConditionFalse {
-			return c, true
 		}
 		return Condition{}, false
 	case StageSections:
