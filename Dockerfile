@@ -34,9 +34,11 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     && cp /atr/LICENSE /out/scan-rules/ATR-LICENSE
 
 # pdf-docling's layout and table models, each file at the commit and SHA-256
-# that download-docling-models pins.
-RUN --mount=type=bind,source=release,target=/src/release \
-    release/download-docling-models /out/docling-models
+# that download-docling-models pins. Their stage reads only that script, so a
+# source change leaves the download cached.
+FROM golang:1.26.11 AS docling-models
+RUN --mount=type=bind,source=release/download-docling-models,target=/usr/local/bin/download-docling-models \
+    download-docling-models /out/docling-models
 
 # Debian rather than a static base, because the worker runs extractors whose
 # libraries are Python as programs in this image.
@@ -55,11 +57,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     && useradd --system --uid 10600 --gid ingestion --no-create-home --shell /usr/sbin/nologin ingestion \
     && install -d -o ingestion -g ingestion /var/lib/ingestion /etc/ingestion
 
-COPY --from=build /out/ingestion /usr/local/bin/ingestion
-# Where scan.Yr and scan.RulesDir name them.
-COPY --from=build /usr/local/bin/yr /usr/local/bin/yr
-COPY --from=build /out/scan-rules /usr/local/share/ingestion/scan-rules
-
 # The extractor programs' Python libraries, each at the version and hashes
 # release/python-requirements.txt pins, in the venv their shebangs name.
 # PyMuPDF is AGPL-3.0, so its notice and the license's text ship beside
@@ -75,7 +72,14 @@ RUN --mount=type=bind,source=release/python-requirements.txt,target=/tmp/python-
 COPY LICENSE /usr/local/share/ingestion/licenses/MIT-LICENSE
 COPY LICENSES/AGPL-3.0-or-later.txt LICENSES/Apache-2.0.txt LICENSES/CDLA-Permissive-2.0.txt /usr/local/share/ingestion/licenses/
 # Where pdf-docling's ARTIFACTS names them.
-COPY --from=build /out/docling-models /usr/local/share/ingestion/docling-models
+COPY --from=docling-models /out/docling-models /usr/local/share/ingestion/docling-models
+
+# The venv and the models sit above the binary, so a release that moves
+# neither keeps their layers and their digests.
+COPY --from=build /out/ingestion /usr/local/bin/ingestion
+# Where scan.Yr and scan.RulesDir name them.
+COPY --from=build /usr/local/bin/yr /usr/local/bin/yr
+COPY --from=build /out/scan-rules /usr/local/share/ingestion/scan-rules
 # Where extract.ProgramDir names them.
 COPY extract/programs/ /usr/local/libexec/ingestion/extractors/
 
