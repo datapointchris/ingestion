@@ -132,8 +132,9 @@ func (h suggestingScan) Run(ctx context.Context, task worker.Task) worker.Result
 // A push hands psyche the item's scanned parse in psyche's parse-input
 // schema. Each command and link that the scan flagged goes as a suggestion,
 // and every other finding stays a finding. --enriched adds the quality gate's
-// answer. A push starts no task and no model call in the service, and an item
-// whose parse no scan has read never reaches psyche.
+// answer. A push starts no task and no model call in the service. An item whose
+// parse no scan has read never reaches psyche, and a URL that the service never
+// landed exits 2.
 func TestAPushHandsPsycheTheScannedParseAndStartsNoStage(t *testing.T) {
 	copied, err := os.ReadFile(parseInputSchema)
 	if err != nil {
@@ -161,8 +162,12 @@ func TestAPushHandsPsycheTheScannedParseAndStartsNoStage(t *testing.T) {
 	if _, err := runCLI(t, "push", key, "--to", "psyche", "--relate", "--config", p.config); err == nil || !strings.Contains(err.Error(), "no scan has read") {
 		t.Errorf("a push before the scan answered %v, want a refusal naming the scan", err)
 	}
+	_, err = runCLI(t, "push", "https://www.reddit.com/r/golang/comments/zz9/unseen/", "--to", "psyche", "--relate", "--config", p.config)
+	if code := exitCode(io.Discard, err); code != 2 {
+		t.Errorf("a push of a URL the service never landed exited %d (%v), want 2", code, err)
+	}
 	if _, err := os.Stat(filepath.Join(kept, "stdin.json")); err == nil {
-		t.Fatal("psyche ran on a parse that no scan has read")
+		t.Fatal("psyche ran on a parse that no scan has read, or on an item the service never landed")
 	}
 	p.run(t, suggestingScan{p.worker})
 	p.run(t, p.qualityGate(t, stand.models(t, "", "")))
