@@ -70,7 +70,7 @@
         "additionalProperties": false,
         "required": ["stage", "producer", "producer_version", "state"],
         "properties": {
-          "stage": {"enum": ["parse", "structure", "scan", "quality", "quality-arm", "model-read"]},
+          "stage": {"enum": ["parse", "structure", "contents", "scan", "quality", "quality-arm", "model-read"]},
           "producer": {"type": "string"},
           "producer_version": {"type": "string"},
           "lens": {"type": ["string", "null"]},
@@ -193,7 +193,7 @@
           "additionalProperties": false,
           "required": ["stage", "reason", "capability", "held_by", "dispatch_id", "last_error", "message"],
           "properties": {
-            "stage": {"enum": ["quality", "model-read"]},
+            "stage": {"enum": ["contents", "quality", "model-read"]},
             "reason": {"description": "first-fill: a connector's first fill holds the task until it is released. dispatched: the model port started a run that has not answered, and message carries why in the dispatch service's words, such as a budget that holds it. unclaimed: no worker heard from lately claims the task's capability, as where no worker's config names a [model] adapter. queued: a worker claims the task next.", "enum": ["first-fill", "dispatched", "unclaimed", "queued"]},
             "capability": {"type": "string"},
             "held_by": {"description": "The connector whose first fill holds the task.", "type": ["string", "null"]},

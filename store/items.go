@@ -242,7 +242,8 @@ type Condition struct {
 
 // line is every stage and gate, in the order that an item passes them.
 var line = []string{
-	StageLand, StageParse, StageStructure, StageSections, StageScan, StageQuality, GateSide, GateRead, StageModelRead, StageDeliver,
+	StageLand, StageParse, StageStructure, StageContents, StageSections, StageScan, StageQuality, GateSide, GateRead, StageModelRead,
+	StageDeliver,
 }
 
 // Precedes says whether step comes before later on the line.
@@ -271,6 +272,7 @@ var reached = map[string]string{
 	StageLand:      "landed",
 	StageParse:     "parsed",
 	StageStructure: "structured",
+	StageContents:  "structured",
 	StageSections:  "sectioned",
 	StageScan:      "scanned",
 	StageQuality:   "gated",
@@ -287,7 +289,7 @@ var reached = map[string]string{
 // decision, waiting where a model stage holds it, and otherwise the furthest
 // stage whose condition is True. A person can place an
 // item whose parse or quality gate failed, which moves it on from that stage.
-// A failed structure profile fails no phase.
+// A failed structure profile or contents reading fails no phase.
 func (r ItemRecords) Phase() string {
 	side, sided := r.NewestDecision(GateSide)
 	if sided && side.Verdict == "drop" {
@@ -301,7 +303,7 @@ func (r ItemRecords) Phase() string {
 		newest[t.Stage] = t
 	}
 	for stage, t := range newest {
-		if t.State == TaskFailed && slices.Contains(line, stage) && stage != StageParse && stage != StageStructure &&
+		if t.State == TaskFailed && slices.Contains(line, stage) && stage != StageParse && stage != StageStructure && stage != StageContents &&
 			(stage != StageQuality || !r.PersonPlaced()) {
 			return "failed"
 		}
@@ -377,9 +379,10 @@ func (r ItemRecords) condition(step string) (Condition, bool) {
 			return Condition{Type: step, Status: ConditionTrue, Reason: d.Verdict}, true
 		}
 		return Condition{}, false
-	case StageStructure:
-		// A PDF's profile runs beside its scan, so one that failed costs the
-		// book its sections and holds back no other stage.
+	case StageStructure, StageContents:
+		// A PDF's profile and its contents reading run beside its scan, so
+		// one that failed costs the book its sections and holds back no
+		// other stage.
 		if c, ok := r.outputCondition(step); ok && c.Status != ConditionFalse {
 			return c, true
 		}

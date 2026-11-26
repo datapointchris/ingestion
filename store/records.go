@@ -39,8 +39,11 @@ const (
 	// StageStructure profiles a PDF's bytes: its outline, page labels,
 	// creation date and fonts.
 	StageStructure = "structure"
+	// StageContents is a model's reading of the printed contents pages of a
+	// PDF whose outline gives it no sections.
+	StageContents = "contents"
 	// StageSections is the write of an item's sections that serve makes from
-	// its structure, which queues no task.
+	// its structure or its contents, which queues no task.
 	StageSections  = "sections"
 	StageScan      = "scan"
 	StageQuality   = "quality"

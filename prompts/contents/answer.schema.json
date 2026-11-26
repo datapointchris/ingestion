@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/datapointchris/ingestion/prompts/contents/answer.schema.json",
+  "title": "The contents stage's answer",
+  "description": "Each entry of a book's printed table of contents, in the order it prints them. The store keeps it whole as the output's answer, and serve places each entry on a PDF page and writes the book's contents sections from them. An empty list says the pages held no contents.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["entries"],
+  "properties": {
+    "entries": {
+      "type": "array",
+      "maxItems": 3000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "page", "level"],
+        "properties": {
+          "title": {"description": "The entry's title as the contents prints it, with its number.", "type": "string", "minLength": 1, "maxLength": 400},
+          "page": {"description": "The page number printed beside the entry, as printed, or null where none is.", "type": ["string", "null"], "maxLength": 20},
+          "level": {"description": "1 for the outermost entries, 2 for those under them, and so on.", "type": "integer", "minimum": 1, "maximum": 8}
+        }
+      }
+    }
+  }
+}

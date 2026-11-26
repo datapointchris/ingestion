@@ -45,6 +45,11 @@ adapter = "claude-cli"
 [model.claude-cli]
 command = "claude"  # a path, or a name on PATH
 
+# What the contents stage asks each run for.
+[model.contents]
+model = "sonnet"
+effort = "medium"
+
 # What the quality gate asks each run for.
 [model.quality]
 model = "haiku"
@@ -404,7 +409,7 @@ A PDF's `pdf-text` parse queues its structure in the same write. A worker runs `
 which reads the PDF with PyMuPDF and writes one profile:
 
 - its page count, and each outline entry's level, title and page
-- its page-label rules, and its metadata's creation date
+- its page-label rules, and its metadata's creation date and title
 - the share of every fifth page whose fonts include a monospace one, a sign of code, or a TeX or
   math one, a sign of formulas
 
@@ -420,13 +425,14 @@ The service writes the book's sections in the write that reports the profile, on
 - **Front and back matter keep their kind and are no chapter.** Contents, a preface, an appendix,
   an index or a bibliography is found by its title. A matter word that opens a longer title
   marks matter only before a tail such as `of` or a colon, so `Index of Notation` is back matter
-  and `Index Structures` is a chapter.
+  and `Index Structures` is a chapter. An entry on PDF page 1 whose title names the book, as its
+  file's name or its PDF's title spells it, is front matter too, as a title page is.
 - **A section ends where the next entry at its level or above begins.** A printed page comes from
   the page's label, else from the book's offset, else stays empty. The offset is the most common
   difference between a PDF page and a number standing alone on its first or last three lines,
   where it holds on 30% of the pages.
 - **A PDF with no usable outline and under 50 pages is one section over the whole file.** A
-  longer one keeps no sections.
+  longer one waits for the contents stage, below, to read its printed contents.
 
 Each chapter becomes a child item, `<book key>#<n>` from 1, which holds no bytes. It carries its
 own title and the book's zone and source time. It takes the book's side and read decisions,
@@ -441,6 +447,32 @@ and a line for each chapter. `ingestion items replay --stage structure` profiles
 such as with a new `pdf-structure`. Its sections write beside the old. In a book that already
 holds chapters, a new version's chapter names the chapter item with the same start page and
 title, and a chapter that matches none makes no item.
+
+### A long book with no outline takes its chapters from its printed contents
+
+Where the outline rule writes no sections for a PDF of 50 or more pages, the write that ends its
+structure queues one task of capability `contents`. A book gets that task once. The stage runs
+on it again only through `ingestion items replay --stage contents`, which estimates its tokens
+first, or through `tasks retry` on its failed task. It is a model stage, so a connector's first
+fill holds every book after the first to reach it, until `ingestion connectors release`.
+
+- **The prompt quotes the pages that look like contents.** Among the first 30 PDF pages, a page
+  is quoted where at least 3 of its lines, and 30% of them, end in a number. Where none does, the
+  first 30 pages are quoted, and the model may answer that they hold no contents.
+- **The answer holds to `prompts/contents/answer.schema.json`**: each entry's title, the page
+  that the contents prints beside it or null, and its level.
+- **The service places each entry on a PDF page.** A printed page that a page label names maps to
+  that page. Otherwise the book's offset maps a printed number, and the page within 20 either
+  side that opens on the entry's title places it, at the start of a run of such pages. A printed
+  page that maps to none places its entry at the first page after the entry before it that opens
+  on its title. An entry with no printed page, such as a part's heading, starts where the next
+  placed entry starts. A book whose labels are each page's PDF page reads its labels as absent.
+- **The entries then pass the outline rule.** They need a usable level, and they take their
+  kinds, their ends and their printed pages as an outline's entries do. They write `sections`
+  rows with producer `contents` and a `start_placed_by` of `label`, `offset`, `title` or
+  `next-entry`, and each chapter becomes a child item as an outline's does.
+- **A failed or waiting reading costs the book its sections only.** The book waits at `contents`
+  while its task is open, and a failed one leaves its phase as the other stages set it.
 
 ### Scanning an item for what it suggests and what it hides
 
@@ -855,7 +887,7 @@ nothing twice. After a crash, a reader folds a resent record on its kind, id and
 Every item passes one line of stages:
 
 ```text
-land → parse → scan → quality gate → side → read → model read → deliver
+land → parse → structure → contents → sections → scan → quality gate → side → read → model read → deliver
 ```
 
 - **An item's key names the artifact, not the source that sent it.** The same article from a feed

@@ -90,7 +90,7 @@ func DeliverCapability(deliverer string) string { return StageDeliver + ":" + de
 
 // modelStages are the stages that read an item with a model, where a
 // connector's first fill holds every item after the first to reach one.
-var modelStages = []string{StageQuality, StageQualityArm, StageModelRead}
+var modelStages = []string{StageContents, StageQuality, StageQualityArm, StageModelRead}
 
 // Enqueue adds a queued task for task's item or connector, stage and
 // capability, and answers it as written. A model stage's task for an item that

@@ -26,6 +26,7 @@ import (
 )
 
 //go:embed quality/prompt.tmpl quality/answer.schema.json
+//go:embed contents/prompt.tmpl contents/answer.schema.json
 //go:embed model-read/prompt.tmpl model-read/answer.schema.json model-read/lenses/*.tmpl
 var files embed.FS
 
@@ -52,6 +53,9 @@ type Lens struct {
 
 // Quality is the quality gate's prompt.
 var Quality = load("quality", "1", nil)
+
+// Contents is the contents stage's prompt.
+var Contents = load("contents", "1", nil)
 
 // ModelRead is the model read's prompt under each lens, by the lens's name.
 var ModelRead = loadLenses("model-read", "1", map[string]string{"fleet": "1"})
