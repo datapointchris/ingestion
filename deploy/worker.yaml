@@ -11,6 +11,9 @@
 # - A Secret named ingestion-deliver-life-articles, where
 #   [deliver.life-articles] names a client_id. Its secret key holds that
 #   client's secret. Without it the worker runs on and opens no life-articles.
+# - A Secret named ingestion-model-queue-client, where [model] adapter is
+#   queue. Its secret key holds the secret of [model.queue]'s client_id.
+#   Without it the worker runs on and claims no model stage's task.
 # - A NetworkPolicy for each egress: the service, the identity provider, each
 #   outside source and each app that the worker delivers to.
 apiVersion: v1
@@ -70,6 +73,12 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: ingestion-deliver-life-articles
+                  key: secret
+                  optional: true
+            - name: INGESTION_MODEL_QUEUE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: ingestion-model-queue-client
                   key: secret
                   optional: true
           # One scan of a 61 MiB parse, about the most a parse report carries,

@@ -735,7 +735,9 @@ signed with cosign by the release workflow. The manifests leave two things for t
 supply: the ConfigMap `ingestion-config` holding `config.toml`, and the Secret
 `ingestion-worker-client` holding the worker's client secret under `secret`. Where the config
 sets `[deliver.life-articles]` with a `client_id`, the cluster also supplies the Secret
-`ingestion-deliver-life-articles`, holding that client's secret under `secret`.
+`ingestion-deliver-life-articles`, holding that client's secret under `secret`. Where it sets
+`[model] adapter = "queue"`, the cluster supplies the Secret `ingestion-model-queue-client`,
+holding `[model.queue]`'s client secret under `secret`.
 
 **An upgrade that changes a table copies the store first.** Before `serve` changes the store's
 tables, it writes a copy beside the store, named `ingestion.db.before-<UTC time>`. A column that
