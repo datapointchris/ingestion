@@ -66,8 +66,8 @@ func TestDoclingAndWhisperParsesShareOneHeavySlotWhereNoSlotLimitIsConfigured(t 
 		}
 		running.Add(-1)
 	}
-	docling := fakeHandler{capability: doclingCapability, slotLimit: extract.PDFDocling.SlotLimit, slotGroup: extract.PDFDocling.SlotGroup, do: heavy}
-	whisper := fakeHandler{capability: whisperCapability, slotLimit: ypl.WhisperExtractor.SlotLimit, slotGroup: ypl.WhisperExtractor.SlotGroup, do: heavy}
+	docling := fakeHandler{capability: doclingCapability, slotGroup: extract.PDFDocling.SlotGroup, do: heavy}
+	whisper := fakeHandler{capability: whisperCapability, slotGroup: ypl.WhisperExtractor.SlotGroup, do: heavy}
 	scanner := fakeHandler{capability: scan.Capability, do: func() {
 		for wait := time.Now().Add(5 * time.Second); running.Load() == 0 && time.Now().Before(wait); {
 			time.Sleep(5 * time.Millisecond)
@@ -153,16 +153,13 @@ func TestADeployThatStopsTheWorkerMidParseQueuesItsTaskAgain(t *testing.T) {
 // fakeHandler runs do for each task of capability, and fails the task.
 type fakeHandler struct {
 	capability string
-	slotLimit  int
 	slotGroup  string
 	do         func()
 }
 
 func (h fakeHandler) Capability() string { return h.capability }
 
-func (h fakeHandler) SlotLimit() int { return h.slotLimit }
-
-func (h fakeHandler) SlotGroup() string { return h.slotGroup }
+func (h fakeHandler) SlotGroup() (string, int) { return h.slotGroup, extract.SlotGroups[h.slotGroup] }
 
 func (h fakeHandler) Run(context.Context, worker.Task) worker.Result {
 	h.do()

@@ -26,14 +26,13 @@ const DoclingTimeout = 3 * time.Hour
 //
 // It is secondary, so landing never queues it. The write that ends such a
 // book's structure task queues it, and its parse writes beside PDFText's. It
-// runs in SlotGroupHeavy, so a worker runs it alone among that group's parses
-// unless [worker.slot_limits] says otherwise. Its
-// version names Docling's and DoclingPins, so a parse by other libraries or
-// weights writes beside the old one. A change to the program's own reading
-// raises the leading number.
+// runs in SlotGroupHeavy, whose limit bounds its parses and Whisper's
+// together. Its version names Docling's and DoclingPins, so a parse by other
+// libraries or weights writes beside the old one. A change to the program's
+// own reading raises the leading number.
 var PDFDocling = func() Extractor {
 	e := Program("docling", "1+docling-"+DoclingVersion+"-"+DoclingPins, MediaTypePDF, ProgramDir+"/pdf-docling")
-	e.Positional, e.Secondary, e.Timeout, e.SlotLimit, e.SlotGroup = true, true, DoclingTimeout, 1, SlotGroupHeavy
+	e.Positional, e.Secondary, e.Timeout, e.SlotGroup = true, true, DoclingTimeout, SlotGroupHeavy
 	return e
 }()
 

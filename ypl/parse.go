@@ -19,11 +19,12 @@ import (
 // reads it through ypl's door, because the item holds no bytes.
 // CaptionsExtractor reads the caption track that ypl picks. Where the video
 // has none, its parse defers to WhisperExtractor, which transcribes the
-// video's audio.
+// video's audio. A worker runs one captions parse at a time, because ypl reads
+// one video at a time, so a second would only wait at ypl and hold a slot.
 var (
 	CaptionsExtractor = extract.Extractor{
 		Name: "youtube-captions", Version: "1", MediaType: MediaTypeVideo,
-		ReadsURL: true, Open: openCaptions, DefersTo: whisperName,
+		ReadsURL: true, Open: openCaptions, DefersTo: whisperName, SlotLimit: 1,
 	}
 	WhisperExtractor = WhisperExtractorAt(extract.WhisperProgram)
 )
@@ -36,7 +37,7 @@ const whisperName = "youtube-whisper"
 func WhisperExtractorAt(program string) extract.Extractor {
 	return extract.Extractor{
 		Name: whisperName, Version: extract.WhisperVersion, MediaType: MediaTypeVideo, Program: program,
-		Secondary: true, ReadsURL: true, SlotLimit: 1, SlotGroup: extract.SlotGroupHeavy, Timeout: WhisperTimeout,
+		Secondary: true, ReadsURL: true, SlotGroup: extract.SlotGroupHeavy, Timeout: WhisperTimeout,
 		Open: func(api string, client *http.Client) extract.Reader {
 			return whisperReader{client: NewClient(api, client), program: program}.read
 		},

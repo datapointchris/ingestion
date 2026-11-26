@@ -49,9 +49,13 @@ func Named(name string) (Extractor, bool) {
 }
 
 // SlotGroupHeavy is the slot group of each parse whose run holds gigabytes,
-// such as Docling's and Whisper's. A worker runs one of them at a time
-// unless [worker.slot_limits] names the group, because its memory holds one.
+// such as Docling's and Whisper's.
 const SlotGroupHeavy = "heavy"
+
+// SlotGroups holds each slot group's default limit, which a
+// [worker.slot_limits] key naming the group overrides. heavy runs one parse
+// at a time, because a worker's memory holds one.
+var SlotGroups = map[string]int{SlotGroupHeavy: 1}
 
 // Item is what an extractor that ReadsURL reads: the item's key, its URL and
 // its media type.
@@ -127,12 +131,11 @@ type Extractor struct {
 	Secondary bool
 	// SlotLimit caps the extractor's parses that one worker runs at once,
 	// where [worker.slot_limits] names no limit for it. Zero leaves them
-	// uncapped. A program whose run holds gigabytes sets it, so the worker's
-	// memory holds its runs. In a slot group, it caps the group's parses
-	// together.
+	// uncapped. An extractor in a slot group sets none.
 	SlotLimit int
 	// SlotGroup names the slot group whose limit the extractor's parses share
-	// with every other extractor in it, such as SlotGroupHeavy.
+	// with every other extractor in it, such as SlotGroupHeavy. SlotGroups
+	// holds the group's limit.
 	SlotGroup string
 	// ReadsURL marks an extractor whose item holds no bytes, so it reads the
 	// item at its source through the reader that Open opens on that source's
@@ -170,7 +173,9 @@ type Registry struct {
 
 // NewRegistry registers extractors. It refuses one with no name, version,
 // media type or way to run, two of one name, two primary ones of one media
-// type, and one that defers to an extractor it does not hold as secondary.
+// type, and one that defers to an extractor it does not hold as secondary. It
+// refuses a slot group that SlotGroups does not hold, and a SlotLimit beside
+// a slot group, whose limit is the group's.
 func NewRegistry(extractors ...Extractor) (*Registry, error) {
 	r := &Registry{byType: map[string]Extractor{}}
 	names := map[string]bool{}
@@ -184,6 +189,10 @@ func NewRegistry(extractors ...Extractor) (*Registry, error) {
 			return nil, fmt.Errorf("extractor %s sets no Extract", e.Name)
 		case names[e.Name]:
 			return nil, fmt.Errorf("two extractors are named %s", e.Name)
+		case e.SlotGroup != "" && SlotGroups[e.SlotGroup] < 1:
+			return nil, fmt.Errorf("extractor %s runs in slot group %s, which SlotGroups gives no limit", e.Name, e.SlotGroup)
+		case e.SlotGroup != "" && e.SlotLimit != 0:
+			return nil, fmt.Errorf("extractor %s runs in slot group %s, so it sets no SlotLimit of its own", e.Name, e.SlotGroup)
 		}
 		names[e.Name] = true
 		r.all = append(r.all, e)

@@ -75,7 +75,9 @@ func (h handler) Capability() string { return Capability(h.extractor) }
 
 func (h handler) SlotLimit() int { return h.extractor.SlotLimit }
 
-func (h handler) SlotGroup() string { return h.extractor.SlotGroup }
+func (h handler) SlotGroup() (string, int) {
+	return h.extractor.SlotGroup, SlotGroups[h.extractor.SlotGroup]
+}
 
 // Run parses the task's item. A parse that fails, or finds no text, fails
 // its task with the reason kept, so the item waits in review rather than
@@ -118,7 +120,9 @@ func (h readHandler) Capability() string { return Capability(h.extractor) }
 
 func (h readHandler) SlotLimit() int { return h.extractor.SlotLimit }
 
-func (h readHandler) SlotGroup() string { return h.extractor.SlotGroup }
+func (h readHandler) SlotGroup() (string, int) {
+	return h.extractor.SlotGroup, SlotGroups[h.extractor.SlotGroup]
+}
 
 // Run reads the task's item at its source. A read that its source asked to
 // wait for queues again after that wait, spending no claim, until the task has

@@ -38,7 +38,7 @@ import (
 )
 
 const (
-	defaultSlots = 2
+	defaultSlots = 3
 	defaultLease = 5 * time.Minute
 	defaultPoll  = 5 * time.Second
 )
@@ -228,8 +228,9 @@ var workerRunCmd = &cobra.Command{
 		"slot group's capabilities together, run at once, within slots, so a long task\n" +
 		"leaves the other slots free. Each key is a slot group or a capability in no\n" +
 		"group, and each value 1 or more. The " + extract.SlotGroupHeavy + " group holds the Docling and\n" +
-		"Whisper parses, whose runs each hold gigabytes, and runs one at a time unless\n" +
-		"the table names it. A capability that nothing caps may take every slot:\n" +
+		"Whisper parses, whose runs each hold gigabytes, and runs " + strconv.Itoa(extract.SlotGroups[extract.SlotGroupHeavy]) + " at a time unless\n" +
+		"the table names it. A captions parse runs one at a time, because ypl reads one\n" +
+		"video at a time. A capability that nothing caps may take every slot:\n" +
 		"\n" +
 		"  [worker.slot_limits]\n" +
 		"  " + extract.SlotGroupHeavy + " = 1\n" +

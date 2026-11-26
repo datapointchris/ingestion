@@ -61,18 +61,18 @@ type Handler interface {
 }
 
 // SlotLimiter is a Handler that caps how many of its tasks run at once by
-// default, such as a parse whose run holds gigabytes. Zero leaves them
-// uncapped, and Config.SlotLimits overrides it. A handler in a slot group caps
-// its group's tasks together, at the least limit its group's handlers set.
+// default. Zero leaves them uncapped, and Config.SlotLimits overrides it. A
+// handler in a slot group sets none, because its group's limit caps it.
 type SlotLimiter interface {
 	SlotLimit() int
 }
 
 // SlotGrouper is a Handler whose tasks share one slot limit with every other
 // handler that names the same group, such as two parses whose runs each hold
-// gigabytes. "" names no group.
+// gigabytes. It names the group and the group's default limit, which every
+// member names alike, and "" names no group.
 type SlotGrouper interface {
-	SlotGroup() string
+	SlotGroup() (name string, limit int)
 }
 
 // Config is how a worker runs.
@@ -189,21 +189,25 @@ type slotPartitions struct {
 }
 
 // partitionSlots reads each handler's slot group and limit, then overrides
-// the limits with configured. It refuses a configured limit that names a
-// grouped capability, and warns of one that names nothing a handler here holds.
+// the limits with configured. It refuses two members of a group that give it
+// different limits, and a configured limit that names a grouped capability. It
+// warns of one that names nothing a handler here holds.
 func partitionSlots(handlers []Handler, configured map[string]int, log *slog.Logger) (slotPartitions, error) {
 	p := slotPartitions{grouped: map[string]string{}, groups: map[string][]string{}, limits: map[string]int{}}
 	for _, h := range handlers {
-		slot := h.Capability()
-		if grouper, ok := h.(SlotGrouper); ok && grouper.SlotGroup() != "" {
-			slot = grouper.SlotGroup()
-			p.grouped[h.Capability()] = slot
-			p.groups[slot] = append(p.groups[slot], h.Capability())
+		if grouper, ok := h.(SlotGrouper); ok {
+			if group, limit := grouper.SlotGroup(); group != "" {
+				if held, set := p.limits[group]; set && held != limit {
+					return p, fmt.Errorf("capability %s gives slot group %s the limit %d, and another of its capabilities gives %d", h.Capability(), group, limit, held)
+				}
+				p.grouped[h.Capability()] = group
+				p.groups[group] = append(p.groups[group], h.Capability())
+				p.limits[group] = limit
+				continue
+			}
 		}
 		if limiter, ok := h.(SlotLimiter); ok && limiter.SlotLimit() > 0 {
-			if held, set := p.limits[slot]; !set || limiter.SlotLimit() < held {
-				p.limits[slot] = limiter.SlotLimit()
-			}
+			p.limits[h.Capability()] = limiter.SlotLimit()
 		}
 	}
 	for _, key := range slices.Sorted(maps.Keys(configured)) {
@@ -229,13 +233,15 @@ func (p slotPartitions) of(capability string) string {
 }
 
 // claimBounds bounds the next claim by each limited capability and slot
-// group's free slots, given how many tasks of each run.
+// group's free slots, given how many tasks of each run. A group of one
+// capability bounds it as a capability does, so a service that reads no slot
+// group still answers the claim.
 func (p slotPartitions) claimBounds(running map[string]int) (map[string]int, map[string]server.SlotGroup) {
 	var bounds map[string]int
 	var groups map[string]server.SlotGroup
 	for slot, limit := range p.limits {
 		free := max(limit-running[slot], 0)
-		if members, isGroup := p.groups[slot]; isGroup {
+		if members, isGroup := p.groups[slot]; isGroup && len(members) > 1 {
 			if groups == nil {
 				groups = map[string]server.SlotGroup{}
 			}
@@ -244,6 +250,9 @@ func (p slotPartitions) claimBounds(running map[string]int) (map[string]int, map
 		}
 		if bounds == nil {
 			bounds = map[string]int{}
+		}
+		if members, isGroup := p.groups[slot]; isGroup {
+			slot = members[0]
 		}
 		bounds[slot] = free
 	}
