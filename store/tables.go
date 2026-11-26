@@ -31,6 +31,9 @@ type Table struct {
 	Stamp []string
 	// JSON names the columns holding JSON text.
 	JSON []string
+	// Bool names the columns holding a boolean, which SQLite keeps as 0 or 1
+	// and a read answers as false or true.
+	Bool []string
 	// Text names the outsider-written columns, which ship as ingestion.text
 	// and never as ingestion.record.
 	Text []string
@@ -94,6 +97,11 @@ var Tables = []Table{
 		Name: "keyed_requests", Key: []string{"caller", "idempotency_key"}, Stamp: []string{"created_ts"},
 		JSON: []string{"answer"}, Writes: Appends,
 	},
+	{Name: "marks", Key: []string{"item_key", "sequence"}, Stamp: []string{"marked_ts"}, JSON: []string{"families"}, Writes: Appends},
+	{
+		Name: "gate_trust", Key: []string{"family"}, Stamp: []string{"updated_ts"}, Bool: []string{"asks_promotion"},
+		Kept: []string{"created_ts"}, Writes: Upserts,
+	},
 }
 
 // TableNamed is the table called name, and false where none is.
@@ -127,6 +135,9 @@ func (t Table) IsText(column string) bool { return contains(t.Text, column) }
 
 // IsJSON says whether column holds JSON text.
 func (t Table) IsJSON(column string) bool { return contains(t.JSON, column) }
+
+// IsBool says whether column holds a boolean.
+func (t Table) IsBool(column string) bool { return contains(t.Bool, column) }
 
 func contains(list []string, s string) bool {
 	for _, v := range list {

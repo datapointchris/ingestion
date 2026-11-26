@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/datapointchris/ingestion/schemas/gate-trust-promotion.schema.json",
+  "title": "A person's promotion of one family of the quality gate",
+  "description": "What POST /api/v1/gates/trust/{family}/promote answers, and `ingestion gates trust promote --json` prints. A person's body is {}, and a service's names the login of the person it promotes for. Sent again for a promoted family, it answers the family as it stands.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "family"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "family": {"$ref": "ingestion-record.schema.json#/$defs/gate_trust"}
+  }
+}

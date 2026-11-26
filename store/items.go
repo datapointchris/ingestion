@@ -323,7 +323,7 @@ func (r ItemRecords) Phase() string {
 	}
 	for stage, t := range newest {
 		if t.State == TaskFailed && slices.Contains(line, stage) && stage != StageParse && !slices.Contains(besideScan, stage) &&
-			(stage != StageQuality || !r.PersonPlaced()) {
+			(stage != StageQuality || !r.PlacedWithoutTheGate()) {
 			return "failed"
 		}
 	}
@@ -349,10 +349,13 @@ func (r ItemRecords) Phase() string {
 	return phase
 }
 
-// PersonPlaced says whether a person made the item's newest side decision.
-func (r ItemRecords) PersonPlaced() bool {
+// PlacedWithoutTheGate says whether a tag, a rule or a person made the item's
+// newest side decision, as decided_by tag, rule:<name> or person:<login>
+// records. The quality gate still answers such an item, and its run holds and
+// fails nothing, because no answer moves the item.
+func (r ItemRecords) PlacedWithoutTheGate() bool {
 	side, ok := r.NewestDecision(GateSide)
-	return ok && side.ByPerson()
+	return ok && (side.ByPerson() || side.DecidedBy == "tag" || strings.HasPrefix(side.DecidedBy, "rule:"))
 }
 
 // ReviewPlacement is the item's label, as ReviewPlacement decides it from the
@@ -393,9 +396,7 @@ func (r ItemRecords) condition(step string) (Condition, bool) {
 		if d, ok := r.NewestDecision(GateQuality); ok {
 			return Condition{Type: step, Status: ConditionTrue, Reason: d.Verdict}, true
 		}
-		if r.PersonPlaced() {
-			// A run of the gate on an item that a person placed measures the
-			// gate against the placement, so it holds and fails nothing.
+		if r.PlacedWithoutTheGate() {
 			return Condition{}, false
 		}
 		return r.outputCondition(step)

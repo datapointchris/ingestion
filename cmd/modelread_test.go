@@ -85,6 +85,11 @@ func TestAFleetSavesModelReadAnswersEachNoteAPersonPlacesItWith(t *testing.T) {
 	if _, err := runCLI(t, "review", "place", "reddit/t3_bb2", "work-inbox", "--note", note, "--config", p.config); err != nil {
 		t.Fatal(err)
 	}
+	// The ruled save's quality task started the first fill, which holds the
+	// model read until it is released.
+	if _, err := runCLI(t, "connectors", "release", "reddit-exports", "--config", p.config); err != nil {
+		t.Fatal(err)
+	}
 
 	models := stand.models(t, "", "")
 	models.ModelRead = stageModel{Model: "sonnet", Effort: "high"}

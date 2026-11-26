@@ -152,6 +152,19 @@ func TestAnItemGainsEachStageRecordAndEachChangeReachesTheCollectorOnce(t *testi
 			return err
 		}
 		connector := "reddit-exports"
+		family, version, verdict, run := connector+"@1-3f9a0b2c", "1-3f9a0b2c", "drop", "model:8812"
+		if err := tx.PutGateTrust(ctx, store.GateTrust{
+			Family: family, Connector: connector, PromptVersion: version, Run: 30, StraightRun: 30, Share: 1, Threshold: 30, FirstShare: 0.25,
+			AsksPromotion: true, LastChange: "mark", LastItemKey: &key,
+		}); err != nil {
+			return err
+		}
+		if _, err := tx.AddMark(ctx, store.Mark{
+			ItemKey: key, Mark: "low-quality", DecidedBy: "person:person", GateVerdict: &verdict, GateDecidedBy: &run, PromptVersion: &version,
+			Agreement: "agreed", Families: []string{family},
+		}); err != nil {
+			return err
+		}
 		if err := tx.AddKeyedRequest(ctx, store.KeyedRequest{
 			Caller: "ingestion-cli-desk person", IdempotencyKey: "drop-1", Route: "drops", Connector: &connector,
 			Fingerprint: strings.Repeat("d", 64), Status: 201, Answer: json.RawMessage(`{"schema_version":1,"items":[]}`),

@@ -181,7 +181,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 			Store: st, Lander: lander, Scheduler: scheduler, Roots: roots, AfterApply: route.AfterApply(log), Log: log,
 		}),
 		server.ReplayRoutes(st, replayableStages(st, extractors), log),
-		server.ReviewRoutes(st, log), accuracy.Routes(st, log))
+		server.ReviewRoutes(st, log), server.TrustRoutes(st, log), accuracy.Routes(st, log))
 	srv := &http.Server{Addr: listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 
 	var wg sync.WaitGroup

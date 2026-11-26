@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/datapointchris/ingestion/schemas/item-mark.schema.json",
+  "title": "A person's mark on one item",
+  "description": "What POST /api/v1/items/{key}/marks answers, and `ingestion items mark --json` prints. The body names the mark, low-quality or read, and a service's body also names the login of the person it marks for. A mark moves no item. Sent again with the mark the item holds from the same person, it answers that mark and appends none.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "mark", "families"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "mark": {"$ref": "ingestion-record.schema.json#/$defs/marks"},
+    "families": {
+      "description": "Each family's standing after the mark moved it, and empty where the mark agreed and disagreed with nothing.",
+      "type": "array",
+      "items": {"$ref": "ingestion-record.schema.json#/$defs/gate_trust"}
+    }
+  }
+}

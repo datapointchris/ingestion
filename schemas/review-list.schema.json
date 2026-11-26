@@ -20,8 +20,8 @@
           "title": {"type": ["string", "null"]},
           "url": {"type": ["string", "null"]},
           "reason": {
-            "description": "Why the item waits: its sightings' tags disagree, the guess fell below the floor, a connector that sighted it leaves its side to a person and the guess waits beside it, no tag or rule placed it and the quality gate gave no answer, because its run failed, its scan could not read the set in force, or it waited in review from before the quality gate ran, the side gate could not read the set in force or the item's sightings, it has no usable parse, or the quality gate sent it to review.",
-            "enum": ["tags-disagree", "below-floor", "person-sorts", "no-guess", "gate-error", "no-parse", "quality-review"]
+            "description": "Why the item waits: its sightings' tags disagree, the guess fell below the floor, a connector that sighted it leaves its side to a person and the guess waits beside it, no tag or rule placed it and the quality gate gave no answer, because its run failed, its scan could not read the set in force, or it waited in review from before the quality gate ran, the side gate could not read the set in force or the item's sightings, it has no usable parse, the quality gate sent it to review, or the quality gate would drop it and a family of it has not earned hiding it, or the family's draw showed it.",
+            "enum": ["tags-disagree", "below-floor", "person-sorts", "no-guess", "gate-error", "no-parse", "quality-review", "gate-would-drop"]
           },
           "guess": {
             "description": "The quality gate's side guess, where it gave one. It is present under any reason, and a reader shows it wherever it is present rather than by the reason.",

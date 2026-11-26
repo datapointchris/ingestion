@@ -181,7 +181,9 @@ root = "books"
   drops files `ingestion.items.drop`. An app that shows the review queue needs
   `ingestion.review.read`, which reads each waiting item's title, URL, quality gate answer and
   sightings' fields without `ingestion.items.read`. One that places items from it for a person
-  needs `ingestion.review.place`. Releasing a connector's first fill spends the model stages on every
+  needs `ingestion.review.place`. One that marks an item `low-quality` or `read` for a person
+  needs `ingestion.marks.write`, and one that promotes a gate family `ingestion.trust.promote`.
+  Releasing a connector's first fill spends the model stages on every
   item it held, so it takes `ingestion.first-fills.release`, which no other scope grants.
 
 `ingestion auth login`, `auth status` and `auth logout` hold a person's login. `ingestion tasks
@@ -611,8 +613,10 @@ decision on each rule.
 
 ### The quality gate reads each item's opening before anyone reads it whole
 
-Where no tag or rule places an item, the write that ends the scan of its reading parse queues one
-task of capability `quality`. An item gets that task once. The gate runs on it again only through
+Where no person placed an item first, the write that ends the scan of its reading parse queues one
+task of capability `quality`. A tag or a rule still places first, and its placement stands
+whatever the gate answers. The gate answers such an item too, because each family's trust is
+earned from the gate's answers on every item it reads. An item gets that task once. The gate runs on it again only through
 a replay, or through `tasks retry` on its failed task. A worker whose config names a `[model]
 adapter` claims it. It reads the item's media type, title, URL and the opening of its parse, up to
 the bound that `qualitygate`'s `openingRunes` sets. It puts them to the model through the prompt in
@@ -620,11 +624,13 @@ the bound that `qualitygate`'s `openingRunes` sets. It puts them to the model th
 
 - **The answer holds to `prompts/quality/answer.schema.json`.** It gives a genre, one or two
   domains, up to four themes, a quality estimate from 1 to 10 and a one-line idea. It ends with a
-  verdict of `pass`, `drop` or `unsure` and a side of `personal`, `fleet` or `unsure`, each with
-  its confidence. An answer that breaks the schema fails the task rather than being patched.
-- **A drop is soft, and needs a confidence at or above `qualitygate.DropFloor`.** A drop below it,
-  or an `unsure`, sends the item to review. A dropped item keeps its row and its one-line idea,
-  and `items show` prints both.
+  verdict of `pass`, `drop` or `unsure`, one sentence of `reason` on the verdict, and a side of
+  `personal`, `fleet` or `unsure`, each with its confidence. An answer that breaks the schema
+  fails the task rather than being patched.
+- **A drop needs a confidence at or above `qualitygate.DropFloor`.** A drop below it, or an
+  `unsure`, sends the item to review. A confident drop waits in review as `gate-would-drop` until
+  the item's family has earned hiding it, as the next section says. A drop is soft: a dropped item
+  keeps its row, its one-line idea and its reason, and `items show` prints them.
 - **The prompt's version is its number and a digest of `prompt.tmpl` and `answer.schema.json`.**
   A change to either writes the gate's outputs beside the old ones.
 - **Each call is dispatched once.** The worker stores the dispatch in the write that ends its
@@ -665,10 +671,9 @@ release`. `tasks retry` posts to `/api/v1/tasks/{id}/retries`, and its `--json` 
 `schemas/task-retry.schema.json`. It queues a failed task again, prints a queued or leased task as
 it stands, and refuses a done one.
 
-`ingestion items replay --stage quality` runs the prompt in force over each scanned item whose
-side waits on a later input, and that holds no answer of that prompt. That is an item in review
-for want of a rule or an answer, or one that a model dropped or sent to review. An item that a
-tag, a rule, a person or a confident guess placed is left as it is. The replay first prints how
+`ingestion items replay --stage quality` runs the prompt in force over each scanned item that no
+person placed, and that holds no answer of that prompt. An item that a tag, a rule or a confident
+guess placed keeps its placement whatever the new answer says. The replay first prints how
 many items it would run on, and the median tokens by kind of the stage's newest stored runs times
 that count. It queues only with `--yes`.
 
@@ -697,6 +702,64 @@ Queued quality-arm (sonnet) on 1 items.
 A scan that ended under a release without the quality gate queued no quality task, so its item
 waits in review as `no-guess`. The replay is what runs the gate over such items.
 
+### Each connector's family earns trust from a person's marks before the gate hides its drops
+
+A family is one connector under one version of the gate's prompt, named
+`<connector>@<prompt version>`. A new prompt version starts a new family at rung 0. The gate
+writes a family's row with its first answer on an item that the connector sighted.
+
+The family climbs a ladder, the skip-lot pattern of acceptance sampling. Rung 0 shows every drop
+in review as `gate-would-drop`. Each rung above shows a share of the drops, and drops the rest as
+`gate`:
+
+| Rung | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Share shown | 25% | 18.75% | 14.06% | 10.55% | 7.91% | 5.93% | 5% |
+
+- **A person's mark agrees or disagrees with the gate's answer on the item.** `low-quality`
+  agrees with a drop and disagrees with a pass. `read` agrees with a pass and disagrees with a
+  drop. A mark on an `unsure` answer moves no family. A mark counts on any item the gate answered,
+  including one that a tag or rule placed. A chapter's mark counts its book's answer.
+- **A mark moves no item.** It counts toward each family that sighted the item, under the prompt
+  version that answered it. A mark that repeats the item's newest, by the same person, appends
+  nothing.
+- **Placing a `gate-would-drop` item on a destination disagrees.** Dropping it counts nothing.
+- **A disagreement returns the family to rung 0, and resets its straight run.**
+- **Thirty agreeing marks in a row earn asking.** The family's `asks_promotion` turns true. One
+  promote then climbs it to rung 1, and each further run of thirty climbs a rung.
+- **A promotion stands after a disagreement.** The family climbs again on its own once its run
+  reaches thirty. A promote before the run is earned climbs nothing until it is.
+- **Which drops show is a seeded draw on the family and the item's key.** The same item under
+  the same family always draws the same way, so the share shown is reproducible.
+- **An item shows its drop where any family of its sightings shows it.** Like the strictest
+  zone, the lowest-trusted connector decides.
+- **The show or hide is decided once for each answer of the gate.** A family that climbs or falls
+  later moves no item already shown or hidden. A connector that sights a hidden drop later shows
+  it where that connector's own family would.
+
+A hidden drop keeps its row, its idea and its reason, and a person can still place it.
+
+```text
+$ ingestion items mark reddit/t3_bb2 low-quality
+Marked reddit/t3_bb2 low-quality, which agrees with the quality gate's drop: reddit-exports@v1-<digest> rung 0, straight run 30 of 30.
+$ ingestion gates trust list
+A straight run of 30 agreeing marks earns asking. Rungs 1 up show 25%, 18.75%, 14.06%, 10.55%, 7.91%, 5.93%, 5% of the gate's drops.
+
+FAMILY                       RUNG  RUN  STRAIGHT RUN  SHOWS  ASKS  PROMOTED BY
+reddit-exports@v1-<digest>   0     30   30 of 30      100%   yes   —
+$ ingestion gates trust promote reddit-exports@v1-<digest>
+Promoted reddit-exports@v1-<digest> to rung 1, which shows 25% of the gate's drops and drops the rest as gate.
+```
+
+`items mark` posts to `/api/v1/items/{key}/marks`, which needs `ingestion.marks.write`, and its
+`--json` prints `schemas/item-mark.schema.json`. `gates trust list` reads `GET
+/api/v1/gates/trust` in `schemas/gate-trust-list.schema.json`, under `ingestion.items.read`.
+`gates trust promote` posts to `/api/v1/gates/trust/{family}/promote`, which needs
+`ingestion.trust.promote`, and prints `schemas/gate-trust-promotion.schema.json`. A service
+marking or promoting for a person names the person's `login` in its body, as a placement does.
+Each mark is a row of `marks`, and each family a row of `gate_trust`. Both ship on the record
+channel.
+
 ### The side gate places each item, and a person places what it leaves
 
 When the scan of an item's reading parse is done, the service runs the side gate in the same
@@ -707,8 +770,9 @@ places the item by the first rung that decides it:
    destination's side. Tags naming two sides send it to review as `tags-disagree`.
 2. **A routing rule**: the first in the file whose match holds on one sighting. A Reddit save's
    sighting carries its `subreddit` field for a rule to match.
-3. **The quality gate.** The item waits at `quality` until the gate answers. A drop drops it as
-   `quality-drop`, and an unsure answer sends it to review as `quality-review`. A pass reads the
+3. **The quality gate.** The item waits at `quality` until the gate answers. A confident drop
+   sends it to review as `gate-would-drop`, or drops it as `gate` where its families' trust hides
+   it. An unsure answer, or a drop below the floor, sends it to review as `quality-review`. A pass reads the
    gate's side guess. A personal guess places the item where its confidence reaches the floor
    that `route.GuessFloor` sets. A fleet guess places nothing at any confidence, because a tag,
    a rule or a person puts an item on the fleet side, never a guess. A fleet guess, a guess below
@@ -724,8 +788,9 @@ in the write that applies a changed set, and in the write that lands another con
 of the item. Each run passes over an item whose reading parse is not scanned yet. Each run decides
 again an item that the gate sent to review as `no-guess`, `below-floor`, `person-sorts` or
 `gate-error`, or that the quality gate dropped or sent to review. So a guess, a rule, or a second
-sighting's tag that arrives later places it. A tag, a rule or a person that places
-an item withdraws its queued quality task, so no model judges an item already placed. A placed item stays where it is: a later sighting or parse moves nothing, and only a
+sighting's tag that arrives later places it. A person's placement withdraws the item's queued
+quality task. A tag's or a rule's leaves it queued, so the gate still answers, and its answer
+moves nothing. A placed item stays where it is: a later sighting or parse moves nothing, and only a
 person's placement moves it. Where the gate cannot read the set in force or the item's sightings,
 it logs why and sends the item to review as `gate-error`, and the scan stands.
 
@@ -1006,7 +1071,10 @@ land → parse → structure → contents → sections → scan → quality gate
   and from a phone is one item, read once and delivered once. Each source's arrival is a sighting
   of that item.
 - **A rule decides before a model does.** A source's tags or a routing rule place an item first.
-  The quality gate's model reads only what the rules leave.
+  The quality gate's model still answers it, and its placement stands.
+- **The quality gate earns trust before it hides a drop.** Each connector's drops show in review
+  until a person's marks agree with thirty in a row and the person promotes it. Then a shrinking
+  share shows, and any disagreement shows them all again.
 - **A model reads an item whole only on the fleet side.** It answers the item's note with a
   summary and a suggested change, and the scanner reads the suggestion before it is kept.
 - **A drop is soft.** A dropped item keeps its row and its one-line idea, so a person can still
