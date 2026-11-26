@@ -450,6 +450,28 @@ such as with a new `pdf-structure`. Its sections write beside the old. In a book
 holds chapters, a new version's chapter names the chapter item with the same start page and
 title key, as `sections.TitleKey` folds a title, and a chapter that matches none makes no item.
 
+### A code-heavy book is read again by Docling
+
+PyMuPDF's page text loses a code block's layout. `docling` reads a PDF a second time with
+Docling's standard pipeline, OCR off and table structure on, one unit per PDF page holding the
+page's markdown. A code block is fenced and a table keeps its rows. A blank page keeps its empty
+unit, and a unit's label is the page's printed label, as `pdf-text` reads it.
+
+- **Only a code-heavy, math-light book takes it.** Its profile sets monospace on at least 20% of
+  the sampled pages and TeX or math fonts on under 10%. Docling drops every formula, so a book
+  with both stays `pdf-text`'s alone.
+- **The write that ends the book's structure queues the parse**, of capability `parse:docling`.
+  The parse writes beside `pdf-text`'s and is scanned like it. It becomes the item's newest
+  parse, which `GET /api/v1/items/{key}/parse` and the model read answer.
+- **Nothing waits on it.** The book's sections and its contents stage keep reading `pdf-text`'s
+  parse, and a delivery reads no parse. The side gate leaves a book that a tag, a rule or a
+  person placed as it is, so the later parse moves no gate.
+- **`ingestion items replay --stage structure` queues it for each selected book** that Docling
+  has not read at its version. A book whose Docling parse failed is read again.
+- **It runs offline, about 1.4 s a page.** The worker image holds Docling's models at pinned
+  commits. A run past 3 hours fails its task. Set `"parse:docling" = 1` in
+  `[worker.slot_limits]` so a long run holds one slot and leaves the rest to every other stage.
+
 ### A long book with no outline takes its chapters from its printed contents
 
 Where the outline rule in force writes no sections for a PDF of `sections.WholeFilePages` pages
@@ -930,4 +952,6 @@ land → parse → structure → contents → sections → scan → quality gate
 ## License
 
 ingestion is MIT licensed, per `LICENSE`, except the extractor programs in `extract/programs/`,
-which import PyMuPDF and so carry AGPL-3.0-or-later, per `LICENSES/AGPL-3.0-or-later.txt`.
+which import PyMuPDF and so carry AGPL-3.0-or-later, per `LICENSES/AGPL-3.0-or-later.txt`. The
+worker image ships Docling's layout model under Apache-2.0 and its TableFormer model under
+CDLA-Permissive-2.0, each license's text beside them.

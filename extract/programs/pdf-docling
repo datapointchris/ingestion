@@ -1,0 +1,89 @@
+#!/opt/ingestion/venv/bin/python3 -I
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# This program imports PyMuPDF, which is licensed AGPL-3.0, so it is licensed
+# AGPL-3.0-or-later rather than under the repository's MIT license.
+"""Write one JSON line per page of the PDF read on stdin: its printed label and Docling's markdown of it.
+
+A line is {"label": "xii", "text": "..."}. Every page writes a line, a blank
+one included, so line n is PDF page n. The label is PyMuPDF's, null where the
+PDF declares no page labels. The text is the page's markdown as Docling's
+standard pipeline lays it out, with OCR off and table structure on, so a code
+block is fenced and a table keeps its rows. Docling drops each formula, so a
+math-heavy book reads better as pdf-text's.
+
+Docling reads its models from --artifacts, which the image fills at pinned
+revisions, and never from the network. A PDF that cannot be opened, that
+needs a password, or that Docling cannot convert, exits 1 naming why, and
+never quotes the document.
+"""
+
+import os
+
+# Set before huggingface_hub is imported, so no model is fetched at run time.
+os.environ["HF_HUB_OFFLINE"] = "1"
+
+import argparse
+import io
+import json
+import logging
+import sys
+
+import pymupdf
+
+ARTIFACTS = "/usr/local/share/ingestion/docling-models"
+
+# Each convert reads this many pages, so memory holds one span's pages rather
+# than the whole book's, and each span's lines are written once it ends.
+SPAN_PAGES = 50
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--artifacts", default=ARTIFACTS, help="the directory holding Docling's models")
+    args = parser.parse_args()
+    pymupdf.TOOLS.mupdf_display_errors(False)
+    pymupdf.TOOLS.mupdf_display_warnings(False)
+    data = sys.stdin.buffer.read()
+    try:
+        doc = pymupdf.open(stream=data, filetype="pdf")
+    except Exception as error:  # PyMuPDF raises several types for a broken file.
+        print(f"pdf-docling: PyMuPDF could not open the bytes as a PDF ({type(error).__name__})", file=sys.stderr)
+        return 1
+    if doc.needs_pass:
+        print("pdf-docling: the PDF needs a password", file=sys.stderr)
+        return 1
+    labeled = bool(doc.get_page_labels())
+    labels = [(page.get_label() if labeled else "") or None for page in doc]
+    pages = doc.page_count
+    doc.close()
+
+    logging.basicConfig(level=logging.ERROR)
+    from docling.datamodel.base_models import ConversionStatus, InputFormat
+    from docling.datamodel.pipeline_options import PdfPipelineOptions
+    from docling.document_converter import DocumentConverter, PdfFormatOption
+    from docling_core.types.io import DocumentStream
+
+    options = PdfPipelineOptions(artifacts_path=args.artifacts, do_ocr=False, do_table_structure=True)
+    converter = DocumentConverter(format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=options)})
+    out = sys.stdout
+    for first in range(1, pages + 1, SPAN_PAGES):
+        last = min(first + SPAN_PAGES - 1, pages)
+        try:
+            result = converter.convert(DocumentStream(name="book.pdf", stream=io.BytesIO(data)), page_range=(first, last))
+        except Exception as error:  # Docling raises several types for a page it cannot read.
+            print(f"pdf-docling: Docling could not convert pages {first} to {last} ({type(error).__name__})", file=sys.stderr)
+            return 1
+        if result.status not in (ConversionStatus.SUCCESS, ConversionStatus.PARTIAL_SUCCESS):
+            print(f"pdf-docling: Docling's convert of pages {first} to {last} ended {result.status.value}", file=sys.stderr)
+            return 1
+        for number in range(first, last + 1):
+            text = result.document.export_to_markdown(page_no=number, escape_underscores=False, escape_html=False)
+            out.write(json.dumps({"label": labels[number - 1], "text": text}, ensure_ascii=False))
+            out.write("\n")
+        out.flush()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

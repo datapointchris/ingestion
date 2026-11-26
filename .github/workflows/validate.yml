@@ -596,6 +596,17 @@ jobs:
             < extract/testdata/pages.pdf > "$RUNNER_TEMP/pages.jsonl"
           jq -se 'map(.label) == ["i", "ii", "1"] and .[1].text == "" and (.[2].text | contains("first chapter"))' "$RUNNER_TEMP/pages.jsonl"
 
+      # The worker runs pdf-docling the same way, with a home and a temporary
+      # directory under /tmp as isolatedprocess gives it. It reads Docling's
+      # models from the image with no network, so a model it would fetch fails
+      # the step. Its markdown holds the fixture's three pages and labels.
+      - name: Read a known PDF with pdf-docling in the image, offline
+        run: |
+          docker run --rm --read-only --network none --tmpfs /tmp -e HOME=/tmp -e TMPDIR=/tmp -i \
+            --entrypoint /usr/local/libexec/ingestion/extractors/pdf-docling ingestion:validate \
+            < extract/testdata/pages.pdf > "$RUNNER_TEMP/docling.jsonl"
+          jq -se 'map(.label) == ["i", "ii", "1"] and .[1].text == "" and (.[2].text | contains("first chapter"))' "$RUNNER_TEMP/docling.jsonl"
+
       # The worker runs pdf-structure the same way. The fixture's outline opens
       # pages 1 and 3, and its one sampled page sets a line in Courier.
       - name: Profile a known PDF with pdf-structure in the image

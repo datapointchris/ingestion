@@ -1,7 +1,19 @@
 # The Python libraries the worker image installs for the extractor programs.
-# PyMuPDF 2 requires onnxruntime and a layout model, which page text never
-# uses, so it stays on 1.x. release/python-requirements.txt pins each library
-# with its hashes, written by:
+# release/python-requirements.txt pins each library with its hashes, written by:
 #   uv pip compile release/python-requirements.in --generate-hashes --python-version 3.13 \
 #     --python-platform x86_64-manylinux_2_28 --no-header -o release/python-requirements.txt
+
+# PyMuPDF 2 requires onnxruntime and a layout model, which page text never
+# uses, so it stays on 1.x.
 pymupdf<2
+
+# pdf-docling's Docling: the PDF pipeline with its layout and table models and
+# no OCR, which the full docling package adds with office formats. The table
+# model imports OpenCV without declaring it, so its extra names it.
+docling-slim[convert-core,format-pdf,models-local]
+docling-ibm-models[opencv-python-headless]
+
+# PyTorch's CPU builds, by URL, because PyPI's builds pull in CUDA's libraries.
+# A bump moves both to the versions that Docling's other pins resolve with.
+torch @ https://download.pytorch.org/whl/cpu/torch-2.15.0%2Bcpu-cp313-cp313-manylinux_2_28_x86_64.whl
+torchvision @ https://download.pytorch.org/whl/cpu/torchvision-0.29.2%2Bcpu-py3-none-manylinux_2_28_x86_64.whl

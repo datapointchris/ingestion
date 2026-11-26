@@ -89,7 +89,7 @@ func init() {
 func afterStage(log *slog.Logger) server.AfterStage {
 	next := map[string][]server.AfterStage{
 		store.StageParse:     {scan.QueueAfterParse, sections.QueueAfterParse},
-		store.StageStructure: {sections.AfterStructure, contents.AfterStructure(log)},
+		store.StageStructure: {sections.AfterStructure, contents.AfterStructure(log), sections.QueueDoclingParse},
 		store.StageContents:  {contents.AfterAnswer(log)},
 		store.StageScan:      {qualitygate.QueueAfterScan},
 		store.StageQuality:   {qualitygate.DecideAfterAnswer},
