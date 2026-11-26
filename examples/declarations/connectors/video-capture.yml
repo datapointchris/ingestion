@@ -1,0 +1,19 @@
+# A ypl connector reads a YouTube playlist or a channel's uploads through
+# ypl's API, from a worker whose [source.ypl] table names ypl's address. This
+# one lands each video saved to the playlist titled capture, then deletes it
+# from the playlist, so the playlist holds only what has not landed. Its
+# cursor keeps the YouTube id that the title named at its first poll, so a
+# renamed playlist never turns its deletes on another. A channel names
+# `channel: <id or @handle>` in place of the playlist, and its first poll
+# keeps the newest uploads as a baseline and lands none of them.
+name: video-capture
+mode: poll
+source: ypl
+schedule: "@every 30m"
+freshness: 14d
+zone: outside
+tags: []
+after_landing: delete
+person_sorts: true
+source_parameters:
+  playlist: capture

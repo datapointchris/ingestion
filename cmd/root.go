@@ -15,6 +15,8 @@ import (
 	"github.com/datapointchris/ingestion/connectors"
 	// Registers the reddit-export drop format, so a set naming it reads and a drop into it lands.
 	_ "github.com/datapointchris/ingestion/redditexport"
+	// Registers the ypl source, so a set may declare its connectors and a worker polls and deletes through it.
+	_ "github.com/datapointchris/ingestion/ypl"
 )
 
 // A subcommand is one file in this package that builds its *cobra.Command and
