@@ -12,8 +12,9 @@ import (
 // since a younger one may be a write still running.
 const LeftoverAfter = time.Hour
 
-// Unpaired is every place the volume and the blob rows disagree, as git fsck
-// names dangling and missing objects. It deletes nothing.
+// Unpaired is every place the volume and the blob rows disagree, and every
+// blob that nothing names, as git fsck names dangling and missing objects. It
+// deletes nothing.
 type Unpaired struct {
 	// Files counts the blobs in the volume, and Rows the blob rows.
 	Files int
@@ -27,6 +28,12 @@ type Unpaired struct {
 	// Leftovers is each file in the volume that is not a blob, such as a
 	// temporary file older than LeftoverAfter.
 	Leftovers []StoredFile
+	// Unnamed is each blob row older than LeftoverAfter that no item, home or
+	// output names. One example is a page that a poll kept for an item that
+	// already held its bytes. Another is a page kept by a poll whose report
+	// never landed. A younger row may be a poll's page that waits on its
+	// report.
+	Unnamed []store.Blob
 }
 
 // StoredFile is one file in the volume. A blob is named by its SHA-256, and
@@ -39,7 +46,7 @@ type StoredFile struct {
 }
 
 // Unpaired walks the volume and reads every blob row, and answers where the
-// two disagree.
+// two disagree and which rows nothing names.
 func (l *Lander) Unpaired(ctx context.Context) (Unpaired, error) {
 	var u Unpaired
 	files, err := l.blobs.walk()
@@ -85,6 +92,9 @@ func (l *Lander) Unpaired(ctx context.Context) (Unpaired, error) {
 			return u, err
 		}
 		_ = b.Close()
+	}
+	if u.Unnamed, err = l.store.UnnamedBlobs(ctx, store.Stamp(now.Add(-LeftoverAfter))); err != nil {
+		return u, err
 	}
 	return u, nil
 }

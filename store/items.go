@@ -241,6 +241,19 @@ func (s *Store) Blobs(ctx context.Context) ([]Blob, error) {
 	return readInto[Blob](ctx, s.read, table("blobs"), `1 ORDER BY sha256`)
 }
 
+// UnnamedBlobs reads each blob row created before the stamp before that no
+// item, home or output names, such as a page that a poll kept for an item
+// that already held its bytes.
+func (s *Store) UnnamedBlobs(ctx context.Context, before string) ([]Blob, error) {
+	return readInto[Blob](ctx, s.read, table("blobs"), `created_ts < ? AND sha256 IN (
+		SELECT sha256 FROM blobs
+		EXCEPT SELECT blob_sha256 FROM items WHERE blob_sha256 IS NOT NULL
+		EXCEPT SELECT blob_sha256 FROM homes
+		EXCEPT SELECT blob_sha256 FROM outputs WHERE blob_sha256 IS NOT NULL
+		EXCEPT SELECT blob_sha256 FROM output_replacements WHERE blob_sha256 IS NOT NULL
+	) ORDER BY sha256`, before)
+}
+
 // LiveHomes reads every home of the blob sum that is not gone.
 func (s *Store) LiveHomes(ctx context.Context, sum string) ([]Home, error) {
 	return readInto[Home](ctx, s.read, table("homes"), `blob_sha256 = ? AND gone_ts IS NULL ORDER BY found_ts, rowid`, sum)

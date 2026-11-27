@@ -98,6 +98,44 @@ func TestOneArtifactFromTwoConnectorsMakesOneBlobOneItemAndTwoSightings(t *testi
 	}
 }
 
+// A page kept through the blob route that no item takes, as a poll keeps one
+// for an item that already held its bytes, shows in the unpaired report once
+// it is older than LeftoverAfter. A blob that an item names never shows.
+func TestABlobThatNothingNamesShowsInTheUnpairedReportOnceItIsOld(t *testing.T) {
+	ctx := t.Context()
+	dir := t.TempDir()
+	now := time.Now()
+	st, err := store.Open(ctx, filepath.Join(dir, "ingestion.db"), store.WithClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	blobs, err := landing.OpenBlobs(filepath.Join(dir, "blobs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, err := landing.New(landing.Config{Store: st, Blobs: blobs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Land(ctx, landing.Arrival{
+		Connector: "freshrss", Zone: store.Outside, MediaType: "text/html", URL: "https://example.com/a", Body: strings.NewReader("<p>the page</p>"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	again, _ := landing.Hash(strings.NewReader("<p>the page, read again</p>"))
+	if _, _, err := l.Keep(ctx, strings.NewReader("<p>the page, read again</p>"), again.SHA256, "text/html"); err != nil {
+		t.Fatal(err)
+	}
+	if u, err := l.Unpaired(ctx); err != nil || len(u.Unnamed) != 0 {
+		t.Fatalf("a page kept a moment ago reads %+v, %v; want no row that nothing names", u.Unnamed, err)
+	}
+	now = now.Add(landing.LeftoverAfter + time.Minute)
+	if u, err := l.Unpaired(ctx); err != nil || len(u.Unnamed) != 1 || u.Unnamed[0].SHA256 != again.SHA256 {
+		t.Errorf("an hour later the report names %+v, %v as rows that nothing names, want the kept page alone", u.Unnamed, err)
+	}
+}
+
 // A shared link lands outside, typed text lands owner, and a child takes the
 // stricter of its own zone and its parent's. An owner item that an outside
 // connector sights again becomes outside, and so does its child.

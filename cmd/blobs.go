@@ -27,8 +27,13 @@ var blobsUnpairedCmd = &cobra.Command{
 		"the volume that is not a blob and is too old for a write to be running it,\n" +
 		"such as a temporary file that no rename finished.\n" +
 		"\n" +
-		"It exits 3 where it lists anything, because only a person can fix what it\n" +
-		"lists, and 1 where it could not compare.",
+		"It also lists each blob row older than an hour that no item, home or output\n" +
+		"names. A poll leaves one when it keeps a page for an item that already held\n" +
+		"its bytes, or when its report never lands.\n" +
+		"\n" +
+		"It exits 3 where the volume and the rows disagree, because only a person can\n" +
+		"fix that, and 1 where it could not compare. A blob that nothing names sets no\n" +
+		"exit code, because an ordinary poll leaves one.",
 	Example: "  ingestion blobs unpaired\n" +
 		"  ingestion blobs unpaired --json",
 	Args: cobra.NoArgs,
@@ -69,6 +74,16 @@ func runBlobsUnpaired(cmd *cobra.Command, _ []string) error {
 
 func writeUnpaired(w io.Writer, a server.UnpairedAnswer) {
 	_, _ = fmt.Fprintf(w, "Blobs: %d in the volume, %d rows.\n", a.Files, a.Rows)
+	if len(a.Unnamed) > 0 {
+		var size int64
+		for _, b := range a.Unnamed {
+			size += b.SizeBytes
+		}
+		_, _ = fmt.Fprintf(w, "\nRows that nothing names (%d, %s):\n", len(a.Unnamed), byteSize(size))
+		for _, b := range a.Unnamed {
+			_, _ = fmt.Fprintf(w, "  %s  %s  %s  created %s\n", b.SHA256, b.MediaType, byteSize(b.SizeBytes), localTime(b.CreatedTS))
+		}
+	}
 	if len(a.Unrowed)+len(a.Missing)+len(a.Leftovers) == 0 {
 		_, _ = fmt.Fprintln(w, "Every blob has its row, and every row has its bytes.")
 		return
