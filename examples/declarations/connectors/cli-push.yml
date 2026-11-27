@@ -1,0 +1,8 @@
+# A push connector takes each new link that `ingestion push` lands from a
+# person's machine.
+name: cli-push
+mode: push
+source: cli-pushes
+due_interval: 30d
+zone: outside
+tags: []

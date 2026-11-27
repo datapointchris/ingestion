@@ -243,7 +243,7 @@
         },
         "confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
         "cause": {
-          "description": "What decided. The quality gate writes pass, drop, unsure, or below-drop-floor where it would drop the item below its confidence floor. The side gate writes tags, tags-disagree, rule, guess, below-floor, person-sorts, no-guess, gate-error, gate-would-drop where the quality gate dropped the item and a family of it has not earned hiding it, quality-drop where every family hides it, or quality-review, and the read gate connector or side-default. A person's decision names an aspect, such as subreddit, channel, theme or title, or unstated.",
+          "description": "What decided. The quality gate writes pass, drop, unsure, or below-drop-floor where it would drop the item below its confidence floor. The side gate writes tags, tags-disagree, rule, guess, below-floor, person-sorts, no-guess, gate-error, gate-would-drop where the quality gate dropped the item and a family of it has not earned hiding it, quality-drop where every family hides it, or quality-review, and the read gate connector or side-default. A person's decision names an aspect, such as subreddit, channel, theme or title, or unstated. A person's push that names its destination writes push at the side gate and at the read gate.",
           "type": "string",
           "pattern": "^[a-z][a-z-]{0,63}$"
         },

@@ -19,8 +19,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/datapointchris/ingestion/server"
@@ -149,6 +151,11 @@ type Extractor struct {
 	// deferred parse of this one queues, such as Whisper for a video whose
 	// captions hold no track.
 	DefersTo string
+	// LinkKind is the kind of item key, as itemkey names it, whose link this
+	// extractor reads at its source, such as youtube. A pushed link of that
+	// kind lands as the extractor's media type. Only a primary extractor that
+	// ReadsURL sets it.
+	LinkKind string
 }
 
 // Unit is one part of a parse, as an extractor writes it. The parse numbers
@@ -165,19 +172,22 @@ type Unit struct {
 func Capability(e Extractor) string { return store.StageParse + ":" + e.Name }
 
 // Registry picks the primary extractor for an item by its media type, and
-// holds every extractor that a worker runs.
+// for a pushed link by its key's kind. It holds every extractor that a worker
+// runs.
 type Registry struct {
 	byType map[string]Extractor
+	byLink map[string]Extractor
 	all    []Extractor
 }
 
 // NewRegistry registers extractors. It refuses one with no name, version,
 // media type or way to run, two of one name, two primary ones of one media
-// type, and one that defers to an extractor it does not hold as secondary. It
-// refuses a slot group that SlotGroups does not hold, and a SlotLimit beside
-// a slot group, whose limit is the group's.
+// type or one link kind, and one that defers to an extractor it does not hold
+// as secondary. It refuses a link kind on an extractor that is secondary or
+// reads bytes. It refuses a slot group that SlotGroups does not hold, and a
+// SlotLimit beside a slot group, whose limit is the group's.
 func NewRegistry(extractors ...Extractor) (*Registry, error) {
-	r := &Registry{byType: map[string]Extractor{}}
+	r := &Registry{byType: map[string]Extractor{}, byLink: map[string]Extractor{}}
 	names := map[string]bool{}
 	for _, e := range extractors {
 		switch {
@@ -193,6 +203,8 @@ func NewRegistry(extractors ...Extractor) (*Registry, error) {
 			return nil, fmt.Errorf("extractor %s runs in slot group %s, which SlotGroups gives no limit", e.Name, e.SlotGroup)
 		case e.SlotGroup != "" && e.SlotLimit != 0:
 			return nil, fmt.Errorf("extractor %s runs in slot group %s, so it sets no SlotLimit of its own", e.Name, e.SlotGroup)
+		case e.LinkKind != "" && (e.Secondary || !e.ReadsURL):
+			return nil, fmt.Errorf("extractor %s reads %s links, so it is primary and reads its item at its source", e.Name, e.LinkKind)
 		}
 		names[e.Name] = true
 		r.all = append(r.all, e)
@@ -203,6 +215,13 @@ func NewRegistry(extractors ...Extractor) (*Registry, error) {
 			return nil, fmt.Errorf("extractors %s and %s are both primary for %s", held.Name, e.Name, e.MediaType)
 		}
 		r.byType[e.MediaType] = e
+		if e.LinkKind == "" {
+			continue
+		}
+		if held, taken := r.byLink[e.LinkKind]; taken {
+			return nil, fmt.Errorf("extractors %s and %s both read %s links", held.Name, e.Name, e.LinkKind)
+		}
+		r.byLink[e.LinkKind] = e
 	}
 	for _, e := range r.all {
 		if e.DefersTo != "" && !slices.ContainsFunc(r.all, func(o Extractor) bool { return o.Name == e.DefersTo && o.Secondary }) {
@@ -228,6 +247,21 @@ func (r *Registry) For(mediaType string) (Extractor, bool) {
 	e, ok := r.byType[mediaType]
 	return e, ok
 }
+
+// LinkMediaType is the media type that a pushed link keyed key lands as, and
+// false where no extractor reads a link of the key's kind. A child's key
+// names no link.
+func (r *Registry) LinkMediaType(key string) (string, bool) {
+	kind, _, ok := strings.Cut(key, "/")
+	if !ok || strings.Contains(key, "#") {
+		return "", false
+	}
+	e, ok := r.byLink[kind]
+	return e.MediaType, ok
+}
+
+// LinkKinds names, in order, each kind of key whose link an extractor reads.
+func (r *Registry) LinkKinds() []string { return slices.Sorted(maps.Keys(r.byLink)) }
 
 // QueueParse queues a parse task for item where an extractor reads its media
 // type. Landing calls it in the write that adds the item, so every item lands

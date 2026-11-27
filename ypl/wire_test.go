@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/datapointchris/goapiauth"
+
+	"github.com/datapointchris/ingestion/push"
 )
 
 // wireDocument decodes testdata/wire/<name>.json into into, refusing a field
@@ -39,6 +41,8 @@ func wireDocument(t *testing.T, name string, into any) []byte {
 // captionsTimeout and audioWait each outlast the longest that ypl holds such a
 // read before its answer begins. One that ends sooner gives up on a read that
 // ypl goes on making, so every long video fails while ypl still downloads it.
+// A push's default wait outlasts a door wait and a captions read, so a pushed
+// video's push ends with its parse rather than its deadline.
 func TestTheClientWaitsLongerThanYPLHoldsARead(t *testing.T) {
 	var budgets struct {
 		DoorWaitSeconds     int64 `json:"door_wait_seconds"`
@@ -54,6 +58,9 @@ func TestTheClientWaitsLongerThanYPLHoldsARead(t *testing.T) {
 	}
 	if most := time.Duration(budgets.AudioReadSeconds) * time.Second; audioWait <= most {
 		t.Errorf("audioWait is %s, and ypl holds an audio read for up to %s before it answers", audioWait, most)
+	}
+	if most := time.Duration(budgets.DoorWaitSeconds+budgets.CaptionsReadSeconds) * time.Second; push.Wait <= most {
+		t.Errorf("push.Wait is %s, and ypl's door wait and captions read take up to %s", push.Wait, most)
 	}
 }
 

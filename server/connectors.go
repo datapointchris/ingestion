@@ -189,11 +189,13 @@ type ConnectorConfig struct {
 	Roots []string
 	// AfterApply runs in the write that applies a changed set.
 	AfterApply connectors.AfterApply
-	Log        *slog.Logger
+	// Links answers whether an extractor reads a pushed link. Nil lands none.
+	Links LinkExtractors
+	Log   *slog.Logger
 }
 
 // ConnectorRoutes are the routes for a person to apply the declarations, read
-// and run each connector, release a first fill, and drop a file.
+// and run each connector, release a first fill, drop a file and push a link.
 func ConnectorRoutes(cfg ConnectorConfig) Routes {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
@@ -209,6 +211,7 @@ func ConnectorRoutes(cfg ConnectorConfig) Routes {
 		r.Handle(RouteConnectorRuns, h.run)
 		r.Handle(RouteFirstFill, h.firstFill)
 		r.Handle(RouteConnectorDrops, h.drop)
+		r.Handle(RouteItemsPush, h.push)
 	}
 }
 

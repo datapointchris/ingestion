@@ -21,10 +21,11 @@ import (
 // has none, its parse defers to WhisperExtractor, which transcribes the
 // video's audio. A worker runs one captions parse at a time, because ypl reads
 // one video at a time, so a second would only wait at ypl and hold a slot.
+// CaptionsExtractor reads a pushed YouTube link, so such a link lands.
 var (
 	CaptionsExtractor = extract.Extractor{
 		Name: "youtube-captions", Version: "1", MediaType: MediaTypeVideo,
-		ReadsURL: true, Open: openCaptions, DefersTo: whisperName, SlotLimit: 1,
+		ReadsURL: true, Open: openCaptions, DefersTo: whisperName, SlotLimit: 1, LinkKind: itemkey.YouTube,
 	}
 	WhisperExtractor = WhisperExtractorAt(extract.WhisperProgram)
 )

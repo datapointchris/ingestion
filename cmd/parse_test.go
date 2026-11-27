@@ -100,7 +100,7 @@ func newPipelineOver(t *testing.T, extractors *extract.Registry, after server.Af
 		server.TrustRoutes(st, log),
 		server.ConnectorRoutes(server.ConnectorConfig{
 			Store: st, Lander: lander, Scheduler: connectors.NewScheduler(st, lander, log),
-			AfterApply: route.AfterApply(log), Log: log,
+			AfterApply: route.AfterApply(log), Links: extractors, Log: log,
 		}),
 		server.ReplayRoutes(st, replayableStages(st, extractors), log), accuracy.Routes(st, log), promptproposal.Routes(st, log)))
 	t.Cleanup(api.Close)

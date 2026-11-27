@@ -1,11 +1,15 @@
 package cmd
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/datapointchris/goclikit"
 	"github.com/spf13/cobra"
@@ -16,26 +20,38 @@ import (
 
 var pushCmd = &cobra.Command{
 	Use:   "push <key or url> --to psyche --relate",
-	Short: "Hand one item's parse and its scan's findings to psyche relate on this machine",
+	Short: "Hand one item's parse and its scan's findings to psyche relate on this machine, landing a new link first",
 	Long: "Reads the item's parse and the findings of the scan that read it from the\n" +
 		"service, writes them as the one document `psyche relate --parse` reads, and runs\n" +
 		"`psyche relate --parse -` on this machine with that document on its stdin.\n" +
 		"psyche prints its answer as it runs, and --json asks psyche for its JSON.\n" +
+		"\n" +
+		"A URL resolves to the key of the artifact it names. A link that the service has\n" +
+		"not landed lands first, through the push connector that --connector names, as an\n" +
+		"outside item that you place at psyche. That placement keeps every gate and model\n" +
+		"stage off the item. Only a link that an extractor of the service reads at its\n" +
+		"source lands, such as a YouTube video's, and the service stores nothing for any\n" +
+		"other. The set in force declares the connector and a destination named psyche.\n" +
+		"\n" +
+		"The push then waits up to --wait for the item's parse and the scan of it, and\n" +
+		"hands them on. A captions parse waits its turn at ypl's door, which the default\n" +
+		"wait leaves room for. --wait 0 hands on only a parse already scanned.\n" +
 		"\n" +
 		"A finding of a rule that lists what the item suggests reaches psyche as a\n" +
 		"suggestion rather than a finding. --enriched adds the service's current quality\n" +
 		"gate answer and model read, and names each part it left out and why. Without it\n" +
 		"psyche reads the parse and the findings alone.\n" +
 		"\n" +
-		"A push starts no stage in the service, so no model reads the item there. It\n" +
-		"hands on only an item that a connector landed and a scan read. A URL resolves\n" +
-		"to the key of the artifact it names. The command exits 4 when the service gives\n" +
-		"no answer, and psyche never runs then. It exits 2 when it names an item that the\n" +
-		"service has not landed yet, and 1 when the item has no scanned parse yet or\n" +
-		"psyche fails.",
-	Example: "  ingestion push reddit/t3_aq7ggd --to psyche --relate\n" +
+		"A push of an item already landed starts no stage in the service, so no model\n" +
+		"reads the item there. The command exits 4 when the service gives no answer, and\n" +
+		"psyche never runs then. It exits 2 for a key that the service has not landed, a\n" +
+		"link that it does not land, or a connector that takes no pushed link. It exits 1\n" +
+		"when the wait ends with no scanned parse, naming the stage it waited at, when\n" +
+		"that stage failed, and when psyche fails.",
+	Example: "  ingestion push https://www.youtube.com/watch?v=<video id> --to psyche --relate\n" +
+		"  ingestion push reddit/t3_aq7ggd --to psyche --relate\n" +
 		"  ingestion push https://www.reddit.com/r/golang/comments/aq7ggd/ --to psyche --relate --enriched\n" +
-		"  ingestion push reddit/t3_aq7ggd --to psyche --relate --json",
+		"  ingestion push reddit/t3_aq7ggd --to psyche --relate --json --wait 0",
 	Args: cobra.ExactArgs(1),
 	RunE: runPush,
 }
@@ -45,6 +61,8 @@ func init() {
 	pushCmd.Flags().Bool("relate", false, "Run "+push.Program+" relate, the verb that reads a pushed parse")
 	pushCmd.Flags().Bool("enriched", false, "Add the quality gate's and the model read's answers to the parse")
 	pushCmd.Flags().Bool("json", false, "Ask "+push.Program+" for its answer as JSON")
+	pushCmd.Flags().String("connector", push.Connector, "Land a new link through this push connector")
+	pushCmd.Flags().Duration("wait", push.Wait, "Wait this long for the item's parse and its scan")
 	pushCmd.Flags().String("api", "", "Call this server rather than the config file's api")
 	_ = pushCmd.MarkFlagRequired("to")
 	addConfigFlag(pushCmd)
@@ -56,6 +74,8 @@ func runPush(cmd *cobra.Command, args []string) error {
 	relate, _ := cmd.Flags().GetBool("relate")
 	enriched, _ := cmd.Flags().GetBool("enriched")
 	asJSON, _ := cmd.Flags().GetBool("json")
+	connector, _ := cmd.Flags().GetString("connector")
+	wait, _ := cmd.Flags().GetDuration("wait")
 	api, _ := cmd.Flags().GetString("api")
 	if to != push.Program {
 		return fmt.Errorf("%w: --to names %q, and a push hands an item only to %s", goclikit.ErrUsage, to, push.Program)
@@ -63,23 +83,41 @@ func runPush(cmd *cobra.Command, args []string) error {
 	if !relate {
 		return fmt.Errorf("%w: a push to %s takes --relate, the one %s verb that reads a pushed parse", goclikit.ErrUsage, push.Program, push.Program)
 	}
+	if wait < 0 {
+		return fmt.Errorf("%w: --wait is a duration from 0, not %s", goclikit.ErrUsage, wait)
+	}
 	ctx, config, ref := cmd.Context(), configPath(cmd), strings.TrimSpace(args[0])
+	stderr := cmd.ErrOrStderr()
 	// The server resolves a URL to its key, as items show relies on.
 	target := "/api/v1/items/" + url.PathEscape(ref)
 	var parse server.ParseAnswer
 	_, err := getJSON(ctx, config, api, server.RouteItemParse, target+"/parse", &parse)
 	var refused *refusal
 	switch {
-	case errors.As(err, &refused) && refused.Code == server.CodeParseNotFound:
-		return fmt.Errorf("%s, so there is nothing to hand %s yet. `ingestion items show %s` says where it waits", refused.Message, push.Program, ref)
 	case errors.As(err, &refused) && refused.Code == server.CodeItemNotFound && refused.Status < http.StatusInternalServerError:
-		return fmt.Errorf("%w: %s is not landed yet, so the service holds %s. A push hands on only an item that a connector landed, "+
-			"and `ingestion connectors list` names each connector", goclikit.ErrUsage, ref, refused.Message)
+		if !isLink(ref) {
+			return fmt.Errorf("%w: %s is not landed yet, so the service holds %s. A push lands a new item only from its link, so give its URL",
+				goclikit.ErrUsage, ref, refused.Message)
+		}
+		pushed, err := pushLink(ctx, config, api, connector, ref)
+		if err != nil {
+			return err
+		}
+		landedWords := "landed"
+		if !pushed.Created {
+			landedWords = "found"
+		}
+		_, _ = fmt.Fprintf(stderr, "%s %s through %s, placed at %s\n", landedWords, pushed.Key, connector, push.Program)
+		target = "/api/v1/items/" + url.PathEscape(pushed.Key)
+	case errors.As(err, &refused) && refused.Code == server.CodeParseNotFound:
+	case err != nil:
+		return argumentRefusal(err)
 	}
-	if err := argumentRefusal(err); err != nil {
-		return err
+	if parse.RulesVersion == nil {
+		if parse, err = waitForScan(ctx, config, api, target, wait, stderr); err != nil {
+			return err
+		}
 	}
-	stderr := cmd.ErrOrStderr()
 	var added push.Enrichment
 	if enriched {
 		var item server.ItemAnswer
@@ -95,10 +133,7 @@ func runPush(cmd *cobra.Command, args []string) error {
 		}
 	}
 	doc, err := push.Write(parse, added.Enriched)
-	switch {
-	case errors.Is(err, push.ErrNotScanned):
-		return fmt.Errorf("%s holds a parse, and a push hands on only a scanned one: %w. `ingestion items show %s` says where it waits", parse.Key, err, parse.Key)
-	case err != nil:
+	if err != nil {
 		return fmt.Errorf("%s: %w", parse.Key, err)
 	}
 	enrichedWords := ""
@@ -108,6 +143,92 @@ func runPush(cmd *cobra.Command, args []string) error {
 	_, _ = fmt.Fprintf(stderr, "pushing %s to %s relate: %s, %s, %s%s\n", doc.Key, push.Program,
 		counted(len(doc.Units), "unit"), counted(len(doc.Findings), "finding"), counted(len(doc.Suggested), "suggestion"), enrichedWords)
 	return push.Relate(ctx, doc, asJSON, cmd.OutOrStdout(), stderr)
+}
+
+// isLink says whether ref is an http or https URL rather than a key.
+func isLink(ref string) bool {
+	u, err := url.Parse(ref)
+	return err == nil && (u.Scheme == "http" || u.Scheme == "https")
+}
+
+// pushLink lands link through connector as an item placed at psyche, and
+// answers the item that the service landed or already held.
+func pushLink(ctx context.Context, config, api, connector, link string) (server.PushedItem, error) {
+	body, err := json.Marshal(server.PushRequest{Connector: connector, URL: link, Destination: push.Program})
+	if err != nil {
+		return server.PushedItem{}, err
+	}
+	var answer server.PushAnswer
+	_, _, err = callJSON(ctx, config, api, call{
+		Route: server.RouteItemsPush, Target: "/api/v1/items", Header: http.Header{"Content-Type": {"application/json"}}, Body: body,
+	}, &answer)
+	var refused *refusal
+	switch {
+	case errors.As(err, &refused) && refused.Code == server.CodeDestinationNotDeclared:
+		return server.PushedItem{}, fmt.Errorf("%s. A push places a new link at %s, so the set in force declares a destination %s", refused.Message, push.Program, push.Program)
+	case errors.As(err, &refused) && (refused.Code == server.CodeConnectorNotFound || refused.Code == server.CodeConnectorMode):
+		return server.PushedItem{}, fmt.Errorf("%w: %s. --connector names a push connector of the set in force", goclikit.ErrUsage, refused.Message)
+	case errors.As(err, &refused) && (refused.Code == server.CodeLinkNotRead || refused.Code == server.CodeInvalidLink):
+		return server.PushedItem{}, fmt.Errorf("%w: %s", goclikit.ErrUsage, refused.Message)
+	case err != nil:
+		return server.PushedItem{}, err
+	case len(answer.Items) != 1:
+		return server.PushedItem{}, fmt.Errorf("the push of one link answered %d items", len(answer.Items))
+	}
+	return answer.Items[0], nil
+}
+
+// The pause between two reads of an item that a push waits on starts at
+// waitPollFloor and doubles to waitPollCeiling.
+const (
+	waitPollFloor   = 250 * time.Millisecond
+	waitPollCeiling = 5 * time.Second
+)
+
+// waitForScan reads the parse of the item at target until a scan has read it,
+// for up to wait. Each read that finds none reads the item too, to name the
+// stage that it waits at, and stops where that stage failed. It says on
+// stderr which stage it waits at, each time that changes.
+func waitForScan(ctx context.Context, config, api, target string, wait time.Duration, stderr io.Writer) (server.ParseAnswer, error) {
+	deadline := time.Now().Add(wait)
+	pause, said := waitPollFloor, ""
+	for {
+		var parse server.ParseAnswer
+		_, err := getJSON(ctx, config, api, server.RouteItemParse, target+"/parse", &parse)
+		var refused *refusal
+		switch {
+		case err == nil && parse.RulesVersion != nil:
+			return parse, nil
+		case errors.As(err, &refused) && refused.Code == server.CodeParseNotFound:
+		case err != nil:
+			return parse, argumentRefusal(err)
+		}
+		var item server.ItemAnswer
+		if _, err := getJSON(ctx, config, api, server.RouteItem, target, &item); err != nil {
+			return parse, err
+		}
+		key := item.Item.Key
+		stage, failure := push.WaitingOn(item)
+		switch left := time.Until(deadline); {
+		case failure != "":
+			return parse, fmt.Errorf("%s's %s failed, so there is nothing to hand %s: %s. `ingestion items show %s` says more", key, stage, push.Program, failure, key)
+		case left <= 0 && wait == 0:
+			return parse, fmt.Errorf("%s waits at its %s, so there is nothing to hand %s yet. `ingestion items show %s` says where it waits, "+
+				"and --wait waits for it", key, stage, push.Program, key)
+		case left <= 0:
+			return parse, fmt.Errorf("%s still waits at its %s after %s, so nothing went to %s. The %s goes on in the service: "+
+				"`ingestion items show %s` says where it stands, and a push hands it on once it is scanned", key, stage, wait, push.Program, stage, key)
+		case stage != said:
+			_, _ = fmt.Fprintf(stderr, "waiting up to %s for %s's %s\n", left.Round(time.Second), key, stage)
+			said = stage
+		}
+		select {
+		case <-ctx.Done():
+			return parse, ctx.Err()
+		case <-time.After(min(pause, time.Until(deadline))):
+		}
+		pause = min(2*pause, waitPollCeiling)
+	}
 }
 
 // counted is n of noun, as a person writes it.

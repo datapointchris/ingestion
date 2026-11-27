@@ -13,6 +13,7 @@ import (
 	"io"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/datapointchris/ingestion/modelread"
 	"github.com/datapointchris/ingestion/qualitygate"
@@ -21,8 +22,51 @@ import (
 	"github.com/datapointchris/ingestion/store"
 )
 
-// Program is the program that a push to psyche runs, found on PATH.
+// Program is the program that a push to psyche runs, found on PATH. A link
+// that a push lands is placed at the destination of the same name.
 const Program = "psyche"
+
+// Connector is the push connector that a new link lands through, where the
+// push names no other.
+const Connector = "cli-push"
+
+// Wait is how long a push waits for an item's parse and the scan of it, where
+// it names no other wait. A captions parse waits its turn at ypl's door before
+// its read, so Wait leaves room for the longest door wait and captions read
+// that ypl publishes, with the claims and the scan after them.
+const Wait = 10 * time.Minute
+
+// WaitingOn names the stage that item waits at on its way to a scanned parse,
+// store.StageParse or store.StageScan. Where that stage failed, failure says
+// why, so a push stops waiting. A parse that defers to another extractor
+// still waits.
+func WaitingOn(item server.ItemAnswer) (stage, failure string) {
+	stage = store.StageParse
+	if output(item, stage, store.OutputDone) != nil {
+		stage = store.StageScan
+	}
+	if output(item, stage, store.OutputDone) != nil {
+		return stage, ""
+	}
+	failed := output(item, stage, store.OutputFailed)
+	switch {
+	case failed == nil:
+		return stage, ""
+	case failed.Error == nil:
+		return stage, "its run failed and gave no reason"
+	}
+	return stage, *failed.Error
+}
+
+// output is item's output of stage in state, and nil where it holds none.
+func output(item server.ItemAnswer, stage, state string) *server.OutputView {
+	for i, o := range item.Outputs {
+		if o.Stage == stage && o.State == state {
+			return &item.Outputs[i]
+		}
+	}
+	return nil
+}
 
 // SchemaVersion is the version of psyche's parse-input schema that Write
 // writes, the one that testdata/parse-input.schema.json holds.
