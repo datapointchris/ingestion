@@ -406,7 +406,7 @@ func yplModelHandlers(t *testing.T, p *pipeline, api string, models modelConfig)
 	}
 	handlers := map[string]worker.Handler{}
 	port := openModelPort(t.Context(), models, p.provider.URL, quiet)
-	for _, h := range workerHandlers(p.worker, nil, openSources(t.Context(), cfg, p.provider.URL, quiet), port, nil, nil, models, quiet) {
+	for _, h := range workerHandlers(p.worker, nil, openSources(t.Context(), cfg, p.provider.URL, p.worker, quiet), port, nil, nil, models, quiet) {
 		handlers[h.Capability()] = h
 	}
 	return handlers

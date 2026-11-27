@@ -32,6 +32,7 @@ import (
 	"github.com/datapointchris/ingestion/modelread"
 	"github.com/datapointchris/ingestion/modelstage"
 	"github.com/datapointchris/ingestion/note"
+	"github.com/datapointchris/ingestion/polling"
 	"github.com/datapointchris/ingestion/promptproposal"
 	"github.com/datapointchris/ingestion/prompts"
 	"github.com/datapointchris/ingestion/qualitygate"
@@ -100,13 +101,15 @@ type openedSources struct {
 }
 
 // openSources opens one client for each registered source whose
-// [source.<name>] table cfg holds, with every scope the source asks, and
+// [source.<name>] table cfg holds, with every scope the source asks, or as
+// the login that the table names for a source that signs in as a person. It
 // answers the handler of each stage the source serves through it, and its
 // reader of comments. issuer is the file's, which a table takes where it
-// names none. A registered source with no table, or whose table cannot open,
-// is logged and left out, so the worker's other stages run on and its tasks
-// wait queued for a worker that opens it.
-func openSources(ctx context.Context, cfg fileConfig, issuer string, log *slog.Logger) openedSources {
+// names none. A poll keeps the bytes that its arrivals carry through blobs. A
+// registered source with no table, or whose table cannot open, is logged and
+// left out, so the worker's other stages run on and its tasks wait queued for
+// a worker that opens it.
+func openSources(ctx context.Context, cfg fileConfig, issuer string, blobs polling.BlobWriter, log *slog.Logger) openedSources {
 	out := openedSources{comments: comments.Readers{}}
 	for _, name := range sources.Names() {
 		r, _ := sources.Lookup(name)
@@ -116,12 +119,12 @@ func openSources(ctx context.Context, cfg fileConfig, issuer string, log *slog.L
 			log.Warn("the config holds no [source."+name+"] table, "+claimsNone, "source", name)
 			continue
 		}
-		client, err := serviceHTTPClient(ctx, table, sourceSecretEnv(name), issuer, r.Scopes)
+		client, err := sourceHTTPClient(ctx, name, r, table, issuer)
 		if err != nil {
 			log.Error("[source."+name+"] cannot open, "+claimsNone, "error", err)
 			continue
 		}
-		out.handlers = append(out.handlers, r.Handlers(table.API, client, log)...)
+		out.handlers = append(out.handlers, r.Handlers(table.API, client, blobs, log)...)
 		if r.Comments != nil {
 			out.comments[r.Comments.MediaType] = r.Comments.Open(table.API, client)
 		}
@@ -129,15 +132,45 @@ func openSources(ctx context.Context, cfg fileConfig, issuer string, log *slog.L
 	return out
 }
 
+// sourceHTTPClient is the client that the [source.<name>] table opens for r:
+// a service client with r's scopes, or where r signs in as a person, the
+// client that r's Login opens as the table's login, with the password in
+// sourcePasswordEnv.
+func sourceHTTPClient(ctx context.Context, name string, r sources.Registration, table sourceTable, issuer string) (*http.Client, error) {
+	if r.Login == nil {
+		if table.Login != "" {
+			return nil, fmt.Errorf("it names login %s, and %s signs in as a service client", table.Login, name)
+		}
+		return serviceHTTPClient(ctx, table.serviceClient, sourceSecretEnv(name), issuer, r.Scopes)
+	}
+	switch {
+	case table.API == "":
+		return nil, errors.New("it names no api")
+	case table.ClientID != "" || len(table.TokenCommand) > 0:
+		return nil, fmt.Errorf("%s signs in as a person, so the table names login rather than client_id or token_command", name)
+	case table.Login == "":
+		return nil, fmt.Errorf("%s signs in as a person, so the table names the login", name)
+	}
+	password := os.Getenv(sourcePasswordEnv(name))
+	if password == "" {
+		return nil, fmt.Errorf("it names login %s, so set %s to its password", table.Login, sourcePasswordEnv(name))
+	}
+	return r.Login(table.API, table.Login, password), nil
+}
+
 // sourcesHelp lists each registered source: its name and the variable that
-// holds its client's secret on one line, and its client's scopes below, then
-// each deliverer that writes through it.
+// holds its client's secret or its login's password on one line, and its
+// client's scopes below, then each deliverer that writes through it.
 func sourcesHelp() string {
 	var b strings.Builder
 	for _, name := range sources.Names() {
 		r, _ := sources.Lookup(name)
 		pad := strings.Repeat(" ", len(name))
-		fmt.Fprintf(&b, "  %s  %s\n  %s  %s\n", name, sourceSecretEnv(name), pad, strings.Join(r.Scopes, " "))
+		if r.Login != nil {
+			fmt.Fprintf(&b, "  %s  %s\n  %s  signs in as the table's login\n", name, sourcePasswordEnv(name), pad)
+		} else {
+			fmt.Fprintf(&b, "  %s  %s\n  %s  %s\n", name, sourceSecretEnv(name), pad, strings.Join(r.Scopes, " "))
+		}
 		for _, d := range r.Deliverers {
 			fmt.Fprintf(&b, "  %s  deliverer %s\n", pad, d.Name)
 		}
@@ -341,8 +374,11 @@ var workerRunCmd = &cobra.Command{
 		"its refresh of metrics and a deliverer that writes through it, such as\n" +
 		"ypl-watch, where a [source.<name>] table names how to reach that source.\n" +
 		"The table takes api, client_id, token_command and issuer as a\n" +
-		"[deliver.<name>] table does. Each source this build registers, with the\n" +
-		"variable that holds its client's secret and the scopes its client needs:\n" +
+		"[deliver.<name>] table does. A source that signs in as a person, such as\n" +
+		"FreshRSS's Google Reader API, takes api and login instead, and reads the\n" +
+		"login's password from the variable it names. Each source this build\n" +
+		"registers, with the variable that holds its client's secret or its login's\n" +
+		"password, and the scopes its client needs:\n" +
 		"\n" +
 		sourcesHelp() +
 		"\n" +
@@ -452,7 +488,7 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 	}
 	contexts := openLensReaders(ctx, cfg, d.Issuer.Value, run.Log)
 	client := worker.NewClient(d.API.Value, oauth2.NewClient(ctx, source))
-	opened := openSources(ctx, cfg, d.Issuer.Value, run.Log)
+	opened := openSources(ctx, cfg, d.Issuer.Value, client, run.Log)
 	handlers := workerHandlers(client, deliverers, opened, port, scan.Installed(run.Log), contexts, cfg.Model, run.Log)
 	return worker.Run(ctx, client, run, handlers...)
 }

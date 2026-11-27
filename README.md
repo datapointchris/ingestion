@@ -186,6 +186,13 @@ root = "books"
 api = "https://ypl.example.com"
 client_id = "ypl-svc-ingestion"
 
+# A source that signs in as a person names api and login instead. This one
+# reads a FreshRSS user's reading list through its Google Reader API, with the
+# login's API password in INGESTION_SOURCE_FRESHRSS_PASSWORD.
+[source.freshrss]
+api = "https://rss.example.com/api/greader.php"
+login = "someone"
+
 # A table for each lens whose context the worker reads, named for the lens. It
 # takes api, client_id, token_command and issuer as a [deliver.<name>] table
 # does, and names the context reader this build registers. This one reads a
@@ -210,6 +217,10 @@ client_id = "slate-svc-ingestion"
   `[source.<name>]` table names by `client_id`, such as `INGESTION_SOURCE_YPL_CLIENT_SECRET`. The
   worker runs the stages that the source registers only where its table opens, and leaves that
   source's polls and deletes queued otherwise.
+- **`INGESTION_SOURCE_<NAME>_PASSWORD`** is the password of the login that a `[source.<name>]`
+  table names, for a source that signs in as a person, such as
+  `INGESTION_SOURCE_FRESHRSS_PASSWORD`. Where it is unset, the table does not open, and the
+  worker leaves that source's polls queued.
 - **`INGESTION_LENS_<NAME>_CONTEXT_CLIENT_SECRET`** is the secret of the client that a
   `[lens.<name>.context]` table names by `client_id`, such as
   `INGESTION_LENS_FLEET_CONTEXT_CLIENT_SECRET`. The worker logs a table that cannot open, and the
@@ -605,6 +616,55 @@ schedule = "0 5 * * *"  # cron, in UTC unless a CRON_TZ=<zone> prefix names anot
   number of times. The next day's refresh reads again either way.
 - **A refresh reads only the sightings of the connectors in the set in force.** Renaming or
   removing a connector ends the refresh of each video that only it sighted.
+
+### A freshrss connector lands each new entry of a reading list, with the page it links
+
+The `freshrss` source reads a person's reading list through
+[FreshRSS](https://freshrss.org)'s Google Reader API. The list holds every entry of every feed
+that they follow. Its poll connector takes no `source_parameters`. The worker signs in through its
+`[source.freshrss]` table. The table names the API and the login whose subscriptions it reads:
+
+```toml
+[source.freshrss]
+api = "https://rss.example.com/api/greader.php"
+login = "someone"
+```
+
+The login's API password reaches the worker as `INGESTION_SOURCE_FRESHRSS_PASSWORD`. The person
+sets that password in FreshRSS under Profile, API management. The worker signs in through
+`accounts/ClientLogin` before its first read. It signs in again where a read answers 401, and
+claims `poll:freshrss`.
+
+- **The first poll keeps the newest entry's crawl time as its baseline, and lands nothing.** An
+  entry crawled before it never lands, so the feeds' back catalogs never flood the review queue.
+  The set refuses a connector of the source that runs `once`, because it would land nothing.
+- **Each later poll lands each entry crawled since the cursor, oldest first.** It reads the reading
+  list from the cursor's second, following each page's `continuation` to its end, and passes over
+  each entry crawled at or before the cursor. Its cursor then moves to the newest crawl time it
+  read, so a rerun lands nothing.
+- **An entry lands once, under its link's key, as `text/html`.** Its key is the canonical link's
+  `url/<hash>`. So when the same page arrives another way, it is one item with a sighting of each.
+  The sighting keeps the entry's id, `feed_stream_id`, `feed_title` and `feed_label`. That label is
+  the label of the feed's category, and a routing rule matches it. The item's source time is when
+  the feed published it. Its zone is `outside`, and the set refuses another.
+- **The worker GETs the page that the entry links, and keeps its HTML as the item's bytes.** Its
+  sighting's `body` reads `page`. When the page refuses the GET, the worker lands the entry's
+  content from the feed instead, wrapped as a page of its own. Its `body` then reads `feed`, and
+  its `page_refused` says why:
+  - a status other than 2xx
+  - a media type other than HTML
+  - a page past `freshrss.MaxPageBytes`
+  - no answer
+
+  The common case is a paywall's or a bot check's 403. The feed's content is often a teaser.
+- **The GET dials only public addresses.** It checks each address after its name resolves, and
+  again on every redirect. A link to a loopback, private, link-local or shared address lands the
+  feed's content, with `page_refused` reading `an address that is not public`. The GET reads no
+  proxy from the environment and carries no credential.
+- **`article-trafilatura` parses the page.** It reads the page's main text with trafilatura, as a
+  reader view does: the article without its navigation, footer or comment section, with its
+  tables. Each paragraph, heading, list item and table row is one unit. When trafilatura finds no
+  main text, the parse fails and the item waits in review.
 
 ### A video parses from its captions, or Whisper transcribes its audio
 

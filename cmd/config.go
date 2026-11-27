@@ -48,6 +48,14 @@ func sourceSecretEnv(name string) string {
 	return "INGESTION_SOURCE_" + strings.ToUpper(strings.ReplaceAll(name, "-", "_")) + "_CLIENT_SECRET"
 }
 
+// sourcePasswordEnv is the variable that holds the password of the login that
+// the [source.<name>] table names, for a source that signs in as a person,
+// such as INGESTION_SOURCE_FRESHRSS_PASSWORD for freshrss. It is read from
+// the environment alone, as clientSecretEnv is.
+func sourcePasswordEnv(name string) string {
+	return "INGESTION_SOURCE_" + strings.ToUpper(strings.ReplaceAll(name, "-", "_")) + "_PASSWORD"
+}
+
 // lensSecretEnv is the variable that holds the secret of the service client
 // that the [lens.<name>.context] table names, such as
 // INGESTION_LENS_FLEET_CONTEXT_CLIENT_SECRET for the fleet lens. It is read
@@ -84,7 +92,7 @@ type fileConfig struct {
 	Deliver map[string]deliverTable `toml:"deliver"`
 	// Sources holds a table for each source that a worker reaches, under the
 	// source's name, for the poller and the deleter that the source registers.
-	Sources map[string]serviceClient `toml:"source"`
+	Sources map[string]sourceTable `toml:"source"`
 	// Lens holds a table for each lens, under the lens's name, whose context
 	// table names the reader of the owner's current work that the note and
 	// the model read quote under that lens. worker run reads it.
@@ -169,6 +177,14 @@ type serviceClient struct {
 type deliverTable struct {
 	serviceClient
 	Root string `toml:"root"`
+}
+
+// sourceTable is one [source.<name>] table: how a worker reaches the source,
+// as a service client, or for a source that signs in as a person, as the
+// login it names.
+type sourceTable struct {
+	serviceClient
+	Login string `toml:"login"`
 }
 
 // lensTable is one [lens.<name>] table.

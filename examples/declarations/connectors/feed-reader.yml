@@ -1,7 +1,12 @@
-# A poll connector's run is a task that a worker holding poll:rss-feeds claims.
+# A freshrss connector polls a FreshRSS user's reading list through its
+# Google Reader API, from a worker whose [source.freshrss] table names the API
+# and the login. Its first poll keeps the newest entry's crawl time as a
+# baseline and lands nothing. Each later poll lands each entry crawled since,
+# with the page that its link names, or the feed's own content where the page
+# refuses the worker's GET.
 name: feed-reader
 mode: poll
-source: rss-feeds
+source: freshrss
 contract: external-feed-rss-feeds
 schedule: "@hourly"
 freshness: 2d

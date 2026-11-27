@@ -631,6 +631,19 @@ jobs:
             < "$RUNNER_TEMP/tone.wav" > "$RUNNER_TEMP/whisper.jsonl"
           jq -se '.[0].duration_ms == 3000 and .[0].voiced_ms <= 3000' "$RUNNER_TEMP/whisper.jsonl"
 
+      # The worker runs article-trafilatura the same way, with no network. The
+      # fixture's article holds a heading, three paragraphs and a table of two
+      # rows, beside a nav, a comment section and a footer that trafilatura
+      # leaves out. The table's rule under its header writes no unit.
+      - name: Read a known page with article-trafilatura in the image, offline
+        run: |
+          docker run --rm --read-only --network none --tmpfs /tmp -e HOME=/tmp -e TMPDIR=/tmp -i \
+            --entrypoint /usr/local/libexec/ingestion/extractors/article-trafilatura ingestion:validate \
+            < extract/testdata/article.html > "$RUNNER_TEMP/article.jsonl"
+          jq -se 'length == 7 and all(.label == null) and (.[1].text | startswith("The first paragraph"))
+            and (map(.text) | any(contains("comment")) | not) and (map(.text) | index("| Beans | 10 cm |") != null)' \
+            "$RUNNER_TEMP/article.jsonl"
+
       # A video's audio arrives through ypl, so the image holds no YouTube
       # downloader of its own.
       - name: Find no yt-dlp in the image
