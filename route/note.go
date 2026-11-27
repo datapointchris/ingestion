@@ -81,10 +81,62 @@ func awaitsNote(read store.Decision, outputs []store.Output) bool {
 
 // noteDue says whether the read gate queues the note stage on an item whose
 // newest read decision is read: the read waits on a draft, no note task of the
-// item is open, and the item holds no done draft. A done draft decided the
-// read once, so a later placement with no note drafts nothing again.
+// item is open, and the item holds no done draft over its reading parse. A
+// done draft decided the read once, so a later placement with no note drafts
+// nothing again.
 func noteDue(read store.Decision, outputs []store.Output, open bool) bool {
-	return !open && awaitsNote(read, outputs) && store.NewestDone(outputs, store.StageNote) == nil
+	return !open && awaitsNote(read, outputs) && !slices.ContainsFunc(outputs, func(o store.Output) bool {
+		return o.Stage == store.StageNote && o.State == store.OutputDone && store.ReadsQuotedParse(o, outputs)
+	})
+}
+
+// RedraftAfterAnswer is the hook that serve runs in the write that ends a
+// quality task done, after the gate's decision. It acts where the read gate
+// decided the item's read from a note's draft over a parse other than the
+// item's reading parse, and the item stands on a side. There it appends the
+// read that the side calls for again, which waits on a draft, and queues the
+// draft. So once the gate answers over a new parse, the read is decided from
+// a draft over the same parse. A read that a person decided stays as it is.
+// So does an item that a model already read under the lens, which a model
+// read's replay reads again.
+func RedraftAfterAnswer(ctx context.Context, tx *store.Tx, task store.Task) error {
+	if task.ItemKey == nil {
+		return nil
+	}
+	key := *task.ItemKey
+	outputs, err := tx.Outputs(ctx, key)
+	if err != nil {
+		return err
+	}
+	draft := store.NewestDone(outputs, store.StageNote)
+	if draft == nil || store.ReadsQuotedParse(*draft, outputs) {
+		return nil
+	}
+	side, sided, err := tx.NewestDecision(ctx, key, store.GateSide)
+	if err != nil || !sided || !onASide(side.Verdict) {
+		return err
+	}
+	held, ok, err := tx.NewestDecision(ctx, key, store.GateRead)
+	if err != nil || !ok || (held.Cause != CauseNoteDraft && held.Cause != CauseNoteUnclear) || held.DecidedBy != ByModel(draft.Run()) {
+		return err
+	}
+	set, _, sightings, err := inputs(ctx, tx, key)
+	if err != nil {
+		return err
+	}
+	read := Read(set, sightings, side.Verdict, nil)
+	if !awaitsNote(read, outputs) {
+		return nil
+	}
+	read.ItemKey = key
+	written, err := tx.AddDecision(ctx, read)
+	if err != nil {
+		return err
+	}
+	if err := reconcileModelRead(ctx, tx, key, side, written); err != nil {
+		return err
+	}
+	return PassToChapters(ctx, tx, key)
 }
 
 // takeDraft is the read decision of a person's placement with no note, by

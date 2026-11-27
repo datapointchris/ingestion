@@ -50,6 +50,12 @@ const (
 	DropFloor = 0.8
 )
 
+// The gate and its arm each quote the opening of the item's reading parse.
+func init() {
+	store.QuotesParse(Capability, store.ParsePick{})
+	store.QuotesParse(ArmCapability, store.ParsePick{})
+}
+
 // VerdictPass is the gate's decision that an item earns a full read. Its drop
 // and review are the side gate's verdicts of the same names.
 const VerdictPass = store.VerdictPass
@@ -165,6 +171,8 @@ func QueueAfterScan(ctx context.Context, tx *store.Tx, task store.Task) error {
 // item's quality task done, from the answer of its newest done output. It
 // appends nothing where the newest decision already came from that run. It
 // starts a standing at rung 0 for each family of the answer that holds none.
+// Where the decision follows an earlier answer, as a re-gate over a new parse
+// does, it reads again each family that holds a person's word on the item.
 func DecideAfterAnswer(ctx context.Context, tx *store.Tx, task store.Task) error {
 	key := *task.ItemKey
 	outputs, err := tx.Outputs(ctx, key)
@@ -183,22 +191,29 @@ func DecideAfterAnswer(ctx context.Context, tx *store.Tx, task store.Task) error
 	if err != nil {
 		return err
 	}
-	if err := gatetrust.Ensure(ctx, tx, key, gatetrust.AnswererOf(*newest), gatetrust.Connectors(sightings)); err != nil {
+	answerer, connectors := gatetrust.AnswererOf(*newest), gatetrust.Connectors(sightings)
+	if err := gatetrust.Ensure(ctx, tx, key, answerer, connectors); err != nil {
 		return err
 	}
 	d := Decision(a, newest.Run())
-	if held, ok, err := tx.NewestDecision(ctx, key, store.GateQuality); err != nil {
+	held, ok, err := tx.NewestDecision(ctx, key, store.GateQuality)
+	if err != nil {
 		return err
 	} else if ok && held.DecidedBy == d.DecidedBy && held.Verdict == d.Verdict {
 		return nil
 	}
 	d.ItemKey = key
-	_, err = tx.AddDecision(ctx, d)
-	return err
+	if _, err := tx.AddDecision(ctx, d); err != nil {
+		return err
+	}
+	if !ok || held.DecidedBy == d.DecidedBy {
+		return nil
+	}
+	return gatetrust.Reanswered(ctx, tx, key, answerer, connectors)
 }
 
-// due says whether a replay runs the gate on an item: the gate is unanswered,
-// and no person placed the item.
+// due says whether a replay runs the gate on an item: the gate is unanswered
+// over its reading parse, and no person placed the item.
 func due(r store.ItemRecords, open bool) bool {
 	side, sided := r.NewestDecision(store.GateSide)
 	return unanswered(r.Outputs, open) && (!sided || !side.ByPerson())
@@ -214,8 +229,9 @@ func measurementDue(r store.ItemRecords, open bool) bool {
 }
 
 // armDue says whether the arm runs on an item: the item is labeled, the gate
-// answered it under the prompt in force, and no arm has. So each arm answer
-// sits beside the gate's answer to the same prompt.
+// answered it under the prompt in force over its reading parse, and no arm
+// has. So each arm answer sits beside the gate's answer to the same prompt
+// over the same text.
 func armDue(r store.ItemRecords, open bool) bool {
 	if open || !store.ReadingParseScanned(r.Outputs) {
 		return false
@@ -226,18 +242,20 @@ func armDue(r store.ItemRecords, open bool) bool {
 	return answered(r.Outputs, store.StageQuality) && !answered(r.Outputs, store.StageQualityArm)
 }
 
-// unanswered says whether the gate may run on an item: its newest parse is
+// unanswered says whether the gate may run on an item: its reading parse is
 // scanned, no quality task of it is open, and it holds no done answer of the
-// prompt in force.
+// prompt in force over that parse.
 func unanswered(outputs []store.Output, open bool) bool {
 	return !open && store.ReadingParseScanned(outputs) && !answered(outputs, store.StageQuality)
 }
 
-// answered says whether outputs hold a done answer of the prompt in force at
-// stage.
+// answered says whether outputs hold a done answer at stage of the prompt in
+// force over the item's reading parse. An answer over an older parse does not
+// count, so the gate is due on the item again.
 func answered(outputs []store.Output, stage string) bool {
 	return slices.ContainsFunc(outputs, func(o store.Output) bool {
-		return o.Stage == stage && o.Producer == Producer && o.ProducerVersion == prompts.Quality.Version && o.State == store.OutputDone
+		return o.Stage == stage && o.Producer == Producer && o.ProducerVersion == prompts.Quality.Version && o.State == store.OutputDone &&
+			store.ReadsQuotedParse(o, outputs)
 	})
 }
 

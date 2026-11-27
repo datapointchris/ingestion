@@ -56,6 +56,9 @@ const (
 	mostLeftOut = 0.2
 )
 
+// The stage quotes the book's pdf-text parse, whose units are its PDF pages.
+func init() { store.QuotesParse(Capability, store.ParsePick{Extractor: sections.ParsedBy.Name}) }
+
 // Answer is the model's answer, as prompts/contents/answer.schema.json holds
 // it. ReadAnswer decodes it.
 type Answer struct {
@@ -225,11 +228,11 @@ func waitsForContents(r store.ItemRecords) bool {
 
 // due says whether a replay runs the stage on a book: the book waits for its
 // contents, no contents task of it is open, and it holds no done answer of
-// the prompt in force.
+// the prompt in force over its newest pdf-text parse.
 func due(r store.ItemRecords, open bool) bool {
 	return !open && waitsForContents(r) && !slices.ContainsFunc(r.Outputs, func(o store.Output) bool {
 		return o.Stage == store.StageContents && o.Producer == Producer && o.ProducerVersion == prompts.Contents.Version &&
-			o.State == store.OutputDone
+			o.State == store.OutputDone && store.ReadsQuotedParse(o, r.Outputs)
 	})
 }
 

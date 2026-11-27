@@ -4,8 +4,10 @@
 // run's answer becomes the output.
 //
 // A task's call is started once, under an idempotency key of its subject, the
-// stage and the prompt's version. The subject is the task's item, or the
-// prompt proposal that a prompt-proposal task drafts. The dispatch is stored on the output in the
+// stage, the prompt's version and the parse that the prompt quotes. The
+// subject is the task's item, or the prompt proposal that a prompt-proposal
+// task drafts. The output names that parse, so a call over a newer parse is
+// started once more and replaces the answer. The dispatch is stored on the output in the
 // write that ends the worker's lease, and each later claim follows it until
 // the run answers. So a waiting task holds no worker slot, and a lease that
 // lapsed never pays for a second run. A run that failed is started again only
@@ -64,8 +66,11 @@ type Stage struct {
 	// build holds no prompt for does.
 	Prompt func(task worker.Task) (prompts.Prompt, error)
 	// Data is what the prompt quotes of task's item. It is read only where a
-	// call starts. An error marked modelport.ErrRefused fails the task, and
-	// any other tries again after a backoff.
+	// call starts. A stage whose prompt quotes a parse registers it with
+	// store.QuotesParse, and reads the parse that the task's claim named with
+	// worker.Client.QuotedParse, which the output names. An error marked
+	// modelport.ErrRefused fails the task, and any other tries again after a
+	// backoff.
 	Data func(ctx context.Context, task worker.Task) (any, error)
 	// Keep fills out from the answer that a run gave to prompt on task, and
 	// returns the answer's fields that the answered line logs, never outsider
@@ -170,11 +175,14 @@ func (h handler) Run(ctx context.Context, task worker.Task) worker.Result {
 	return worker.Result{Outcome: server.OutcomeDone, Outputs: []server.ReportOutput{kept}}
 }
 
-// own is the task's output from prompt that answers the task's note, and nil
-// where it holds none.
+// own is the task's output from prompt that answers the task's note over the
+// parse that the claim named, and nil where it holds none. An output over an
+// older parse is no answer, so the task calls again over the parse named.
 func (h handler) own(task worker.Task, prompt prompts.Prompt) *server.StageOutput {
+	extractor, version := quoted(task)
 	i := slices.IndexFunc(task.StageOutputs, func(o server.StageOutput) bool {
-		return o.Producer == h.stage.Producer && o.ProducerVersion == prompt.Version && store.NoteAnswered(o.NoteDigest, task.Answers())
+		return o.Producer == h.stage.Producer && o.ProducerVersion == prompt.Version && store.NoteAnswered(o.NoteDigest, task.Answers()) &&
+			deref(o.InputProducer) == deref(extractor) && deref(o.InputVersion) == deref(version)
 	})
 	if i < 0 {
 		return nil
@@ -192,10 +200,23 @@ func (h handler) request(ctx context.Context, task worker.Task, prompt prompts.P
 	if err != nil {
 		return modelport.Request{}, fmt.Errorf("%w: %w", modelport.ErrRefused, err)
 	}
-	return modelport.Request{
+	request := modelport.Request{
 		Subject: subject(task), Stage: h.stage.Name, PromptVersion: prompt.Version, NoteDigest: deref(store.NoteDigest(task.Answers())),
 		Prompt: text, Schema: prompt.Schema, Model: h.model(task), Effort: h.settings.Effort,
-	}, nil
+	}
+	if extractor, version := quoted(task); extractor != nil {
+		request.Parse = *extractor + "@" + *version
+	}
+	return request, nil
+}
+
+// quoted is the extractor and version of the parse that the task's claim
+// named as the one its prompt quotes, each nil where it named none.
+func quoted(task worker.Task) (extractor, version *string) {
+	if task.Parse == nil {
+		return nil, nil
+	}
+	return &task.Parse.Extractor, &task.Parse.Version
 }
 
 // subject names what the task's call answers: its item, or the prompt
@@ -210,13 +231,14 @@ func (h handler) model(task worker.Task) string {
 	return cmp.Or(deref(task.Model), h.settings.Model)
 }
 
-// output is the output that prompt names for the task's note, asked of model
-// at effort, waiting on dispatch.
+// output is the output that prompt names for the task's note over the parse
+// that the claim named, asked of model at effort, waiting on dispatch.
 func (h handler) output(task worker.Task, prompt prompts.Prompt, model, effort, dispatch string) server.ReportOutput {
 	out := server.ReportOutput{
 		Producer: h.stage.Producer, ProducerVersion: prompt.Version, NoteDigest: store.NoteDigest(task.Answers()),
 		Model: &model, Effort: &effort, DispatchID: optional(dispatch),
 	}
+	out.InputProducer, out.InputVersion = quoted(task)
 	if prompt.Lens != nil {
 		name, version := prompt.Lens.Name, prompt.Lens.Version
 		out.Lens, out.LensVersion = &name, &version

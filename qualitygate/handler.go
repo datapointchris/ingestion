@@ -68,10 +68,10 @@ type promptData struct {
 }
 
 // opening is the task's item as the prompt quotes it: its title, the opening
-// of its newest parse, and FitLens's context, which a read that fails leaves
-// as the last read or empty, logged on log.
+// of the reading parse that the claim named, and FitLens's context, which a
+// read that fails leaves as the last read or empty, logged on log.
 func opening(ctx context.Context, client *worker.Client, contexts lens.Readers, task worker.Task, log *slog.Logger) (promptData, error) {
-	parse, err := client.TaskParse(ctx, task.ID, task.LeaseToken, store.ParsePick{})
+	parse, err := client.QuotedParse(ctx, task)
 	if err != nil {
 		return promptData{}, fmt.Errorf("read the parse: %w", err)
 	}

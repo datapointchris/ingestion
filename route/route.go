@@ -694,26 +694,28 @@ func ReadByModel(side, read store.Decision) bool {
 // ModelReadDue says whether a replay runs the model read on an item: its
 // newest decisions read it by a model, under a lens whose prompt this build
 // holds, the read waits on no note's draft, no model read's task of it is
-// open, and no done read of that lens's prompt in force answers the read's
-// note. A read decision that the item took from its parent is never due,
-// because a model read reads the item's own parse, and a book's chapter holds
-// none.
+// open, and no done read of that lens's prompt in force over the item's
+// reading parse answers the read's note. A read decision that the item took
+// from its parent is never due, because a model read reads the item's own
+// parse, and a book's chapter holds none.
 func ModelReadDue(side, read store.Decision, outputs []store.Output, open bool) bool {
 	return modelReadDue(side, read, outputs, open, true)
 }
 
-// modelReadDue is ModelReadDue, where currentPrompt false counts a done read
-// of any prompt version under the read's lens, as the read gate does. A new
-// prompt then reads an item again only through a replay, which estimates its
-// tokens first. An output that names no lens counts under every lens.
-func modelReadDue(side, read store.Decision, outputs []store.Output, open, currentPrompt bool) bool {
+// modelReadDue is ModelReadDue, where current false counts a done read of any
+// prompt version over any parse under the read's lens, as the read gate does.
+// A new prompt or parse then reads an item again only through a replay, which
+// estimates its tokens first. An output that names no lens counts under every
+// lens.
+func modelReadDue(side, read store.Decision, outputs []store.Output, open, current bool) bool {
 	if open || !ReadByModel(side, read) || read.ByParent() || awaitsNote(read, outputs) {
 		return false
 	}
 	p, ok := prompts.ModelRead[text(read.Lens)]
 	note, _ := NoteOf(read, store.NewestDone(outputs, store.StageNote))
 	return ok && !slices.ContainsFunc(outputs, func(o store.Output) bool {
-		return readDoneUnder(read, o) && (!currentPrompt || o.ProducerVersion == p.Version) && store.NoteAnswered(o.NoteDigest, note)
+		return readDoneUnder(read, o) && (!current || (o.ProducerVersion == p.Version && store.ReadsQuotedParse(o, outputs))) &&
+			store.NoteAnswered(o.NoteDigest, note)
 	})
 }
 

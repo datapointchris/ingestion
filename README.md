@@ -878,11 +878,20 @@ release`. `tasks retry` posts to `/api/v1/tasks/{id}/retries`, and its `--json` 
 `schemas/task-retry.schema.json`. It queues a failed task again, prints a queued or leased task as
 it stands, and refuses a done one.
 
-`ingestion items replay --stage quality` runs the prompt in force over each scanned item that no
-person placed, and that holds no answer of that prompt. An item that a tag, a rule or a confident
-guess placed keeps its placement whatever the new answer says. The replay first prints how
-many items it would run on, and the median tokens by kind of the stage's newest stored runs times
-that count. It queues only with `--yes`.
+`ingestion items replay --stage quality` runs the prompt in force over scanned items. It skips an
+item that a person placed. It also skips one that holds an answer of that prompt over its reading
+parse. An item that a tag, a rule or a confident guess placed keeps its placement whatever the new
+answer says. The replay first prints how many items it would run on, and the median tokens by
+kind of the stage's newest stored runs times that count. It queues only with `--yes`.
+
+Each model stage's answer names the parse its prompt quoted, in `input_producer` and
+`input_version`. An answer over an older parse does not count. So once a parse replay writes a
+new extractor version, each model stage's replay finds the item due. The gate's call over the new
+parse is a dispatch of its own, and its answer replaces the old one. Where the read gate decided
+the item's read from a note's draft over the older parse, the new answer appends the read that the
+side calls for again and drafts the note over the new parse. The replay's estimate leaves those
+drafts out. An item counts once in its family's trust, by the person's words against its newest
+answer. When the store opens, it names the reading parse on each stored answer that names none.
 
 `--placed-by person` runs the replay instead over each labeled item, one that a person placed
 after the gates sent it to review, which the gate otherwise never judges again. The answer

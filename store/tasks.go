@@ -354,7 +354,8 @@ func (c Claim) slotPartitions() (partition string, args []any, bounds map[string
 // newest read decision, whose lens and note the read answers, and the item's
 // newest done note draft, which the read answers where the decision took it.
 // A note task carries the newest read decision too, whose lens it drafts
-// under. A poll carries
+// under. A task of a stage whose prompt quotes a parse carries the done parse
+// that its stage quotes, which its call reads and its output names. A poll carries
 // its connector's cursor, whose position it reads on from. A delete task
 // carries the sighting whose source it removes the item from. A prompt-proposal task
 // carries the prompt proposal that it drafts, which holds its run's dispatch.
@@ -363,6 +364,7 @@ type Leased struct {
 	Item     Item
 	Delivery *Delivery
 	Outputs  []Output
+	Parse    *Output
 	Read     *Decision
 	Draft    *Output
 	Cursor   *Cursor
@@ -485,6 +487,14 @@ func (s *Store) Claim(ctx context.Context, c Claim) ([]Leased, error) {
 					*task.ItemKey, task.Stage); err != nil {
 					return err
 				}
+			}
+			if pick, quotes := QuotedPick(task.Stage); quotes && task.ItemKey != nil {
+				parses, err := readInto[Output](ctx, tx.tx, table("outputs"), `item_key = ? AND stage = ? ORDER BY created_ts, rowid`,
+					*task.ItemKey, StageParse)
+				if err != nil {
+					return err
+				}
+				leased.Parse = PickedParse(parses, pick)
 			}
 			if (task.Stage == StageModelRead || task.Stage == StageNote) && task.ItemKey != nil {
 				read, ok, err := tx.NewestDecision(ctx, *task.ItemKey, GateRead)

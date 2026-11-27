@@ -551,3 +551,72 @@ func TestTheQualityGateKeepsTheFitToTheCurrentWork(t *testing.T) {
 		t.Errorf("the store keeps %d quality outputs with the fit of 8, want one", n)
 	}
 }
+
+// A save parsed again at a new extractor version holds a gate answer over its
+// older parse, which no longer counts. A quality replay then runs on that save
+// alone, because the other save's answer read its reading parse. The gate's
+// call over the new parse is a dispatch of its own, its answer names that
+// parse, and a new decision follows it.
+func TestAGateAnswerOverAnOlderParseIsDueAgain(t *testing.T) {
+	p := newGatedPipeline(t, mustAbs(t, "../examples/declarations"))
+	stand := newStandInDispatch(t, p.provider)
+	stand.answer = answerBy(nil)
+	key := "reddit/t3_bb2"
+	p.landExports(t, map[string][]byte{"first": redditExport(redditSave("t3_aa1", "golang"), redditSave("t3_bb2", "golang"))})
+	p.parse(t, extract.Builtin())
+	p.scanFindingNothing(t)
+	if _, err := runCLI(t, "connectors", "release", "reddit-exports", "--config", p.config); err != nil {
+		t.Fatal(err)
+	}
+	gate := p.qualityGate(t, stand.models(t, "", ""))
+	if ran := p.run(t, gate); ran != 2 {
+		t.Fatalf("the gate ran %d tasks, want one per save", ran)
+	}
+	due := func() int {
+		t.Helper()
+		out, err := runCLI(t, "items", "replay", "--stage", store.StageQuality, "--json", "--config", p.config)
+		var answer server.ReplayAnswer
+		if err != nil || json.Unmarshal([]byte(out), &answer) != nil {
+			t.Fatalf("items replay --stage quality printed %q, %v", out, err)
+		}
+		return answer.Items
+	}
+	if n := due(); n != 0 {
+		t.Fatalf("with each answer over its reading parse a quality replay would run on %d saves, want none", n)
+	}
+
+	if _, err := runCLI(t, "items", "replay", "--stage", store.StageParse, "--key", key, "--config", p.config); err != nil {
+		t.Fatal(err)
+	}
+	v2 := extract.ThreadText
+	v2.Version = "2"
+	next, err := extract.NewRegistry(v2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.parse(t, next)
+	p.scanFindingNothing(t)
+	if n := due(); n != 1 {
+		t.Fatalf("once one save is parsed at version 2 a quality replay would run on %d saves, want that one", n)
+	}
+	if _, err := runCLI(t, "items", "replay", "--stage", store.StageQuality, "--yes", "--config", p.config); err != nil {
+		t.Fatal(err)
+	}
+	if ran := p.run(t, gate); ran != 1 {
+		t.Fatalf("the replay ran %d gate tasks, want 1", ran)
+	}
+	if s := stand.starts(); len(s) != 3 || s[2].Key == s[0].Key || s[2].Key == s[1].Key {
+		t.Errorf("the stand-in started %s, want a third dispatch under a key of its own", jsonOf(s))
+	}
+	var extractor, version string
+	if err := p.st.Reader().QueryRowContext(t.Context(), `SELECT input_producer, input_version FROM outputs WHERE item_key = ? AND stage = ?`,
+		key, store.StageQuality).Scan(&extractor, &version); err != nil || extractor != extract.ThreadText.Name || version != "2" {
+		t.Errorf("the save's answer names the parse %s@%s, %v, want %s@2", extractor, version, err, extract.ThreadText.Name)
+	}
+	if all, _, _ := p.decisions(t, key); len(slices.DeleteFunc(all, func(d server.DecisionView) bool { return d.Gate != store.GateQuality })) != 2 {
+		t.Errorf("the save holds decisions %s, want a gate decision on each answer", jsonOf(all))
+	}
+	if n := due(); n != 0 {
+		t.Errorf("after the gate answered over version 2 a quality replay would run on %d saves, want none", n)
+	}
+}

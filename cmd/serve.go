@@ -142,7 +142,7 @@ func afterStageUnder(log *slog.Logger, noteFloor float64) server.AfterStage {
 		store.StageStructure: {sections.AfterStructure, contents.AfterStructure(log), sections.QueueDoclingParse},
 		store.StageContents:  {contents.AfterAnswer(log)},
 		store.StageScan:      {qualitygate.QueueAfterScan},
-		store.StageQuality:   {qualitygate.DecideAfterAnswer},
+		store.StageQuality:   {qualitygate.DecideAfterAnswer, route.RedraftAfterAnswer},
 		store.StageNote:      {route.AfterDraft(noteFloor)},
 		store.StageDeliver:   {route.AfterDelivery},
 	}
@@ -206,6 +206,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	defer func() { _ = st.Close() }()
+	log.Info("named the parse that each stored model answer read, where it named none", "outputs", st.InputsNamedAtOpen())
 	blobs, err := landing.OpenBlobs(filepath.Join(stateDir(cfg), "blobs"))
 	if err != nil {
 		return err

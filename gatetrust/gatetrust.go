@@ -9,7 +9,8 @@
 // a drop climbs, because a family earns hiding drops: a pass shows its item
 // whatever the family's standing. A person who places on a destination an
 // item whose drop the gate showed or hid disagrees with the drop. Any
-// disagreement returns the family to rung 0.
+// disagreement returns the family to rung 0. An item that the gate answered
+// again counts once, by the words against its newest answer.
 //
 // While its family stands on rung 0, every item that the gate drops waits in
 // review, marked gate-would-drop. A family whose straight run reaches its
@@ -71,8 +72,9 @@ const (
 
 // What moves a family's standing, as its last_change records.
 const (
-	// ChangeGateAnswer is the gate's first answer under the family, which
-	// starts it at rung 0.
+	// ChangeGateAnswer is the gate's answer: its first under the family,
+	// which starts it at rung 0, or a later one on an item that a person gave
+	// a word on, after which only the words against the later answer count.
 	ChangeGateAnswer = "gate-answer"
 	ChangeMark       = "mark"
 	// ChangePlacement is a person's placement on a destination of an item
@@ -397,8 +399,7 @@ func Settle(ctx context.Context, tx *store.Tx) (int, error) {
 		if err != nil {
 			return moved, err
 		}
-		if g.Rung == held.Rung && g.Run == held.Run && g.StraightRun == held.StraightRun && g.Share == held.Share &&
-			g.Threshold == held.Threshold && g.FirstShare == held.FirstShare && g.AsksPromotion == held.AsksPromotion {
+		if sameStanding(g, held) {
 			continue
 		}
 		g.LastChange, g.LastItemKey = ChangeRule, nil
@@ -410,11 +411,53 @@ func Settle(ctx context.Context, tx *store.Tx) (int, error) {
 	return moved, nil
 }
 
-// reread is g with the standing that earnedtrust reads from g's decisions and
-// its promotion.
+// Reanswered reads again the standing of each family of connectors under a
+// that holds a person's word on the item under key, in the write that appends
+// the gate's newer answer on it, and writes each one that moved. The item's
+// words against an earlier answer then stop counting, so the item counts
+// once, under its newest answer.
+func Reanswered(ctx context.Context, tx *store.Tx, key string, a Answerer, connectors []string) error {
+	if a.PromptVersion == "" {
+		return nil
+	}
+	for _, c := range connectors {
+		held, ok, err := tx.GateTrust(ctx, Family(c, a))
+		if err != nil {
+			return err
+		}
+		if !ok {
+			continue
+		}
+		logged, err := tx.GateTrustDecisions(ctx, held.Family)
+		if err != nil {
+			return err
+		}
+		if !slices.ContainsFunc(logged, func(d store.GateTrustDecision) bool { return d.ItemKey == key }) {
+			continue
+		}
+		g, err := reread(ctx, tx, held)
+		if err != nil {
+			return err
+		}
+		if sameStanding(g, held) {
+			continue
+		}
+		g.LastChange, g.LastItemKey = ChangeGateAnswer, &key
+		if err := tx.PutGateTrust(ctx, g); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// reread is g with the standing that earnedtrust reads from g's decisions
+// that count and its promotion.
 func reread(ctx context.Context, tx *store.Tx, g store.GateTrust) (store.GateTrust, error) {
 	logged, err := tx.GateTrustDecisions(ctx, g.Family)
 	if err != nil {
+		return g, err
+	}
+	if logged, err = counted(ctx, tx, g, logged); err != nil {
 		return g, err
 	}
 	decisions := make([]earnedtrust.Decision, len(logged))
@@ -422,6 +465,41 @@ func reread(ctx context.Context, tx *store.Tx, g store.GateTrust) (store.GateTru
 		decisions[i] = earnedtrust.Decision{ByPerson: true, Agreed: d.Agreement == Agreed, Disagreed: d.Agreement == Disagreed, Promoted: d.Promoted}
 	}
 	return withStanding(g, familyOf(g.Family).Standing(decisions, g.Promoted())), nil
+}
+
+// counted is the words among logged, g's decisions, that count on its ladder.
+// Where the gate's newest answer on a word's item came from g's answerer, the
+// word counts only where it was given against that answer. So an item that
+// the gate answered again, such as over a new parse, counts once, under its
+// newest answer. A word on an item whose newest answer came from another
+// family counts as it was given.
+func counted(ctx context.Context, tx *store.Tx, g store.GateTrust, logged []store.GateTrustDecision) ([]store.GateTrustDecision, error) {
+	answerer := Answerer{PromptVersion: g.PromptVersion, Model: g.Model, Effort: g.Effort}
+	newest := map[string]string{}
+	out := make([]store.GateTrustDecision, 0, len(logged))
+	for _, d := range logged {
+		answer, read := newest[d.ItemKey]
+		if !read {
+			j, _, judged, err := JudgmentOn(ctx, tx, d.ItemKey)
+			if err != nil {
+				return nil, err
+			}
+			if judged && j.Answerer == answerer {
+				answer = j.DecidedBy
+			}
+			newest[d.ItemKey] = answer
+		}
+		if answer == "" || d.GateDecidedBy == answer {
+			out = append(out, d)
+		}
+	}
+	return out, nil
+}
+
+// sameStanding says whether a and b hold the same standing.
+func sameStanding(a, b store.GateTrust) bool {
+	return a.Rung == b.Rung && a.Run == b.Run && a.StraightRun == b.StraightRun && a.Share == b.Share &&
+		a.Threshold == b.Threshold && a.FirstShare == b.FirstShare && a.AsksPromotion == b.AsksPromotion
 }
 
 // withStanding is g holding s.

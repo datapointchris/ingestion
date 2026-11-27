@@ -114,8 +114,12 @@ var itemsReplayCmd = &cobra.Command{
 		"page and title, and one that matches none makes no item.\n" +
 		"\n" +
 		"A quality replay runs on each scanned item that holds no answer of the prompt\n" +
-		"in force and that no person placed. An item that a tag, a rule or a\n" +
-		"confident guess placed keeps its placement whatever the answer says.\n" +
+		"in force over its reading parse and that no person placed. An answer over an\n" +
+		"older parse, such as one a parse replay at a new extractor version passed,\n" +
+		"does not count. An item that a tag, a rule or a confident guess placed keeps\n" +
+		"its placement whatever the answer says. Where the read gate decided an\n" +
+		"item's read from a note's draft over an older parse, the new answer drafts\n" +
+		"the note again, whose tokens the estimate leaves out.\n" +
 		"--placed-by person runs it only over each labeled item, one that a person\n" +
 		"placed after the gates sent it to review, as a measurement against the\n" +
 		"placement. Its answer and its decision are kept, and the placement, its\n" +

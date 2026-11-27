@@ -50,6 +50,8 @@ type Store struct {
 
 	// itemColumns names each logged table's column that names an item.
 	itemColumns []itemColumn
+	// inputsNamed counts the outputs that this open named their parse on.
+	inputsNamed int
 
 	mu sync.Mutex
 	// last is the newest stamp taken, so the next is later.
@@ -67,6 +69,8 @@ func WithClock(clock func() time.Time) Option {
 
 // Open opens the database at path, creating it and its directory where they
 // are missing, and converges every schema file and every logged table's guard.
+// It then names on each output of a stage whose prompt quotes a parse, where
+// the output names none, the parse that its stage quotes.
 func Open(ctx context.Context, path string, options ...Option) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return nil, fmt.Errorf("create the store's directory: %w", err)
@@ -91,8 +95,16 @@ func Open(ctx context.Context, path string, options ...Option) (*Store, error) {
 		_ = s.Close()
 		return nil, err
 	}
+	if s.inputsNamed, err = s.fillQuotedInputs(ctx); err != nil {
+		_ = s.Close()
+		return nil, err
+	}
 	return s, nil
 }
+
+// InputsNamedAtOpen counts the stored outputs that Open named the parse they
+// read on, each of a stage whose prompt quotes a parse.
+func (s *Store) InputsNamedAtOpen() int { return s.inputsNamed }
 
 // dsn names path with the pragmas for every connection. A reader refuses any
 // write. A writer's transaction takes the write lock as it begins.

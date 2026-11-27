@@ -44,6 +44,9 @@ const (
 	openingRunes = 2000
 )
 
+// The draft quotes the opening of the item's reading parse.
+func init() { store.QuotesParse(Capability, store.ParsePick{}) }
+
 // Answer is the model's answer, as prompts/note/answer.schema.json holds it.
 type Answer struct {
 	route.Draft
@@ -107,7 +110,7 @@ type promptData struct {
 // of its reading parse, and its lens's context, which is empty where no
 // reader is opened for the lens or none could be read, and logged on log.
 func opening(ctx context.Context, client *worker.Client, contexts lens.Readers, task worker.Task, log *slog.Logger) (promptData, error) {
-	parse, err := client.TaskParse(ctx, task.ID, task.LeaseToken, store.ParsePick{})
+	parse, err := client.QuotedParse(ctx, task)
 	if err != nil {
 		return promptData{}, fmt.Errorf("read the parse: %w", err)
 	}

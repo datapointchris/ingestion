@@ -163,7 +163,7 @@
         "producer": {"description": "What wrote the output: an extractor, a rule set or a stage's prompt.", "type": "string"},
         "producer_version": {"description": "The extractor's, the rules' or the prompt's version, so a new one replays beside the old.", "type": "string"},
         "lens": {"description": "The lens a model read answered under.", "type": ["string", "null"]},
-        "input_producer": {"description": "The producer of the parse this output read, such as the parse a scan's findings index the units of.", "type": ["string", "null"]},
+        "input_producer": {"description": "The producer of the parse this output read: the parse a scan's findings index the units of, or the parse a model stage's prompt quoted. A model stage's answer counts as current only while it names the parse that its stage quotes now, such as the item's reading parse.", "type": ["string", "null"]},
         "input_version": {"description": "The producer version of the parse this output read.", "type": ["string", "null"]},
         "lens_version": {"description": "The version of the lens a model read answered under.", "type": ["string", "null"]},
         "note_digest": {"description": "The hex SHA-256 of the note a model read answered, trimmed, and null where it answered none. A read of a new note replaces the item's read under the same prompt.", "anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
@@ -462,7 +462,7 @@
         "promoted_client_id": {"description": "The client that sent the promotion, such as a service sending it under the person's login.", "type": ["string", "null"]},
         "promoted_ts": {"anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
         "last_change": {
-          "description": "What moved the row last: the gate's first answer under the family, a mark, a person's placement on a destination of an item whose drop the gate showed or hid, a promotion, or a release whose rule reads the family's decisions to another standing.",
+          "description": "What moved the row last: the gate's first answer under the family, or a later answer on an item that a person gave a word on, after which only the words against the later answer count; a mark; a person's placement on a destination of an item whose drop the gate showed or hid; a promotion; or a release whose rule reads the family's decisions to another standing.",
           "enum": ["gate-answer", "mark", "placement", "promotion", "rule"]
         },
         "last_item_key": {"description": "The item that the last change moved on, and null for a promotion or a rule.", "anyOf": [{"$ref": "#/$defs/item_key"}, {"type": "null"}]},

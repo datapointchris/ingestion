@@ -117,6 +117,11 @@ type LeasedTask struct {
 	// so a task whose run is already dispatched follows that run rather than
 	// starting another. Every other task carries none.
 	StageOutputs []StageOutput `json:"stage_outputs,omitempty"`
+	// Parse is the done parse that the prompt of a model stage's task quotes,
+	// as the claim read it: the item's reading parse, or the one extractor's
+	// that the stage reads. The task's call reads it, and its output names it.
+	// It is absent where the stage quotes no parse or the item holds none.
+	Parse *QuotedParse `json:"parse,omitempty"`
 	// Lens, Note and NoteDraft are a model read's task's: the lens of the
 	// item's newest read decision, the note that a person wrote on it, and
 	// the note stage's draft where the decision took one instead. A draft
@@ -161,6 +166,12 @@ func (t LeasedTask) Answers() *string {
 	return t.NoteDraft
 }
 
+// QuotedParse names one parse of a task's item by its extractor and version.
+type QuotedParse struct {
+	Extractor string `json:"extractor"`
+	Version   string `json:"version"`
+}
+
 // LeasedProposal is the prompt proposal that a prompt-proposal task drafts: the
 // prompt it changes, at the version it changes, and the misses labeled after
 // LabeledAfter, through LabeledThrough, as one JSON array.
@@ -186,12 +197,14 @@ type LeasedSighting struct {
 }
 
 // StageOutput is one output that a model stage's task carries: which prompt
-// wrote it, how far it got, and the dispatch it waits on. Error is why a
-// waiting one has not started, or why a failed one failed.
+// wrote it over which parse, how far it got, and the dispatch it waits on.
+// Error is why a waiting one has not started, or why a failed one failed.
 type StageOutput struct {
 	Producer        string  `json:"producer"`
 	ProducerVersion string  `json:"producer_version"`
 	NoteDigest      *string `json:"note_digest"`
+	InputProducer   *string `json:"input_producer"`
+	InputVersion    *string `json:"input_version"`
 	State           string  `json:"state"`
 	DispatchID      *string `json:"dispatch_id"`
 	Model           *string `json:"model"`
@@ -354,13 +367,20 @@ func (o ReportOutput) output() store.Output {
 	}
 }
 
-// stageOutput is run as a model stage's task carries it, beside the note
-// digest of an item's model read.
-func stageOutput(run store.StageRun, noteDigest *string) StageOutput {
+// stageOutput is run as a model stage's task carries it.
+func stageOutput(run store.StageRun) StageOutput {
 	return StageOutput{
-		Producer: run.Producer, ProducerVersion: run.ProducerVersion, NoteDigest: noteDigest, State: run.State, DispatchID: run.DispatchID,
+		Producer: run.Producer, ProducerVersion: run.ProducerVersion, State: run.State, DispatchID: run.DispatchID,
 		Model: run.Model, Effort: run.Effort, Error: run.Error,
 	}
+}
+
+// itemStageOutput is an item's output o as its model stage's task carries it,
+// with the note digest of a model read and the parse that its call quoted.
+func itemStageOutput(o store.Output) StageOutput {
+	out := stageOutput(o.StageRun)
+	out.NoteDigest, out.InputProducer, out.InputVersion = o.NoteDigest, o.InputProducer, o.InputVersion
+	return out
 }
 
 // TaskView is one task as the list shows it. It leaves out the lease token
@@ -513,7 +533,10 @@ func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		for _, o := range t.Outputs {
-			leased.StageOutputs = append(leased.StageOutputs, stageOutput(o.StageRun, o.NoteDigest))
+			leased.StageOutputs = append(leased.StageOutputs, itemStageOutput(o))
+		}
+		if p := t.Parse; p != nil {
+			leased.Parse = &QuotedParse{Extractor: p.Producer, Version: p.ProducerVersion}
 		}
 		if s := t.Sighting; s != nil {
 			leased.Sighting = &LeasedSighting{Connector: s.Connector, ExternalKey: s.ExternalKey, Fields: s.Fields}
@@ -523,7 +546,7 @@ func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
 				Prompt: p.Prompt, PromptVersion: p.PromptVersion, PromptText: p.PromptText, LabeledAfter: p.LabeledAfter,
 				LabeledThrough: p.LabeledThrough, MissCount: p.MissCount, Misses: p.Misses,
 			}
-			leased.StageOutputs = append(leased.StageOutputs, stageOutput(p.StageRun, nil))
+			leased.StageOutputs = append(leased.StageOutputs, stageOutput(p.StageRun))
 		}
 		if t.Stage == store.StagePoll && t.Connector != nil {
 			if t.Cursor != nil {
