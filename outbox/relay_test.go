@@ -190,6 +190,13 @@ func TestAnItemGainsEachStageRecordAndEachChangeReachesTheCollectorOnce(t *testi
 		if err != nil {
 			return err
 		}
+		field := "subreddit"
+		if _, err := tx.AddRoutingRule(ctx, store.RoutingRule{
+			Name: "quiet-bakers", Action: store.RuleBlock, MatchConnector: &connector, MatchField: &field, MatchValues: []string{"Sourdough Circle"},
+			ReviewShare: 0.1, DecidedBy: "person:person",
+		}); err != nil {
+			return err
+		}
 		drafted := "drafted"
 		proposal.State, proposal.RunID = store.OutputDone, &drafted
 		proposal.Answer = json.RawMessage(`{"pattern":"Kept thin tutorials.","change":"Weigh depth.","edits":[{"before":"a","after":"b"}],"answers":[1]}`)
@@ -247,7 +254,7 @@ func TestAnItemGainsEachStageRecordAndEachChangeReachesTheCollectorOnce(t *testi
 	}
 
 	schemas := compileSchemas(t)
-	outsider := []string{title, url, text, "redd.it", "shelf/a.pdf", "sed -i", "loud markers"}
+	outsider := []string{title, url, text, "redd.it", "shelf/a.pdf", "sed -i", "loud markers", "Sourdough Circle"}
 	for _, r := range got {
 		tab, _ := store.TableNamed(r.kind)
 		if r.service != "ingestion" || r.serviceVersion != "v0.0.0-test" {
@@ -288,7 +295,7 @@ func TestAnItemGainsEachStageRecordAndEachChangeReachesTheCollectorOnce(t *testi
 			}
 		}
 	}
-	for _, kind := range []string{"items", "sightings", "homes", "outputs", "parse_units"} {
+	for _, kind := range []string{"items", "sightings", "homes", "outputs", "parse_units", "routing_rules"} {
 		if !collector.has(TextKind, kind) {
 			t.Errorf("no %s text reached the collector as %s", kind, TextKind)
 		}

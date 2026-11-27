@@ -980,8 +980,10 @@ places the item by the first rung that decides it:
 
 1. **Every sighting's tags.** A tag that a destination names places the item on that
    destination's side. Tags naming two sides send it to review as `tags-disagree`.
-2. **A routing rule**: the first in the file whose match holds on one sighting. A Reddit save's
-   sighting carries its `subreddit` field for a rule to match.
+2. **A routing rule**: the first in the file whose match holds on one sighting, then the first
+   rule that a person accepted, each keep before each block. A Reddit save's sighting carries its
+   `subreddit` field for a rule to match. An accepted rule's review share of its items waits in
+   review as `rule-would-hide` instead.
 3. **The quality gate.** The item waits at `quality` until the gate answers. A confident drop
    sends it to review as `gate-would-drop`, or drops it as `quality-drop` where its families'
    trust hides it. An unsure answer, or a drop below the floor, sends it to review as `quality-review`. A pass reads the
@@ -1045,6 +1047,51 @@ one, and a placement with no note of an item that holds a draft takes the draft.
 the person's `login` in its body, because a service token carries no person. The decision keeps
 the service's client id beside the login.
 
+### A person accepts a routing rule in the service, and its review share shows what it would hide
+
+A rule written by hand stays in `routing-rules.yml`. A rule that a person accepts, such as one
+proposed from their run of verdicts on a connector, is a row of `routing_rules` instead. Each
+write appends a version, so the table's history ships on the record channel. The newest version
+of a name is in force until it is retired. The side gate reads each rule in force after every
+declared rule: each keep, then each block, by name. A keep goes first because a like on a feature
+wins over a dislike, as NewsBlur weighs them.
+
+- **A block drops each item that it matches** as `rule:<name>`, and keeps its row. A keep places
+  it on a destination on a side.
+- **A rule's `review_share`, from 0 to 1, of its items waits in review instead**, marked
+  `rule-would-hide`, so a wrong rule shows itself. A seeded draw over the rule's name and the
+  item's key picks them. A replay picks the same items, and raising the share keeps every item
+  that a lower one picked.
+- **A write runs the side gate again** over each scanned item that waits on it, as an apply does.
+  An item that a tag, a rule, a model's confident guess or a person placed stays where it is.
+  Retiring a rule moves nothing that it placed, and each item that it sent to review still waits.
+- **A rule never weighs in the review tab's order.**
+- **A rule matches what a source states**: a connector, a tag, or a sighting's field. A theme or a
+  genre is a model's output, and a title is outsider text, so no rule matches either before the
+  model reads the item.
+
+```text
+$ ingestion gates routing-rules put quiet-misc --block --connector reddit-exports --review-share 0.1
+Accepted routing rule quiet-misc as version 1. It drops each item that reddit-exports sighted, and sends 10% of them to review as rule-would-hide.
+$ ingestion gates routing-rules list
+NAME        VERSION  ACTION  MATCH                        DESTINATION  REVIEW SHARE  STATE     DECIDED BY
+quiet-misc  1        block   that reddit-exports sighted  —            10%           in force  person:person
+$ ingestion gates routing-rules retire quiet-misc
+Retired routing rule quiet-misc as version 2. Each item it placed stays where it is, and each it sent to review still waits there.
+```
+
+`put` sends `PUT /api/v1/routing-rules/{name}`, whose body holds to
+`schemas/routing-rules.schema.json#/$defs/accepted`. `retire` posts to
+`/api/v1/routing-rules/{name}/retire`. Each needs `ingestion.routing-rules.write` and prints
+`schemas/routing-rule-version.schema.json` with `--json`. A service writing for a person names the
+person's `login`. Where a service names no login, it writes as `service:<client id>`, as a mark does. The
+body's `proposal` names the proposal that the person accepted, which the version keeps. Writing
+what the newest version already says appends nothing. The set in force refuses a rule naming a
+connector or destination that it does not declare, a keep on a destination with no side, and a
+name that `routing-rules.yml` declares. `list` reads `GET /api/v1/routing-rules` under
+`ingestion.items.read`, in `schemas/routing-rules-list.schema.json`. A match's values copy a
+source's field, so `match_values` ships on the text channel.
+
 ### `ingestion tui` reads each waiting item whole, and one key decides it
 
 `ingestion tui` opens a terminal board with a tab per view. Its `review` tab lists the review
@@ -1058,6 +1105,7 @@ title. The side panel reads the item under the cursor. It opens on the card:
 - the views, likes and comments, and the likes per view
 - the gate's quality, fit, verdict, reason and side hint
 - `gate-would-drop` where the gate would drop it, and how the read of its comments stands
+- `rule-would-hide` where a routing rule's share drew it, naming the rule and what it would do
 
 Under the card come its URL, the gate's whole answer, the note's draft where a model drafted one,
 the scan's findings, and its text, the post first and then each comment. `enter` reads it full
@@ -1525,7 +1573,8 @@ land → parse → structure → contents → sections → scan → quality gate
   and from a phone is one item, read once and delivered once. Each source's arrival is a sighting
   of that item.
 - **A rule decides before a model does.** A source's tags or a routing rule place an item first.
-  The quality gate's model answers it too, and its placement stands.
+  The quality gate's model answers it too, and its placement stands. A share of what a rule that
+  a person accepted would hide still waits in review, so a wrong rule shows itself.
 - **The quality gate earns trust before it hides a drop.** Each connector's drops show in review
   until a straight run of a person's marks agrees with them and the person promotes it. Then a
   shrinking share of its new drops shows, and a disagreement shows every drop that the gate

@@ -84,6 +84,14 @@ func cardSection(it item) string {
 	if it.Reason == route.CauseGateWouldDrop {
 		rows = append(rows, "- **"+literalLine(route.CauseGateWouldDrop)+"** the gate would drop it, and its family has not earned hiding the drop")
 	}
+	if r := it.Rule; it.Reason == route.CauseRuleWouldHide && r != nil {
+		would := "drop it"
+		if r.Destination != nil {
+			would = "place it on " + literalLine(*r.Destination)
+		}
+		rows = append(rows, "- **"+literalLine(route.CauseRuleWouldHide)+"** routing rule "+literalLine(r.Name)+" would "+would+
+			" without you, and its review share drew it")
+	}
 	if it.Comments != nil {
 		rows = append(rows, "- **comments read** "+literalLine(commentsWords(it.Comments)))
 	}

@@ -2,6 +2,7 @@ package route_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"slices"
 	"testing"
 
@@ -28,10 +29,24 @@ func sighting(connector, subreddit string, tags ...string) store.Sighting {
 	return store.Sighting{Connector: connector, Tags: tags, Fields: map[string]string{"subreddit": subreddit}}
 }
 
+func ptr(s string) *string { return &s }
+
+// Two accepted rules on feed-reader. The block's name sorts first, and the
+// keep still decides first where both hold.
+var accepted = []store.RoutingRule{
+	{Name: "aa-quiet-feed", Action: store.RuleBlock, MatchConnector: ptr("feed-reader")},
+	{
+		Name: "zz-golang-feed", Action: store.RuleKeep, MatchConnector: ptr("feed-reader"), MatchField: ptr("subreddit"), MatchValues: []string{"golang"},
+		Destination: ptr("work-inbox"),
+	},
+	{Name: "aa-quiet-reddit", Action: store.RuleBlock, MatchConnector: ptr("reddit-exports"), MatchField: ptr("subreddit"), MatchValues: []string{"Cooking"}},
+}
+
 // The side gate places each item by the first rung that decides it, and says
 // who decided: one side's tags, then the first rule that holds, then a guess
-// at or above the floor. Tags naming two sides, a guess below the floor and no
-// guess at all each send the item to review.
+// at or above the floor. A declared rule decides before an accepted one, and
+// an accepted keep before an accepted block. Tags naming two sides, a guess
+// below the floor and no guess at all each send the item to review.
 func TestTheSideGatePlacesEachItemByTheFirstRungThatDecidesIt(t *testing.T) {
 	confident := &route.Guess{Side: connectors.SideFleet, Confidence: 0.9, Run: "run-1"}
 	doubtful := &route.Guess{Side: connectors.SidePersonal, Confidence: 0.4, Run: "run-2"}
@@ -51,16 +66,61 @@ func TestTheSideGatePlacesEachItemByTheFirstRungThatDecidesIt(t *testing.T) {
 			confident,
 			"review", "tag", "tags-disagree",
 		},
-		{"a rule", []store.Sighting{sighting("reddit-exports", "Cooking")}, confident, "personal", "rule:cooking", "rule"},
+		{"a declared rule before an accepted one", []store.Sighting{sighting("reddit-exports", "Cooking")}, confident, "personal", "rule:cooking", "rule"},
+		{"an accepted keep before a block", []store.Sighting{sighting("feed-reader", "golang")}, confident, "fleet", "rule:zz-golang-feed", "rule"},
+		{"an accepted block", []store.Sighting{sighting("feed-reader", "rust")}, confident, "drop", "rule:aa-quiet-feed", "rule"},
 		{"a confident personal guess", []store.Sighting{sighting("reddit-exports", "golang")}, sure, "personal", "model:run-3", "guess"},
 		{"a confident fleet guess", []store.Sighting{sighting("reddit-exports", "golang")}, confident, "review", "model:run-1", "below-floor"},
 		{"a low-confidence guess", []store.Sighting{sighting("reddit-exports", "golang")}, doubtful, "review", "model:run-2", "below-floor"},
 		{"no guess", []store.Sighting{sighting("reddit-exports", "golang")}, nil, "review", "gate", "no-guess"},
 	} {
-		d := route.Side(set, c.sightings, c.guess)
+		d := route.Side(set, accepted, "url/0123456789abcdef", c.sightings, c.guess)
 		if d.Verdict != c.verdict || d.DecidedBy != c.by || d.Cause != c.cause {
 			t.Errorf("%s: the side gate answered %s by %s for %s, want %s by %s for %s", c.name, d.Verdict, d.DecidedBy, d.Cause, c.verdict, c.by, c.cause)
 		}
+	}
+}
+
+// A block's review share sends a seeded draw of its items to review as
+// rule-would-hide, and drops the rest as rule:<name>. A replay over the same
+// rule and item keys draws the same items. A higher share keeps every item
+// that a lower one drew, so raising it never hides an item already shown.
+func TestARulesReviewShareIsADrawThatAReplayRepeats(t *testing.T) {
+	keys := make([]string, 400)
+	for i := range keys {
+		keys[i] = fmt.Sprintf("url/%016x", i)
+	}
+	drawn := func(share float64) []string {
+		rule := []store.RoutingRule{{Name: "quiet-feed", Action: store.RuleBlock, MatchConnector: ptr("feed-reader"), ReviewShare: share}}
+		var out []string
+		for _, key := range keys {
+			d := route.Side(set, rule, key, []store.Sighting{sighting("feed-reader", "")}, nil)
+			switch {
+			case d.DecidedBy != "rule:quiet-feed":
+				t.Fatalf("%s is decided by %s, want the rule", key, d.DecidedBy)
+			case d.Verdict == route.VerdictReview && d.Cause == route.CauseRuleWouldHide:
+				out = append(out, key)
+			case d.Verdict != route.VerdictDrop || d.Cause != route.CauseRule:
+				t.Fatalf("%s is %s for %s, want a drop by the rule or its share's review", key, d.Verdict, d.Cause)
+			}
+		}
+		return out
+	}
+	tenth := drawn(0.1)
+	if n := len(tenth); n < 20 || n > 60 {
+		t.Errorf("a share of 0.1 drew %d of %d items", n, len(keys))
+	}
+	if again := drawn(0.1); !slices.Equal(again, tenth) {
+		t.Errorf("a replay over the same rule and keys drew %v, then %v", tenth, again)
+	}
+	fifth := drawn(0.2)
+	for _, key := range tenth {
+		if !slices.Contains(fifth, key) {
+			t.Errorf("a share of 0.1 drew %s, and a share of 0.2 does not", key)
+		}
+	}
+	if n := len(drawn(0)); n != 0 {
+		t.Errorf("a share of 0 drew %d items, want none", n)
 	}
 }
 

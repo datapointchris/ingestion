@@ -22,7 +22,8 @@
     {"$ref": "#/$defs/marks"},
     {"$ref": "#/$defs/gate_trust"},
     {"$ref": "#/$defs/gate_trust_decisions"},
-    {"$ref": "#/$defs/prompt_proposals"}
+    {"$ref": "#/$defs/prompt_proposals"},
+    {"$ref": "#/$defs/routing_rules"}
   ],
   "$defs": {
     "item_key": {
@@ -264,7 +265,7 @@
         },
         "confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
         "cause": {
-          "description": "What decided. The quality gate writes pass, drop, unsure, or below-drop-floor where it would drop the item below its confidence floor. The side gate writes tags, tags-disagree, rule, guess, below-floor, person-sorts, no-guess, gate-error, gate-would-drop where the quality gate dropped the item and a family of it has not earned hiding it, quality-drop where every family hides it, or quality-review, and the read gate connector, side-default, note-draft where the read answers the note stage's draft, by the model where the draft reached the note floor or by a person who took it, or note-unclear where the draft fell below the floor. A person's decision names an aspect, such as subreddit, channel, theme or title, or unstated. When a person's push names its destination, the side gate and the read gate each write push.",
+          "description": "What decided. The quality gate writes pass, drop, unsure, or below-drop-floor where it would drop the item below its confidence floor. The side gate writes tags, tags-disagree, rule, rule-would-hide where an accepted rule's review share drew the item, guess, below-floor, person-sorts, no-guess, gate-error, gate-would-drop where the quality gate dropped the item and a family of it has not earned hiding it, quality-drop where every family hides it, or quality-review, and the read gate connector, side-default, note-draft where the read answers the note stage's draft, by the model where the draft reached the note floor or by a person who took it, or note-unclear where the draft fell below the floor. A person's decision names an aspect, such as subreddit, channel, theme or title, or unstated. When a person's push names its destination, the side gate and the read gate each write push.",
           "type": "string",
           "pattern": "^[a-z][a-z-]{0,63}$"
         },
@@ -555,6 +556,28 @@
         "error": {"description": "Why the draft waits or failed.", "type": ["string", "null"]},
         "created_ts": {"$ref": "#/$defs/timestamp"},
         "updated_ts": {"$ref": "#/$defs/timestamp"}
+      }
+    },
+    "routing_rules": {
+      "title": "routing_rules, one row per version of a routing rule that a person accepted, appended",
+      "description": "ingestion.record.id is <name>/<sequence>. The newest version of a name is in force unless it is retired, and the side gate reads each rule in force at its rule rung, after every rule that routing-rules.yml declares. A block drops each item that the rule matches as rule:<name>, and a keep places it on destination. review_share of the matched items wait in review instead, marked rule-would-hide, picked by a seeded draw over the rule's name and the item's key. match_values ships as ingestion.text, because each copies a source's field.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "sequence", "action", "review_share", "retired", "decided_by", "decided_ts"],
+      "properties": {
+        "name": {"description": "The rule's name, which its decisions' decided_by names as rule:<name>.", "type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
+        "sequence": {"description": "The version's place among its name's versions, from 1.", "type": "integer", "minimum": 1},
+        "action": {"description": "block drops what the rule matches and keeps its row. keep places it on destination.", "enum": ["block", "keep"]},
+        "match_connector": {"description": "Holds for an item this connector sighted, and null where the rule names no connector.", "type": ["string", "null"]},
+        "match_tag": {"description": "Holds for an item a sighting tagged with this, and null where the rule names no tag.", "type": ["string", "null"]},
+        "match_field": {"description": "A field of a sighting whose value one of match_values must be, and null where the rule names no field.", "type": ["string", "null"]},
+        "destination": {"description": "A keep's destination, and null on a block.", "type": ["string", "null"]},
+        "review_share": {"description": "The share of the matched items that wait in review as rule-would-hide.", "type": "number", "minimum": 0, "maximum": 1},
+        "retired": {"description": "True on a version that takes the rule out of force, which copies the version before it. An item that the rule placed stays where it is.", "type": "boolean"},
+        "proposal": {"description": "The proposal that the person accepted, and null where none did.", "type": ["string", "null"]},
+        "decided_by": {"description": "person:<login>, or service:<client id> where a service holding ingestion.routing-rules.write named nobody.", "type": "string", "pattern": "^(person|service):.+$"},
+        "client_id": {"description": "The client that sent the version.", "type": ["string", "null"]},
+        "decided_ts": {"$ref": "#/$defs/timestamp"}
       }
     }
   }
