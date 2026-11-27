@@ -367,7 +367,7 @@
       "properties": {
         "caller": {"description": "The client, and the person where the token named one.", "type": "string"},
         "idempotency_key": {"description": "The request's Idempotency-Key header.", "type": "string"},
-        "route": {"description": "Which keyed route took it.", "enum": ["drops", "runs"]},
+        "route": {"description": "Which keyed route took it: drops, a dropped file; runs, a started connector run; or pushes, a pushed link.", "enum": ["drops", "runs", "pushes"]},
         "connector": {"type": ["string", "null"]},
         "fingerprint": {"description": "The SHA-256 of what the request asked, which a retry repeats.", "type": "string", "pattern": "^[0-9a-f]{64}$"},
         "status": {"description": "The HTTP status the request answered.", "type": "integer"},

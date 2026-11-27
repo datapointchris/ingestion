@@ -30,10 +30,13 @@ const (
 // set in force does not declare. CodeActingForAnother refuses a person's
 // token whose body names another person's login. CodeChapterOfBook refuses a
 // placement of a book's chapter, which takes its book's placement.
+// CodeDestinationPushOnly refuses a placement from review on a push-only
+// destination, which only a push places an item at.
 const (
 	CodeDestinationNotDeclared = "destination_not_declared"
 	CodeActingForAnother       = "acting_for_another"
 	CodeChapterOfBook          = "chapter_of_book"
+	CodeDestinationPushOnly    = "destination_push_only"
 )
 
 var errActingForAnother = errors.New("a person's token acts only as that person")
@@ -172,7 +175,8 @@ func (h reviewHandlers) list(w http.ResponseWriter, r *http.Request) {
 	JSON(w, http.StatusOK, answer)
 }
 
-// destinations are those the set in force declares. A set that cannot be read
+// destinations are those the set in force declares, but for each push-only
+// one, which a placement from review refuses. A set that cannot be read
 // answers nil, which the answer carries as null, so the queue itself still
 // reads and a reader tells the fault from a set that declares none.
 func (h reviewHandlers) destinations(r *http.Request) []ReviewDestination {
@@ -183,7 +187,9 @@ func (h reviewHandlers) destinations(r *http.Request) []ReviewDestination {
 	}
 	out := make([]ReviewDestination, 0, len(set.Destinations))
 	for _, d := range set.Destinations {
-		out = append(out, ReviewDestination{Name: d.Name, Side: optional(d.Side)})
+		if !d.PushOnly {
+			out = append(out, ReviewDestination{Name: d.Name, Side: optional(d.Side)})
+		}
 	}
 	return out
 }
@@ -240,12 +246,16 @@ func (h reviewHandlers) decide(w http.ResponseWriter, r *http.Request, p route.P
 	})
 	var undeclared *route.NotDeclaredError
 	var chapter *route.ChapterError
+	var pushOnly *route.PushOnlyError
 	switch {
 	case errors.Is(err, store.ErrNoItem):
 		Refuse(w, http.StatusNotFound, CodeItemNotFound, "no item %s", key)
 		return
 	case errors.As(err, &undeclared):
 		Refuse(w, http.StatusUnprocessableEntity, CodeDestinationNotDeclared, "%v, so nothing was placed", undeclared)
+		return
+	case errors.As(err, &pushOnly):
+		Refuse(w, http.StatusUnprocessableEntity, CodeDestinationPushOnly, "%v, and nothing was placed", pushOnly)
 		return
 	case errors.As(err, &chapter):
 		Refuse(w, http.StatusUnprocessableEntity, CodeChapterOfBook, "%v", chapter)

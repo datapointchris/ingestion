@@ -933,6 +933,16 @@ func (e *ChapterError) Error() string {
 	return fmt.Sprintf("%s is a chapter of %s and takes its book's placement, so place %s", e.Chapter, e.Book, e.Book)
 }
 
+// PushOnlyError is a placement other than a push on a push-only destination,
+// whose program only a push hands the item to.
+type PushOnlyError struct {
+	Destination string
+}
+
+func (e *PushOnlyError) Error() string {
+	return fmt.Sprintf("only a push places an item at %s, since a push hands the item to its program, so push the item there instead", e.Destination)
+}
+
 // Place appends a person's decision on the item under key: on p's destination,
 // or a drop where p names none. Where the destination takes a side, the read
 // gate's decision follows it. A person can place any item, including one that
@@ -941,8 +951,9 @@ func (e *ChapterError) Error() string {
 // destination of an item whose drop the gate showed or hid disagrees with the
 // gate, which returns each family of its answer to rung 0. Place answers
 // store.ErrNoItem where the store holds no such item, a NotDeclaredError
-// for a destination that the set in force does not declare, and a
-// ChapterError for a book's chapter.
+// for a destination that the set in force does not declare, a PushOnlyError
+// for a push-only destination that p does not push to, and a ChapterError
+// for a book's chapter.
 func Place(ctx context.Context, tx *store.Tx, key string, p Placement) ([]store.Decision, error) {
 	if item, ok, err := tx.Item(ctx, key); err != nil {
 		return nil, err
@@ -977,6 +988,9 @@ func Place(ctx context.Context, tx *store.Tx, key string, p Placement) ([]store.
 				e.Declared = append(e.Declared, d.Name)
 			}
 			return nil, e
+		}
+		if destination.PushOnly && !p.Pushed {
+			return nil, &PushOnlyError{Destination: destination.Name}
 		}
 		side.Verdict, side.Destination = verdictOf(destination), &destination.Name
 	}

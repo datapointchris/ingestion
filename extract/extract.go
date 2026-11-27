@@ -153,9 +153,13 @@ type Extractor struct {
 	DefersTo string
 	// LinkKind is the kind of item key, as itemkey names it, whose link this
 	// extractor reads at its source, such as youtube. A pushed link of that
-	// kind lands as the extractor's media type. Only a primary extractor that
-	// ReadsURL sets it.
+	// kind lands as the extractor's media type, under the URL that LinkURL
+	// makes. Only a primary extractor that ReadsURL sets it.
 	LinkKind string
+	// LinkURL is the URL that the source names an item under, from the id in
+	// the item's key, as its poll lands it. An extractor with a LinkKind sets
+	// it, so an item's URL is the same whichever connector landed it first.
+	LinkURL func(id string) string
 }
 
 // Unit is one part of a parse, as an extractor writes it. The parse numbers
@@ -203,8 +207,8 @@ func NewRegistry(extractors ...Extractor) (*Registry, error) {
 			return nil, fmt.Errorf("extractor %s runs in slot group %s, which SlotGroups gives no limit", e.Name, e.SlotGroup)
 		case e.SlotGroup != "" && e.SlotLimit != 0:
 			return nil, fmt.Errorf("extractor %s runs in slot group %s, so it sets no SlotLimit of its own", e.Name, e.SlotGroup)
-		case e.LinkKind != "" && (e.Secondary || !e.ReadsURL):
-			return nil, fmt.Errorf("extractor %s reads %s links, so it is primary and reads its item at its source", e.Name, e.LinkKind)
+		case e.LinkKind != "" && (e.Secondary || !e.ReadsURL || e.LinkURL == nil):
+			return nil, fmt.Errorf("extractor %s reads %s links, so it is primary, reads its item at its source and sets LinkURL", e.Name, e.LinkKind)
 		}
 		names[e.Name] = true
 		r.all = append(r.all, e)
@@ -248,16 +252,19 @@ func (r *Registry) For(mediaType string) (Extractor, bool) {
 	return e, ok
 }
 
-// LinkMediaType is the media type that a pushed link keyed key lands as, and
-// false where no extractor reads a link of the key's kind. A child's key
-// names no link.
-func (r *Registry) LinkMediaType(key string) (string, bool) {
-	kind, _, ok := strings.Cut(key, "/")
+// LinkArrival is the media type and URL that a pushed link keyed key lands
+// with, as the extractor that reads the key's kind names them, and false
+// where no extractor reads a link of that kind. A child's key names no link.
+func (r *Registry) LinkArrival(key string) (mediaType, link string, ok bool) {
+	kind, id, ok := strings.Cut(key, "/")
 	if !ok || strings.Contains(key, "#") {
-		return "", false
+		return "", "", false
 	}
 	e, ok := r.byLink[kind]
-	return e.MediaType, ok
+	if !ok {
+		return "", "", false
+	}
+	return e.MediaType, e.LinkURL(id), true
 }
 
 // LinkKinds names, in order, each kind of key whose link an extractor reads.

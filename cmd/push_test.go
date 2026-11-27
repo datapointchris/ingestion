@@ -284,9 +284,9 @@ func TestAPushOfANewLinkLandsItPlacedAtPsycheAndWaitsForItsScan(t *testing.T) {
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		t.Fatal(err)
 	}
-	if doc.Key != key || doc.Zone != store.Outside || doc.URL == nil || *doc.URL != "https://youtu.be/pushedvid01" ||
+	if doc.Key != key || doc.Zone != store.Outside || doc.URL == nil || *doc.URL != ypl.WatchURL("pushedvid01") ||
 		doc.Extractor != ypl.CaptionsExtractor.Name || len(doc.Units) != 2 || doc.RulesVersion == nil {
-		t.Errorf("psyche read %s, want the outside video's scanned captions parse under its canonical link", jsonOf(doc))
+		t.Errorf("psyche read %s, want the outside video's scanned captions parse under the watch URL that ypl's poll lands", jsonOf(doc))
 	}
 	if n := p.count(t, `SELECT count(*) FROM items i JOIN sightings s ON s.item_key = i.key
 		WHERE i.key = ? AND i.zone = 'outside' AND i.media_type = ? AND s.connector = 'cli-push'`, key, ypl.MediaTypeVideo); n != 1 {
@@ -351,4 +351,35 @@ func TestAPushOfANewLinkLandsItPlacedAtPsycheAndWaitsForItsScan(t *testing.T) {
 	if code := exitCode(io.Discard, err); code != 1 || !strings.Contains(fmt.Sprint(err), "still waits at its parse") {
 		t.Errorf("a push past its deadline exited %d (%v), want 1 naming the parse it waited at", code, err)
 	}
+
+	// A parse whose task failed with no output, as one whose leases lapsed
+	// does, ends the wait at once rather than at its deadline.
+	if ran := p.run(t, failingCaptions{}); ran != 1 {
+		t.Fatalf("%d captions parses ran, want the second video's", ran)
+	}
+	started := time.Now()
+	_, err = runCLI(t, "push", "youtube/pushedvid02", "--to", "psyche", "--relate", "--wait", "30s", "--config", p.config)
+	if code := exitCode(io.Discard, err); code != 1 || !strings.Contains(fmt.Sprint(err), "parse failed: "+failingCaptionsError) ||
+		time.Since(started) > 10*time.Second {
+		t.Errorf("a push on a parse that failed with no output exited %d after %s (%v), want 1 at once with the task's error", code, time.Since(started), err)
+	}
+
+	// psyche takes only a push's placement, so review neither offers nor takes it.
+	_, err = runCLI(t, "review", "place", "youtube/pushedvid02", "psyche", "--config", p.config)
+	if code := exitCode(io.Discard, err); code != 2 || !strings.Contains(fmt.Sprint(err), "only a push places an item at psyche") {
+		t.Errorf("a placement from review at psyche exited %d (%v), want 2 naming the push", code, err)
+	}
+}
+
+const failingCaptionsError = "the stand-in read failed"
+
+// failingCaptions fails a video's captions parse and writes no output, as a
+// task does whose leases lapsed.
+type failingCaptions struct{}
+
+func (failingCaptions) Capability() string { return extract.Capability(ypl.CaptionsExtractor) }
+
+func (failingCaptions) Run(context.Context, worker.Task) worker.Result {
+	reason := failingCaptionsError
+	return worker.Result{Outcome: server.OutcomeFailed, Error: &reason}
 }

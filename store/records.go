@@ -550,6 +550,17 @@ type Declarations struct {
 	Destinations []json.RawMessage `json:"destinations"`
 }
 
+// The keyed routes, as a KeyedRequest's Route names each. KeyedRoutes lists
+// them, and the record schema's route enum holds the same names.
+const (
+	KeyedRouteDrops  = "drops"
+	KeyedRouteRuns   = "runs"
+	KeyedRoutePushes = "pushes"
+)
+
+// KeyedRoutes is every keyed route's name.
+var KeyedRoutes = []string{KeyedRouteDrops, KeyedRouteRuns, KeyedRoutePushes}
+
 // KeyedRequest is one request a caller sent under an Idempotency-Key, and
 // what it answered.
 type KeyedRequest struct {

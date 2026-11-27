@@ -146,6 +146,10 @@ type Destination struct {
 	// DefaultForSide makes this the destination of an item placed on its side
 	// with no destination named, as the quality gate's guess places one.
 	DefaultForSide bool `json:"default_for_side,omitempty" yaml:"default_for_side"`
+	// PushOnly makes this a destination that only a push places an item at,
+	// such as one whose program a person's push hands the item to. Review
+	// offers it nowhere, and no tag, rule or side default names it.
+	PushOnly bool `json:"push_only,omitempty" yaml:"push_only"`
 }
 
 // Set is every declaration applied together.
@@ -335,7 +339,8 @@ func decodeFile(file string, into any) error {
 // Each declaration is checked against its schema in schemas/, the one copy of
 // the rules a single declaration holds to. Validate adds only what a schema
 // cannot say: that no two declarations of a kind share a name, that a rule's
-// connector and destination are declared, that a tag places an item on one
+// connector and destination are declared, that no rule, tag or side default
+// names a push-only destination, that a tag places an item on one
 // destination, that one destination at most is a side's default, that a
 // schedule parses, that a drop's format, a destination's deliverer and the
 // deleter of a poll that deletes after landing are registered, that each
@@ -361,7 +366,7 @@ func Validate(s Set, roots []string) []Invalid {
 		connectors[c.Name] = true
 		add("connector "+c.Name, problems)
 	}
-	destinations := map[string]bool{}
+	destinations, pushOnly := map[string]bool{}, map[string]bool{}
 	tagged := map[string]string{}
 	sideDefaults := map[string]string{}
 	for _, d := range s.Destinations {
@@ -372,6 +377,12 @@ func Validate(s Set, roots []string) []Invalid {
 		destinations[d.Name] = true
 		if _, ok := deliverers[d.Deliverer]; d.Deliverer != "" && !ok {
 			problems = append(problems, fmt.Sprintf("deliverer %s names no deliverer this build registers", d.Deliverer))
+		}
+		if d.PushOnly && (d.DefaultForSide || len(d.Tags) > 0) {
+			problems = append(problems, "a push-only destination takes no tag and is no side's default, since only a push places an item there")
+		}
+		if d.PushOnly {
+			pushOnly[d.Name] = true
 		}
 		if d.DefaultForSide && d.Side != "" {
 			if other, taken := sideDefaults[d.Side]; taken {
@@ -399,6 +410,9 @@ func Validate(s Set, roots []string) []Invalid {
 		}
 		if r.Destination != "" && !destinations[r.Destination] {
 			problems = append(problems, fmt.Sprintf("destination %s is not one %s declares", r.Destination, DestinationsFile))
+		}
+		if pushOnly[r.Destination] {
+			problems = append(problems, fmt.Sprintf("destination %s is push-only, so only a push places an item there", r.Destination))
 		}
 		add("routing rule "+r.Name, problems)
 	}

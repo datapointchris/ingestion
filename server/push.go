@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/datapointchris/ingestion/connectors"
@@ -24,11 +25,11 @@ const (
 )
 
 // LinkExtractors answers whether an extractor reads a pushed link at its
-// source, and as what media type.
+// source, and as what media type and URL.
 type LinkExtractors interface {
-	// LinkMediaType is the media type that a link keyed key lands as, and
-	// false where no extractor reads such a link.
-	LinkMediaType(key string) (string, bool)
+	// LinkArrival is the media type and URL that a link keyed key lands with,
+	// and false where no extractor reads such a link.
+	LinkArrival(key string) (mediaType, link string, ok bool)
 	// LinkKinds names, in order, each kind of key whose link an extractor
 	// reads.
 	LinkKinds() []string
@@ -74,12 +75,19 @@ func (h connectorHandlers) push(w http.ResponseWriter, r *http.Request) {
 		Refuse(w, http.StatusBadRequest, CodeInvalidLink, "%v, so nothing was stored", err)
 		return
 	}
-	mediaType, read := "", false
+	mediaType, landAt, read := "", "", false
 	if h.cfg.Links != nil {
-		mediaType, read = h.cfg.Links.LinkMediaType(itemKey)
+		mediaType, landAt, read = h.cfg.Links.LinkArrival(itemKey)
 	}
-	if !read {
-		kind, _, _ := strings.Cut(itemKey, "/")
+	kind, _, _ := strings.Cut(itemKey, "/")
+	switch site := itemkey.SiteKind(link); {
+	case read:
+	case kind == itemkey.URL && site != "" && slices.Contains(kindsOf(h.cfg.Links), site):
+		Refuse(w, http.StatusUnprocessableEntity, CodeLinkNotRead,
+			"the link is on a %s site but names no single %s item, as a channel's or a playlist's page names none, so nothing was stored. %s",
+			site, site, kindsRead(h.cfg.Links))
+		return
+	default:
 		Refuse(w, http.StatusUnprocessableEntity, CodeLinkNotRead,
 			"the link keys as %s, and no extractor of this build reads a %s link at its source, so nothing was stored. %s",
 			itemKey, kind, kindsRead(h.cfg.Links))
@@ -107,7 +115,7 @@ func (h connectorHandlers) push(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	caller := callerOf(r)
-	fingerprint := fingerprintOf("items", c.Name, link, body.Destination)
+	fingerprint := fingerprintOf(store.KeyedRoutePushes, c.Name, link, body.Destination)
 	var (
 		answer PushAnswer
 		replay *store.KeyedRequest
@@ -119,7 +127,7 @@ func (h connectorHandlers) push(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		landed, err := h.cfg.Lander.LandIn(r.Context(), tx, landing.Arrival{
-			Connector: c.Name, Zone: store.Outside, Key: itemKey, MediaType: mediaType, URL: link, Tags: c.Tags,
+			Connector: c.Name, Zone: store.Outside, Key: itemKey, MediaType: mediaType, URL: landAt, Tags: c.Tags,
 		})
 		if err != nil {
 			return err
@@ -134,7 +142,7 @@ func (h connectorHandlers) push(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		answer = PushAnswer{SchemaVersion: 1, Items: []PushedItem{{Key: itemKey, Zone: item.Zone, Created: landed.ItemAdded}}}
-		if err := h.keep(r, tx, caller, key, "items", c.Name, fingerprint, http.StatusCreated, answer); err != nil {
+		if err := h.keep(r, tx, caller, key, store.KeyedRoutePushes, c.Name, fingerprint, http.StatusCreated, answer); err != nil {
 			return err
 		}
 		return connectors.Delivered(r.Context(), tx, c)
@@ -155,10 +163,20 @@ func (h connectorHandlers) push(w http.ResponseWriter, r *http.Request) {
 	JSON(w, http.StatusCreated, answer)
 }
 
+// kindsOf names each kind of link that an extractor reads, and none where
+// links is nil.
+func kindsOf(links LinkExtractors) []string {
+	if links == nil {
+		return nil
+	}
+	return links.LinkKinds()
+}
+
 // kindsRead names each kind of link that an extractor reads, in a sentence.
 func kindsRead(links LinkExtractors) string {
-	if links == nil || len(links.LinkKinds()) == 0 {
+	kinds := kindsOf(links)
+	if len(kinds) == 0 {
 		return "This build lands no pushed link."
 	}
-	return "This build lands a pushed " + strings.Join(links.LinkKinds(), " or ") + " link alone."
+	return "This build lands a pushed link only where it names one " + strings.Join(kinds, " or ") + " item."
 }

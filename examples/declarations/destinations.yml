@@ -3,7 +3,9 @@
 # each item placed on its destination through that app's API. A destination
 # with none, such as one whose reader pulls items itself, takes no delivery.
 # An item that the quality gate's guess places on a side, naming no
-# destination, goes to the side's default_for_side destination.
+# destination, goes to the side's default_for_side destination. The review
+# tab's number keys follow this order, as views/review/keys.go binds them, so
+# a new destination goes last.
 destinations:
   - name: reading-list
     side: personal
@@ -17,8 +19,9 @@ destinations:
     tags: [work]
     default_for_side: true
   - name: dropped
-  # Takes each link that `ingestion push --to psyche` lands, and names no
-  # deliverer, because the push hands the item to psyche itself. Review keys
-  # each destination by its place here, so a new one goes last.
+  # Takes each link that `ingestion push --to psyche` lands. Only a push places
+  # an item here, because the push hands the item to psyche itself, so review
+  # offers it nowhere and it names no deliverer.
   - name: psyche
     side: personal
+    push_only: true

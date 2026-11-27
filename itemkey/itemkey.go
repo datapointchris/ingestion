@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -263,6 +264,27 @@ func redditFullname(u *url.URL) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// SiteKind is the kind of key whose site hosts the canonical URL raw, such as
+// youtube for a channel's page, whether or not raw names one item there, and
+// "" where no kind's site hosts it.
+func SiteKind(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	host := strings.TrimPrefix(u.Hostname(), "www.")
+	under := func(domains ...string) bool {
+		return slices.ContainsFunc(domains, func(d string) bool { return host == d || strings.HasSuffix(host, "."+d) })
+	}
+	switch {
+	case under("youtu.be", "youtube.com", "youtube-nocookie.com"):
+		return YouTube
+	case under("redd.it", "reddit.com"):
+		return Reddit
+	}
+	return ""
 }
 
 // youtubeVideo is the video id a YouTube URL names.

@@ -37,35 +37,29 @@ const Connector = "cli-push"
 const Wait = 10 * time.Minute
 
 // WaitingOn names the stage that item waits at on its way to a scanned parse,
-// store.StageParse or store.StageScan. Where that stage failed, failure says
-// why, so a push stops waiting. A parse that defers to another extractor
-// still waits.
-func WaitingOn(item server.ItemAnswer) (stage, failure string) {
+// store.StageParse until a parse is done and store.StageScan after, as the
+// service's progress of each reads. Where no run of that stage is left to
+// end it, ended says how it ended, so a push stops waiting: it failed, or
+// nothing queued it.
+func WaitingOn(item server.ItemAnswer) (stage, ended string) {
+	progress := map[string]store.StageProgress{}
+	for _, p := range item.Progress {
+		progress[p.Stage] = p
+	}
 	stage = store.StageParse
-	if output(item, stage, store.OutputDone) != nil {
+	if progress[stage].State == store.ProgressDone {
 		stage = store.StageScan
 	}
-	if output(item, stage, store.OutputDone) != nil {
-		return stage, ""
-	}
-	failed := output(item, stage, store.OutputFailed)
+	p, queued := progress[stage]
 	switch {
-	case failed == nil:
+	case !queued:
+		return stage, "was never queued"
+	case p.State != store.ProgressFailed:
 		return stage, ""
-	case failed.Error == nil:
-		return stage, "its run failed and gave no reason"
+	case p.Error == nil:
+		return stage, "failed and gave no reason"
 	}
-	return stage, *failed.Error
-}
-
-// output is item's output of stage in state, and nil where it holds none.
-func output(item server.ItemAnswer, stage, state string) *server.OutputView {
-	for i, o := range item.Outputs {
-		if o.Stage == stage && o.State == state {
-			return &item.Outputs[i]
-		}
-	}
-	return nil
+	return stage, "failed: " + *p.Error
 }
 
 // SchemaVersion is the version of psyche's parse-input schema that Write
