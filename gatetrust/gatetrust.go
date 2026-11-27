@@ -10,7 +10,8 @@
 // whatever the family's standing. A person who places on a destination an
 // item whose drop the gate showed or hid disagrees with the drop. Any
 // disagreement returns the family to rung 0. An item that the gate answered
-// again counts once, by the words against its newest answer.
+// again counts once, under its newest answer: by the words against it, else
+// by the newest earlier word, read against it.
 //
 // While its family stands on rung 0, every item that the gate drops waits in
 // review, marked gate-would-drop. A family whose straight run reaches its
@@ -29,6 +30,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/datapointchris/earnedtrust"
 
@@ -74,7 +76,7 @@ const (
 const (
 	// ChangeGateAnswer is the gate's answer: its first under the family,
 	// which starts it at rung 0, or a later one on an item that a person gave
-	// a word on, after which only the words against the later answer count.
+	// a word on, after which the item counts under the later answer.
 	ChangeGateAnswer = "gate-answer"
 	ChangeMark       = "mark"
 	// ChangePlacement is a person's placement on a destination of an item
@@ -145,12 +147,9 @@ type Judgment struct {
 // takes its book's answer and its book's connectors. It is false where the
 // gate has decided nothing.
 func JudgmentOn(ctx context.Context, tx *store.Tx, key string) (Judgment, []string, bool, error) {
-	item, ok, err := tx.Item(ctx, key)
-	if err != nil || !ok {
+	key, err := judgedKey(ctx, tx, key)
+	if err != nil || key == "" {
 		return Judgment{}, nil, false, err
-	}
-	if item.PlacedThroughParent() {
-		key = *item.ParentKey
 	}
 	d, ok, err := tx.NewestDecision(ctx, key, store.GateQuality)
 	if err != nil || !ok {
@@ -165,6 +164,20 @@ func JudgmentOn(ctx context.Context, tx *store.Tx, key string) (Judgment, []stri
 		return Judgment{}, nil, false, err
 	}
 	return Judgment{Decision: d, Answerer: Answered(outputs, d)}, Connectors(sightings), true, nil
+}
+
+// judgedKey is the key of the item whose gate answer judges the item under
+// key: its book's for a chapter placed through it, its own otherwise. It is
+// empty where the store holds no such item.
+func judgedKey(ctx context.Context, tx *store.Tx, key string) (string, error) {
+	item, ok, err := tx.Item(ctx, key)
+	if err != nil || !ok {
+		return "", err
+	}
+	if item.PlacedThroughParent() {
+		return *item.ParentKey, nil
+	}
+	return key, nil
 }
 
 // Connectors names each connector of sightings once, in their order.
@@ -413,9 +426,8 @@ func Settle(ctx context.Context, tx *store.Tx) (int, error) {
 
 // Reanswered reads again the standing of each family of connectors under a
 // that holds a person's word on the item under key, in the write that appends
-// the gate's newer answer on it, and writes each one that moved. The item's
-// words against an earlier answer then stop counting, so the item counts
-// once, under its newest answer.
+// the gate's newer answer on it, and writes each one that moved. The item
+// then counts once, under its newest answer, as counted reads it.
 func Reanswered(ctx context.Context, tx *store.Tx, key string, a Answerer, connectors []string) error {
 	if a.PromptVersion == "" {
 		return nil
@@ -468,32 +480,102 @@ func reread(ctx context.Context, tx *store.Tx, g store.GateTrust) (store.GateTru
 }
 
 // counted is the words among logged, g's decisions, that count on its ladder.
-// Where the gate's newest answer on a word's item came from g's answerer, the
-// word counts only where it was given against that answer. So an item that
-// the gate answered again, such as over a new parse, counts once, under its
-// newest answer. A word on an item whose newest answer came from another
-// family counts as it was given.
+// Where g's answerer gave the gate's newest answer on a word's item, the item
+// counts once, under that answer, as when the gate answered it again over a
+// new parse. It counts by its words against that answer. Where it holds none
+// yet, its newest word against an earlier answer counts, read against the
+// newest one. A word on an item whose newest answer came from another family
+// counts as it was given.
 func counted(ctx context.Context, tx *store.Tx, g store.GateTrust, logged []store.GateTrustDecision) ([]store.GateTrustDecision, error) {
 	answerer := Answerer{PromptVersion: g.PromptVersion, Model: g.Model, Effort: g.Effort}
-	newest := map[string]string{}
-	out := make([]store.GateTrustDecision, 0, len(logged))
-	for _, d := range logged {
-		answer, read := newest[d.ItemKey]
+	type item struct {
+		newest        *Judgment
+		againstNewest bool
+		newestEarlier int
+	}
+	items := map[string]*item{}
+	for i, d := range logged {
+		it, read := items[d.ItemKey]
 		if !read {
+			it = &item{newestEarlier: -1}
 			j, _, judged, err := JudgmentOn(ctx, tx, d.ItemKey)
 			if err != nil {
 				return nil, err
 			}
 			if judged && j.Answerer == answerer {
-				answer = j.DecidedBy
+				it.newest = &j
 			}
-			newest[d.ItemKey] = answer
+			items[d.ItemKey] = it
 		}
-		if answer == "" || d.GateDecidedBy == answer {
-			out = append(out, d)
+		switch {
+		case it.newest == nil:
+		case d.GateDecidedBy == it.newest.DecidedBy:
+			it.againstNewest = true
+		default:
+			it.newestEarlier = i
 		}
 	}
+	out := make([]store.GateTrustDecision, 0, len(logged))
+	for i, d := range logged {
+		it := items[d.ItemKey]
+		switch {
+		case it.newest == nil || d.GateDecidedBy == it.newest.DecidedBy:
+			out = append(out, d)
+		case !it.againstNewest && it.newestEarlier == i:
+			again, ok, err := againstNewer(ctx, tx, g, d, *it.newest)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				out = append(out, again)
+			}
+		}
+	}
+	slices.SortStableFunc(out, func(a, b store.GateTrustDecision) int { return strings.Compare(a.DecidedTS, b.DecidedTS) })
 	return out, nil
+}
+
+// againstNewer is word, given against an earlier answer of the gate on its
+// item, read against j, the gate's newer answer on it, and whether it counts
+// there. It counts as given when j was, so a disagreement that j finds
+// returns the family to rung 0 as a new word would. A mark keeps its word, so low-quality agrees with a newer drop and
+// disagrees with a newer pass. A placement disagrees only with a newer drop.
+// Where the item's decisions hold no answer that the word names, the word
+// counts as it was given.
+func againstNewer(ctx context.Context, tx *store.Tx, g store.GateTrust, word store.GateTrustDecision, j Judgment) (store.GateTrustDecision, bool, error) {
+	agreement := Neither
+	switch word.Kind {
+	case KindPlacement:
+		if j.Verdict == store.VerdictDrop {
+			agreement = Disagreed
+		}
+	default:
+		key, err := judgedKey(ctx, tx, word.ItemKey)
+		if err != nil {
+			return word, false, err
+		}
+		decisions, err := tx.Decisions(ctx, key)
+		if err != nil {
+			return word, false, err
+		}
+		i := slices.IndexFunc(decisions, func(d store.Decision) bool {
+			return d.Gate == store.GateQuality && d.DecidedBy == word.GateDecidedBy
+		})
+		if i < 0 {
+			return word, true, nil
+		}
+		mark := MarkRead
+		if Agreement(MarkLowQuality, decisions[i].Verdict) == word.Agreement {
+			mark = MarkLowQuality
+		}
+		agreement = Agreement(mark, j.Verdict)
+	}
+	if !counts(agreement, j.Verdict) {
+		return word, false, nil
+	}
+	word.Agreement, word.GateDecidedBy, word.DecidedTS = agreement, j.DecidedBy, j.DecidedTS
+	word.Promoted = g.Promoted() && *g.PromotedTS <= j.DecidedTS
+	return word, true, nil
 }
 
 // sameStanding says whether a and b hold the same standing.

@@ -24,7 +24,8 @@
 -- item whose drop the gate showed or hid. promoted records whether the family
 -- was promoted when the gate answered the item, so only a drop that the gate
 -- answered after a person's yes climbs past it. Where the family answered an
--- item again, only the words against its newest answer count.
+-- item again, the item counts once, under its newest answer: by the words
+-- against it, else by its newest earlier word, read against it.
 
 CREATE TABLE IF NOT EXISTS marks (
     item_key        TEXT NOT NULL REFERENCES items (key),

@@ -462,7 +462,7 @@
         "promoted_client_id": {"description": "The client that sent the promotion, such as a service sending it under the person's login.", "type": ["string", "null"]},
         "promoted_ts": {"anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
         "last_change": {
-          "description": "What moved the row last: the gate's first answer under the family, or a later answer on an item that a person gave a word on, after which only the words against the later answer count; a mark; a person's placement on a destination of an item whose drop the gate showed or hid; a promotion; or a release whose rule reads the family's decisions to another standing.",
+          "description": "What moved the row last: the gate's first answer under the family, or a later answer on an item that a person gave a word on, after which the item counts under the later answer; a mark; a person's placement on a destination of an item whose drop the gate showed or hid; a promotion; or a release whose rule reads the family's decisions to another standing.",
           "enum": ["gate-answer", "mark", "placement", "promotion", "rule"]
         },
         "last_item_key": {"description": "The item that the last change moved on, and null for a promotion or a rule.", "anyOf": [{"$ref": "#/$defs/item_key"}, {"type": "null"}]},
