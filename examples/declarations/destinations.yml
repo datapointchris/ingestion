@@ -16,8 +16,9 @@ destinations:
     side: fleet
     tags: [work]
     default_for_side: true
+  - name: dropped
   # Takes each link that `ingestion push --to psyche` lands, and names no
-  # deliverer, because the push hands the item to psyche itself.
+  # deliverer, because the push hands the item to psyche itself. Review keys
+  # each destination by its place here, so a new one goes last.
   - name: psyche
     side: personal
-  - name: dropped
