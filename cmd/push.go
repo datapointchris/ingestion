@@ -114,6 +114,16 @@ func runPush(cmd *cobra.Command, args []string) error {
 	case err != nil:
 		return argumentRefusal(err)
 	}
+	return relateParse(ctx, config, api, target, parse, wait, enriched, asJSON, cmd.OutOrStdout(), stderr)
+}
+
+// relateParse hands the landed item at target, whose parse as read is parse,
+// to psyche relate on this machine. It first waits up to wait for the parse's
+// scan, where parse holds none.
+func relateParse(ctx context.Context, config, api, target string, parse server.ParseAnswer, wait time.Duration,
+	enriched, asJSON bool, stdout, stderr io.Writer,
+) error {
+	var err error
 	if parse.RulesVersion == nil {
 		if parse, err = waitForScan(ctx, config, api, target, wait, stderr); err != nil {
 			return err
@@ -143,7 +153,7 @@ func runPush(cmd *cobra.Command, args []string) error {
 	}
 	_, _ = fmt.Fprintf(stderr, "pushing %s to %s relate: %s, %s, %s%s\n", doc.Key, push.Program,
 		counted(len(doc.Units), "unit"), counted(len(doc.Findings), "finding"), counted(len(doc.Suggested), "suggestion"), enrichedWords)
-	return push.Relate(ctx, doc, asJSON, cmd.OutOrStdout(), stderr)
+	return push.Relate(ctx, doc, asJSON, stdout, stderr)
 }
 
 // isLink says whether ref is an http or https URL rather than a key.

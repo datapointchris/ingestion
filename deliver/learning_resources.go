@@ -2,6 +2,7 @@ package deliver
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -20,7 +21,8 @@ import (
 // learning, through learning's POST /api/v1/resources with the item's key as
 // the resource's source_key and its file's path as the resource's file_path.
 // It creates each book's chapter there too, as a chapter resource part of its
-// book's resource, with its pages.
+// book's resource, with its pages, and each video as a video resource by its
+// link.
 const LearningResources = "learning-resources"
 
 // LearningResourcesScopes is what the learning client asks its token for: the
@@ -38,13 +40,33 @@ func init() {
 // book, whose copy is a PDF.
 const pdfMediaType = "application/pdf"
 
-var errNotPDF = errors.New("it is not a PDF, and learning holds a book's file only as its pdf copy")
+var errNotTaken = errors.New("learning holds a book as its PDF copy and a video by its link, and the item is neither")
 
+// learningTakes takes a PDF, which it writes as a book, and a video with a
+// web link and no bytes, which it writes as a video resource. A video is a
+// media type under video/, or one whose subtype names a video, as a YouTube
+// video's does.
 func learningTakes(item store.Item) error {
-	if item.MediaType != pdfMediaType {
-		return errNotPDF
+	switch {
+	case item.MediaType == pdfMediaType:
+		return nil
+	case isVideo(item.MediaType) && item.BlobSHA256 == nil && webLink(item.URL) != "":
+		return nil
 	}
-	return nil
+	return errNotTaken
+}
+
+func isVideo(mediaType string) bool {
+	kind, subtype, _ := strings.Cut(mediaType, "/")
+	return kind == "video" || strings.HasSuffix(subtype, "-video")
+}
+
+// webLink is url where it is an http or https address, and "" otherwise.
+func webLink(url *string) string {
+	if url == nil || (!strings.HasPrefix(*url, "https://") && !strings.HasPrefix(*url, "http://")) {
+		return ""
+	}
+	return *url
 }
 
 // learningTimeout bounds one create, so a learning that hangs frees its worker
@@ -70,6 +92,7 @@ type learningResources struct {
 type learningResource struct {
 	Title            string  `json:"title"`
 	ResourceType     string  `json:"resource_type"`
+	URL              string  `json:"url,omitempty"`
 	BookCopy         string  `json:"book_copy,omitempty"`
 	FilePath         string  `json:"file_path,omitempty"`
 	SourceKey        string  `json:"source_key"`
@@ -91,6 +114,16 @@ func bookResource(item Item) (learningResource, error) {
 		title = t
 	}
 	return learningResource{Title: title, ResourceType: "book", BookCopy: "pdf", FilePath: *item.Path, SourceKey: item.Key}, nil
+}
+
+// videoResource is the create of the video at the item's link, titled as the
+// item is, else by its link.
+func videoResource(item Item) (learningResource, error) {
+	link := webLink(item.URL)
+	if link == "" {
+		return learningResource{}, errors.New("the delivery holds no web link, which a learning video needs")
+	}
+	return learningResource{Title: cmp.Or(learningTitle(item.Title), link), ResourceType: "video", URL: link, SourceKey: item.Key}, nil
 }
 
 // learningTitle is title as the destination stores it, which holds no NUL,
@@ -152,8 +185,9 @@ type learningHolder struct {
 	SourceKey  *string `json:"source_key"`
 }
 
-// Deliver creates item as a book whose pdf copy is the file at its path, or,
-// where it is a book's chapter, as a chapter part of its book's resource.
+// Deliver creates item as a book whose pdf copy is the file at its path,
+// where it is a book's chapter as a chapter part of its book's resource, and
+// where it holds no path as a video by its link.
 // learning answers 201 for a new resource. It answers 200 for a resource it
 // already held: one under no key that held exactly the path and took the key,
 // adopted, or one that the key already names. Either is delivered-to-existing.
@@ -164,8 +198,11 @@ type learningHolder struct {
 // repeat sends the same body, and learning answers it as the key's own.
 func (l learningResources) Deliver(ctx context.Context, item Item) Outcome {
 	create := bookResource
-	if item.Chapter != nil {
+	switch {
+	case item.Chapter != nil:
 		create = chapterResource
+	case item.Path == nil && item.URL != nil:
+		create = videoResource
 	}
 	resource, err := create(item)
 	if err != nil {

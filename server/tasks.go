@@ -103,6 +103,9 @@ type LeasedTask struct {
 	LandedTS string     `json:"landed_ts,omitempty"`
 	SourceTS *string    `json:"source_ts,omitempty"`
 	Path     *string    `json:"path,omitempty"`
+	// Playlist is a watch's deliver task's: the playlist that the delivery
+	// adds the video to, kept the same way. Every other task carries none.
+	Playlist *string `json:"playlist,omitempty"`
 	// Chapter is a deliver task's of a book's chapter, kept the same way:
 	// the destination's id for its book's record, and where the chapter
 	// sits in the book. Every other task carries none.
@@ -497,6 +500,7 @@ func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
 		}
 		if d := t.Delivery; d != nil {
 			leased.Title, leased.URL, leased.SourceTS, leased.Path, leased.Chapter = d.Title, d.URL, d.SourceTS, d.Path, d.Chapter()
+			leased.Playlist = d.Playlist
 		}
 		if t.Read != nil {
 			leased.Lens = t.Read.Lens

@@ -71,7 +71,10 @@ type standInItem struct {
 // one, and every video read where it holds no yt-dlp. cutAudio sends that
 // many of a video's audio answers with half the bytes that it promised.
 // comments holds each video's top comments, and commentReads the id of each
-// read of them.
+// read of them. An insert into a playlist adds the video to its end, as
+// YouTube does however often the playlist holds it, and inserts keeps each
+// insert's playlist and video. refuseInsert answers a video's first insert
+// with a 503 and a Retry-After, as a spent day's quota does.
 type standInYPL struct {
 	mu                  sync.Mutex
 	playlistIDs         map[string]string
@@ -94,6 +97,8 @@ type standInYPL struct {
 	busyDetails         int
 	comments            map[string][]ypl.Comment
 	commentReads        []string
+	inserts             []string
+	refuseInsert        map[string]time.Duration
 }
 
 func newStandInYPL(t *testing.T) (*standInYPL, *httptest.Server) {
@@ -102,11 +107,12 @@ func newStandInYPL(t *testing.T) (*standInYPL, *httptest.Server) {
 		playlistIDs: map[string]string{}, playlists: map[string][]standInItem{}, uploads: map[string][]standInItem{},
 		videos: map[string]standInVideo{}, refuseDelete: map[string]time.Duration{}, refuseDeleteForGood: map[string]bool{},
 		captions: map[string]map[string]any{}, audio: map[string][]byte{}, busy: map[string]int{}, gatewayDown: map[string]int{}, failing: map[string]int{},
-		unreadable: map[string]bool{}, cutAudio: map[string]int{}, comments: map[string][]ypl.Comment{},
+		unreadable: map[string]bool{}, cutAudio: map[string]int{}, comments: map[string][]ypl.Comment{}, refuseInsert: map[string]time.Duration{},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/youtube/playlists/{id}/items", s.playlistItems)
 	mux.HandleFunc("DELETE /api/v1/youtube/playlists/{id}/items/{item}", s.deleteItem)
+	mux.HandleFunc("POST /api/v1/youtube/playlists/{id}/items", s.insertItem)
 	mux.HandleFunc("GET /api/v1/youtube/channels/{id}/uploads", s.channelUploads)
 	mux.HandleFunc("GET /api/v1/youtube/videos", s.videoDetails)
 	mux.HandleFunc("GET /api/v1/youtube/videos/{id}/captions", s.videoCaptions)
@@ -174,6 +180,36 @@ func (s *standInYPL) deleteItem(w http.ResponseWriter, r *http.Request) {
 	}
 	s.playlists[playlist] = slices.DeleteFunc(s.playlists[playlist], func(i standInItem) bool { return i.itemID == item })
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// insertItem answers ypl's playlist-item insert: a body of video_id alone,
+// answered 201 with the new item's id and the playlist's YouTube id.
+func (s *standInYPL) insertItem(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.playlistIDs[r.PathValue("id")]
+	if !ok {
+		refuse(w, http.StatusNotFound, "not_found", "playlist not found", 0)
+		return
+	}
+	var body struct {
+		VideoID string `json:"video_id"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&body) != nil || body.VideoID == "" {
+		refuse(w, http.StatusUnprocessableEntity, "invalid_body", "the body names video_id alone", 0)
+		return
+	}
+	if wait, ok := s.refuseInsert[body.VideoID]; ok {
+		delete(s.refuseInsert, body.VideoID)
+		refuse(w, http.StatusServiceUnavailable, "youtube_quota_spent", "the day's quota cannot afford this call", wait)
+		return
+	}
+	item := fmt.Sprintf("item-%d", len(s.inserts)+1)
+	s.inserts = append(s.inserts, id+"/"+body.VideoID)
+	s.playlists[id] = append(s.playlists[id], standInItem{itemID: item, videoID: body.VideoID})
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(map[string]string{"item_id": item, "playlist_id": id, "video_id": body.VideoID})
 }
 
 func (s *standInYPL) channelUploads(w http.ResponseWriter, r *http.Request) {

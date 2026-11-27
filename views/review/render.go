@@ -69,7 +69,7 @@ func (b *Board) Frame(now time.Time, grouping string) gotermboard.Frame {
 			gotermboard.ReadStatus(b.statuses(), now),
 			b.writes.Line(now),
 		},
-		Charts:  func(width, _ int) []gotermboard.Line { return legend(h, unread, width) },
+		Charts:  func(width, _ int) []gotermboard.Line { return verbBar(h, unread, width) },
 		Columns: columns,
 		Groups:  groups,
 	}
@@ -88,31 +88,57 @@ func (b *Board) header(h held, grouping string, unread bool) gotermboard.Line {
 	}
 }
 
-// legend is the digit that places on each destination, wrapped at the screen's width. A strip
-// line would cut it, and a digit places at once, so every digit stays on screen. Where no key
-// places, it says why.
-func legend(h held, unread bool, width int) []gotermboard.Line {
+// verbBar is the key that sorts by each verb and where the verb sends an item, then the drop's,
+// wrapped at the screen's width. A strip line would cut it, and a verb's key sorts at once, so
+// every key stays on screen. A verb that the set in force gives no destination is drawn in yellow,
+// and the queue's verbs missing say why no verb sorts.
+func verbBar(h held, unread bool, width int) []gotermboard.Line {
 	if unread {
 		return nil
 	}
-	if missing := destinationsMissing(h.destinations); missing != "" {
-		return []gotermboard.Line{{gotermboard.C(missing, gotermboard.Yellow)}}
+	if h.verbs == nil {
+		return []gotermboard.Line{{gotermboard.C(verbMissing(h, route.VerbFleetRelate), gotermboard.Yellow)}}
 	}
 	var lines []gotermboard.Line
 	var line gotermboard.Line
 	used := 0
-	for i, d := range h.destinations[:min(len(h.destinations), 9)] {
-		digit, label := strconv.Itoa(i+1), " "+destinationLabel(d)
-		wide := utf8.RuneCountInString(digit + label)
+	add := func(key, label, color string) {
+		wide := utf8.RuneCountInString(key + label)
 		if used > 0 && used+2+wide > width {
 			lines, line, used = append(lines, line), nil, 0
 		}
 		if used > 0 {
 			line, used = append(line, gotermboard.C("  ", "")), used+2
 		}
-		line, used = append(line, gotermboard.C(digit, gotermboard.Bold), gotermboard.C(label, "")), used+wide
+		line, used = append(line, gotermboard.C(key, gotermboard.Bold), gotermboard.C(label, color)), used+wide
 	}
+	for _, v := range h.verbs {
+		key, ok := VerbKeys[v.Verb]
+		if !ok {
+			continue
+		}
+		label, color := " "+verbLabel(v, h.watchDefault), ""
+		if v.Missing != nil {
+			color = gotermboard.Yellow
+		}
+		add(key, label, color)
+	}
+	add(KeyDrop, " drop", "")
 	return append(lines, line)
+}
+
+// verbLabel is a verb with where it sends an item, as `learning → learning-plan`, a shelf's as
+// `personal-relate → shelf`, and a watch's with the playlist that enter takes.
+func verbLabel(v server.ReviewVerb, watchDefault *string) string {
+	switch {
+	case v.Missing != nil:
+		return v.Verb + " → no destination"
+	case v.Destination == nil:
+		return v.Verb + " → shelf"
+	case v.Verb == route.VerbWatch && watchDefault != nil:
+		return v.Verb + " → " + *v.Destination + ", " + outsider(*watchDefault) + " unless picked"
+	}
+	return v.Verb + " → " + *v.Destination
 }
 
 // destinationsMissing is why no key places, or empty where the set declares a destination. The
@@ -136,8 +162,14 @@ func destinationLabel(d server.ReviewDestination) string {
 	return d.Name + " → " + *d.Side
 }
 
+// statuses are the reads the strip names: the queue and the parses, and the playlists once a
+// watch asked for them.
 func (b *Board) statuses() []gotermboard.Status {
-	return []gotermboard.Status{b.queue.Status(), b.parses.Status()}
+	out := []gotermboard.Status{b.queue.Status(), b.parses.Status()}
+	if b.wantPlaylists.Load() {
+		out = append(out, b.playlists.Status())
+	}
+	return out
 }
 
 // shown is the queue less each item a write is pending on, since every decision takes the item out
@@ -361,24 +393,33 @@ func sortedKeys(m map[string]string) []string { return slices.Sorted(maps.Keys(m
 
 // SchemaVersion is the shape `ingestion tui --view review --json` prints, which
 // schemas/tui-review.schema.json holds.
-const SchemaVersion = 2
+const SchemaVersion = 3
 
 // Snapshot is what --json prints: each waiting item ordered by the board's default grouping and,
 // within each group, by the sort in force, beside the group it draws under, the source the row
-// names and its rank under the sort, then the key that places on each destination, and how each
-// read stands. A display left grouped otherwise does not change it.
+// names and its rank under the sort, then the key that sorts by each verb, the digit that the
+// note's menu places on each destination with, and how each read stands. A display left grouped
+// otherwise does not change it.
 type Snapshot struct {
-	SchemaVersion int                  `json:"schema_version"`
-	TakenAt       time.Time            `json:"taken_at"`
-	Grouping      string               `json:"grouping"`
-	Sort          string               `json:"sort"`
-	Destinations  []DestinationKey     `json:"destinations"`
-	Items         []ItemShown          `json:"items"`
-	Sources       []gotermboard.Status `json:"sources"`
-	Unread        []string             `json:"unread_sources,omitempty"`
+	SchemaVersion        int                  `json:"schema_version"`
+	TakenAt              time.Time            `json:"taken_at"`
+	Grouping             string               `json:"grouping"`
+	Sort                 string               `json:"sort"`
+	Verbs                []VerbKey            `json:"verbs"`
+	WatchDefaultPlaylist *string              `json:"watch_default_playlist"`
+	Destinations         []DestinationKey     `json:"destinations"`
+	Items                []ItemShown          `json:"items"`
+	Sources              []gotermboard.Status `json:"sources"`
+	Unread               []string             `json:"unread_sources,omitempty"`
 }
 
-// DestinationKey is the digit that places on a destination.
+// VerbKey is the key that sorts by a verb, and where the verb sends an item.
+type VerbKey struct {
+	Key string `json:"key"`
+	server.ReviewVerb
+}
+
+// DestinationKey is the digit that the note's menu places on a destination with.
 type DestinationKey struct {
 	Key string `json:"key"`
 	server.ReviewDestination
@@ -398,7 +439,18 @@ func (b *Board) Snapshot(now time.Time) Snapshot {
 	h := b.queue.Value()
 	grouping := b.Groupings()[0]
 	sort := sorts[b.sortAt]
-	snap := Snapshot{SchemaVersion: SchemaVersion, TakenAt: now.UTC(), Grouping: grouping, Sort: sort, Items: []ItemShown{}, Sources: b.statuses()}
+	snap := Snapshot{
+		SchemaVersion: SchemaVersion, TakenAt: now.UTC(), Grouping: grouping, Sort: sort, WatchDefaultPlaylist: h.watchDefault,
+		Items: []ItemShown{}, Sources: b.statuses(),
+	}
+	if h.verbs != nil {
+		snap.Verbs = []VerbKey{}
+	}
+	for _, v := range h.verbs {
+		if key, ok := VerbKeys[v.Verb]; ok {
+			snap.Verbs = append(snap.Verbs, VerbKey{Key: key, ReviewVerb: v})
+		}
+	}
 	if h.destinations != nil {
 		snap.Destinations = []DestinationKey{}
 	}

@@ -27,12 +27,13 @@ func (t *Tx) Deliveries(ctx context.Context, key string) ([]Delivery, error) {
 // item's title, URL and source time, path and chapter as every attempt sends
 // them. path is the item's file below the deliverer's root, and nil for a
 // deliverer that writes no file. chapter is where a book's chapter sits in its
-// book's record, and nil for every other item. It queues nothing where the
-// delivery is settled, because a destination can forget a record it held, so
-// a second write could save the item again. It queues nothing where a deliver
-// task for the item and destination is queued or leased. It answers whether
-// it queued.
-func (t *Tx) QueueDelivery(ctx context.Context, item Item, path *string, chapter *ChapterInBook, destination, deliverer string) (bool, error) {
+// book's record, and nil for every other item. playlist is the playlist that
+// a watch adds the video to, and nil for every other deliverer. It queues
+// nothing where the delivery is settled, because a destination can forget a
+// record it held, so a second write could save the item again. It queues
+// nothing where a deliver task for the item and destination is queued or
+// leased. It answers whether it queued.
+func (t *Tx) QueueDelivery(ctx context.Context, item Item, path *string, chapter *ChapterInBook, playlist *string, destination, deliverer string) (bool, error) {
 	key := item.Key
 	held, ok, err := t.Delivery(ctx, key, destination)
 	if err != nil || (ok && held.Settled()) {
@@ -45,7 +46,7 @@ func (t *Tx) QueueDelivery(ctx context.Context, item Item, path *string, chapter
 	if !ok {
 		d := Delivery{
 			ItemKey: key, Destination: destination, Outcome: DeliveryPending, Title: item.Title, URL: item.URL, SourceTS: item.SourceTS,
-			Path: path,
+			Path: path, Playlist: playlist,
 		}
 		if chapter != nil {
 			d.BookDestinationID, d.PDFPageStart, d.PDFPageEnd = &chapter.BookDestinationID, &chapter.PDFPageStart, &chapter.PDFPageEnd

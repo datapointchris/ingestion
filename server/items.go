@@ -286,6 +286,7 @@ type DecisionView struct {
 	Destination    *string          `json:"destination"`
 	Note           *string          `json:"note"`
 	Lens           *string          `json:"lens"`
+	Playlist       *string          `json:"playlist"`
 	ClientID       *string          `json:"client_id"`
 	Presented      *store.Presented `json:"presented"`
 	DecidedAfterMS *int64           `json:"decided_after_ms"`
@@ -299,6 +300,7 @@ type DeliveryView struct {
 	Outcome       string  `json:"outcome"`
 	Attempts      int     `json:"attempts"`
 	LastError     *string `json:"last_error"`
+	Playlist      *string `json:"playlist"`
 	// UnclaimedCapability is the capability of the delivery's queued task
 	// where no worker heard from lately holds it, and null otherwise.
 	UnclaimedCapability *string `json:"unclaimed_capability"`
@@ -618,6 +620,7 @@ func itemAnswer(rec store.ItemRecords) ItemAnswer {
 	for _, d := range rec.Deliveries {
 		a.Deliveries = append(a.Deliveries, DeliveryView{
 			Destination: d.Destination, DestinationID: d.DestinationID, Outcome: d.Outcome, Attempts: d.Attempts, LastError: d.LastError,
+			Playlist: d.Playlist,
 		})
 	}
 	for _, s := range rec.Sections {
@@ -676,7 +679,7 @@ type SectionView struct {
 func decisionView(d store.Decision) DecisionView {
 	return DecisionView{
 		Gate: d.Gate, Verdict: d.Verdict, DecidedBy: d.DecidedBy, Confidence: d.Confidence, Cause: d.Cause,
-		Destination: d.Destination, Note: d.Note, Lens: d.Lens, ClientID: d.ClientID,
+		Destination: d.Destination, Note: d.Note, Lens: d.Lens, Playlist: d.Playlist, ClientID: d.ClientID,
 		Presented: d.Presented, DecidedAfterMS: d.DecidedAfterMS, DecidedTS: d.DecidedTS,
 	}
 }

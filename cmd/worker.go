@@ -128,12 +128,17 @@ func openSources(ctx context.Context, cfg fileConfig, issuer string, log *slog.L
 }
 
 // sourcesHelp lists each registered source: its name and the variable that
-// holds its client's secret on one line, and its client's scopes below.
+// holds its client's secret on one line, and its client's scopes below, then
+// each deliverer that writes through it.
 func sourcesHelp() string {
 	var b strings.Builder
 	for _, name := range sources.Names() {
 		r, _ := sources.Lookup(name)
-		fmt.Fprintf(&b, "  %s  %s\n  %s  %s\n", name, sourceSecretEnv(name), strings.Repeat(" ", len(name)), strings.Join(r.Scopes, " "))
+		pad := strings.Repeat(" ", len(name))
+		fmt.Fprintf(&b, "  %s  %s\n  %s  %s\n", name, sourceSecretEnv(name), pad, strings.Join(r.Scopes, " "))
+		for _, d := range r.Deliverers {
+			fmt.Fprintf(&b, "  %s  deliverer %s\n", pad, d.Name)
+		}
 	}
 	return b.String()
 }
@@ -329,9 +334,10 @@ var workerRunCmd = &cobra.Command{
 		deliver.LearningResources + " client " + strings.Join(deliver.LearningResourcesScopes, " ") + ". A table that\n" +
 		"cannot open is logged and left out, and the worker's other stages run on.\n" +
 		"\n" +
-		"It runs each stage that a source registers, such as its poll, its delete\n" +
-		"and its refresh of metrics, where a [source.<name>] table names how to reach\n" +
-		"that source. The table takes api, client_id, token_command and issuer as a\n" +
+		"It runs each stage that a source registers, such as its poll, its delete,\n" +
+		"its refresh of metrics and a deliverer that writes through it, such as\n" +
+		"ypl-watch, where a [source.<name>] table names how to reach that source.\n" +
+		"The table takes api, client_id, token_command and issuer as a\n" +
 		"[deliver.<name>] table does. Each source this build registers, with the\n" +
 		"variable that holds its client's secret and the scopes its client needs:\n" +
 		"\n" +

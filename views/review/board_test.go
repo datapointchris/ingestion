@@ -18,11 +18,21 @@ import (
 	"github.com/datapointchris/ingestion/store"
 )
 
-// fakeService answers the queue it holds, and keeps each placement it is sent.
+// fakeService answers the queue and the playlists it holds, and keeps each placement and sort it
+// is sent.
 type fakeService struct {
-	answer server.ReviewAnswer
-	placed []server.PlaceRequest
+	answer    server.ReviewAnswer
+	playlists []Playlist
+	placed    []server.PlaceRequest
+	sorted    []server.SortRequest
 }
+
+func (f *fakeService) Sort(_ context.Context, key string, body server.SortRequest) (string, error) {
+	f.sorted = append(f.sorted, body)
+	return "sorted " + key, nil
+}
+
+func (f *fakeService) Playlists(context.Context) ([]Playlist, error) { return f.playlists, nil }
 
 func (f *fakeService) Queue(context.Context) (server.ReviewAnswer, error) { return f.answer, nil }
 func (f *fakeService) Parse(context.Context, string) (server.ParseAnswer, bool, error) {
@@ -76,9 +86,15 @@ func fit(n int) *int { return &n }
 func deck() server.ReviewAnswer {
 	save, subreddit := "A post about sourdough", "r/baking"
 	fleet, personal := connectors.SideFleet, connectors.SidePersonal
+	inbox, watch, later := "work-inbox", "watch", "Later"
 	return server.ReviewAnswer{
 		SchemaVersion: 2,
-		Destinations:  []server.ReviewDestination{{Name: "reading-list", Side: &personal}, {Name: "work-inbox", Side: &fleet}},
+		Destinations:  []server.ReviewDestination{{Name: "reading-list", Side: &personal}, {Name: inbox, Side: &fleet}},
+		Verbs: []server.ReviewVerb{
+			{Verb: route.VerbFleetRelate, Side: &fleet, Destination: &inbox},
+			{Verb: route.VerbWatch, Side: &personal, Destination: &watch},
+		},
+		WatchDefaultPlaylist: &later,
 		Items: []server.ReviewItem{
 			video("vida", "Gardening with robots", "Allotment Lab", "ypl-capture", store.ReasonQualityReview, 20, 10_000, 900, 300, 5, fit(9), "pass"),
 			video("vidb", "Tidal power explained", "Sea Notes", "ypl-channel", store.ReasonQualityReview, 24, 50_000, 1000, 1800, 6, fit(3), "unsure"),
@@ -212,16 +228,39 @@ func TestAPlacementFromAFilteredTabKeepsTheCardAsTheTabShowedIt(t *testing.T) {
 		t.Fatalf("filtered to the greenhouse video, the cursor rests on %q", m.Cursor())
 	}
 	runKey(m, letter(KeyFleetRelate[0]))
-	if len(service.placed) != 1 {
-		t.Fatalf("F sent %d placements, want one", len(service.placed))
+	if len(service.sorted) != 1 {
+		t.Fatalf("%s sent %d sorts, want one", KeyFleetRelate, len(service.sorted))
 	}
-	body := service.placed[0]
+	body := service.sorted[0]
 	p := body.Presented
-	if body.Destination != "work-inbox" || p == nil || p.Sort != store.SortQuality || p.Grouping != store.GroupByConnector || p.Rank != 1 || p.Position != 1 || p.Shown != 1 ||
+	if body.Verb != route.VerbFleetRelate || p == nil || p.Sort != store.SortQuality || p.Grouping != store.GroupByConnector || p.Rank != 1 || p.Position != 1 || p.Shown != 1 ||
 		p.Quality == nil || *p.Quality != 8 || p.Fit != nil || p.Verdict == nil || *p.Verdict != "drop" ||
 		p.Side == nil || *p.Side != connectors.SideFleet || body.DecidedAfterMS == nil || *body.DecidedAfterMS < 0 {
-		t.Errorf("F placed on %s keeping %+v after %v ms, want work-inbox with the one row shown, first under quality, grouped by connector",
-			body.Destination, p, body.DecidedAfterMS)
+		t.Errorf("%s sorted by %s keeping %+v after %v ms, want fleet-relate with the one row shown, first under quality, grouped by connector",
+			KeyFleetRelate, body.Verb, p, body.DecidedAfterMS)
+	}
+}
+
+// w asks which playlist, the service's default first and then each playlist this machine lists.
+// Enter takes the default, which the sort leaves to the service, and a number its playlist's id.
+func TestWatchAsksForThePlaylistWithTheDefaultFirst(t *testing.T) {
+	service := &fakeService{answer: deck(), playlists: []Playlist{{ID: "PLb", Title: "Bench"}, {ID: "PLl", Title: "Later"}, {ID: "PLa", Title: "Audio"}}}
+	b := readBoard(t, service)
+	b.wantPlaylists.Store(true)
+	b.playlists.Refresh(t.Context())
+	m := gotermboard.NewModel(b, gotermstyle.PaletteFor(nil))
+	m.Update(tea.WindowSizeMsg{Width: 200, Height: 40})
+	if order := playlistOrder(b.playlists.Value(), deck().WatchDefaultPlaylist); len(order) != 3 || order[0].ID != "PLl" || order[1].ID != "PLa" {
+		t.Fatalf("the picker lists %+v, want Later, the default, then Audio and Bench", order)
+	}
+	first := m.Cursor()
+	runKey(m, letter(KeyWatch[0]))
+	runKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	runKey(m, letter(KeyWatch[0]))
+	runKey(m, letter('3'))
+	runKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if len(service.sorted) != 2 || service.sorted[0].Verb != route.VerbWatch || service.sorted[0].Playlist != "" || service.sorted[1].Playlist != "PLb" {
+		t.Fatalf("after w enter on %s, then w 3 enter, the sorts are %+v, want the default, then Bench by its id", first, service.sorted)
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -82,6 +83,13 @@ var serveCmd = &cobra.Command{
 		"\n" +
 		"  [note]\n" +
 		"  floor             a confidence from 0 to 1 (default " + strconv.FormatFloat(route.DefaultNoteFloor, 'f', -1, 64) + ")\n" +
+		"\n" +
+		"A sort by watch adds a video to the playlist that the person picks, through\n" +
+		"the ypl-watch deliverer, and to this one where they pick none. With none named,\n" +
+		"a watch that picks no playlist is refused:\n" +
+		"\n" +
+		"  [watch]\n" +
+		"  default_playlist  a playlist's YouTube id, or the title or slug that ypl holds\n" +
 		"\n" +
 		"At each time of its [gates.proposals] schedule, it projects the quality gate's\n" +
 		"misses that a person labeled since the last done proposal. Where it finds any, it\n" +
@@ -185,6 +193,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		}
 		noteFloor = *f
 	}
+	watchDefault := strings.TrimSpace(cfg.Watch.DefaultPlaylist)
 	listen := cfg.Serve.Listen
 	if listen == "" {
 		listen = defaultListen
@@ -239,7 +248,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 			Store: st, Lander: lander, Scheduler: scheduler, Roots: roots, AfterApply: route.AfterApply(log), Links: extractors, Log: log,
 		}),
 		server.ReplayRoutes(st, replayableStages(st, extractors), log),
-		server.ReviewRoutes(st, comments.StateOf, log), server.TrustRoutes(st, log), server.RoutingRuleRoutes(st, log), accuracy.Routes(st, noteFloor, log),
+		server.ReviewRoutes(st, comments.StateOf, watchDefault, log), server.TrustRoutes(st, log), server.RoutingRuleRoutes(st, log), accuracy.Routes(st, noteFloor, log),
 		promptproposal.Routes(st, log), comments.Routes(st, log))
 	srv := &http.Server{Addr: listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 
@@ -256,6 +265,11 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	served := make(chan error, 1)
 	go func() { served <- srv.ListenAndServe() }()
 	log.Info("ingestion serves", "listen", listen, "store", stateDir(cfg), "issuer", cfg.Issuer, "version", version)
+	if watchDefault == "" {
+		log.Warn("[watch] names no default_playlist, so a watch is refused unless its sort picks a playlist")
+	} else {
+		log.Info("a watch that picks no playlist adds the video to [watch] default_playlist", "default_playlist", watchDefault)
+	}
 	wg.Go(func() { settlePhases(background, st, log) })
 	wg.Go(func() { settleGateFamilies(background, st, log) })
 	wg.Go(func() { fillSourceTimes(background, lander, log) })

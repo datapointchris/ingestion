@@ -3,9 +3,10 @@
 # each item placed on its destination through that app's API. A destination
 # with none, such as one whose reader pulls items itself, takes no delivery.
 # An item that the quality gate's guess places on a side, naming no
-# destination, goes to the side's default_for_side destination. The review
-# tab's number keys follow this order, as views/review/keys.go binds them, so
-# a new destination goes last.
+# destination, goes to the side's default_for_side destination. A sort verb
+# places an item on the first destination whose deliverer is the verb's, such
+# as learning-resources for learning. The review tab's note menu numbers the
+# destinations in this order, so a new destination goes last.
 destinations:
   - name: reading-list
     side: personal
@@ -19,6 +20,16 @@ destinations:
     tags: [work]
     default_for_side: true
   - name: dropped
+  # Takes each item that a sort by learning sends to a learning plan, where a
+  # worker's config holds a [deliver.learning-resources] table.
+  - name: learning-plan
+    side: personal
+    deliverer: learning-resources
+  # Takes each video that a sort by watch adds to a playlist at its source,
+  # through the client of a worker's [source.ypl] table.
+  - name: watch
+    side: personal
+    deliverer: ypl-watch
   # Takes each link that `ingestion push --to psyche` lands. Only a push places
   # an item here, because the push hands the item to psyche itself, so review
   # offers it nowhere and it names no deliverer.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -113,8 +114,18 @@ func TestTheReviewTabShowsTheGatesAnswerAndDecidesByKey(t *testing.T) {
 		snap.Items[0].Group != "reason/"+store.ReasonQualityReview || len(snap.Items[0].Item.QualityAnswer) == 0 {
 		t.Fatalf("the snapshot lists %s, want both saves under the gate's review, the drop first from r/golang with its answer", jsonOf(snap.Items))
 	}
-	if len(snap.Destinations) != 3 || snap.Destinations[1].Key != "2" || snap.Destinations[1].Name != "work-inbox" || snap.Destinations[2].Side != nil {
-		t.Errorf("the snapshot's destinations are %s, want the three the set declares but the push-only psyche, keyed 1 to 3", jsonOf(snap.Destinations))
+	if len(snap.Destinations) != 5 || snap.Destinations[1].Key != "2" || snap.Destinations[1].Name != "work-inbox" || snap.Destinations[2].Side != nil {
+		t.Errorf("the snapshot's destinations are %s, want the five the set declares but the push-only psyche, keyed 1 to 5", jsonOf(snap.Destinations))
+	}
+	keyed := map[string]string{}
+	for _, v := range snap.Verbs {
+		keyed[v.Key] = v.Verb + " → " + orDash(v.Destination)
+	}
+	if want := map[string]string{
+		"f": "fleet-relate → work-inbox", "l": "learning → learning-plan", "p": "personal-relate → —",
+		"m": "personal-summarize → —", "t": "technical-summarize → —", "w": "watch → watch",
+	}; !maps.Equal(keyed, want) {
+		t.Errorf("the snapshot keys the verbs %v, want %v", keyed, want)
 	}
 
 	t.Setenv("COLUMNS", "200")
@@ -130,7 +141,8 @@ func TestTheReviewTabShowsTheGatesAnswerAndDecidesByKey(t *testing.T) {
 	}
 	for _, want := range []string{
 		"r/golang", "drop 0.65", "personal 0.58", "unsure 0.40", "Hostile title", "exploratory",
-		"test-instruction high in unit 1: Hostile", "# not a heading", "a comment red", "1 reading-list → personal",
+		"test-instruction high in unit 1: Hostile", "# not a heading", "a comment red", "f fleet-relate → work-inbox",
+		"p personal-relate → shelf", "w watch → watch",
 		"docker run \\\n",
 	} {
 		if !strings.Contains(frame, want) {

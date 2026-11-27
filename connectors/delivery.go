@@ -9,9 +9,10 @@ import (
 
 // Writes is what one deliverer can write. Takes answers why it cannot write
 // an item, and nil where it can, and a nil Takes writes every item. FilePath
-// says it writes an item by its file: it takes only an item with a live home
-// below the root that SetDelivererRoot names, and its delivery keeps that
-// home's path. Chapters says it writes a book's chapter as part of its book's
+// says it writes an item that holds bytes by its file: it takes such an item
+// only with a live home below the root that SetDelivererRoot names, and its
+// delivery keeps that home's path. An item that holds no bytes, such as a
+// video, reads no home, and Takes alone decides it. Chapters says it writes a book's chapter as part of its book's
 // record, so a chapter waits for its book's delivery and keeps that record's
 // id. Takes and FilePath read no chapter, which holds no bytes or home.
 type Writes struct {
@@ -161,7 +162,7 @@ func (s Set) DeliveryTo(side store.Decision, item store.Item, homes []store.Home
 		case item.PlacedThroughParent() && !w.Chapters:
 			err = errNoChapters
 		case !item.PlacedThroughParent():
-			if err = w.Takes(item); err == nil {
+			if err = w.Takes(item); err == nil && item.BlobSHA256 != nil {
 				_, err = FilePath(d.Deliverer, homes)
 			}
 		}

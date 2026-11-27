@@ -20,8 +20,8 @@
           "title": {"type": ["string", "null"]},
           "url": {"type": ["string", "null"]},
           "reason": {
-            "description": "Why the item waits: its sightings' tags disagree, the guess fell below the floor, a connector that sighted it leaves its side to a person and the guess waits beside it, no tag or rule placed it and the quality gate gave no answer, because its run failed, its scan could not read the set in force, or it waited in review from before the quality gate ran, the side gate could not read the set in force or the item's sightings, it has no usable parse, the quality gate sent it to review, or the quality gate would drop it and a family of it has not earned hiding it, or the family's draw showed it, or a routing rule that a person accepted would drop it or place it and the rule's review share drew it, or a read by a model waits on its note, whose draft fell below the note floor.",
-            "enum": ["tags-disagree", "below-floor", "person-sorts", "no-guess", "gate-error", "no-parse", "quality-review", "gate-would-drop", "rule-would-hide", "note-unclear"]
+            "description": "Why the item waits: its sightings' tags disagree, the guess fell below the floor, a connector that sighted it leaves its side to a person and the guess waits beside it, no tag or rule placed it and the quality gate gave no answer, because its run failed, its scan could not read the set in force, or it waited in review from before the quality gate ran, the side gate could not read the set in force or the item's sightings, it has no usable parse, the quality gate sent it to review, or the quality gate would drop it and a family of it has not earned hiding it, or the family's draw showed it, or a routing rule that a person accepted would drop it or place it and the rule's review share drew it, or a read by a model waits on its note, whose draft fell below the note floor, or a person sorted it to learning and the quality gate's newest answer did not pass it, whose reason the quality answer holds.",
+            "enum": ["tags-disagree", "below-floor", "person-sorts", "no-guess", "gate-error", "no-parse", "quality-review", "gate-would-drop", "rule-would-hide", "note-unclear", "learning-refused"]
           },
           "rule": {
             "description": "The routing rule that would have decided the item, where it waits as rule-would-hide, and null under any other reason: its name, and the destination that a keep would place it on, null where a block would drop it.",
@@ -91,6 +91,22 @@
         }
       }
     },
+    "verbs": {
+      "description": "Each sort verb that POST /api/v1/review/{key}/sort takes, in the order the review tab binds them, with the destination it places an item on under the set in force. destination is null for a verb that places on none, as a shelf does, and missing where the set declares none that the verb takes, so the verb refuses. Null where the set in force could not be read.",
+      "type": ["array", "null"],
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["verb", "side", "destination", "missing"],
+        "properties": {
+          "verb": {"enum": ["fleet-relate", "learning", "personal-relate", "personal-summarize", "technical-summarize", "watch"]},
+          "side": {"enum": ["personal", "fleet", null]},
+          "destination": {"type": ["string", "null"]},
+          "missing": {"description": "Why the verb places nothing under the set in force, and null where it places.", "type": ["string", "null"]}
+        }
+      }
+    },
+    "watch_default_playlist": {"description": "The playlist that a watch adds a video to where the person names none, as serve's [watch] default_playlist names it, and null where it names none, so a watch names its playlist.", "type": ["string", "null"]},
     "destinations": {
       "description": "Each destination the set in force declares, in its order, which a placement takes. A push-only destination is left out, since a placement from review refuses it. side is the side an item placed there takes, and null where the destination drops what it takes. Empty where the set declares none, and null where the set in force could not be read, so the queue still answers.",
       "type": ["array", "null"],

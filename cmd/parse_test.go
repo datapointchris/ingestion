@@ -96,7 +96,7 @@ func newPipelineOver(t *testing.T, extractors *extract.Registry, after server.Af
 	provider.Register("ingestion-svc-worker", "worker-secret", server.ScopeTasksClaim)
 	gate := verifiedGate{provider.Verifier(t, "ingestion-cli-", "ingestion-svc-")}
 	api := httptest.NewServer(server.Handler(server.Config{Store: st, Gate: gate, Issuer: provider.URL, Version: "test", Log: log},
-		server.TaskRoutes(st, lander, log, after), server.BlobRoutes(lander, log), server.ItemRoutes(st, log), server.ReviewRoutes(st, comments.StateOf, log),
+		server.TaskRoutes(st, lander, log, after), server.BlobRoutes(lander, log), server.ItemRoutes(st, log), server.ReviewRoutes(st, comments.StateOf, "", log),
 		server.TrustRoutes(st, log), server.RoutingRuleRoutes(st, log),
 		server.ConnectorRoutes(server.ConnectorConfig{
 			Store: st, Lander: lander, Scheduler: connectors.NewScheduler(st, lander, log),

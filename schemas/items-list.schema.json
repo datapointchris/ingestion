@@ -32,8 +32,8 @@
   },
   "$defs": {
     "phase": {
-      "description": "The furthest stage the item's records reach, or waiting where a model stage holds it, review where it waits on a person, and failed where the newest task of a stage that holds back the line failed. A parse holds back no stage once the item is placed. A failed structure profile or contents reading holds back none, costs a PDF its sections only, and shows in its outputs. An item waits in review where no tag, rule or confident guess placed it, or where it holds no usable parse, the review list's no-parse reason.",
-      "enum": ["landed", "parsed", "structured", "sectioned", "scanned", "gated", "placed", "read", "delivered", "dropped", "waiting", "review", "failed"]
+      "description": "The furthest stage the item's records reach, or waiting where a model stage holds it, review where it waits on a person, shelved where a person put it on the shelf and has not opened it, and failed where the newest task of a stage that holds back the line failed. A parse holds back no stage once the item is placed. A failed structure profile or contents reading holds back none, costs a PDF its sections only, and shows in its outputs. An item waits in review where no tag, rule or confident guess placed it, or where it holds no usable parse, the review list's no-parse reason.",
+      "enum": ["landed", "parsed", "structured", "sectioned", "scanned", "gated", "placed", "read", "delivered", "dropped", "waiting", "review", "shelved", "failed"]
     },
     "waiting_at": {"description": "The model stage the item waits at.", "enum": ["contents", "quality", "note", "model-read", null]}
   }

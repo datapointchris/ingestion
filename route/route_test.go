@@ -157,12 +157,11 @@ func TestTheReadGateTakesTheConnectorsRuleElseTheSidesDefault(t *testing.T) {
 // no prompt for that lens. The same item on the fleet side, placed with a
 // note, is due one.
 func TestAModelReadIsDueOnlyUnderALensWhosePromptTheBuildHolds(t *testing.T) {
-	modelRead := connectors.Set{Connectors: []connectors.Connector{{Name: "reddit-exports", ReadRule: connectors.ReadModel}}}
 	note := "what would this change?"
-	for side, want := range map[string]bool{connectors.SidePersonal: false, connectors.SideFleet: true} {
-		read := route.Read(modelRead, []store.Sighting{sighting("reddit-exports", "")}, side, &note)
-		if due := route.ModelReadDue(store.Decision{Verdict: side}, read, nil, false); due != want {
-			t.Errorf("a model read on the %s side under lens %v is due: %v, want %v", side, read.Lens, due, want)
+	for lens, want := range map[string]bool{route.LensFleet: true, route.LensPersonal: true, route.LensLearning: true, "unheld": false} {
+		read := store.Decision{Gate: store.GateRead, Verdict: connectors.ReadModel, DecidedBy: route.ByPerson("ana"), Lens: &lens, Note: &note}
+		if due := route.ModelReadDue(store.Decision{Verdict: connectors.SidePersonal}, read, nil, false); due != want {
+			t.Errorf("a model read under lens %s is due: %v, want %v", lens, due, want)
 		}
 	}
 }

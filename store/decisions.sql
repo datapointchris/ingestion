@@ -5,6 +5,8 @@
 -- record of the service. presented is the review card as the person saw it
 -- when they decided, as JSON, and decided_after_ms how long after the card
 -- was drawn they decided. Both are null where no card preceded the decision.
+-- playlist is the playlist that a person's watch adds the video to, and null
+-- on every other decision.
 
 CREATE TABLE IF NOT EXISTS decisions (
     item_key         TEXT NOT NULL REFERENCES items (key),
@@ -20,6 +22,7 @@ CREATE TABLE IF NOT EXISTS decisions (
     client_id        TEXT,
     presented        TEXT,
     decided_after_ms INTEGER,
+    playlist         TEXT,
     decided_ts       TEXT NOT NULL,
     PRIMARY KEY (item_key, gate, sequence)
 );

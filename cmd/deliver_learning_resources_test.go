@@ -45,7 +45,8 @@ const (
 // source_key otherwise or where that resource is deleted. A title holding a
 // NUL answers 500, as the store's text refuses one. A chapter is then
 // created where its part_of names a live book, and refused 422 otherwise. A
-// path that one live resource holds exactly under no key is adopted. A path
+// video is created from its url, with no file. A path that one live resource
+// holds exactly under no key is adopted. A path
 // held under another key, inside a held directory, by two resources, or by
 // deleted ones alone answers 409 file_path naming its holders.
 type standInLearning struct {
@@ -61,6 +62,7 @@ type standInLearning struct {
 type standInCreate struct {
 	Title            string `json:"title"`
 	ResourceType     string `json:"resource_type"`
+	URL              string `json:"url"`
 	BookCopy         string `json:"book_copy"`
 	FilePath         string `json:"file_path"`
 	SourceKey        string `json:"source_key"`
@@ -104,15 +106,15 @@ func newStandInLearning(t *testing.T, provider *authtest.Provider) *standInLearn
 			})
 			return
 		}
-		chapter := body.ResourceType == "chapter"
-		if !chapter && body.ResourceType != "book" {
+		chapter, video := body.ResourceType == "chapter", body.ResourceType == "video"
+		if !chapter && !video && body.ResourceType != "book" {
 			writeLearning(w, http.StatusUnprocessableEntity, map[string]any{
-				"error": "Unprocessable Entity", "message": "resource_type names no resource type", "field": "resource_type", "known": []string{"book", "chapter"},
+				"error": "Unprocessable Entity", "message": "resource_type names no resource type", "field": "resource_type", "known": []string{"book", "chapter", "video"},
 			})
 			return
 		}
-		if chapter == (body.FilePath != "") || chapter == (body.PartOf == 0) {
-			writeLearning(w, http.StatusBadRequest, map[string]any{"error": "Bad Request", "message": "a book takes a file_path, and a chapter a part_of"})
+		if video && (body.URL == "" || body.FilePath != "" || body.PartOf != 0) || !video && (chapter == (body.FilePath != "") || chapter == (body.PartOf == 0)) {
+			writeLearning(w, http.StatusBadRequest, map[string]any{"error": "Bad Request", "message": "a book takes a file_path, a chapter a part_of, and a video a url"})
 			return
 		}
 		l.mu.Lock()
@@ -130,6 +132,12 @@ func newStandInLearning(t *testing.T, provider *authtest.Provider) *standInLearn
 				return
 			}
 			l.created(w, http.StatusOK, held, false)
+			return
+		}
+		if video {
+			res := &standInResource{id: int64(len(l.resources) + 1), sourceKey: &body.SourceKey, made: &body}
+			l.resources = append(l.resources, res)
+			l.created(w, http.StatusCreated, res, false)
 			return
 		}
 		if chapter {

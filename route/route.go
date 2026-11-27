@@ -106,6 +106,11 @@ const (
 	// sends to review an item whose draft fell below the floor.
 	CauseNoteDraft   = "note-draft"
 	CauseNoteUnclear = "note-unclear"
+	// CauseLearningRefused sends to review, at the read gate, an item that a
+	// person sorted to learning where the quality gate's newest answer did
+	// not pass it. CauseShelfOpen is a person's opening of a shelved item.
+	CauseLearningRefused = "learning-refused"
+	CauseShelfOpen       = "shelf-open"
 )
 
 // ReviewReason is one reason an item waits in review: its name, the line
@@ -132,6 +137,10 @@ var ReviewReasons = []ReviewReason{
 	{
 		CauseNoteUnclear, "a model read waits on its note, whose draft fell below the note floor: write a note, or place it with none to take the draft",
 		"the note's draft is unclear",
+	},
+	{
+		CauseLearningRefused, "you sorted it to learning, and the quality gate's newest answer did not pass it: its card holds the gate's reason",
+		"learning refused it",
 	},
 	{CauseBelowFloor, "the quality gate guessed fleet, or its guess fell below its floor", "fleet guess, or below its floor"},
 	{
@@ -562,7 +571,9 @@ func GuessOf(outputs []store.Output) *Guess {
 // Where a person decides the side, it withdraws the item's queued quality
 // task, so no model judges an item that a person placed before the gate
 // answered. A tag's or a rule's placement leaves the task queued, because the
-// gate's answer on every item it reads is what its trust is earned from.
+// gate's answer on every item it reads is what its trust is earned from. So
+// does a learning sort that the gate's want of an answer refused, which the
+// person decides again once the gate answers.
 func decide(ctx context.Context, tx *store.Tx, key string, side store.Decision, set connectors.Set, sightings []store.Sighting,
 	note *string, readAs *store.Decision,
 ) ([]store.Decision, error) {
@@ -571,7 +582,7 @@ func decide(ctx context.Context, tx *store.Tx, key string, side store.Decision, 
 	if err != nil {
 		return nil, err
 	}
-	if written.ByPerson() {
+	if written.ByPerson() && (readAs == nil || readAs.Cause != CauseLearningRefused) {
 		why := "withdrawn: " + written.DecidedBy + " decided the item's side before the quality gate ran"
 		if err := tx.WithdrawQueued(ctx, key, store.StageQuality, why); err != nil {
 			return nil, err
@@ -690,8 +701,9 @@ func ModelReadDue(side, read store.Decision, outputs []store.Output, open bool) 
 }
 
 // modelReadDue is ModelReadDue, where currentPrompt false counts a done read
-// of any prompt version, as the read gate does. A new prompt then reads an
-// item again only through a replay, which estimates its tokens first.
+// of any prompt version under the read's lens, as the read gate does. A new
+// prompt then reads an item again only through a replay, which estimates its
+// tokens first. An output that names no lens counts under every lens.
 func modelReadDue(side, read store.Decision, outputs []store.Output, open, currentPrompt bool) bool {
 	if open || !ReadByModel(side, read) || read.ByParent() || awaitsNote(read, outputs) {
 		return false
@@ -700,7 +712,7 @@ func modelReadDue(side, read store.Decision, outputs []store.Output, open, curre
 	note, _ := NoteOf(read, store.NewestDone(outputs, store.StageNote))
 	return ok && !slices.ContainsFunc(outputs, func(o store.Output) bool {
 		return o.Stage == store.StageModelRead && o.State == store.OutputDone && (!currentPrompt || o.ProducerVersion == p.Version) &&
-			store.NoteAnswered(o.NoteDigest, note)
+			(o.Lens == nil || *o.Lens == text(read.Lens)) && store.NoteAnswered(o.NoteDigest, note)
 	})
 }
 
@@ -794,7 +806,7 @@ func Due(ctx context.Context, r DueReader, set connectors.Set, item store.Item, 
 			return DueDelivery{}, false, err
 		}
 		due.BookDestinationID, due.Undelivered = bookRecord(due.Destination, side, book)
-	default:
+	case item.BlobSHA256 != nil:
 		if due.Path, err = connectors.FilePath(due.Destination.Deliverer, homes); err != nil {
 			return DueDelivery{}, false, err
 		}
@@ -943,7 +955,7 @@ func reconcileDelivery(ctx context.Context, tx *store.Tx, set connectors.Set, it
 			return false, err
 		}
 	}
-	return tx.QueueDelivery(ctx, item, due.Path, chapter, due.Destination.Name, due.Destination.Deliverer)
+	return tx.QueueDelivery(ctx, item, due.Path, chapter, side.Playlist, due.Destination.Name, due.Destination.Deliverer)
 }
 
 // chapterInBook is where the chapter under key sits in the record book: at
@@ -1124,7 +1136,7 @@ func repeated(ctx context.Context, tx *store.Tx, key string, side store.Decision
 	}
 	if newest.Verdict != side.Verdict || newest.DecidedBy != side.DecidedBy || newest.Cause != side.Cause ||
 		text(newest.Destination) != text(side.Destination) || text(newest.Note) != text(side.Note) ||
-		text(newest.ClientID) != text(side.ClientID) {
+		text(newest.ClientID) != text(side.ClientID) || text(newest.Playlist) != text(side.Playlist) {
 		return nil, false, nil
 	}
 	made := []store.Decision{newest}

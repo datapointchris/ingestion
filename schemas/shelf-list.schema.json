@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/datapointchris/ingestion/schemas/shelf-list.schema.json",
+  "title": "The items on the shelf",
+  "description": "What GET /api/v1/shelf answers and `ingestion shelf list --json` prints: each item that a person sorted by a shelf verb, personal-relate, personal-summarize or technical-summarize, whose newest decisions still hold it there, the oldest landed first. Nothing runs on a shelved item until a person opens it with POST /api/v1/shelf/{key}/open.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "items"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "items": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/shelved"}
+    }
+  },
+  "$defs": {
+    "shelved": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "zone", "title", "url", "media_type", "verb", "lens", "state", "sorted_by", "sorted_ts", "opened_ts", "summary", "error"],
+      "properties": {
+        "key": {"type": "string"},
+        "zone": {"enum": ["outside", "owner"]},
+        "title": {"type": ["string", "null"]},
+        "url": {"type": ["string", "null"]},
+        "media_type": {"type": "string"},
+        "verb": {
+          "description": "The shelf verb that the person sorted the item by.",
+          "enum": ["personal-relate", "personal-summarize", "technical-summarize"]
+        },
+        "lens": {
+          "description": "The lens through which opening a summary reads the item, and null for a relate, which runs on the person's machine and keeps nothing in the service.",
+          "enum": ["personal", "learning", null]
+        },
+        "state": {
+          "description": "waiting until a person opens it. A relate then reads opened. A summary reads reading while its model read is queued or running, done once kept, and failed where it failed, which a retry of its task runs again.",
+          "enum": ["waiting", "opened", "reading", "done", "failed"]
+        },
+        "sorted_by": {"description": "Who sorted it, as person:<login>.", "type": "string"},
+        "sorted_ts": {"description": "When it was sorted, as a store stamp.", "type": "string"},
+        "opened_ts": {"description": "When it was first opened, and null while it waits.", "type": ["string", "null"]},
+        "summary": {
+          "description": "A summary's model read once done, as prompts/model-read/answer.schema.json answers it, and null before. It is a model's over the item's text, so a reader treats it as outsider text.",
+          "type": ["object", "null"]
+        },
+        "error": {"description": "Why the summary's model read failed, and null unless state is failed.", "type": ["string", "null"]}
+      }
+    }
+  }
+}

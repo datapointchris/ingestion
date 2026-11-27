@@ -98,6 +98,9 @@ type Item struct {
 	// Chapter is where a book's chapter sits in its book's record, as the
 	// delivery first kept it, and nil for every other item.
 	Chapter *store.ChapterInBook
+	// Playlist is the playlist that a watch adds the video to, as the
+	// delivery first kept it, and nil for every other deliverer.
+	Playlist *string
 }
 
 // Outcome is how one write of an item ended.
@@ -115,6 +118,10 @@ type Outcome struct {
 	// cannot mend, as where the destination refuses the body as invalid. Its
 	// task fails rather than trying again.
 	Permanent bool
+	// RetryAfter is the wait that the destination asked a pending write for,
+	// as while a quota is spent. Its task tries again after it and spends no
+	// attempt, and a zero tries again with backoff.
+	RetryAfter time.Duration
 }
 
 // Deliverer writes items to one kind of destination.
@@ -154,7 +161,7 @@ func (h handler) Run(ctx context.Context, task worker.Task) worker.Result {
 	}
 	o := h.deliverer.Deliver(ctx, Item{
 		Key: *task.ItemKey, Zone: task.Zone, Title: task.Title, URL: task.URL, LandedTS: task.LandedTS, SourceTS: task.SourceTS,
-		Path: task.Path, Chapter: task.Chapter,
+		Path: task.Path, Chapter: task.Chapter, Playlist: task.Playlist,
 	})
 	delivery := &server.ReportDelivery{Outcome: o.Outcome, DestinationID: o.DestinationID, Error: o.Error}
 	switch {
@@ -162,6 +169,8 @@ func (h handler) Run(ctx context.Context, task worker.Task) worker.Result {
 		return worker.Result{Outcome: server.OutcomeDone, Delivery: delivery}
 	case o.Permanent:
 		return worker.Result{Outcome: server.OutcomeFailed, Error: o.Error, Delivery: delivery}
+	case o.RetryAfter > 0:
+		return worker.Result{Outcome: server.OutcomeRetry, Error: o.Error, RetryAfter: o.RetryAfter, Wait: true, Delivery: delivery}
 	}
 	return worker.Result{Outcome: server.OutcomeRetry, Error: o.Error, RetryAfter: backoff(task.Attempts), Delivery: delivery}
 }
