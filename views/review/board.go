@@ -1,6 +1,7 @@
 // Package review is the review tab of `ingestion tui`: the items that wait on a person's
 // placement, each opening into its text, the quality gate's whole answer and the scan's findings,
-// and placed or dropped by key through the routes `ingestion review` calls.
+// and sorted by a verb's key, dropped or placed with a note through the routes `ingestion review`
+// calls.
 package review
 
 import (
@@ -34,6 +35,10 @@ type Service interface {
 	// `ingestion review drop` print.
 	Place(ctx context.Context, key string, body server.PlaceRequest) (string, error)
 	Drop(ctx context.Context, key string, body server.DropRequest) (string, error)
+	// Sort sorts the item by a verb and answers the sentence `ingestion review sort` prints.
+	Sort(ctx context.Context, key string, body server.SortRequest) (string, error)
+	// Playlists lists the playlists that a watch can add a video to, as this machine reads them.
+	Playlists(ctx context.Context) ([]Playlist, error)
 	// Mark posts a person's mark on the item, low-quality or read, and
 	// answers the sentence `ingestion items mark` prints.
 	Mark(ctx context.Context, key, mark string) (string, error)
@@ -42,10 +47,18 @@ type Service interface {
 	Comments(ctx context.Context, key string) (server.ReviewComments, error)
 }
 
+// Playlist is one playlist that a watch can add a video to, as ypl lists it.
+type Playlist struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	Items int    `json:"item_count"`
+}
+
 // The sources' names, as the strip and the ? overlay name them.
 const (
-	sourceQueue  = "review queue"
-	sourceParses = "parse"
+	sourceQueue     = "review queue"
+	sourceParses    = "parse"
+	sourcePlaylists = "playlists"
 )
 
 // held is one read of the queue, each item decoded once off the screen's loop. readFrom is when the
@@ -53,6 +66,8 @@ const (
 type held struct {
 	at, readFrom time.Time
 	destinations []server.ReviewDestination
+	verbs        []server.ReviewVerb
+	watchDefault *string
 	items        []item
 	index        map[string]int
 }
@@ -100,10 +115,16 @@ type Board struct {
 	queueErr atomic.Pointer[error]
 	// parses holds the parse of each item the cursor has rested on. Each is read off the screen's
 	// loop, as the cursor lands, rather than one per row on every read of the queue.
-	parses   *gotermboard.Source[map[string]parsed]
-	cursor   atomic.Pointer[string]
-	renderer *markdown.Renderer
-	writes   keywrites.Writes
+	parses *gotermboard.Source[map[string]parsed]
+	// playlists holds the playlists that a watch picks from, read once the first watch asks for
+	// them, so a run that sorts nothing to watch reads none. playlistsErr is why the newest read
+	// failed.
+	playlists     *gotermboard.Source[[]Playlist]
+	wantPlaylists atomic.Bool
+	playlistsErr  atomic.Pointer[error]
+	cursor        atomic.Pointer[string]
+	renderer      *markdown.Renderer
+	writes        keywrites.Writes
 	// drawn is every row's key in the order the last frame drew them, and drawnIn the group each
 	// drew under, which a decided row passes the cursor along.
 	drawn   []string
@@ -130,7 +151,22 @@ func NewBoard(ctx context.Context, service Service, outside Outside) *Board {
 	b := &Board{ctx: ctx, service: service, outside: outside, renderer: markdown.New(nil), drawnIn: map[string]string{}}
 	b.queue = gotermboard.NewSource(sourceQueue, 30*time.Second, b.readQueue)
 	b.parses = gotermboard.NewSource(sourceParses, time.Hour, b.readParse)
+	b.playlists = gotermboard.NewSource(sourcePlaylists, time.Hour, b.readPlaylists)
 	return b
+}
+
+// readPlaylists reads the playlists once a watch asked for them, and holds none before.
+func (b *Board) readPlaylists(ctx context.Context) ([]Playlist, string, error) {
+	if !b.wantPlaylists.Load() {
+		return b.playlists.Value(), "", nil
+	}
+	lists, err := b.service.Playlists(ctx)
+	if err != nil {
+		b.playlistsErr.Store(&err)
+		return b.playlists.Value(), "", fmt.Errorf("the playlists were not read: %w", err)
+	}
+	b.playlistsErr.Store(nil)
+	return lists, "", nil
 }
 
 func (b *Board) readQueue(ctx context.Context) (held, string, error) {
@@ -141,7 +177,10 @@ func (b *Board) readQueue(ctx context.Context) (held, string, error) {
 		return held{}, "", err
 	}
 	b.queueErr.Store(nil)
-	h := held{at: time.Now(), readFrom: readFrom, destinations: answer.Destinations, index: make(map[string]int, len(answer.Items))}
+	h := held{
+		at: time.Now(), readFrom: readFrom, destinations: answer.Destinations, verbs: answer.Verbs, watchDefault: answer.WatchDefaultPlaylist,
+		index: make(map[string]int, len(answer.Items)),
+	}
 	for i, it := range answer.Items {
 		decoded := item{ReviewItem: it}
 		if len(it.QualityAnswer) > 0 && string(it.QualityAnswer) != "null" {
@@ -207,7 +246,7 @@ func (b *Board) CursorOn(key string) {
 
 // Sources is gotermboard.Board's.
 func (b *Board) Sources() []gotermboard.Refresher {
-	return []gotermboard.Refresher{b.queue, b.parses}
+	return []gotermboard.Refresher{b.queue, b.parses, b.playlists}
 }
 
 // Groupings is gotermboard.Board's: the groupings v cycles, the first the default, which a

@@ -137,6 +137,11 @@ records_otlp_url = "http://collector.example.com:4318/v1/logs"
 [serve.homes]
 books = "/srv/books"
 
+# serve reads it: the playlist that a sort by watch adds a video to where the
+# person picks none. With none, such a watch is refused.
+[watch]
+default_playlist = "Watch soon"
+
 [worker]
 slots = 4     # tasks leased at once
 lease = "10m" # how long a lease holds without a heartbeat
@@ -158,9 +163,10 @@ client_id = "life-svc-ingestion"
 # token_command = ["my-token-helper", "life"]  # in place of client_id
 # issuer = "..."  # the OIDC provider that signs life's tokens, if not the one above
 
-# This one creates each PDF book as a resource in learning, as a client that
-# holds the scope learning.resources.write. It writes a book by its file, so
-# serve reads root too: the [serve.homes] root that each book's path is below.
+# This one creates each PDF book, and each video, as a resource in learning, as
+# a client that holds the scope learning.resources.write. It writes a book by
+# its file, so serve reads root too: the [serve.homes] root that each book's
+# path is below.
 [deliver.learning-resources]
 api = "https://learning.example.com"
 client_id = "learning-svc-ingestion"
@@ -169,7 +175,8 @@ root = "books"
 # A table for each source whose stages the worker runs, named for the source.
 # It takes api, client_id, token_command and issuer as a [deliver.<name>]
 # table does. This one reads YouTube through ypl, as a client that holds the
-# scopes that `ingestion worker run --help` names for ypl.
+# scopes that `ingestion worker run --help` names for ypl. The ypl-watch
+# deliverer writes through the same client, so it takes no table of its own.
 [source.ypl]
 api = "https://ypl.example.com"
 client_id = "ypl-svc-ingestion"
@@ -1047,6 +1054,84 @@ one, and a placement with no note of an item that holds a draft takes the draft.
 the person's `login` in its body, because a service token carries no person. The decision keeps
 the service's client id beside the login.
 
+### A person sorts an item by a verb, and a shelved item runs nothing until it is opened
+
+Each sort verb is a route. It places the item on a side and says what runs on it then.
+`ingestion review sort <key> <verb>` posts to `POST /api/v1/review/{key}/sort` under
+`ingestion.review.place`, and the review tab binds one key to each verb:
+
+| Key | Verb | What runs | When |
+| --- | --- | --- | --- |
+| `F` | `fleet-relate` | a model read under the `fleet` lens, after a note's draft, on the fleet side's default destination | in the background |
+| `L` | `learning` | delivery to the destination whose deliverer is `learning-resources`, where the quality gate's newest answer passes the item. Otherwise the item returns to review as `learning-refused`, and its card holds the gate's reason | at once |
+| `P` | `personal-relate` | nothing until opened, then `psyche relate` on the machine that opens it, as `ingestion push --to psyche --relate` runs it | when opened |
+| `S` | `personal-summarize` | nothing until opened, then one model read under the `personal` lens | when opened |
+| `T` | `technical-summarize` | nothing until opened, then one model read under the `learning` lens | when opened |
+| `W` | `watch` | the `ypl-watch` deliverer adds the video to the playlist picked, or to `[watch] default_playlist` | at once |
+| `d` | drop | the drop, with the cause picked from the drop menu | at once |
+
+```text
+$ ingestion review sort youtube/aqz-KE-bpKQ watch --playlist "Watch soon"
+Placed youtube/aqz-KE-bpKQ on watch in the playlist Watch soon: side personal, read as-is.
+$ ingestion review sort youtube/Ks-_Mh1QhMc personal-summarize
+Shelved youtube/Ks-_Mh1QhMc by personal-summarize: nothing runs until ingestion shelf open youtube/Ks-_Mh1QhMc.
+$ ingestion shelf open youtube/Ks-_Mh1QhMc
+Opened youtube/Ks-_Mh1QhMc: a model reads it under the personal lens. Open it again once it is done to read its summary.
+```
+
+- **Each sort writes a person's side decision with the verb as its cause**, then its read
+  decision. The gate's trust and its agreement count it as a person's placement, as they count
+  `review place`. A card sent with it is kept as a placement's is. A sort that repeats the newest
+  side decision, playlist included, changes nothing.
+- **A verb places on the first destination whose deliverer is the verb's.** Fleet relate places
+  on the fleet side's default. `review list --json` lists each verb under `verbs` with that
+  destination, and says why the verb places nothing where the set declares none. The sort then
+  answers 422 `verb_refused`, and so it does where the deliverer cannot take the item, such as
+  `ypl-watch` for anything but a YouTube video.
+- **`learning-refused` is the read gate's review.** The item keeps the person's side decision.
+  A quality task that has not run stays queued, and the item waits until the person sorts it
+  again.
+- **`ypl-watch` inserts the video through ypl's `POST /api/v1/youtube/playlists/{id}/items`.**
+  Each insert spends ypl's Data API quota. YouTube keeps a second copy of a video that a playlist
+  holds already. The `deliveries` row keeps the playlist picked, and is never queued again once
+  settled. From its second attempt on, the deliverer reads the playlist before it inserts. The
+  attempt before may have landed with its answer lost. The deliverer then settles on the video
+  that it finds there. A quota
+  that ypl reports spent holds the task for its `Retry-After`, and spends no attempt. The
+  deliverer writes through the client of the worker's `[source.ypl]` table. The Data API cannot
+  write the Watch Later list, so a watch names a playlist of the channel's own.
+- **One delivery adds the video to one playlist.** Where the item's delivery holds another
+  playlist, a watch answers 422 `verb_refused` and names the playlist held.
+- **Only a watch places an item on the `watch` destination**, because only the sort picks the
+  playlist. Review leaves the destination out. `review place` answers 422
+  `destination_takes_playlist`. The set check refuses the destination as a side's default or a
+  tag's target. It also refuses an accepted rule that names it.
+- **The review tab's `W` asks which playlist.** It lists the default first, then each playlist
+  that `ypl playlists list --json` prints on the person's machine. Enter takes the default, a
+  number picks its playlist, and any other text names a playlist by its title or its id.
+- **A shelved item's phase is `shelved` until a person opens it**, and nothing runs on it before.
+  `ingestion shelf list` reads `GET /api/v1/shelf` under `ingestion.review.read`, in
+  `schemas/shelf-list.schema.json`. `ingestion shelf open <key>` posts to
+  `POST /api/v1/shelf/{key}/open` under `ingestion.review.place`, and answers
+  `schemas/shelf-open.schema.json`. An item that is not on the shelf answers 409 `not_shelved`.
+- **The first opening appends the person's read decision with cause `shelf-open`.** For a
+  summary, that decision reads the item by a model under the shelf's lens, which queues one
+  model read. A later opening appends and queues nothing, so it shows the kept summary with no
+  model call. A failed read runs again only through `ingestion tasks retry`.
+- **A relate runs only on the machine that opens it.** `shelf open` reads the item's parse and its
+  scan, and hands them to `psyche relate`, as `ingestion push --to psyche --relate` does. The
+  service keeps nothing of it, so each opening runs it again.
+- **A shelf item's state** is `waiting` until opened. A relate then reads `opened`. A summary
+  reads `reading` while its model read is queued or running, `done` once kept, and `failed`.
+- **Once opened, an item stays on the shelf until a person removes it.**
+  `ingestion shelf remove <key>` posts to `POST /api/v1/shelf/{key}/remove` under
+  `ingestion.review.place`, and answers `schemas/shelf-remove.schema.json`. The removal appends
+  the person's read decision with cause `shelf-remove`. It keeps the newest read's verdict and
+  lens, so a summary already kept stays in the item. Removing it again answers `removed: false`.
+- **`ingestion tui --view shelf` lists the shelf**, grouped by verb or by state, with a kept
+  summary in the side panel. `a` opens the item under the cursor, `o` opens its URL, and `D`
+  removes it. The tab's `--json` snapshot holds to `schemas/tui-shelf.schema.json`.
+
 ### A person accepts a routing rule in the service, and its review share shows what it would hide
 
 A rule written by hand stays in `routing-rules.yml`. A rule that a person accepts, such as one
@@ -1129,17 +1214,16 @@ idea and themes, or a sighting's fields.
 
 | Key | Does |
 | --- | --- |
-| `1`–`9` | places the item on the destination numbered with that digit under the strip, taking the note's draft where the item holds one |
-| `F` | fleet relate: places it on the first destination on the fleet side, so a model reads it against the owner's current work |
+| `F` `L` `P` `S` `T` `W` | sorts it by `fleet-relate`, `learning`, `personal-relate`, `personal-summarize`, `technical-summarize` or `watch`, as the section on sort verbs tells. The bar under the strip names where each verb sends an item |
 | `d` | drops it, after asking what decided it: its channel or another field of its source such as its subreddit, its title, its theme, its low quality, or none |
 | `x` | marks it `low-quality`, which counts on its gate families and leaves it waiting |
 | `r` | marks it `read`, which counts on its gate families and leaves it waiting |
 | `c` | asks once what a video's top comments say, as the next section tells |
-| `n` | writes a note in `$VISUAL` or `$EDITOR`, which a model read answers, then places the item with it on the destination picked |
+| `n` | writes a note in `$VISUAL` or `$EDITOR`, which a model read answers, then places the item with it on the destination picked from a numbered menu |
 | `o` | opens its URL in the browser, where it is an http or https address |
 
-Each key posts to the routes that `review place`, `review drop` and `items mark` post to, under
-the same login, so the decision is the person's. A placement or a drop also keeps `presented`,
+Each key posts to the routes that `review sort`, `review place`, `review drop` and `items mark`
+post to, under the same login, so the decision is the person's. A placement or a drop also keeps `presented`,
 the card as the tab showed it:
 
 - the sort and grouping in force
@@ -1359,8 +1443,10 @@ It puts them to the model through `prompts/model-read/prompt.tmpl` and the lens'
 `prompts/model-read/lenses/`, beside the lens's context where the worker opened a reader.
 
 - **The lens says what the item is read for.** The `fleet` lens reads it for the software it may
-  bear on: how that software is built, run and kept safe. Where the item carries a note, the read
-  answers the note. A draft is quoted under its own heading, as questions a model drafted, so an
+  bear on: how that software is built, run and kept safe. The `personal` lens reads it for the
+  owner's own life, and the `learning` lens to learn its subject, concept by concept. A sort by
+  `personal-summarize` or `technical-summarize` reads under those two once opened. Only the
+  `fleet` lens drafts a missing note. Where the item carries a note, the read answers the note. A draft is quoted under its own heading, as questions a model drafted, so an
   instruction inside it is not the owner's. Where the item carries neither, the read answers the
   lens's default questions.
 - **The answer holds to `prompts/model-read/answer.schema.json`**: a summary, a suggestion
@@ -1415,7 +1501,9 @@ keeps the item's key as the record's source key. `life-articles` posts the item 
 first landed as the save date, and its key as `source_key`. `learning-resources` posts a PDF to
 learning's `/api/v1/resources` as a book whose copy is that PDF. It sends the item's title, the
 type `book`, the copy `pdf`, its key as `source_key`, and its file as `file_path`: the path of its
-live home below the `[serve.homes]` root that `[deliver.learning-resources]` names as `root`.
+live home below the `[serve.homes]` root that `[deliver.learning-resources]` names as `root`. It
+posts a video, which holds no bytes, as type `video` with its URL. `ypl-watch` adds a video to the
+playlist that its sort picked, through ypl, as the section on sort verbs tells.
 
 A book's chapter takes its book's placement, so it goes where its book goes. `learning-resources`
 posts it as type `chapter`, `part_of` the resource that its book's delivery settled on. It sends

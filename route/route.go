@@ -106,6 +106,13 @@ const (
 	// sends to review an item whose draft fell below the floor.
 	CauseNoteDraft   = "note-draft"
 	CauseNoteUnclear = "note-unclear"
+	// CauseLearningRefused sends to review, at the read gate, an item that a
+	// person sorted to learning where the quality gate's newest answer did
+	// not pass it. CauseShelfOpen is a person's opening of a shelved item,
+	// and CauseShelfRemove their taking it off the shelf.
+	CauseLearningRefused = "learning-refused"
+	CauseShelfOpen       = store.CauseShelfOpen
+	CauseShelfRemove     = store.CauseShelfRemove
 )
 
 // ReviewReason is one reason an item waits in review: its name, the line
@@ -132,6 +139,10 @@ var ReviewReasons = []ReviewReason{
 	{
 		CauseNoteUnclear, "a model read waits on its note, whose draft fell below the note floor: write a note, or place it with none to take the draft",
 		"the note's draft is unclear",
+	},
+	{
+		CauseLearningRefused, "you sorted it to learning, and the quality gate's newest answer did not pass it: its card holds the gate's reason",
+		"learning refused it",
 	},
 	{CauseBelowFloor, "the quality gate guessed fleet, or its guess fell below its floor", "fleet guess, or below its floor"},
 	{
@@ -562,7 +573,9 @@ func GuessOf(outputs []store.Output) *Guess {
 // Where a person decides the side, it withdraws the item's queued quality
 // task, so no model judges an item that a person placed before the gate
 // answered. A tag's or a rule's placement leaves the task queued, because the
-// gate's answer on every item it reads is what its trust is earned from.
+// gate's answer on every item it reads is what its trust is earned from. So
+// does a learning sort that the gate's want of an answer refused, which the
+// person decides again once the gate answers.
 func decide(ctx context.Context, tx *store.Tx, key string, side store.Decision, set connectors.Set, sightings []store.Sighting,
 	note *string, readAs *store.Decision,
 ) ([]store.Decision, error) {
@@ -571,7 +584,7 @@ func decide(ctx context.Context, tx *store.Tx, key string, side store.Decision, 
 	if err != nil {
 		return nil, err
 	}
-	if written.ByPerson() {
+	if written.ByPerson() && (readAs == nil || readAs.Cause != CauseLearningRefused) {
 		why := "withdrawn: " + written.DecidedBy + " decided the item's side before the quality gate ran"
 		if err := tx.WithdrawQueued(ctx, key, store.StageQuality, why); err != nil {
 			return nil, err
@@ -690,8 +703,9 @@ func ModelReadDue(side, read store.Decision, outputs []store.Output, open bool) 
 }
 
 // modelReadDue is ModelReadDue, where currentPrompt false counts a done read
-// of any prompt version, as the read gate does. A new prompt then reads an
-// item again only through a replay, which estimates its tokens first.
+// of any prompt version under the read's lens, as the read gate does. A new
+// prompt then reads an item again only through a replay, which estimates its
+// tokens first. An output that names no lens counts under every lens.
 func modelReadDue(side, read store.Decision, outputs []store.Output, open, currentPrompt bool) bool {
 	if open || !ReadByModel(side, read) || read.ByParent() || awaitsNote(read, outputs) {
 		return false
@@ -699,9 +713,21 @@ func modelReadDue(side, read store.Decision, outputs []store.Output, open, curre
 	p, ok := prompts.ModelRead[text(read.Lens)]
 	note, _ := NoteOf(read, store.NewestDone(outputs, store.StageNote))
 	return ok && !slices.ContainsFunc(outputs, func(o store.Output) bool {
-		return o.Stage == store.StageModelRead && o.State == store.OutputDone && (!currentPrompt || o.ProducerVersion == p.Version) &&
-			store.NoteAnswered(o.NoteDigest, note)
+		return readDoneUnder(read, o) && (!currentPrompt || o.ProducerVersion == p.Version) && store.NoteAnswered(o.NoteDigest, note)
 	})
+}
+
+// readDoneUnder says whether o is a done model read under read's lens, as
+// underLens decides.
+func readDoneUnder(read store.Decision, o store.Output) bool {
+	return o.Stage == store.StageModelRead && o.State == store.OutputDone && underLens(read, o)
+}
+
+// underLens says whether o was read under read's lens. An output that names
+// no lens counts under every lens, since it was read before any lens but the
+// fleet's.
+func underLens(read store.Decision, o store.Output) bool {
+	return o.Lens == nil || *o.Lens == text(read.Lens)
 }
 
 // reconcileModelRead queues the note's draft of the item under key where the
@@ -794,7 +820,7 @@ func Due(ctx context.Context, r DueReader, set connectors.Set, item store.Item, 
 			return DueDelivery{}, false, err
 		}
 		due.BookDestinationID, due.Undelivered = bookRecord(due.Destination, side, book)
-	default:
+	case item.BlobSHA256 != nil:
 		if due.Path, err = connectors.FilePath(due.Destination.Deliverer, homes); err != nil {
 			return DueDelivery{}, false, err
 		}
@@ -943,7 +969,7 @@ func reconcileDelivery(ctx context.Context, tx *store.Tx, set connectors.Set, it
 			return false, err
 		}
 	}
-	return tx.QueueDelivery(ctx, item, due.Path, chapter, due.Destination.Name, due.Destination.Deliverer)
+	return tx.QueueDelivery(ctx, item, due.Path, chapter, side.Playlist, due.Destination.Name, due.Destination.Deliverer)
 }
 
 // chapterInBook is where the chapter under key sits in the record book: at
@@ -1017,6 +1043,19 @@ func (e *ChapterError) Error() string {
 	return fmt.Sprintf("%s is a chapter of %s and takes its book's placement, so place %s", e.Chapter, e.Book, e.Book)
 }
 
+// PlaylistDestinationError is a placement on a destination whose deliverer
+// adds the item to the playlist that a sort picks, which no placement carries.
+type PlaylistDestinationError struct {
+	Destination string
+	// Verb is the verb whose sort places an item there.
+	Verb string
+}
+
+func (e *PlaylistDestinationError) Error() string {
+	return fmt.Sprintf("only a sort by %s places an item at %s, since its deliverer adds the item to the playlist that the sort picks, so sort the item by %s instead",
+		e.Verb, e.Destination, e.Verb)
+}
+
 // PushOnlyError is a placement other than a push on a push-only destination,
 // whose program only a push hands the item to.
 type PushOnlyError struct {
@@ -1038,8 +1077,9 @@ func (e *PushOnlyError) Error() string {
 // gate, which returns each family of its answer to rung 0. Place answers
 // store.ErrNoItem where the store holds no such item, a NotDeclaredError
 // for a destination that the set in force does not declare, a PushOnlyError
-// for a push-only destination that p does not push to, and a ChapterError
-// for a book's chapter.
+// for a push-only destination that p does not push to, a
+// PlaylistDestinationError for a destination that only a sort places on, and
+// a ChapterError for a book's chapter.
 func Place(ctx context.Context, tx *store.Tx, key string, p Placement) ([]store.Decision, error) {
 	if item, ok, err := tx.Item(ctx, key); err != nil {
 		return nil, err
@@ -1076,6 +1116,13 @@ func Place(ctx context.Context, tx *store.Tx, key string, p Placement) ([]store.
 		}
 		if destination.PushOnly && !p.Pushed {
 			return nil, &PushOnlyError{Destination: destination.Name}
+		}
+		if connectors.TakesPlaylist(destination.Deliverer) {
+			e := &PlaylistDestinationError{Destination: destination.Name}
+			if i := slices.IndexFunc(Verbs, func(v VerbRoute) bool { return v.Deliverer == destination.Deliverer }); i >= 0 {
+				e.Verb = Verbs[i].Verb
+			}
+			return nil, e
 		}
 		side.Verdict, side.Destination = verdictOf(destination), &destination.Name
 	}
@@ -1124,7 +1171,7 @@ func repeated(ctx context.Context, tx *store.Tx, key string, side store.Decision
 	}
 	if newest.Verdict != side.Verdict || newest.DecidedBy != side.DecidedBy || newest.Cause != side.Cause ||
 		text(newest.Destination) != text(side.Destination) || text(newest.Note) != text(side.Note) ||
-		text(newest.ClientID) != text(side.ClientID) {
+		text(newest.ClientID) != text(side.ClientID) || text(newest.Playlist) != text(side.Playlist) {
 		return nil, false, nil
 	}
 	made := []store.Decision{newest}

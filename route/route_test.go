@@ -157,12 +157,11 @@ func TestTheReadGateTakesTheConnectorsRuleElseTheSidesDefault(t *testing.T) {
 // no prompt for that lens. The same item on the fleet side, placed with a
 // note, is due one.
 func TestAModelReadIsDueOnlyUnderALensWhosePromptTheBuildHolds(t *testing.T) {
-	modelRead := connectors.Set{Connectors: []connectors.Connector{{Name: "reddit-exports", ReadRule: connectors.ReadModel}}}
 	note := "what would this change?"
-	for side, want := range map[string]bool{connectors.SidePersonal: false, connectors.SideFleet: true} {
-		read := route.Read(modelRead, []store.Sighting{sighting("reddit-exports", "")}, side, &note)
-		if due := route.ModelReadDue(store.Decision{Verdict: side}, read, nil, false); due != want {
-			t.Errorf("a model read on the %s side under lens %v is due: %v, want %v", side, read.Lens, due, want)
+	for lens, want := range map[string]bool{route.LensFleet: true, route.LensPersonal: true, route.LensLearning: true, "unheld": false} {
+		read := store.Decision{Gate: store.GateRead, Verdict: connectors.ReadModel, DecidedBy: route.ByPerson("ana"), Lens: &lens, Note: &note}
+		if due := route.ModelReadDue(store.Decision{Verdict: connectors.SidePersonal}, read, nil, false); due != want {
+			t.Errorf("a model read under lens %s is due: %v, want %v", lens, due, want)
 		}
 	}
 }
@@ -197,5 +196,41 @@ func TestTheReviewReasonsAreTheReviewListSchemasReasons(t *testing.T) {
 	enum := schema.Properties.Items.Items.Properties.Reason.Enum
 	if !slices.Equal(slices.Sorted(slices.Values(names)), slices.Sorted(slices.Values(enum))) {
 		t.Errorf("route.ReviewReasons names %v, and the schema's reason enum %v", names, enum)
+	}
+}
+
+// A verb that the table gains and a schema's enum lacks fails a reader that
+// validates the answer. So each schema that names the verbs names
+// route.Verbs, and the shelf-list names the shelf verbs.
+func TestTheVerbSchemasNameTheVerbTable(t *testing.T) {
+	enumAt := func(file string, path ...string) []string {
+		raw, err := schemas.Files.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var node any
+		if err := json.Unmarshal(raw, &node); err != nil {
+			t.Fatal(err)
+		}
+		for _, step := range append(path, "enum") {
+			node = node.(map[string]any)[step]
+		}
+		var enum []string
+		for _, v := range node.([]any) {
+			enum = append(enum, v.(string))
+		}
+		return slices.Sorted(slices.Values(enum))
+	}
+	for _, c := range []struct {
+		file  string
+		path  []string
+		verbs []string
+	}{
+		{"review-list.schema.json", []string{"properties", "verbs", "items", "properties", "verb"}, route.VerbNames()},
+		{"shelf-list.schema.json", []string{"$defs", "shelved", "properties", "verb"}, route.ShelfVerbs()},
+	} {
+		if enum, want := enumAt(c.file, c.path...), slices.Sorted(slices.Values(c.verbs)); !slices.Equal(enum, want) {
+			t.Errorf("%s names the verbs %v, and the table %v", c.file, enum, want)
+		}
 	}
 }

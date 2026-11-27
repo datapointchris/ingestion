@@ -346,9 +346,14 @@ type Decision struct {
 	Cause       string   `json:"cause"`
 	Destination *string  `json:"destination"`
 	Note        *string  `json:"note"`
-	// Lens is set on a read decision whose verdict is model.
+	// Lens is set on a read decision whose verdict is model, and on a shelf
+	// whose opening runs a model read.
 	Lens     *string `json:"lens"`
 	ClientID *string `json:"client_id"`
+	// Playlist is the playlist that a person's watch adds the video to, on
+	// the side decision that places it on a destination whose deliverer adds
+	// videos to a playlist, and nil on every other decision.
+	Playlist *string `json:"playlist"`
 	// Presented is the card as the person saw it when they decided, and
 	// DecidedAfterMS how long after it was drawn they decided. Both are nil
 	// on a decision that no card preceded, such as a rule's or a command's.
@@ -408,6 +413,25 @@ const (
 	VerdictPass   = "pass"
 	VerdictDrop   = "drop"
 	VerdictReview = "review"
+	// VerdictShelf is the read gate's verdict on an item that a person put on
+	// the shelf: nothing reads it until the person opens it.
+	VerdictShelf = "shelf"
+)
+
+// The causes of a person's read decisions on a shelved item. CauseShelfOpen
+// opens it, and CauseShelfRemove takes it off the shelf, keeping the newest
+// read's verdict and lens.
+const (
+	CauseShelfOpen   = "shelf-open"
+	CauseShelfRemove = "shelf-remove"
+)
+
+// The standings of an item on the shelf, as ItemRecords.ShelfStanding answers
+// them: waiting for a person to open it, and opened. An item off the shelf
+// stands at "".
+const (
+	ShelfWaiting = "waiting"
+	ShelfOpened  = "opened"
 )
 
 // Who decided, as decided_by spells it, beside the forms that the DecidedBy
@@ -547,7 +571,11 @@ type Delivery struct {
 	PDFPageEnd        *int    `json:"pdf_page_end"`
 	PrintedPageStart  *string `json:"printed_page_start"`
 	PrintedPageEnd    *string `json:"printed_page_end"`
-	UpdatedTS         string  `json:"updated_ts"`
+	// Playlist is the playlist that a watch adds the video to, from the side
+	// decision when the delivery was first queued, which every attempt sends,
+	// and nil for every other deliverer.
+	Playlist  *string `json:"playlist"`
+	UpdatedTS string  `json:"updated_ts"`
 }
 
 // ChapterInBook is where a book's chapter sits in its destination: the

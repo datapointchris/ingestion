@@ -3,6 +3,10 @@ package review
 import (
 	"context"
 	"encoding/json"
+	"maps"
+	"os"
+	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -14,15 +18,26 @@ import (
 
 	"github.com/datapointchris/ingestion/connectors"
 	"github.com/datapointchris/ingestion/route"
+	"github.com/datapointchris/ingestion/schemas"
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
 )
 
-// fakeService answers the queue it holds, and keeps each placement it is sent.
+// fakeService answers the queue and the playlists it holds, and keeps each placement and sort it
+// is sent.
 type fakeService struct {
-	answer server.ReviewAnswer
-	placed []server.PlaceRequest
+	answer    server.ReviewAnswer
+	playlists []Playlist
+	placed    []server.PlaceRequest
+	sorted    []server.SortRequest
 }
+
+func (f *fakeService) Sort(_ context.Context, key string, body server.SortRequest) (string, error) {
+	f.sorted = append(f.sorted, body)
+	return "sorted " + key, nil
+}
+
+func (f *fakeService) Playlists(context.Context) ([]Playlist, error) { return f.playlists, nil }
 
 func (f *fakeService) Queue(context.Context) (server.ReviewAnswer, error) { return f.answer, nil }
 func (f *fakeService) Parse(context.Context, string) (server.ParseAnswer, bool, error) {
@@ -76,9 +91,15 @@ func fit(n int) *int { return &n }
 func deck() server.ReviewAnswer {
 	save, subreddit := "A post about sourdough", "r/baking"
 	fleet, personal := connectors.SideFleet, connectors.SidePersonal
+	inbox, watch, later := "work-inbox", "watch", "Later"
 	return server.ReviewAnswer{
-		SchemaVersion: 2,
-		Destinations:  []server.ReviewDestination{{Name: "reading-list", Side: &personal}, {Name: "work-inbox", Side: &fleet}},
+		SchemaVersion: server.ReviewListVersion,
+		Destinations:  []server.ReviewDestination{{Name: "reading-list", Side: &personal}, {Name: inbox, Side: &fleet}},
+		Verbs: []server.ReviewVerb{
+			{Verb: route.VerbFleetRelate, Side: &fleet, Destination: &inbox},
+			{Verb: route.VerbWatch, Side: &personal, Destination: &watch, Playlist: true},
+		},
+		WatchDefaultPlaylist: &later,
 		Items: []server.ReviewItem{
 			video("vida", "Gardening with robots", "Allotment Lab", "ypl-capture", store.ReasonQualityReview, 20, 10_000, 900, 300, 5, fit(9), "pass"),
 			video("vidb", "Tidal power explained", "Sea Notes", "ypl-channel", store.ReasonQualityReview, 24, 50_000, 1000, 1800, 6, fit(3), "unsure"),
@@ -211,17 +232,39 @@ func TestAPlacementFromAFilteredTabKeepsTheCardAsTheTabShowedIt(t *testing.T) {
 	if m.Cursor() != "youtube/vidc" {
 		t.Fatalf("filtered to the greenhouse video, the cursor rests on %q", m.Cursor())
 	}
-	runKey(m, letter(KeyFleetRelate[0]))
-	if len(service.placed) != 1 {
-		t.Fatalf("F sent %d placements, want one", len(service.placed))
+	fleet := VerbBindings[route.VerbFleetRelate].Key
+	runKey(m, letter(fleet[0]))
+	if len(service.sorted) != 1 {
+		t.Fatalf("%s sent %d sorts, want one", fleet, len(service.sorted))
 	}
-	body := service.placed[0]
+	body := service.sorted[0]
 	p := body.Presented
-	if body.Destination != "work-inbox" || p == nil || p.Sort != store.SortQuality || p.Grouping != store.GroupByConnector || p.Rank != 1 || p.Position != 1 || p.Shown != 1 ||
+	if body.Verb != route.VerbFleetRelate || p == nil || p.Sort != store.SortQuality || p.Grouping != store.GroupByConnector || p.Rank != 1 || p.Position != 1 || p.Shown != 1 ||
 		p.Quality == nil || *p.Quality != 8 || p.Fit != nil || p.Verdict == nil || *p.Verdict != "drop" ||
 		p.Side == nil || *p.Side != connectors.SideFleet || body.DecidedAfterMS == nil || *body.DecidedAfterMS < 0 {
-		t.Errorf("F placed on %s keeping %+v after %v ms, want work-inbox with the one row shown, first under quality, grouped by connector",
-			body.Destination, p, body.DecidedAfterMS)
+		t.Errorf("%s sorted by %s keeping %+v after %v ms, want fleet-relate with the one row shown, first under quality, grouped by connector",
+			fleet, body.Verb, p, body.DecidedAfterMS)
+	}
+}
+
+// W asks which playlist, the service's default first and then each playlist this machine lists.
+// Enter takes the default, which the sort leaves to the service, and a number its playlist's id.
+func TestWatchAsksForThePlaylistWithTheDefaultFirst(t *testing.T) {
+	service := &fakeService{answer: deck(), playlists: []Playlist{{ID: "PLb", Title: "Bench"}, {ID: "PLl", Title: "Later"}, {ID: "PLa", Title: "Audio"}}}
+	b := readBoard(t, service)
+	b.wantPlaylists.Store(true)
+	b.playlists.Refresh(t.Context())
+	m := gotermboard.NewModel(b, gotermstyle.PaletteFor(nil))
+	m.Update(tea.WindowSizeMsg{Width: 200, Height: 40})
+	first := m.Cursor()
+	watch := VerbBindings[route.VerbWatch].Key
+	runKey(m, letter(watch[0]))
+	runKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	runKey(m, letter(watch[0]))
+	runKey(m, letter('3'))
+	runKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if len(service.sorted) != 2 || service.sorted[0].Verb != route.VerbWatch || service.sorted[0].Playlist != "" || service.sorted[1].Playlist != "PLb" {
+		t.Fatalf("after W enter on %s, then W 3 enter, the sorts are %+v, want the default, then Bench by its id", first, service.sorted)
 	}
 }
 
@@ -242,4 +285,65 @@ func runKey(m *gotermboard.Model, key tea.KeyPressMsg) {
 		}
 	}
 	m.Rebuild()
+}
+
+// Each verb has one key, no two verbs share one, and tui-review's key enum
+// names exactly those keys. A verb with no binding would never be offered.
+func TestEachVerbHasItsOwnKey(t *testing.T) {
+	var keys []string
+	for _, v := range route.Verbs {
+		bound, ok := VerbBindings[v.Verb]
+		if !ok || bound.Key == "" || bound.Footer == "" {
+			t.Errorf("verb %s has the binding %+v", v.Verb, bound)
+		}
+		keys = append(keys, bound.Key)
+	}
+	if len(VerbBindings) != len(route.Verbs) || len(slices.Compact(slices.Sorted(slices.Values(keys)))) != len(keys) {
+		t.Errorf("the bindings %v give the verbs %v keys %v, want one key each", VerbBindings, route.VerbNames(), keys)
+	}
+	raw, err := schemas.Files.ReadFile("tui-review.schema.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema struct {
+		Properties struct {
+			Verbs struct {
+				Items struct {
+					Properties struct {
+						Key struct {
+							Enum []string `json:"enum"`
+						} `json:"key"`
+					} `json:"properties"`
+				} `json:"items"`
+			} `json:"verbs"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatal(err)
+	}
+	if enum := schema.Properties.Verbs.Items.Properties.Key.Enum; !slices.Equal(slices.Sorted(slices.Values(enum)), slices.Sorted(slices.Values(keys))) {
+		t.Errorf("tui-review's key enum is %v, and the bindings' keys %v", enum, keys)
+	}
+}
+
+// The watch's question lists what ypl playlists list --json prints, each an
+// entry of ypl's own playlists answer. A field that ypl renames would list a
+// blank row, so each field that Playlist reads is in ypl's document.
+func TestAPlaylistReadsTheFieldsThatYPLPrints(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "ypl", "testdata", "wire", "playlists.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var answer struct {
+		Data []map[string]json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &answer); err != nil || len(answer.Data) == 0 {
+		t.Fatalf("ypl's playlists answer holds %d playlists: %v", len(answer.Data), err)
+	}
+	fields := reflect.TypeFor[Playlist]()
+	for i := range fields.NumField() {
+		if name := fields.Field(i).Tag.Get("json"); answer.Data[0][name] == nil {
+			t.Errorf("Playlist reads %q, and ypl's playlist holds only %v", name, slices.Sorted(maps.Keys(answer.Data[0])))
+		}
+	}
 }

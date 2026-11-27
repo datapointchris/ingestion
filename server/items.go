@@ -286,6 +286,7 @@ type DecisionView struct {
 	Destination    *string          `json:"destination"`
 	Note           *string          `json:"note"`
 	Lens           *string          `json:"lens"`
+	Playlist       *string          `json:"playlist"`
 	ClientID       *string          `json:"client_id"`
 	Presented      *store.Presented `json:"presented"`
 	DecidedAfterMS *int64           `json:"decided_after_ms"`
@@ -299,6 +300,7 @@ type DeliveryView struct {
 	Outcome       string  `json:"outcome"`
 	Attempts      int     `json:"attempts"`
 	LastError     *string `json:"last_error"`
+	Playlist      *string `json:"playlist"`
 	// UnclaimedCapability is the capability of the delivery's queued task
 	// where no worker heard from lately holds it, and null otherwise.
 	UnclaimedCapability *string `json:"unclaimed_capability"`
@@ -370,7 +372,7 @@ func (h itemHandlers) list(w http.ResponseWriter, r *http.Request) {
 		h.internal(w, r, "list items", err)
 		return
 	}
-	answer := ItemsAnswer{SchemaVersion: 1, Items: make([]ItemListed, 0, len(records))}
+	answer := ItemsAnswer{SchemaVersion: ItemsListVersion, Items: make([]ItemListed, 0, len(records))}
 	if next != "" {
 		answer.Next = &next
 	}
@@ -582,7 +584,7 @@ func (h itemHandlers) internal(w http.ResponseWriter, r *http.Request, what stri
 func itemAnswer(rec store.ItemRecords) ItemAnswer {
 	it := rec.Item
 	a := ItemAnswer{
-		SchemaVersion: 1,
+		SchemaVersion: ItemVersion,
 		Item: ItemView{
 			Key: it.Key, Zone: it.Zone, MediaType: it.MediaType, Title: it.Title, URL: it.URL, SourceTS: it.SourceTS, BlobSHA256: it.BlobSHA256,
 			ParentKey: it.ParentKey, FlowID: it.FlowID, Phase: rec.Phase(), WaitingAt: optional(rec.WaitingAt()), CreatedTS: it.CreatedTS,
@@ -618,6 +620,7 @@ func itemAnswer(rec store.ItemRecords) ItemAnswer {
 	for _, d := range rec.Deliveries {
 		a.Deliveries = append(a.Deliveries, DeliveryView{
 			Destination: d.Destination, DestinationID: d.DestinationID, Outcome: d.Outcome, Attempts: d.Attempts, LastError: d.LastError,
+			Playlist: d.Playlist,
 		})
 	}
 	for _, s := range rec.Sections {
@@ -676,7 +679,7 @@ type SectionView struct {
 func decisionView(d store.Decision) DecisionView {
 	return DecisionView{
 		Gate: d.Gate, Verdict: d.Verdict, DecidedBy: d.DecidedBy, Confidence: d.Confidence, Cause: d.Cause,
-		Destination: d.Destination, Note: d.Note, Lens: d.Lens, ClientID: d.ClientID,
+		Destination: d.Destination, Note: d.Note, Lens: d.Lens, Playlist: d.Playlist, ClientID: d.ClientID,
 		Presented: d.Presented, DecidedAfterMS: d.DecidedAfterMS, DecidedTS: d.DecidedTS,
 	}
 }

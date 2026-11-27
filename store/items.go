@@ -315,12 +315,36 @@ var reached = map[string]string{
 	StageDeliver:   "delivered",
 }
 
-// PhaseReview is the phase of an item that waits on a person's placement.
-const PhaseReview = "review"
+// PhaseReview is the phase of an item that waits on a person's placement, and
+// PhaseShelved of one that waits on the shelf for a person to open it.
+const (
+	PhaseReview  = "review"
+	PhaseShelved = "shelved"
+)
+
+// ShelfStanding is where the item stands on the shelf, read from its newest
+// side and read decisions: ShelfWaiting where a sort put it on the shelf and
+// nobody opened it, ShelfOpened once a person opened it, and "" off the shelf.
+// Its side decision places it on a side. A person's removal, or any other
+// read decision, takes it off.
+func (r ItemRecords) ShelfStanding() string {
+	_, onASide := r.Side()
+	read, ok := r.NewestDecision(GateRead)
+	switch {
+	case !onASide || !ok:
+		return ""
+	case read.Cause == CauseShelfOpen:
+		return ShelfOpened
+	case read.Verdict == VerdictShelf && read.Cause != CauseShelfRemove:
+		return ShelfWaiting
+	}
+	return ""
+}
 
 // Phase is the item's phase in the words of schemas/items-list.schema.json:
 // dropped where the newest side decision drops it, review where WaitsOnPerson
-// says it waits, failed where another stage on the line holds a newest task
+// says it waits, shelved where it waits on the shelf for a person to open it,
+// failed where another stage on the line holds a newest task
 // that failed, dropped where the quality gate drops it before any side
 // decision, waiting where a model stage holds it, and otherwise the furthest
 // stage whose condition is True. A person can place an
@@ -334,6 +358,9 @@ func (r ItemRecords) Phase() string {
 	}
 	if _, _, waits := r.WaitsOnPerson(); waits {
 		return PhaseReview
+	}
+	if r.ShelfStanding() == ShelfWaiting {
+		return PhaseShelved
 	}
 	newest := map[string]Task{}
 	for _, t := range r.Tasks {

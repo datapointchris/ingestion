@@ -103,6 +103,9 @@ func TestTheClientHoldsWhatYPLsSuiteWrites(t *testing.T) {
 				switch {
 				case r.Method == http.MethodDelete:
 					w.WriteHeader(http.StatusNoContent)
+				case r.Method == http.MethodPost:
+					w.WriteHeader(http.StatusCreated)
+					_, _ = w.Write([]byte("null"))
 				case strings.HasSuffix(r.URL.Path, "/audio"):
 					_, _ = w.Write([]byte("audio"))
 				default:
@@ -126,6 +129,9 @@ func TestTheClientHoldsWhatYPLsSuiteWrites(t *testing.T) {
 		t.Error(err)
 	}
 	if err := c.DeletePlaylistItem(ctx, "PLtestcapture", "item0001"); err != nil {
+		t.Error(err)
+	}
+	if _, err := c.AddPlaylistItem(ctx, "PLtestwatch", "testvid0001"); err != nil {
 		t.Error(err)
 	}
 	if _, err := c.Captions(ctx, "testvid0001"); err != nil {

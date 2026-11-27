@@ -15,7 +15,6 @@ import (
 	"github.com/datapointchris/gotermboard/keywrites"
 	"github.com/datapointchris/gotermboard/terminalcontrol"
 
-	"github.com/datapointchris/ingestion/connectors"
 	"github.com/datapointchris/ingestion/gatetrust"
 	"github.com/datapointchris/ingestion/route"
 	"github.com/datapointchris/ingestion/server"
@@ -25,19 +24,16 @@ import (
 // Every key is bound on every row and says on the footer why it does nothing where it cannot act.
 func (b *Board) Actions() []gotermboard.Action {
 	var actions []gotermboard.Action
-	for n := 1; n <= 9; n++ {
-		digit := gotermboard.Action{Keys: []string{strconv.Itoa(n)}, Run: b.onItem(func(m *gotermboard.Model, it item) tea.Cmd { return b.place(m, it, n, nil, "") })}
-		if n == 1 {
-			digit.Label = "place the item on the destination the strip numbers with that digit, at once, as your decision. " +
-				"It takes that destination's side, or drops where the destination takes none, and leaves the queue. " +
-				"An item that waits as note-unclear takes the note's draft"
-			digit.Footer = "1-9 place"
+	for _, v := range route.Verbs {
+		bound, ok := VerbBindings[v.Verb]
+		if !ok {
+			continue
 		}
-		actions = append(actions, digit)
+		actions = append(actions, gotermboard.Action{
+			Keys: []string{bound.Key}, Label: v.Verb + ", at once, as your decision: " + v.Help, Footer: bound.Key + " " + bound.Footer, Run: b.onItem(b.sortBy(v)),
+		})
 	}
 	return append(actions,
-		gotermboard.Action{Keys: []string{KeyFleetRelate}, Label: "fleet relate: place the item on the first destination on the fleet side, at once, as your decision, " +
-			"so a model reads it under the fleet lens against your current work, unless its connector's read rule reads it as is", Footer: KeyFleetRelate + " fleet relate", Run: b.onItem(b.fleetRelate)},
 		gotermboard.Action{Keys: []string{KeyDrop}, Label: "drop the item, which keeps its row, after asking what decided it: its channel or another field of its source such as its subreddit, its title, its theme, its low quality, or none", Footer: KeyDrop + " drop", Run: b.onItem(b.drop)},
 		gotermboard.Action{Keys: []string{KeyLowQuality}, Label: "mark the item low quality: it held nothing worth keeping. The mark teaches the quality gate and leaves the item waiting", Footer: KeyLowQuality + " low quality", Run: b.onItem(b.mark(gatetrust.MarkLowQuality))},
 		gotermboard.Action{Keys: []string{KeyRead}, Label: "mark the item read: it was read and gave what was wanted. The mark teaches the quality gate and leaves the item waiting", Footer: KeyRead + " read", Run: b.onItem(b.mark(gatetrust.MarkRead))},
@@ -62,29 +58,132 @@ func sortLabel() string {
 	return "next sort, in turn: " + strings.Join(words, ", then ")
 }
 
-// The keys of the sort verbs and the marks that the tab binds beside the digits.
+// The keys of the drop and the marks.
 const (
-	KeyFleetRelate = "F"
-	KeyDrop        = "d"
-	KeyLowQuality  = "x"
-	KeyRead        = "r"
-	KeyComments    = "c"
+	KeyDrop       = "d"
+	KeyLowQuality = "x"
+	KeyRead       = "r"
+	KeyComments   = "c"
 )
 
-// fleetRelate places it on the first destination that the set in force declares on the fleet
-// side, as its digit would.
-func (b *Board) fleetRelate(m *gotermboard.Model, it item) tea.Cmd {
-	destinations := b.queue.Value().destinations
-	if missing := destinationsMissing(destinations); missing != "" {
-		m.Say(missing)
-		return nil
+// VerbBinding is the key that sorts by one verb, and the word the footer names the verb by.
+type VerbBinding struct{ Key, Footer string }
+
+// VerbBindings is the binding of each of route.Verbs, which a test holds to route.Verbs and to the
+// snapshot's schema. Each key is uppercase, since every fleet TUI keeps the lowercase letters it
+// would take: f the summaries, p the panel, t going to what the row names.
+var VerbBindings = map[string]VerbBinding{
+	route.VerbFleetRelate:        {Key: "F", Footer: "fleet"},
+	route.VerbLearning:           {Key: "L", Footer: "learn"},
+	route.VerbPersonalRelate:     {Key: "P", Footer: "relate"},
+	route.VerbPersonalSummarize:  {Key: "S", Footer: "summarize"},
+	route.VerbTechnicalSummarize: {Key: "T", Footer: "technical"},
+	route.VerbWatch:              {Key: "W", Footer: "watch"},
+}
+
+// sortBy sorts it by v, once the queue says the set in force takes v. A verb whose sort picks a
+// playlist first asks for it.
+func (b *Board) sortBy(v route.VerbRoute) func(*gotermboard.Model, item) tea.Cmd {
+	return func(m *gotermboard.Model, it item) tea.Cmd {
+		h := b.queue.Value()
+		verb, why := queuedVerb(h, v.Verb)
+		if why != "" {
+			m.Say(why)
+			return nil
+		}
+		if verb.Playlist {
+			return b.watch(m, it, verb.Verb, h.watchDefault)
+		}
+		return b.sortWrite(m, it, v.Verb, "")
 	}
-	n := slices.IndexFunc(destinations, func(d server.ReviewDestination) bool { return d.Side != nil && *d.Side == connectors.SideFleet })
-	if n < 0 || n > 8 {
-		m.Say("no destination among the first nine on the fleet side, so " + KeyFleetRelate + " places nothing")
-		return nil
+}
+
+// queuedVerb is the verb as the queue's read answers it, and why it sorts nothing, or empty where
+// it sorts.
+func queuedVerb(h held, verb string) (server.ReviewVerb, string) {
+	if h.verbs == nil {
+		return server.ReviewVerb{}, "the queue came without its verbs, so no verb's key sorts: the service could not read its set in force, or predates the verbs"
 	}
-	return b.place(m, it, n+1, nil, "")
+	i := slices.IndexFunc(h.verbs, func(v server.ReviewVerb) bool { return v.Verb == verb })
+	switch {
+	case i < 0:
+		return server.ReviewVerb{}, "the service names no verb " + verb + ", so " + VerbBindings[verb].Key + " sorts nothing"
+	case h.verbs[i].Missing != nil:
+		return h.verbs[i], *h.verbs[i].Missing
+	}
+	return h.verbs[i], ""
+}
+
+// sortWrite sorts it by verb, and a watch into playlist, where it names one.
+func (b *Board) sortWrite(m *gotermboard.Model, it item, verb, playlist string) tea.Cmd {
+	key := it.Key
+	body := server.SortRequest{Verb: verb, Playlist: playlist}
+	body.Presented, body.DecidedAfterMS = b.presented(m, key, time.Now())
+	doing := "sorting " + key + " by " + verb
+	if playlist != "" {
+		doing += " into " + playlist
+	}
+	return b.writeRow(m, key, doing, func() (string, error) { return b.service.Sort(b.ctx, key, body) })
+}
+
+// watch asks which playlist a sort by verb adds the video to, listing the service's default first
+// and then each playlist this machine reads, numbered. Enter takes the default, a number its
+// playlist, and any other text names a playlist by its title or YouTube id. The first watch begins
+// the read, so its list shows on the next.
+func (b *Board) watch(m *gotermboard.Model, it item, verb string, fallback *string) tea.Cmd {
+	if b.wantPlaylists.CompareAndSwap(false, true) {
+		b.playlists.Force()
+	}
+	lists := playlistOrder(b.playlists.Value(), fallback)
+	var listing []gotermboard.Line
+	for i, p := range lists {
+		label := fmt.Sprintf("%d  %s", i+1, outsider(p.Title))
+		if fallback != nil && (p.Title == *fallback || p.ID == *fallback) {
+			label += "  (the default)"
+		}
+		listing = append(listing, gotermboard.Line{gotermboard.C(label, "")})
+	}
+	switch failed := b.playlistsErr.Load(); {
+	case failed != nil:
+		listing = append(listing, gotermboard.Line{gotermboard.C("the playlists were not read: "+(*failed).Error(), gotermboard.Yellow)})
+	case len(lists) == 0 || (fallback != nil && len(lists) == 1):
+		listing = append(listing, gotermboard.Line{gotermboard.C("reading the playlists; "+VerbBindings[verb].Key+" again lists them once read", "")})
+	}
+	text := verb + " " + outsider(it.Key) + " in which playlist? Type its number, title or id"
+	if fallback != nil {
+		text += ", or enter for " + outsider(*fallback)
+	}
+	m.Ask(gotermboard.Question{
+		Listing: listing, Text: text, Typed: true, Cancel: nothingWritten(m),
+		Answer: func(typed string) tea.Cmd {
+			playlist := typed
+			if n, err := strconv.Atoi(typed); err == nil && n >= 1 && n <= len(lists) {
+				playlist = lists[n-1].ID
+			}
+			if playlist == "" && fallback == nil {
+				m.Say("no playlist named, and the service names no default, so nothing was sorted")
+				return nil
+			}
+			return b.sortWrite(m, it, verb, playlist)
+		},
+	})
+	return nil
+}
+
+// playlistOrder is the default first, then every other playlist by title. A default that no
+// listed playlist names is listed by itself, so its number still picks it.
+func playlistOrder(lists []Playlist, fallback *string) []Playlist {
+	out := slices.Clone(lists)
+	slices.SortStableFunc(out, func(a, b Playlist) int { return strings.Compare(strings.ToLower(a.Title), strings.ToLower(b.Title)) })
+	if fallback == nil {
+		return out
+	}
+	i := slices.IndexFunc(out, func(p Playlist) bool { return p.Title == *fallback || p.ID == *fallback })
+	if i < 0 {
+		return slices.Insert(out, 0, Playlist{ID: *fallback, Title: *fallback})
+	}
+	first := out[i]
+	return slices.Insert(slices.Delete(out, i, i+1), 0, first)
 }
 
 // mark posts the person's mark on it. The item stays in the queue, since a mark decides nothing,

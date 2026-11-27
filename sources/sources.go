@@ -20,6 +20,7 @@ import (
 	"github.com/datapointchris/ingestion/comments"
 	"github.com/datapointchris/ingestion/connectors"
 	"github.com/datapointchris/ingestion/deletion"
+	"github.com/datapointchris/ingestion/deliver"
 	"github.com/datapointchris/ingestion/extract"
 	"github.com/datapointchris/ingestion/metricsrefresh"
 	"github.com/datapointchris/ingestion/polling"
@@ -58,6 +59,10 @@ type Registration struct {
 	// type, which the comments stage asks a model about. A source whose
 	// items carry no comments leaves it nil.
 	Comments *comments.Source
+	// Deliverers are the deliverers that write through the source, each
+	// opened on the source's client rather than on a [deliver.<name>] table
+	// of its own, as a watch adds a video to a playlist at its source.
+	Deliverers []deliver.Registration
 }
 
 var registered = map[string]Registration{}
@@ -72,6 +77,9 @@ func Register(r Registration) {
 	extract.Register(r.Extractors...)
 	if r.Comments != nil {
 		comments.Register(r.Comments.MediaType)
+	}
+	for _, d := range r.Deliverers {
+		connectors.RegisterDeliverer(d.Name, d.Writes())
 	}
 	registered[r.Name] = r
 }
@@ -100,6 +108,9 @@ func (r Registration) Capabilities() []string {
 	for _, e := range r.Extractors {
 		out = append(out, extract.Capability(e))
 	}
+	for _, d := range r.Deliverers {
+		out = append(out, store.DeliverCapability(d.Name))
+	}
 	return out
 }
 
@@ -120,6 +131,9 @@ func (r Registration) Handlers(api string, client *http.Client, log *slog.Logger
 		if h, ok := extract.SourceHandler(e, api, client, log); ok {
 			out = append(out, h)
 		}
+	}
+	for _, d := range r.Deliverers {
+		out = append(out, deliver.Handler(d.Name, d.Open(api, client)))
 	}
 	return out
 }

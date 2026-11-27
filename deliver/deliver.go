@@ -48,6 +48,10 @@ type Registration struct {
 	// and each attempt sends that record's id and the chapter's pages as the
 	// delivery first kept them. Takes reads no chapter.
 	Chapters bool
+	// Playlist says the deliverer adds each item to the playlist that a
+	// person's sort picked, which each attempt sends as the delivery first
+	// kept it. Only a sort places an item on its destination.
+	Playlist bool
 	// Open is the deliverer that writes to the app at api through client,
 	// which carries the service client's token.
 	Open func(api string, client *http.Client) Deliverer
@@ -55,12 +59,17 @@ type Registration struct {
 
 var registered = map[string]Registration{}
 
-// Register records r, and records its name, Takes, FilePath and Chapters
-// with connectors.RegisterDeliverer, so each name a set may give is one a
-// worker can open.
+// Register records r, and records its name and what it writes with
+// connectors.RegisterDeliverer, so each name a set may give is one a worker
+// can open.
 func Register(r Registration) {
-	connectors.RegisterDeliverer(r.Name, connectors.Writes{Takes: r.Takes, FilePath: r.FilePath, Chapters: r.Chapters})
+	connectors.RegisterDeliverer(r.Name, r.Writes())
 	registered[r.Name] = r
+}
+
+// Writes is what r writes, as connectors.RegisterDeliverer records it.
+func (r Registration) Writes() connectors.Writes {
+	return connectors.Writes{Takes: r.Takes, FilePath: r.FilePath, Chapters: r.Chapters, Playlist: r.Playlist}
 }
 
 // Lookup is the deliverer registered as name, and false where none is.
@@ -98,6 +107,14 @@ type Item struct {
 	// Chapter is where a book's chapter sits in its book's record, as the
 	// delivery first kept it, and nil for every other item.
 	Chapter *store.ChapterInBook
+	// Playlist is the playlist that a watch adds the video to, as the
+	// delivery first kept it, and nil for every other deliverer.
+	Playlist *string
+	// Attempt counts this task's claims that ended with no answer, this one
+	// included. A claim that the destination asked to wait is not counted, so
+	// an attempt past the first follows one whose write may have landed
+	// unanswered.
+	Attempt int
 }
 
 // Outcome is how one write of an item ended.
@@ -115,6 +132,10 @@ type Outcome struct {
 	// cannot mend, as where the destination refuses the body as invalid. Its
 	// task fails rather than trying again.
 	Permanent bool
+	// RetryAfter is the wait that the destination asked a pending write for,
+	// as while a quota is spent. Its task tries again after it and spends no
+	// attempt, and a zero tries again with backoff.
+	RetryAfter time.Duration
 }
 
 // Deliverer writes items to one kind of destination.
@@ -154,7 +175,7 @@ func (h handler) Run(ctx context.Context, task worker.Task) worker.Result {
 	}
 	o := h.deliverer.Deliver(ctx, Item{
 		Key: *task.ItemKey, Zone: task.Zone, Title: task.Title, URL: task.URL, LandedTS: task.LandedTS, SourceTS: task.SourceTS,
-		Path: task.Path, Chapter: task.Chapter,
+		Path: task.Path, Chapter: task.Chapter, Playlist: task.Playlist, Attempt: task.Attempts,
 	})
 	delivery := &server.ReportDelivery{Outcome: o.Outcome, DestinationID: o.DestinationID, Error: o.Error}
 	switch {
@@ -162,6 +183,8 @@ func (h handler) Run(ctx context.Context, task worker.Task) worker.Result {
 		return worker.Result{Outcome: server.OutcomeDone, Delivery: delivery}
 	case o.Permanent:
 		return worker.Result{Outcome: server.OutcomeFailed, Error: o.Error, Delivery: delivery}
+	case o.RetryAfter > 0:
+		return worker.Result{Outcome: server.OutcomeRetry, Error: o.Error, RetryAfter: o.RetryAfter, Wait: true, Delivery: delivery}
 	}
 	return worker.Result{Outcome: server.OutcomeRetry, Error: o.Error, RetryAfter: backoff(task.Attempts), Delivery: delivery}
 }

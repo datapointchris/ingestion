@@ -23,12 +23,15 @@ import (
 
 var reviewCmd = &cobra.Command{
 	Use:   "review",
-	Short: "Read the items that wait on a person, and place or drop one",
+	Short: "Read the items that wait on a person, and place, sort or drop one",
 	Example: "  # the items waiting on a person, the longest waiting first\n" +
 		"  ingestion review list\n" +
 		"\n" +
 		"  # place one on a destination, naming what decided it\n" +
-		"  ingestion review place reddit/t3_1h9xk2 reading-list --cause subreddit",
+		"  ingestion review place reddit/t3_1h9xk2 reading-list --cause subreddit\n" +
+		"\n" +
+		"  # sort one by a verb, which places, reads or shelves it\n" +
+		"  ingestion review sort youtube/aqz-KE-bpKQ watch --playlist \"Later\"",
 }
 
 var reviewListCmd = &cobra.Command{
@@ -73,11 +76,47 @@ var reviewPlaceCmd = &cobra.Command{
 		"from the item's opening. An item whose draft fell below the note floor waits\n" +
 		"as note-unclear. Placing an item that holds a draft with no --note takes that\n" +
 		"draft. Placing an item again with the same destination, cause and note\n" +
-		"changes nothing.",
+		"changes nothing. A destination whose deliverer adds the item to a playlist is\n" +
+		"refused and exits 2, because only a sort by watch picks the playlist.",
 	Example: "  ingestion review place reddit/t3_1h9xk2 reading-list --cause subreddit\n" +
 		"  ingestion review place reddit/t3_1h9xk2 work-inbox --note \"what would this change for retries?\"",
 	Args: cobra.ExactArgs(2),
 	RunE: runReviewPlace,
+}
+
+var reviewSortCmd = &cobra.Command{
+	Use:   "sort <key or url> <verb>",
+	Short: "Sort an item by a verb, which places it, reads it, shelves it, or adds it to a playlist",
+	Long: "Sorts the item by a verb as your decision, recorded under person:<login> with\n" +
+		"the verb as its cause. Each verb places the item on a side and says what runs:\n" +
+		"\n" +
+		verbLines() +
+		"\n" +
+		"A verb places the item on the destination whose deliverer it names, or for\n" +
+		"fleet-relate on the fleet side's default, as review list --json lists under\n" +
+		"verbs. A shelf verb places it on no destination, and nothing runs until\n" +
+		"`ingestion shelf open <key>`. --playlist names the playlist that a watch adds\n" +
+		"the video to, by its YouTube id or the title that ypl holds. Left out, a watch\n" +
+		"takes serve's [watch] default_playlist. A verb whose destination the set in\n" +
+		"force does not declare, or whose deliverer does not take the item, is refused\n" +
+		"and exits 2. A watch is refused the same way where the item's delivery holds\n" +
+		"another playlist. A sort that repeats the newest side decision, playlist\n" +
+		"included, changes nothing.",
+	Example: "  ingestion review sort youtube/aqz-KE-bpKQ learning\n" +
+		"  ingestion review sort youtube/aqz-KE-bpKQ watch --playlist \"Later\"\n" +
+		"  ingestion review sort reddit/t3_1h9xk2 personal-summarize",
+	Args:      cobra.ExactArgs(2),
+	ValidArgs: route.VerbNames(),
+	RunE:      runReviewSort,
+}
+
+// verbLines gives each of route.Verbs its help line.
+func verbLines() string {
+	var b strings.Builder
+	for _, v := range route.Verbs {
+		fmt.Fprintf(&b, "  %-20s %s\n", v.Verb, v.Help)
+	}
+	return b.String()
 }
 
 var reviewDropCmd = &cobra.Command{
@@ -101,11 +140,13 @@ func init() {
 		c.Flags().String("note", "", "Carry the questions and why the item was saved, for a model read to answer")
 		c.Flags().Bool("json", false, "Print the service's answer as JSON")
 	}
-	for _, c := range []*cobra.Command{reviewListCmd, reviewPlaceCmd, reviewDropCmd} {
+	reviewSortCmd.Flags().String("playlist", "", "Name the playlist that a watch adds the video to")
+	reviewSortCmd.Flags().Bool("json", false, "Print the service's answer as JSON")
+	for _, c := range []*cobra.Command{reviewListCmd, reviewPlaceCmd, reviewSortCmd, reviewDropCmd} {
 		c.Flags().String("api", "", "Call this server rather than the config file's api")
 		addConfigFlag(c)
 	}
-	reviewCmd.AddCommand(reviewListCmd, reviewPlaceCmd, reviewDropCmd)
+	reviewCmd.AddCommand(reviewListCmd, reviewPlaceCmd, reviewSortCmd, reviewDropCmd)
 	rootCmd.AddCommand(reviewCmd)
 }
 
@@ -151,6 +192,15 @@ func runReviewPlace(cmd *cobra.Command, args []string) error {
 	return sendReview(cmd, server.RouteReviewPlace, args[0], "place", body)
 }
 
+func runReviewSort(cmd *cobra.Command, args []string) error {
+	body := server.SortRequest{Verb: strings.TrimSpace(args[1])}
+	if _, ok := route.VerbOf(body.Verb); !ok {
+		return fmt.Errorf("%w: %q is no verb. A sort takes one of %s", goclikit.ErrUsage, body.Verb, strings.Join(route.VerbNames(), ", "))
+	}
+	body.Playlist, _ = cmd.Flags().GetString("playlist")
+	return sendReview(cmd, server.RouteReviewSort, args[0], "sort", body)
+}
+
 func runReviewDrop(cmd *cobra.Command, args []string) error {
 	body := server.DropRequest{}
 	body.Cause, _ = cmd.Flags().GetString("cause")
@@ -179,7 +229,8 @@ func sendReview(cmd *cobra.Command, route server.Route, key, verb string, body a
 	asJSON, _ := cmd.Flags().GetBool("json")
 	api, _ := cmd.Flags().GetString("api")
 	answer, raw, err := decideReview(cmd.Context(), configPath(cmd), api, route, key, verb, body)
-	if err := argumentRefusal(err, server.CodeDestinationNotDeclared, server.CodeDestinationPushOnly, server.CodeChapterOfBook, server.CodeInvalidBody); err != nil {
+	if err := argumentRefusal(err, server.CodeDestinationNotDeclared, server.CodeDestinationPushOnly, server.CodeDestinationTakesPlaylist,
+		server.CodeChapterOfBook, server.CodeInvalidBody, server.CodeVerbRefused); err != nil {
 		return err
 	}
 	w := cmd.OutOrStdout()
@@ -208,21 +259,34 @@ func decideReview(ctx context.Context, path, api string, route server.Route, key
 // is read.
 func placedSentence(a server.PlacementAnswer) string {
 	side := a.Decisions[0]
+	var read *server.DecisionView
+	for i, d := range a.Decisions[1:] {
+		if d.Gate == store.GateRead {
+			read = &a.Decisions[i+1]
+		}
+	}
 	switch {
+	case read != nil && read.Verdict == store.VerdictShelf:
+		return fmt.Sprintf("Shelved %s by %s: nothing runs until ingestion shelf open %s.", a.Key, side.Cause, a.Key)
 	case side.Destination == nil:
 		return fmt.Sprintf("Dropped %s, cause %s.", a.Key, side.Cause)
 	case side.Verdict != connectors.SidePersonal && side.Verdict != connectors.SideFleet:
 		return fmt.Sprintf("Placed %s on %s, which takes no side, so it is dropped.", a.Key, *side.Destination)
+	case read != nil && read.Cause == route.CauseLearningRefused:
+		return fmt.Sprintf("%s is back in review as %s: the quality gate's newest answer did not pass it, so nothing goes to %s.",
+			a.Key, route.CauseLearningRefused, *side.Destination)
 	}
-	read := "unread"
-	for _, d := range a.Decisions[1:] {
-		if d.Gate != store.GateRead {
-			continue
-		}
-		read = "read " + d.Verdict
-		if d.Lens != nil {
-			read = "read by a model under the " + *d.Lens + " lens"
-		}
+	how := "unread"
+	switch {
+	case read == nil:
+	case read.Lens != nil:
+		how = "read by a model under the " + *read.Lens + " lens"
+	default:
+		how = "read " + read.Verdict
 	}
-	return fmt.Sprintf("Placed %s on %s: side %s, %s.", a.Key, *side.Destination, side.Verdict, read)
+	to := *side.Destination
+	if side.Playlist != nil {
+		to += " in the playlist " + *side.Playlist
+	}
+	return fmt.Sprintf("Placed %s on %s: side %s, %s.", a.Key, to, side.Verdict, how)
 }

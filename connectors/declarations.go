@@ -382,6 +382,9 @@ func Validate(s Set, roots []string) []Invalid {
 		if d.PushOnly && (d.DefaultForSide || len(d.Tags) > 0) {
 			problems = append(problems, "a push-only destination takes no tag and is no side's default, since only a push places an item there")
 		}
+		if TakesPlaylist(d.Deliverer) && (d.DefaultForSide || len(d.Tags) > 0) {
+			problems = append(problems, fmt.Sprintf("deliverer %s adds to the playlist that a sort picks, so its destination takes no tag and is no side's default", d.Deliverer))
+		}
 		if d.DefaultForSide && d.Side != "" {
 			if other, taken := sideDefaults[d.Side]; taken {
 				problems = append(problems, fmt.Sprintf("%s is already the default for side %s", other, d.Side))

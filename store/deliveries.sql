@@ -8,7 +8,9 @@
 -- every other deliverer. A book's chapter keeps the same way where it sits in
 -- its book: book_destination_id is the destination's id for the book's record,
 -- from the book's settled delivery, and the pages are the newest sections'
--- that name the chapter. Each is null for every other item. last_error is the
+-- that name the chapter. Each is null for every other item. playlist is the
+-- playlist that a watch adds the video to, from the side decision, kept the
+-- same way, and null for every other deliverer. last_error is the
 -- destination's answer, or why the delivery was withdrawn. It, title, url and
 -- path can quote the item, so the outbox ships them as ingestion.text.
 
@@ -28,6 +30,7 @@ CREATE TABLE IF NOT EXISTS deliveries (
     pdf_page_end        INTEGER,
     printed_page_start  TEXT,
     printed_page_end    TEXT,
+    playlist            TEXT,
     updated_ts          TEXT NOT NULL,
     PRIMARY KEY (item_key, destination)
 );

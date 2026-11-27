@@ -1,6 +1,7 @@
 package ypl
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -349,6 +350,31 @@ func (c *Client) DeletePlaylistItem(ctx context.Context, playlist, item string) 
 	return c.do(ctx, http.MethodDelete, path, nil, http.StatusNoContent, nil)
 }
 
+// AddedItem is ypl's answer to an insert of a video into a playlist: the new
+// playlist item's id, and the playlist's YouTube id, though the insert named
+// it by its title.
+type AddedItem struct {
+	ItemID     string `json:"item_id"`
+	PlaylistID string `json:"playlist_id"`
+	VideoID    string `json:"video_id"`
+}
+
+// AddPlaylistItem appends video to the end of playlist on YouTube, which
+// spends ypl's Data API quota. playlist is a YouTube id, or the whole title or
+// slug of a playlist that ypl holds. YouTube keeps a second copy of a video
+// that a playlist holds already, so a caller sends it once.
+func (c *Client) AddPlaylistItem(ctx context.Context, playlist, video string) (AddedItem, error) {
+	body, err := json.Marshal(struct {
+		VideoID string `json:"video_id"`
+	}{video})
+	if err != nil {
+		return AddedItem{}, err
+	}
+	var out AddedItem
+	err = c.send(ctx, callTimeout, http.MethodPost, "/api/v1/youtube/playlists/"+url.PathEscape(playlist)+"/items", nil, body, http.StatusCreated, &out)
+	return out, err
+}
+
 // Captions reads video's captions through ypl's door: its details, its
 // chapters, and the segments of the one track that ypl picks. A video with no
 // track answers a nil Track. ypl refuses a video that no signed-out read
@@ -445,28 +471,40 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 	return c.doWithin(ctx, callTimeout, method, path, query, want, into)
 }
 
-// doWithin sends one request bounded by within, and decodes its answer into
-// into, where into is not nil. A status of 300 or more is an *Error. Any other
-// status but want is an error too, because only want shows that the route
-// ran.
+// doWithin sends one request with no body bounded by within, as send does.
 func (c *Client) doWithin(ctx context.Context, within time.Duration, method, path string, query url.Values, want int, into any) error {
+	return c.send(ctx, within, method, path, query, nil, want, into)
+}
+
+// send sends one request bounded by within, with body as its JSON where body
+// is not nil, and decodes its answer into into, where into is not nil. A
+// status of 300 or more is an *Error. Any other status but want is an error
+// too, because only want shows that the route ran.
+func (c *Client) send(ctx context.Context, within time.Duration, method, path string, query url.Values, body []byte, want int, into any) error {
 	ctx, cancel := context.WithTimeout(ctx, within)
 	defer cancel()
 	target := c.api + path
 	if len(query) > 0 {
 		target += "?" + query.Encode()
 	}
-	req, err := http.NewRequestWithContext(ctx, method, target, nil)
+	var sent io.Reader
+	if body != nil {
+		sent = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, target, sent)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Accept", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return fmt.Errorf("%s %s: %w", method, path, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body := io.LimitReader(resp.Body, maxAnswer)
+	answer := io.LimitReader(resp.Body, maxAnswer)
 	if resp.StatusCode >= http.StatusMultipleChoices {
 		return refusalOf(method, path, resp)
 	}
@@ -476,7 +514,7 @@ func (c *Client) doWithin(ctx context.Context, within time.Duration, method, pat
 	if into == nil {
 		return nil
 	}
-	if err := json.NewDecoder(body).Decode(into); err != nil {
+	if err := json.NewDecoder(answer).Decode(into); err != nil {
 		return fmt.Errorf("%s %s: read the answer: %w", method, path, err)
 	}
 	return nil

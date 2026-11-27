@@ -12,6 +12,8 @@
 // transcript of its audio, each read through ypl. It reads again the views,
 // likes, comments and length of each video that waits in review, in one
 // details read of up to MaxVideos at a time, when serve's daily refresh asks.
+// Its deliverer, ypl-watch, adds a video that a person sorted to watch to the
+// playlist they picked.
 package ypl
 
 import (
@@ -23,6 +25,7 @@ import (
 
 	"github.com/datapointchris/ingestion/connectors"
 	"github.com/datapointchris/ingestion/deletion"
+	"github.com/datapointchris/ingestion/deliver"
 	"github.com/datapointchris/ingestion/extract"
 	"github.com/datapointchris/ingestion/landing"
 	"github.com/datapointchris/ingestion/metricsrefresh"
@@ -67,8 +70,8 @@ const (
 )
 
 // Scopes are what the source's service client asks for: what the poller
-// reads, what the deleter writes, what the extractors read, and the comments
-// that a person asks about. ypl's route table grants each, and a test holds
+// reads, what the deleter and the watch write, what the extractors read, and
+// the comments that a person asks about. ypl's route table grants each, and a test holds
 // them to the routes this package calls.
 var Scopes = []string{
 	"ypl.playlists.read", "ypl.channels.read", "ypl.videos.read", "ypl.playlist-items.write",
@@ -85,6 +88,7 @@ func init() {
 		},
 		Extractors: []extract.Extractor{CaptionsExtractor, WhisperExtractor},
 		Comments:   &CommentsSource,
+		Deliverers: []deliver.Registration{Watch},
 	})
 	landing.RegisterSightingRoles(landing.SightingRoles{
 		Channel: FieldChannelTitle, ChannelFormat: "%s", ChannelFields: []string{FieldChannelTitle, FieldChannelID},
