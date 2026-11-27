@@ -19,9 +19,9 @@ import (
 // apiTimeout bounds one call to the API.
 const apiTimeout = time.Minute
 
-// maxAnswerBytes bounds one answer that the client reads. FreshRSS cuts each
-// entry's content well below it, and a page of the reading list holds
-// pageSize entries.
+// maxAnswerBytes bounds one answer that the client reads. A page of the
+// reading list holds pageSize entries, and an answer past the bound fails the
+// read.
 const maxAnswerBytes = 64 << 20
 
 // readingList is the stream of every entry in the person's subscriptions.

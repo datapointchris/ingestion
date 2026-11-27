@@ -1,7 +1,10 @@
 package cmd
 
 import (
+	"cmp"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,9 +22,11 @@ import (
 	"github.com/datapointchris/ingestion/freshrss"
 	"github.com/datapointchris/ingestion/itemkey"
 	"github.com/datapointchris/ingestion/polling"
+	"github.com/datapointchris/ingestion/publicweb"
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
 	"github.com/datapointchris/ingestion/worker"
+	"github.com/datapointchris/ingestion/ypl"
 )
 
 // The stand-in FreshRSS's one person: the login, the API password and the
@@ -108,7 +113,7 @@ func (s *standInFreshRSS) readingList(w http.ResponseWriter, r *http.Request) {
 	count = min(count, standInPageCap)
 	continuation, _ := strconv.ParseInt(q.Get("c"), 10, 64)
 	oldestFirst := q.Get("r") == "o"
-	list := slices.Clone(s.entries)
+	list := slices.SortedFunc(slices.Values(s.entries), func(a, b standInEntry) int { return cmp.Compare(a.id, b.id) })
 	if !oldestFirst {
 		slices.Reverse(list)
 	}
@@ -145,25 +150,39 @@ func (s *standInFreshRSS) readingList(w http.ResponseWriter, r *http.Request) {
 // add adds an entry numbered n, crawled at crawled, whose link names
 // pages' /post/<n>, under label.
 func (s *standInFreshRSS) add(pages *httptest.Server, crawled time.Time, label string, n ...int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	for i, number := range n {
-		s.entries = append(s.entries, standInEntry{
-			id: crawled.UnixMicro() + int64(i), n: number, label: label,
-			link: fmt.Sprintf("%s/post/%d?utm_source=rss", pages.URL, number),
-		})
+		s.addLink(crawled.Add(time.Duration(i)*time.Microsecond), label, number, fmt.Sprintf("%s/post/%d?utm_source=rss", pages.URL, number))
 	}
 }
 
+// addLink adds an entry numbered n, crawled at crawled, whose link is link,
+// under label.
+func (s *standInFreshRSS) addLink(crawled time.Time, label string, n int, link string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.entries = append(s.entries, standInEntry{id: crawled.UnixMicro(), n: n, label: label, link: link})
+}
+
 // newStandInPages serves each /post/<n> as a page whose article reads
-// "Page text of test entry <n>.", and answers 403 for each n in refused, as
-// a site that refuses the worker's GET does.
-func newStandInPages(t *testing.T, refused ...int) *httptest.Server {
+// "Page text of test entry <n>.". It answers 403 for each n in refused, as a
+// site that refuses the worker's GET does. It answers 503 to the first GET
+// of each n in unavailableOnce, as a site that is down for a while does.
+func newStandInPages(t *testing.T, refused, unavailableOnce []int) *httptest.Server {
 	t.Helper()
+	var mu sync.Mutex
+	asked := map[int]int{}
 	pages := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n, err := strconv.Atoi(strings.TrimPrefix(r.URL.Path, "/post/"))
-		if err != nil || slices.Contains(refused, n) {
+		mu.Lock()
+		asked[n]++
+		first := asked[n] == 1
+		mu.Unlock()
+		switch {
+		case err != nil || slices.Contains(refused, n):
 			w.WriteHeader(http.StatusForbidden)
+			return
+		case first && slices.Contains(unavailableOnce, n):
+			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -175,6 +194,29 @@ func newStandInPages(t *testing.T, refused ...int) *httptest.Server {
 
 func standInPage(n int) string {
 	return fmt.Sprintf("<!doctype html><html><body><nav>Home</nav><article>\n<p>Page text of test entry %d.</p>\n</article></body></html>", n)
+}
+
+// standInPagesAlone is a transport that reaches pages and nothing else, so a
+// GET of a link elsewhere fails rather than reaching the internet.
+func standInPagesAlone(pages *httptest.Server) http.RoundTripper {
+	return roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if "http://"+r.URL.Host != pages.URL {
+			return nil, errors.New("the test reaches its stand-in pages alone")
+		}
+		return http.DefaultTransport.RoundTrip(r)
+	})
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// newStandInPoller is a poller of the stand-in FreshRSS at api whose GETs
+// reach pages alone.
+func newStandInPoller(api, pages *httptest.Server) freshrss.Poller {
+	base := api.URL + "/api/greader.php"
+	return freshrss.NewPoller(freshrss.NewClient(base, freshrss.SignedIn(base, freshRSSLogin, freshRSSPassword)),
+		publicweb.NewReader(&http.Client{Timeout: 10 * time.Second, Transport: standInPagesAlone(pages)}), extract.Builtin())
 }
 
 // newFreshRSSPipeline is a pipeline under one freshrss connector, polled
@@ -226,19 +268,20 @@ func (p *pipeline) blobText(t *testing.T, sum *string) string {
 // keeps the page that the link names as the item's text/html bytes, which
 // the article parse reads, and the sighting names the feed and its label. A
 // page that answers 403 lands the entry's content from the feed instead, and
-// its sighting says why. A poll with nothing new lands nothing, though the
-// API answers again the entry crawled in the cursor's second.
+// its sighting says why. A page that answers 503 waits for the next poll,
+// which lands it. A YouTube video's link lands as the video with no bytes, as
+// a pushed one does, and a Reddit post's link lands nothing. An entry that
+// FreshRSS commits late, crawled before the cursor, lands on the next poll. A
+// poll with nothing new lands nothing, though the API answers again each
+// entry in the hour behind the cursor.
 func TestAFreshRSSPollLandsEachNewEntryOnceWithItsPageAfterItsBaseline(t *testing.T) {
 	stand, api := newStandInFreshRSS(t)
-	pages := newStandInPages(t, 6)
+	pages := newStandInPages(t, []int{6}, []int{8})
 	now := time.Now()
 	stand.add(pages, now.Add(-3*time.Hour), "Uncategorized", 1, 2)
 	stand.add(pages, now.Add(-2*time.Hour), "neovim", 3)
 	p, extractors := newFreshRSSPipeline(t)
-	base := api.URL + "/api/greader.php"
-	poll := &recording{Handler: polling.Handler(freshrss.Source, freshrss.NewPoller(
-		freshrss.NewClient(base, freshrss.SignedIn(base, freshRSSLogin, freshRSSPassword)),
-		freshrss.NewPageReader(&http.Client{Timeout: 10 * time.Second})), p.worker, quiet)}
+	poll := &recording{Handler: polling.Handler(freshrss.Source, newStandInPoller(api, pages), p.worker, quiet)}
 	pollNow := func() []string {
 		t.Helper()
 		p.runConnector(t, "freshrss")
@@ -252,14 +295,18 @@ func TestAFreshRSSPollLandsEachNewEntryOnceWithItsPageAfterItsBaseline(t *testin
 		}
 		return key
 	}
+	video, _ := itemkey.FromURL("https://www.youtube.com/watch?v=testvideo01")
 
 	if got := pollNow(); len(got) != 0 {
 		t.Fatalf("the baseline poll reported %v, want nothing", got)
 	}
 	stand.add(pages, now.Add(-time.Hour), "neovim", 4, 5)
 	stand.add(pages, now.Add(-30*time.Minute), "Uncategorized", 6)
-	if got := pollNow(); !slices.Equal(got, []string{keyOf(4), keyOf(5), keyOf(6)}) {
-		t.Fatalf("the poll after three new entries reported %v, want them oldest first", got)
+	stand.addLink(now.Add(-25*time.Minute), "Uncategorized", 9, "https://www.youtube.com/watch?v=testvideo01&feature=rss")
+	stand.add(pages, now.Add(-20*time.Minute), "Uncategorized", 8)
+	stand.addLink(now.Add(-15*time.Minute), "Uncategorized", 10, "https://www.reddit.com/r/test/comments/abc123/test_post/")
+	if got := pollNow(); !slices.Equal(got, []string{keyOf(4), keyOf(5), keyOf(6), video}) {
+		t.Fatalf("the poll after six new entries reported %v, want the four that land now, oldest first", got)
 	}
 	shown := p.item(t, keyOf(4))
 	s := shown.Sightings[0]
@@ -278,9 +325,21 @@ func TestAFreshRSSPollLandsEachNewEntryOnceWithItsPageAfterItsBaseline(t *testin
 		!strings.Contains(p.blobText(t, refused.Item.BlobSHA256), "<p>Feed content of test entry 6.</p>") {
 		t.Errorf("the entry whose page refused the GET is %s, want the feed's content and why", jsonOf(refused))
 	}
+	if v := p.item(t, video); v.Item.MediaType != ypl.MediaTypeVideo || v.Item.BlobSHA256 != nil ||
+		v.Sightings[0].Fields[freshrss.FieldFeedStreamID] != "feed/7" {
+		t.Errorf("the entry that links a video is %s, want the video with no bytes, sighted from the feed", jsonOf(v))
+	}
 
-	if n := p.parse(t, extractors); n != 3 {
-		t.Fatalf("ran %d parses, want one for each new entry", n)
+	stand.add(pages, now.Add(-35*time.Minute), "neovim", 7)
+	if got := pollNow(); !slices.Equal(got, []string{keyOf(7), keyOf(8)}) {
+		t.Fatalf("the poll after a late entry and a page that answered 503 once reported %v, want both", got)
+	}
+	if f := p.item(t, keyOf(8)).Sightings[0].Fields; f[freshrss.FieldBody] != freshrss.BodyPage {
+		t.Errorf("the entry whose page answered 503 once landed %s, want its page", f[freshrss.FieldBody])
+	}
+
+	if n := p.parse(t, extractors); n != 5 {
+		t.Fatalf("ran %d parses, want one for each new page", n)
 	}
 	for n, want := range map[int]string{4: "Page text of test entry 4.", 6: "Feed content of test entry 6."} {
 		if parse := p.readParse(t, keyOf(n), ""); len(parse.Units) != 1 || parse.Units[0].Text != want ||
@@ -292,11 +351,52 @@ func TestAFreshRSSPollLandsEachNewEntryOnceWithItsPageAfterItsBaseline(t *testin
 	if got := pollNow(); len(got) != 0 {
 		t.Errorf("a poll with nothing new reported %v, want nothing", got)
 	}
-	if n := p.count(t, `SELECT count(*) FROM items WHERE media_type = ?`, extract.MediaTypeHTML); n != 3 {
-		t.Errorf("the polls left %d pages, want the 3 new entries", n)
+	if n := p.count(t, `SELECT count(*) FROM items WHERE media_type = ?`, extract.MediaTypeHTML); n != 5 {
+		t.Errorf("the polls left %d pages, want the 5 new entries that link one", n)
 	}
 	if stand.logins != 1 {
-		t.Errorf("the worker signed in %d times over three polls, want once", stand.logins)
+		t.Errorf("the worker signed in %d times over four polls, want once", stand.logins)
+	}
+}
+
+// A poll whose keep fails partway, as the blob route refuses while serve
+// rolls, reports the entries before the failure and moves the cursor past
+// those alone. The next poll lands the rest.
+func TestAFreshRSSPollWhoseKeepFailsPartwayReportsTheEntriesBeforeIt(t *testing.T) {
+	stand, api := newStandInFreshRSS(t)
+	pages := newStandInPages(t, nil, nil)
+	now := time.Now()
+	stand.add(pages, now.Add(-2*time.Hour), "Uncategorized", 1)
+	poller := newStandInPoller(api, pages)
+	keeps := 0
+	keep := func(context.Context, []byte, string) (string, error) {
+		keeps++
+		if keeps == 2 {
+			return "", errors.New("keep a page: the service answered 503")
+		}
+		return fmt.Sprintf("%064x", keeps), nil
+	}
+	keysOf := func(o polling.Outcome) []string {
+		keys := []string{}
+		for _, a := range o.Arrivals {
+			keys = append(keys, a.Key)
+		}
+		return keys
+	}
+	keyOf := func(n int) string {
+		key, _ := itemkey.FromURL(fmt.Sprintf("%s/post/%d", pages.URL, n))
+		return key
+	}
+
+	baseline := poller.Poll(t.Context(), polling.Poll{Keep: keep})
+	stand.add(pages, now.Add(-time.Hour), "Uncategorized", 2, 3, 4)
+	stopped := poller.Poll(t.Context(), polling.Poll{Cursor: baseline.Cursor, Keep: keep})
+	if stopped.Error != nil || stopped.Cursor == nil || len(stopped.Warnings) != 1 || !slices.Equal(keysOf(stopped), []string{keyOf(2)}) {
+		t.Fatalf("the poll whose second keep failed ended %s, want entry 2 reported, the cursor moved and a warning", jsonOf(stopped))
+	}
+	resumed := poller.Poll(t.Context(), polling.Poll{Cursor: stopped.Cursor, Keep: keep})
+	if resumed.Error != nil || !slices.Equal(keysOf(resumed), []string{keyOf(3), keyOf(4)}) {
+		t.Errorf("the next poll ended %s, want entries 3 and 4", jsonOf(resumed))
 	}
 }
 
@@ -306,7 +406,7 @@ func TestAFreshRSSPollLandsEachNewEntryOnceWithItsPageAfterItsBaseline(t *testin
 // connects, so the entry lands its content from the feed.
 func TestAFreshRSSWorkerSignsInFromItsTableAndLandsTheFeedsContentForAPrivatePage(t *testing.T) {
 	stand, api := newStandInFreshRSS(t)
-	pages := newStandInPages(t)
+	pages := newStandInPages(t, nil, nil)
 	stand.add(pages, time.Now().Add(-2*time.Hour), "Uncategorized", 1)
 	p, _ := newFreshRSSPipeline(t)
 	t.Setenv(sourcePasswordEnv(freshrss.Source), freshRSSPassword)

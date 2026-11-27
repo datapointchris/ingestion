@@ -631,10 +631,11 @@ jobs:
             < "$RUNNER_TEMP/tone.wav" > "$RUNNER_TEMP/whisper.jsonl"
           jq -se '.[0].duration_ms == 3000 and .[0].voiced_ms <= 3000' "$RUNNER_TEMP/whisper.jsonl"
 
-      # The worker runs article-trafilatura the same way, with no network. The
-      # fixture's article holds a heading, three paragraphs and a table of two
-      # rows, beside a nav, a comment section and a footer that trafilatura
-      # leaves out. The table's rule under its header writes no unit.
+      # article-trafilatura runs here with no network, so a resource that it
+      # would fetch fails the step. The fixture's article holds a heading,
+      # three paragraphs and a table with a header row, beside a nav, a comment
+      # section and a footer that trafilatura leaves out. Each table row is one
+      # unit, and the rule under the header writes none.
       - name: Read a known page with article-trafilatura in the image, offline
         run: |
           docker run --rm --read-only --network none --tmpfs /tmp -e HOME=/tmp -e TMPDIR=/tmp -i \

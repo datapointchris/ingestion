@@ -288,8 +288,9 @@ The service keeps each item's bytes under their SHA-256 in `blobs/sha256/<first 
 instead. Its size and modification time are recorded when it lands. A file whose size or time
 differs is hashed again before it is served, and is not served where its bytes changed.
 `ingestion blobs unpaired` names each blob in the volume that no row names, and each row whose
-bytes are missing. It exits 3 where it names any, and 1 where it could not compare. It deletes
-nothing.
+bytes are missing. It exits 3 where it names any, and 1 where it could not compare. It also names
+each row older than an hour that no item, home or output names, such as a page that a poll kept
+for an item that already held its bytes. Those set no exit code. It deletes nothing.
 
 ### A person applies each connector as a declaration kept in git
 
@@ -309,7 +310,7 @@ for an editor to check against. A connector names these:
 | --- | --- |
 | `name` | the connector's name, which each item it lands is sighted under |
 | `mode` | `poll`, `push`, `folder` or `drop` |
-| `source` | the external feed it reads, by its name in the data catalog |
+| `source` | what it reads: for a poll, the source that this build registers, such as `ypl` or `freshrss`, and otherwise the external feed by its name in the data catalog |
 | `contract` | optional: the data contract its records hold to |
 | `zone` | who wrote what it carries: `outside` for an outsider, `owner` for the owner's own words |
 | `tags` | the tags every item it lands carries |
@@ -638,10 +639,19 @@ claims `poll:freshrss`.
 - **The first poll keeps the newest entry's crawl time as its baseline, and lands nothing.** An
   entry crawled before it never lands, so the feeds' back catalogs never flood the review queue.
   The set refuses a connector of the source that runs `once`, because it would land nothing.
-- **Each later poll lands each entry crawled since the cursor, oldest first.** It reads the reading
-  list from the cursor's second, following each page's `continuation` to its end, and passes over
-  each entry crawled at or before the cursor. Its cursor then moves to the newest crawl time it
-  read, so a rerun lands nothing.
+- **Each later poll lands each entry crawled since the cursor, oldest first.** It follows each
+  page's `continuation` to the reading list's end. Its cursor then moves to the newest crawl time
+  it read, so a rerun lands nothing.
+- **A poll reads again the hour behind its cursor.** FreshRSS stamps an entry's crawl time as it
+  parses the entry, and commits the feed's entries after. So two refreshes at once can commit an
+  entry crawled before one that a poll already read. The cursor keeps the id of each entry that a
+  poll read in that hour. The next poll passes over those ids alone.
+- **A poll reads for ten minutes at most.** When it stops, past that or at a failure after its
+  first read, it reports what it read before the stop. The cursor moves past those entries alone.
+  The next poll reads on from there.
+- **When an entry links a YouTube video, the entry lands as the video, with no bytes.** A pushed
+  link of the video lands the same way. When an entry links a Reddit post, the entry lands
+  nothing. No extractor reads a Reddit post from its link.
 - **An entry lands once, under its link's key, as `text/html`.** Its key is the canonical link's
   `url/<hash>`. So when the same page arrives another way, it is one item with a sighting of each.
   The sighting keeps the entry's id, `feed_stream_id`, `feed_title` and `feed_label`. That label is
@@ -652,11 +662,16 @@ claims `poll:freshrss`.
   content from the feed instead, wrapped as a page of its own. Its `body` then reads `feed`, and
   its `page_refused` says why:
   - a status other than 2xx
+  - a redirect to the site's home or a section above the page
   - a media type other than HTML
-  - a page past `freshrss.MaxPageBytes`
+  - a page past `publicweb.MaxPageBytes`
+  - a bot's challenge, by its title, in place of the page
   - no answer
 
   The common case is a paywall's or a bot check's 403. The feed's content is often a teaser.
+- **A refusal that may clear holds the entry for the next poll.** That covers a 5xx, a 408, a 429,
+  a timeout, a failed lookup and no answer. After three polls, the entry lands the feed's
+  content.
 - **The GET dials only public addresses.** It checks each address after its name resolves, and
   again on every redirect. A link to a loopback, private, link-local or shared address lands the
   feed's content, with `page_refused` reading `an address that is not public`. The GET reads no

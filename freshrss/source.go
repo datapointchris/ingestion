@@ -17,8 +17,10 @@ import (
 	"slices"
 
 	"github.com/datapointchris/ingestion/connectors"
+	"github.com/datapointchris/ingestion/extract"
 	"github.com/datapointchris/ingestion/landing"
 	"github.com/datapointchris/ingestion/polling"
+	"github.com/datapointchris/ingestion/publicweb"
 	"github.com/datapointchris/ingestion/sources"
 	"github.com/datapointchris/ingestion/store"
 )
@@ -36,6 +38,8 @@ const (
 	// FieldFeedLabel is the label of the category that holds the feed.
 	FieldFeedLabel = "feed_label"
 	// FieldBody says where the item's bytes came from: BodyPage or BodyFeed.
+	// An entry whose link names an item that an extractor reads at its
+	// source, such as a YouTube video, lands no bytes and carries none.
 	FieldBody = "body"
 	// FieldPageRefused says why the page's GET failed, where the bytes are
 	// BodyFeed, such as "HTTP 403".
@@ -56,7 +60,7 @@ func init() {
 	sources.Register(sources.Registration{
 		Name: Source, Rules: rules, Login: SignedIn,
 		Poller: func(api string, client *http.Client) polling.Poller {
-			return NewPoller(NewClient(api, client), NewPageReader(PageClient()))
+			return NewPoller(NewClient(api, client), publicweb.NewReader(publicweb.Client()), extract.Builtin())
 		},
 	})
 	landing.RegisterSightingRoles(landing.SightingRoles{
