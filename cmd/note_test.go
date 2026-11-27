@@ -17,6 +17,7 @@ import (
 	"github.com/datapointchris/ingestion/accuracy"
 	"github.com/datapointchris/ingestion/extract"
 	"github.com/datapointchris/ingestion/lens"
+	"github.com/datapointchris/ingestion/modelport"
 	"github.com/datapointchris/ingestion/note"
 	"github.com/datapointchris/ingestion/route"
 	"github.com/datapointchris/ingestion/server"
@@ -305,6 +306,42 @@ func TestANoteDraftAtTheFloorIsTheReadsNoteAndOneBelowWaitsOnAPerson(t *testing.
 	if o := n.Overall; n.Floor != route.DefaultNoteFloor || o.Drafts != 3 || o.Kept != 1 || o.Applied != 1 || o.Rewritten != 1 || o.Waiting != 0 ||
 		len(n.ByConfidence) != 3 || n.ByConfidence[0].From != 0.4 || n.ByConfidence[0].To != 0.5 || n.ByConfidence[0].Rewritten != 1 {
 		t.Errorf("the note band is %s, want three drafts in three bands at the default floor: one kept, one applied and the lowest rewritten", jsonOf(n))
+	}
+}
+
+// A person places a fleet save with no note, the draft's run fails, and the
+// person then places the save with a note. The failed draft fails the save
+// while its read waits on the draft. The person's note leaves nothing waiting
+// on it, so the read answers that note and the save reads as read.
+func TestAFailedDraftFailsAFleetSaveOnlyWhileItsReadWaitsOnTheDraft(t *testing.T) {
+	p := newGatedPipeline(t, lifeSet(t, withLife))
+	stand := newStandInDispatch(t, p.provider)
+	stand.fail = modelport.FailureClaudeFailed
+	stand.read = func(string) map[string]any { return readAnswered("A post.", "") }
+	p.landExports(t, map[string][]byte{"first": redditExport(redditSave("t3_bb2", "golang"))})
+	p.parse(t, extract.Builtin())
+	p.scanFindingNothing(t)
+	place := func(flags ...string) {
+		t.Helper()
+		if _, err := runCLI(t, append([]string{"review", "place", "reddit/t3_bb2", "work-inbox", "--config", p.config}, flags...)...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	place()
+	if _, err := runCLI(t, "connectors", "release", "reddit-exports", "--config", p.config); err != nil {
+		t.Fatal(err)
+	}
+	models := stand.models(t, "", "")
+	drafter, reader := p.noteDrafter(t, models, nil), p.modelRead(t, models, nil, sentenceScanner{})
+	if ran := p.run(t, drafter, reader); ran != 1 || p.shown(t, "reddit/t3_bb2").Item.Phase != "failed" {
+		t.Fatalf("the worker ran %d tasks and the save is %s, want the failed draft alone, and failed", ran, p.shown(t, "reddit/t3_bb2").Item.Phase)
+	}
+	place("--note", "what would this change in the build?")
+	if ran := p.run(t, drafter, reader); ran != 1 {
+		t.Fatalf("placing the save with a note ran %d tasks, want its model read", ran)
+	}
+	if shown := p.shown(t, "reddit/t3_bb2"); shown.Item.Phase != "read" {
+		t.Errorf("after its read answered the person's note the save is %s, want read", shown.Item.Phase)
 	}
 }
 

@@ -314,7 +314,7 @@ const PhaseReview = "review"
 // stage whose condition is True. A person can place an
 // item whose parse or quality gate failed, which moves it on from that stage.
 // A failed stage of besideScan fails no phase, and neither does a failed note
-// where the newest read decision carries a person's note in the draft's place.
+// where the newest read decision waits on no draft.
 func (r ItemRecords) Phase() string {
 	side, sided := r.NewestDecision(GateSide)
 	if sided && side.Verdict == VerdictDrop {
@@ -329,7 +329,7 @@ func (r ItemRecords) Phase() string {
 	}
 	for stage, t := range newest {
 		if t.State == TaskFailed && slices.Contains(line, stage) && stage != StageParse && !slices.Contains(besideScan, stage) &&
-			(stage != StageQuality || !r.SideSettled()) && (stage != StageNote || !r.personNoted()) {
+			(stage != StageQuality || !r.SideSettled()) && (stage != StageNote || r.awaitsNote()) {
 			return "failed"
 		}
 	}
@@ -355,11 +355,16 @@ func (r ItemRecords) Phase() string {
 	return phase
 }
 
-// personNoted says whether the item's newest read decision carries a person's
-// note, which a model read answers in place of any draft.
-func (r ItemRecords) personNoted() bool {
+// ReadAwaitsNote says whether a read decision waits on the note stage's draft,
+// given the item's outputs. The read gate sets it from its own rule, so the
+// phase and the gate never disagree on it. Unset, every read waits.
+var ReadAwaitsNote = func(Decision, []Output) bool { return true }
+
+// awaitsNote says whether the item's newest read decision still waits on the
+// note stage's draft, as ReadAwaitsNote decides it.
+func (r ItemRecords) awaitsNote() bool {
 	read, ok := r.NewestDecision(GateRead)
-	return ok && NoteDigest(read.Note) != nil
+	return ok && ReadAwaitsNote(read, r.Outputs)
 }
 
 // SideSettled says whether the item's newest side decision is one that no
@@ -424,6 +429,11 @@ func (r ItemRecords) condition(step string) (Condition, bool) {
 		return Condition{}, false
 	case StageDeliver:
 		return r.deliveryCondition()
+	case StageNote:
+		if c, ok := r.outputCondition(step); ok && (c.Status != ConditionFalse || r.awaitsNote()) {
+			return c, true
+		}
+		return Condition{}, false
 	default:
 		return r.outputCondition(step)
 	}

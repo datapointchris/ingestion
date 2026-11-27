@@ -62,10 +62,12 @@ func NoteOf(read store.Decision, draft *store.Output) (*string, bool) {
 	return &note, true
 }
 
+func init() { store.ReadAwaitsNote = awaitsNote }
+
 // awaitsNote says whether read waits on the note stage's draft before a model
 // reads the item: it reads by a model under a lens whose note prompt this
 // build holds, it carries no person's note and takes no draft, and the item
-// holds no done model read, as one read before the note stage existed does.
+// holds no done model read, so an item a model already read is never drafted.
 func awaitsNote(read store.Decision, outputs []store.Output) bool {
 	if read.Verdict != connectors.ReadModel || read.ByParent() || store.NoteDigest(read.Note) != nil || read.Cause == CauseNoteDraft {
 		return false
