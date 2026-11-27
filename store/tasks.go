@@ -65,8 +65,9 @@ type Task struct {
 	Stage      string  `json:"stage"`
 	Capability string  `json:"capability"`
 	State      string  `json:"state"`
-	// HeldBy names the connector whose first fill holds this model stage's
-	// task. No claim takes it until a person releases the fill.
+	// HeldBy names the connector that holds this queued task: by a person's
+	// hold on it, or by its first fill at a model stage. No claim takes the
+	// task until a person releases the connector.
 	HeldBy *string `json:"held_by"`
 	// LeaseHolder is the worker that claimed the task last.
 	LeaseHolder *string `json:"lease_holder"`
@@ -204,7 +205,9 @@ func LineModelStages() []string {
 
 // Enqueue adds a queued task for task's item, connector, proposal or source,
 // stage and capability, and answers it as written. A model stage's task for
-// an item that a connector's first fill holds is held by that connector.
+// an item that a connector's first fill holds is held by that connector. So
+// is a poll of a held connector, and any task of an item that a held
+// connector sighted.
 func (t *Tx) Enqueue(ctx context.Context, task Task) (Task, error) {
 	named := 0
 	for _, subject := range []*string{task.ItemKey, task.Connector, task.ProposalID, task.Source} {
@@ -220,6 +223,13 @@ func (t *Tx) Enqueue(ctx context.Context, task Task) (Task, error) {
 	task.HeldBy, task.LeaseHolder, task.LeaseToken, task.LeaseExpiresTS, task.Error = nil, nil, nil, nil, nil
 	if task.ItemKey != nil && slices.Contains(modelStages, task.Stage) {
 		holder, err := t.firstFillHold(ctx, *task.ItemKey)
+		if err != nil {
+			return task, err
+		}
+		task.HeldBy = holder
+	}
+	if task.HeldBy == nil {
+		holder, err := t.heldConnector(ctx, task)
 		if err != nil {
 			return task, err
 		}
@@ -257,12 +267,68 @@ func (t *Tx) firstFillHold(ctx context.Context, item string) (*string, error) {
 	return nil, nil
 }
 
-// ReleaseFirstFill marks connector's first fill released, and returns to the
-// claims every task it held whose item no other connector's fill holds. A task
-// whose item another held fill sighted moves to that fill. It answers how many
-// queued tasks it returned. A held task that a person's placement already
-// finished loses its hold too, and is not counted.
-func (t *Tx) ReleaseFirstFill(ctx context.Context, connector string) (int, error) {
+// heldConnector is the held connector that holds task, and nil where none
+// does: a poll's own connector, or a connector that sighted the task's item.
+// Of several, it is the first by name.
+func (t *Tx) heldConnector(ctx context.Context, task Task) (*string, error) {
+	var where, subject string
+	switch {
+	case task.Connector != nil:
+		where, subject = `held_ts IS NOT NULL AND connector = ?`, *task.Connector
+	case task.ItemKey != nil:
+		where, subject = `held_ts IS NOT NULL AND connector IN (SELECT connector FROM sightings WHERE item_key = ?)`, *task.ItemKey
+	default:
+		return nil, nil
+	}
+	c, ok, err := first[Cursor](ctx, t.tx, table("cursors"), where+` ORDER BY connector`, subject)
+	if err != nil || !ok {
+		return nil, err
+	}
+	return &c.Connector, nil
+}
+
+// HoldConnector holds connector for decidedBy, and answers its cursor and how
+// many queued tasks it holds now. A held connector holds its queued poll and
+// every queued task of an item it sighted, at any stage. Each such task made
+// or queued again while it is held is held too. A task already leased runs
+// to its end. Holding a held connector keeps its first hold's time and
+// decider.
+func (t *Tx) HoldConnector(ctx context.Context, connector, decidedBy string) (Cursor, int, error) {
+	c, ok, err := t.Cursor(ctx, connector)
+	if err != nil {
+		return c, 0, err
+	}
+	if !ok {
+		return c, 0, fmt.Errorf("connector %s: %w", connector, ErrNoCursor)
+	}
+	if c.HeldTS == nil {
+		at := t.stamp()
+		c.HeldTS, c.HoldDecidedBy = &at, &decidedBy
+		if err := t.PutCursor(ctx, c); err != nil {
+			return c, 0, err
+		}
+	}
+	if _, err := t.tx.ExecContext(ctx, `UPDATE tasks SET held_by = ?, updated_ts = ?
+		WHERE state = 'queued' AND held_by IS NULL
+			AND (connector = ? OR item_key IN (SELECT item_key FROM sightings WHERE connector = ?))`,
+		connector, t.stamp(), connector, connector); err != nil {
+		return c, 0, fmt.Errorf("hold the tasks of %s: %w", connector, err)
+	}
+	var held int
+	if err := t.tx.QueryRowContext(ctx, `SELECT count(*) FROM tasks WHERE held_by = ? AND state = 'queued'`, connector).Scan(&held); err != nil {
+		return c, 0, fmt.Errorf("count the tasks %s holds: %w", connector, err)
+	}
+	return c, held, nil
+}
+
+// ReleaseConnector lifts a person's hold on connector and marks its first
+// fill released, and returns to the claims every task it held that no other
+// connector holds. A task that another held connector holds, or whose item
+// another held fill holds at a model stage, moves to that connector. It
+// answers how many queued tasks it returned, each in its place by its
+// creation. A held task that a person's placement already finished loses its
+// hold too, and is not counted.
+func (t *Tx) ReleaseConnector(ctx context.Context, connector string) (int, error) {
 	c, ok, err := t.Cursor(ctx, connector)
 	if err != nil {
 		return 0, err
@@ -270,20 +336,28 @@ func (t *Tx) ReleaseFirstFill(ctx context.Context, connector string) (int, error
 	if !ok {
 		return 0, fmt.Errorf("connector %s: %w", connector, ErrNoCursor)
 	}
-	if c.FirstFill != FirstFillReleased {
-		c.FirstFill = FirstFillReleased
+	if c.FirstFill != FirstFillReleased || c.HeldTS != nil {
+		c.FirstFill, c.HeldTS, c.HoldDecidedBy = FirstFillReleased, nil, nil
 		if err := t.PutCursor(ctx, c); err != nil {
 			return 0, err
 		}
 	}
+	args := []any{t.stamp()}
+	for _, stage := range modelStages {
+		args = append(args, stage)
+	}
+	args = append(args, connector)
 	rows, err := t.tx.QueryContext(ctx, `
-UPDATE tasks SET updated_ts = ?, held_by = (
-	SELECT c.connector FROM cursors c JOIN sightings s ON s.connector = c.connector
-	WHERE s.item_key = tasks.item_key AND c.first_fill = 'held'
-		AND (c.first_fill_item_key IS NULL OR c.first_fill_item_key != tasks.item_key)
-	ORDER BY c.connector LIMIT 1)
+UPDATE tasks SET updated_ts = ?, held_by = CASE WHEN state = 'queued' THEN (
+	SELECT c.connector FROM cursors c
+	WHERE (c.held_ts IS NOT NULL AND (c.connector = tasks.connector
+			OR EXISTS (SELECT 1 FROM sightings s WHERE s.connector = c.connector AND s.item_key = tasks.item_key)))
+		OR (c.first_fill = 'held' AND tasks.stage IN (?`+strings.Repeat(", ?", len(modelStages)-1)+`)
+			AND (c.first_fill_item_key IS NULL OR c.first_fill_item_key != tasks.item_key)
+			AND EXISTS (SELECT 1 FROM sightings s WHERE s.connector = c.connector AND s.item_key = tasks.item_key))
+	ORDER BY c.connector LIMIT 1) END
 WHERE held_by = ?
-RETURNING held_by, state`, t.stamp(), connector)
+RETURNING held_by, state`, args...)
 	if err != nil {
 		return 0, fmt.Errorf("release the tasks %s held: %w", connector, err)
 	}
@@ -413,7 +487,7 @@ type Leased struct {
 
 // Claim records the worker's heartbeat and leases it up to c.Max tasks whose
 // capability it holds, the oldest first: each queued task past its backoff
-// that no first fill holds, and each leased task whose lease lapsed. It leases
+// that no connector holds, and each leased task whose lease lapsed. It leases
 // no more of a capability than c.MaxByCapability names, and no more of a slot
 // group's capabilities together than c.SlotGroups names. Every claim runs
 // through the one writer, so two workers asking at once never lease one task
@@ -681,13 +755,16 @@ func (s *Store) Report(ctx context.Context, id string, token int64, outcome Outc
 				return err
 			}
 		}
-		var notBefore *string
+		var notBefore, holder *string
 		if outcome.State == TaskQueued {
 			at := Stamp(tx.at.Add(outcome.RetryAfter))
 			notBefore = &at
+			if holder, err = tx.heldConnector(ctx, task); err != nil {
+				return err
+			}
 		}
-		if _, err := tx.tx.ExecContext(ctx, `UPDATE tasks SET state = ?, error = ?, not_before_ts = ?, lapses = 0, updated_ts = ? WHERE id = ?`,
-			outcome.State, outcome.Error, notBefore, tx.stamp(), id); err != nil {
+		if _, err := tx.tx.ExecContext(ctx, `UPDATE tasks SET state = ?, error = ?, not_before_ts = ?, held_by = ?, lapses = 0, updated_ts = ? WHERE id = ?`,
+			outcome.State, outcome.Error, notBefore, holder, tx.stamp(), id); err != nil {
 			return fmt.Errorf("end task %s: %w", id, err)
 		}
 		if outcome.State == TaskQueued && outcome.Wait {
@@ -743,7 +820,8 @@ func (t *Tx) KeepRun(ctx context.Context, task Task, o Output, units []Unit) err
 }
 
 // RetryTask queues the failed task id again, with its attempts and backoff
-// cleared, and answers it. A task that is queued or leased is answered as it
+// cleared, and held where a held connector holds it, and answers it. A task
+// that is queued or leased is answered as it
 // is, so a retry sent twice queues it once. It answers ErrNoTask where there
 // is no such task, ErrTaskDone where it ended done, and ErrTaskSuperseded
 // where it drafts a proposal that a later one replaced.
@@ -778,8 +856,12 @@ func (tx *Tx) RetryTask(ctx context.Context, id string) (Task, error) {
 			return Task{}, fmt.Errorf("task %s drafts proposal %s, and proposal %s reads its misses: %w", id, *task.ProposalID, newest.ID, ErrTaskSuperseded)
 		}
 	}
-	if _, err := tx.tx.ExecContext(ctx, `UPDATE tasks SET state = 'queued', attempts = 0, lapses = 0, waiting_since_ts = NULL, error = NULL,
-		not_before_ts = NULL, updated_ts = ? WHERE id = ?`, tx.stamp(), id); err != nil {
+	holder, err := tx.heldConnector(ctx, task)
+	if err != nil {
+		return Task{}, err
+	}
+	if _, err := tx.tx.ExecContext(ctx, `UPDATE tasks SET state = 'queued', held_by = ?, attempts = 0, lapses = 0, waiting_since_ts = NULL, error = NULL,
+		not_before_ts = NULL, updated_ts = ? WHERE id = ?`, holder, tx.stamp(), id); err != nil {
 		return Task{}, fmt.Errorf("queue task %s again: %w", id, err)
 	}
 	return tx.task(ctx, id)

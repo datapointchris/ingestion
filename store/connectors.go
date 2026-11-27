@@ -24,9 +24,12 @@ type ConnectorCounts struct {
 	Waiting int
 	Review  int
 	Failed  int
-	// Held counts the items whose model stage the connector's own first fill
-	// holds.
+	// Held counts the items with a queued task held by the connector, which
+	// its first fill reads as the items held behind it.
 	Held int
+	// HeldTasks counts the queued tasks held by the connector, through a
+	// person's hold or its first fill, its own polls included.
+	HeldTasks int
 }
 
 // connectorCounts counts each item a connector sighted by the phase on its
@@ -44,7 +47,7 @@ FROM sightings s JOIN items i ON i.key = s.item_key
 GROUP BY s.connector`
 
 // ConnectorCounts reads every connector's counts, by its name. A connector
-// that sighted nothing is absent.
+// that sighted nothing and holds no task is absent.
 func (s *Store) ConnectorCounts(ctx context.Context) (map[string]ConnectorCounts, error) {
 	rows, err := s.read.QueryContext(ctx, connectorCounts)
 	if err != nil {
@@ -60,7 +63,38 @@ func (s *Store) ConnectorCounts(ctx context.Context) (map[string]ConnectorCounts
 		}
 		out[name] = c
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("count each connector's items: %w", err)
+	}
+	held, err := s.read.QueryContext(ctx, `SELECT held_by, count(*) FROM tasks WHERE held_by IS NOT NULL AND state = 'queued' GROUP BY held_by`)
+	if err != nil {
+		return nil, fmt.Errorf("count the tasks each connector holds: %w", err)
+	}
+	defer func() { _ = held.Close() }()
+	for held.Next() {
+		var name string
+		var n int
+		if err := held.Scan(&name, &n); err != nil {
+			return nil, fmt.Errorf("count the tasks each connector holds: %w", err)
+		}
+		c := out[name]
+		c.HeldTasks = n
+		out[name] = c
+	}
+	return out, held.Err()
+}
+
+// HeldConnectors is each connector that a person holds, by its name.
+func (s *Store) HeldConnectors(ctx context.Context) (map[string]bool, error) {
+	cursors, err := readInto[Cursor](ctx, s.read, table("cursors"), `held_ts IS NOT NULL`)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]bool{}
+	for _, c := range cursors {
+		out[c.Connector] = true
+	}
+	return out, nil
 }
 
 // ItemZones reads each of keys' zone, by key, and leaves out each key with

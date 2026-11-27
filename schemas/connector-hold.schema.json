@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/datapointchris/ingestion/schemas/connector-hold.schema.json",
+  "title": "A connector a person holds",
+  "description": "What POST /api/v1/connectors/{name}/hold answers: when the connector was held and by whom, and how many queued tasks it holds now. A held connector runs no poll or scan, and no worker claims its queued poll or any queued task of an item it sighted until POST /api/v1/connectors/{name}/release. Holding it again keeps the first hold's time and decider.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "connector", "held_ts", "hold_decided_by", "held"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "connector": {"type": "string"},
+    "held_ts": {"type": "string", "format": "date-time"},
+    "hold_decided_by": {"description": "person:<login>, or service:<client id> where a service held it.", "type": "string", "pattern": "^(person|service):.+$"},
+    "held": {"description": "The queued tasks held by the connector, through this hold or its first fill.", "type": "integer", "minimum": 0}
+  }
+}

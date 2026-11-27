@@ -216,9 +216,9 @@
           "required": ["stage", "reason", "capability", "held_by", "dispatch_id", "last_error", "message"],
           "properties": {
             "stage": {"enum": ["contents", "topics", "quality", "note", "model-read"]},
-            "reason": {"description": "first-fill: a connector's first fill holds the task until it is released. dispatched: the model port started a run that has not answered, and message carries why in the dispatch service's words, such as a budget that holds it. unclaimed: no worker heard from lately claims the task's capability, as where no worker's config names a [model] adapter. queued: a worker claims the task next.", "enum": ["first-fill", "dispatched", "unclaimed", "queued"]},
+            "reason": {"description": "held: a person holds the connector named in held_by, which holds the task until it is released. first-fill: a connector's first fill holds the task until it is released. dispatched: the model port started a run that has not answered, and message carries why in the dispatch service's words, such as a budget that holds it. unclaimed: no worker heard from lately claims the task's capability, as where no worker's config names a [model] adapter. queued: a worker claims the task next.", "enum": ["held", "first-fill", "dispatched", "unclaimed", "queued"]},
             "capability": {"type": "string"},
-            "held_by": {"description": "The connector whose first fill holds the task.", "type": ["string", "null"]},
+            "held_by": {"description": "The connector that holds the task, by a person's hold or its first fill.", "type": ["string", "null"]},
             "dispatch_id": {"type": ["string", "null"]},
             "last_error": {"description": "Why the task's last try did not go through, such as a dispatch service that did not answer or a usage limit that waits for its reset, and null where the last try went through. The task tries again after its backoff.", "type": ["string", "null"]},
             "message": {"type": "string"}

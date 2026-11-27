@@ -50,6 +50,9 @@
         "overdue": {"description": "True once due_at has passed with no delivery since, or for a poll or a folder declaring a freshness, once its last delivery is older than that. Always false for a connector whose finished_ts is set.", "type": "boolean"},
         "overdue_since": {"description": "When the connector went overdue, the earlier of the two instants that overdue rests on, and null while it is not overdue. Absent from a server older than this field.", "type": ["string", "null"], "format": "date-time"},
         "finished_ts": {"description": "When a connector scheduled once ran a poll that landed everything it found, after which the scheduler never runs it. Null until then and for every other connector, and absent from a server older than this field.", "type": ["string", "null"], "format": "date-time"},
+        "held_ts": {"description": "When a person held the connector, and null while it is not held. A held connector runs no poll or scan, and no worker claims its queued poll or any queued task of an item it sighted until `ingestion connectors release`. Absent from a server older than this field.", "type": ["string", "null"], "format": "date-time"},
+        "hold_decided_by": {"description": "Who held the connector: person:<login>, or service:<client id>. Null while it is not held, and absent from a server older than this field.", "type": ["string", "null"], "pattern": "^(person|service):.+$"},
+        "held_tasks": {"description": "The queued tasks held by the connector, through a person's hold or its first fill, which no worker claims until it is released. Absent from a server older than this field.", "type": "integer", "minimum": 0},
         "first_fill": {
           "description": "Answered on one connector alone.",
           "type": "object",
@@ -58,7 +61,7 @@
           "properties": {
             "state": {"enum": ["held", "released", "none"]},
             "item_key": {"description": "The one item the held fill ran end to end.", "type": ["string", "null"]},
-            "held": {"description": "Items whose model stage the fill holds behind it.", "type": "integer"},
+            "held": {"description": "Items with a queued task held by the connector, which while no person holds it are the items the fill holds behind it.", "type": "integer"},
             "tokens": {
               "description": "That item's tokens, by model stage.",
               "type": "object",

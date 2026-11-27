@@ -342,7 +342,7 @@
         "stage": {"$ref": "#/$defs/stage"},
         "capability": {"description": "What a worker needs to claim the task: poll:<source> for a poll, parse:<extractor> for a parse, deliver:<deliverer> for a delivery, delete:<source> for a delete and refresh-metrics:<source> for a refresh of metrics.", "type": "string"},
         "state": {"enum": ["queued", "leased", "done", "failed"]},
-        "held_by": {"description": "The connector whose first fill holds this model stage's task. No claim takes it until a person releases the fill.", "type": ["string", "null"]},
+        "held_by": {"description": "The connector that holds this queued task: by a person's hold on it, as its cursor's held_ts records, or by its first fill at a model stage. No claim takes it until a person releases the connector.", "type": ["string", "null"]},
         "lease_holder": {"description": "The worker holding the lease.", "type": ["string", "null"]},
         "lease_token": {"description": "The fencing token. A report under an older token is refused.", "type": ["integer", "null"]},
         "lease_expires_ts": {"anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
@@ -384,6 +384,8 @@
         "failures": {"description": "How many runs in a row failed. The scheduler retries a failed run sooner than its schedule, waiting longer after each.", "type": "integer", "minimum": 0},
         "first_fill": {"description": "none until an item reaches a model stage. held once one has, which keeps every later item at the model stages until a person releases it.", "enum": ["held", "released", "none"]},
         "first_fill_item_key": {"description": "The one item a held first fill ran end to end.", "anyOf": [{"$ref": "#/$defs/item_key"}, {"type": "null"}]},
+        "held_ts": {"description": "When a person held the connector, and null while it is not held. A held connector runs no poll or scan, and holds its queued poll and every queued task of an item it sighted, at any stage, until a person releases it. Absent from a record shipped before the store kept it.", "anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
+        "hold_decided_by": {"description": "Who held the connector: person:<login>, or service:<client id> where a service held it. Null while it is not held, and absent from a record shipped before the store kept it.", "type": ["string", "null"], "pattern": "^(person|service):.+$"},
         "finished_ts": {"description": "When a connector scheduled once ran a poll that landed everything it found, after which the scheduler never runs it. Null until then and for every other connector, and null again once an apply declares the connector other than once. Absent from a record shipped before the store kept it.", "anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
         "created_ts": {"description": "When an apply first declared the connector. A due time with no run or delivery before it counts from here.", "$ref": "#/$defs/timestamp"},
         "updated_ts": {"$ref": "#/$defs/timestamp"}

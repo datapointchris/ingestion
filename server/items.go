@@ -170,6 +170,8 @@ func suggestionFindings(o store.Output, in string) []SuggestionFindingView {
 const (
 	// WaitingFirstFill is a task that a connector's first fill holds.
 	WaitingFirstFill = "first-fill"
+	// WaitingHeld is a task of a connector that a person holds.
+	WaitingHeld = "held"
 	// WaitingUnclaimed is a task that no worker heard from lately claims.
 	WaitingUnclaimed = "unclaimed"
 	// WaitingQueued is a task that a worker claims next.
@@ -184,7 +186,8 @@ type WaitingView struct {
 	Stage      string `json:"stage"`
 	Reason     string `json:"reason"`
 	Capability string `json:"capability"`
-	// HeldBy is the connector whose first fill holds the task.
+	// HeldBy is the connector that holds the task, by a person's hold or its
+	// first fill.
 	HeldBy *string `json:"held_by"`
 	// DispatchID is the run's dispatch, where the port started one.
 	DispatchID *string `json:"dispatch_id"`
@@ -420,7 +423,12 @@ func (h itemHandlers) show(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	markUnclaimed(rec, answer.Deliveries, claimed)
-	answer.Waiting = waitingView(rec, claimed)
+	holds, err := h.store.HeldConnectors(r.Context())
+	if err != nil {
+		h.internal(w, r, "read the held connectors", err)
+		return
+	}
+	answer.Waiting = waitingView(rec, claimed, holds)
 	JSON(w, http.StatusOK, answer)
 }
 
@@ -441,8 +449,8 @@ func Claimed(ctx context.Context, st *store.Store) (map[string]bool, error) {
 }
 
 // waitingView is why rec's item waits at the model stage that holds it, and
-// nil where none does.
-func waitingView(rec store.ItemRecords, claimed map[string]bool) *WaitingView {
+// nil where none does. holds names each connector that a person holds.
+func waitingView(rec store.ItemRecords, claimed, holds map[string]bool) *WaitingView {
 	stage := rec.WaitingAt()
 	if stage == "" {
 		return nil
@@ -460,6 +468,9 @@ func waitingView(rec store.ItemRecords, claimed map[string]bool) *WaitingView {
 		}
 	}
 	switch {
+	case v.HeldBy != nil && holds[*v.HeldBy]:
+		v.Reason = WaitingHeld
+		v.Message = fmt.Sprintf("connector %s is held until `ingestion connectors release %s`", *v.HeldBy, *v.HeldBy)
 	case v.HeldBy != nil:
 		v.Reason = WaitingFirstFill
 		v.Message = fmt.Sprintf("the first fill of connector %s holds it until `ingestion connectors release %s`", *v.HeldBy, *v.HeldBy)

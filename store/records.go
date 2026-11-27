@@ -666,6 +666,11 @@ type Cursor struct {
 	Failures         int     `json:"failures"`
 	FirstFill        string  `json:"first_fill"`
 	FirstFillItemKey *string `json:"first_fill_item_key"`
+	// HeldTS is when a person held the connector, and HoldDecidedBy who held
+	// it, as person:<login> or service:<client id>. Both are nil while it is
+	// not held.
+	HeldTS        *string `json:"held_ts"`
+	HoldDecidedBy *string `json:"hold_decided_by"`
 	// FinishedTS is when a connector scheduled once ran a poll that ended
 	// done, after which it never runs again, and nil until then.
 	FinishedTS *string `json:"finished_ts"`

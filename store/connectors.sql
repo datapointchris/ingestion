@@ -1,8 +1,12 @@
 -- A cursor is one connector's position and when the scheduler next makes it
 -- due. first_fill is none until an item reaches a model stage, held once one
 -- has and every later item waits there, and released once a person lets the
--- rest through. last_error and last_error_ts hold the newest failed run, and
--- failures counts the runs that failed in a row. stale_at is the stale time
+-- rest through. held_ts is when a person held the connector, and
+-- hold_decided_by who held it, both null while it is not held. A held
+-- connector runs no poll or scan, and holds every queued task of its own and
+-- of each item it sighted, until a person releases it. last_error and
+-- last_error_ts hold the newest failed run, and failures counts the runs
+-- that failed in a row. stale_at is the stale time
 -- that connectors.StaleAt writes on each cursor put. finished_ts is when a
 -- connector scheduled once ran a poll that ended done, after which it never
 -- runs again. A cursor with no recorded creation reads as made at the Unix
@@ -23,6 +27,8 @@ CREATE TABLE IF NOT EXISTS cursors (
     failures            INTEGER NOT NULL DEFAULT 0,
     first_fill          TEXT NOT NULL CHECK (first_fill IN ('held', 'released', 'none')),
     first_fill_item_key TEXT,
+    held_ts             TEXT,
+    hold_decided_by     TEXT,
     finished_ts         TEXT,
     created_ts         TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z',
     updated_ts          TEXT NOT NULL

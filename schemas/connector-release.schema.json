@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/datapointchris/ingestion/schemas/connector-release.schema.json",
+  "title": "A released connector",
+  "description": "What POST /api/v1/connectors/{name}/release answers: the connector, whose hold is lifted and whose first fill is released, and how many of the queued tasks they held this request returned to the claims. Releasing it again returns none.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "connector", "released"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "connector": {"type": "string"},
+    "released": {"type": "integer", "minimum": 0}
+  }
+}

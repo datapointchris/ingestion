@@ -177,7 +177,7 @@ func writeTasks(w io.Writer, answer server.TasksAnswer) {
 			lease = "retries at " + localTime(*t.NotBeforeTS)
 		}
 		if t.HeldBy != nil {
-			state += " (held by " + *t.HeldBy + "'s first fill)"
+			state += " (held by " + *t.HeldBy + ")"
 		}
 		_, _ = fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n",
 			t.ID, taskSubject(t), t.Stage, t.Capability, state, t.Attempts, lease, localTime(t.UpdatedTS))

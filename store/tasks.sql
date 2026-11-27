@@ -3,8 +3,9 @@
 -- worker holding its capability. It names exactly one of the four: source
 -- names the source whose metrics a refresh-metrics task reads again.
 -- lease_token rises with every claim, so a report under an older token is
--- refused. held_by names the connector whose first fill holds a model
--- stage's task, which no claim takes until a person releases the fill.
+-- refused. held_by names the connector that holds a queued task, by a
+-- person's hold on it or by its first fill at a model stage, which no claim
+-- takes until a person releases the connector.
 -- destination names the destination a deliver task writes its item to. model names the model that a measurement arm's task asks its
 -- run for. sighting_connector names the connector whose sighting a delete
 -- task removes from that connector's source. attempts counts every claim but

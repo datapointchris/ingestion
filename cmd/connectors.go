@@ -70,7 +70,9 @@ var connectorsListCmd = &cobra.Command{
 	Short: "List each applied connector, its counts, and when it is next due",
 	Long: "Lists each connector in the set in force: its mode, the commit applied, its\n" +
 		"last delivery, its items, those waiting at a model stage, in review and\n" +
-		"failed, and when the scheduler next makes it due. A connector whose due time\n" +
+		"failed, the queued tasks it holds, and when the scheduler next makes it due.\n" +
+		"HELD reads held where a person holds the connector, and counts the tasks that\n" +
+		"its hold and its first fill keep from the workers. A connector whose due time\n" +
 		"passed with no delivery reads overdue.",
 	Example: "  ingestion connectors list\n" +
 		"  ingestion connectors list --json",
@@ -81,7 +83,8 @@ var connectorsListCmd = &cobra.Command{
 var connectorsShowCmd = &cobra.Command{
 	Use:   "show <name>",
 	Short: "Show one connector, and the item its first fill ran end to end",
-	Long: "Shows one connector's declaration, counts and due time, and its first fill.\n" +
+	Long: "Shows one connector's declaration, counts and due time, any hold a person\n" +
+		"put on it, and its first fill.\n" +
 		"A connector's first fill runs the first of its items to reach a model stage\n" +
 		"through those stages. It holds every later one there until a person releases\n" +
 		"it, so that item's tokens can be read before the rest are spent. Every held\n" +
@@ -103,13 +106,28 @@ var connectorsRunCmd = &cobra.Command{
 	RunE:    runConnectorsRun,
 }
 
+var connectorsHoldCmd = &cobra.Command{
+	Use:   "hold <name>",
+	Short: "Hold a connector, so none of its work runs until it is released",
+	Long: "A held connector runs no poll or folder scan. No worker claims its queued\n" +
+		"poll, or any queued task of an item it sighted, at any stage. A task made\n" +
+		"for such an item while it is held is held too. A task that a worker already\n" +
+		"leased runs to its end. The hold lives in the store, so it survives a\n" +
+		"restart. `connectors release` returns every task it held, each in its place.\n" +
+		"Holding a held connector changes nothing.",
+	Example: "  ingestion connectors hold books-folder",
+	Args:    cobra.ExactArgs(1),
+	RunE:    runConnectorsHold,
+}
+
 var connectorsReleaseCmd = &cobra.Command{
 	Use:   "release <name>",
-	Short: "Release a connector's first fill, queuing every item it held",
-	Long: "Lets every item that the connector's first fill holds at a model stage go on,\n" +
-		"and stops holding any later one. Releasing a fill already released changes\n" +
-		"nothing. A connector that a later set dropped can still be released, so its\n" +
-		"held items do not wait for ever.",
+	Short: "Release a connector's hold and its first fill, queuing every task they held",
+	Long: "Lifts a person's hold on the connector and releases its first fill. Every\n" +
+		"task they held goes back to the workers in its place by when it was made,\n" +
+		"and the first fill holds no later item. Releasing a connector already\n" +
+		"released changes nothing. A connector that a later set dropped can still\n" +
+		"be released, so its held items do not wait for ever.",
 	Example: "  ingestion connectors release reddit-exports",
 	Args:    cobra.ExactArgs(1),
 	RunE:    runConnectorsRelease,
@@ -120,11 +138,11 @@ func init() {
 	connectorsListCmd.Flags().Bool("json", false, "Print the service's answer as JSON")
 	connectorsShowCmd.Flags().Bool("json", false, "Print the service's answer as JSON")
 	connectorsApplyCmd.Flags().String("replacing", "", "Replace this commit in force, which dir's HEAD need not contain")
-	for _, c := range []*cobra.Command{connectorsApplyCmd, connectorsListCmd, connectorsShowCmd, connectorsRunCmd, connectorsReleaseCmd} {
+	for _, c := range []*cobra.Command{connectorsApplyCmd, connectorsListCmd, connectorsShowCmd, connectorsRunCmd, connectorsHoldCmd, connectorsReleaseCmd} {
 		c.Flags().String("api", "", "Call this server rather than the config file's api")
 		addConfigFlag(c)
 	}
-	connectorsCmd.AddCommand(connectorsApplyCmd, connectorsListCmd, connectorsShowCmd, connectorsRunCmd, connectorsReleaseCmd)
+	connectorsCmd.AddCommand(connectorsApplyCmd, connectorsListCmd, connectorsShowCmd, connectorsRunCmd, connectorsHoldCmd, connectorsReleaseCmd)
 	rootCmd.AddCommand(connectorsCmd)
 }
 
@@ -319,14 +337,14 @@ func runConnectorsList(cmd *cobra.Command, _ []string) error {
 
 func writeConnectors(w io.Writer, applied *string, list []server.ConnectorView, now time.Time) {
 	table := tabwriter.NewWriter(w, 0, 0, 2, ' ', tabwriter.AlignRight)
-	_, _ = fmt.Fprintln(table, "CONNECTOR\tMODE\tAPPLIED\tLAST DELIVERY\tITEMS\tWAITING\tREVIEW\tFAILED\tDUE\t")
+	_, _ = fmt.Fprintln(table, "CONNECTOR\tMODE\tAPPLIED\tLAST DELIVERY\tITEMS\tWAITING\tREVIEW\tFAILED\tHELD\tDUE\t")
 	for _, c := range list {
 		last := "—"
 		if c.LastDeliveryTS != nil {
 			last = shortTime(*c.LastDeliveryTS)
 		}
-		_, _ = fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%d\t%d\t%d\t%d\t%s\t\n", c.Name, c.Mode, shortCommit(c.AppliedCommit), last,
-			c.Items, c.Waiting, c.Review, c.Failed, dueText(c, now))
+		_, _ = fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%d\t%d\t%d\t%d\t%s\t%s\t\n", c.Name, c.Mode, shortCommit(c.AppliedCommit), last,
+			c.Items, c.Waiting, c.Review, c.Failed, heldText(c), dueText(c, now))
 	}
 	switch {
 	case applied == nil:
@@ -335,6 +353,18 @@ func writeConnectors(w io.Writer, applied *string, list []server.ConnectorView, 
 		_, _ = fmt.Fprintf(table, "(the set in force, %s, declares no connector)\t\n", shortCommit(*applied))
 	}
 	_ = table.Flush()
+}
+
+// heldText is how many queued tasks c holds, marked held where a person holds
+// it, and a dash where it holds nothing.
+func heldText(c server.ConnectorView) string {
+	switch {
+	case c.HeldTS != nil:
+		return fmt.Sprintf("held · %d tasks", c.HeldTasks)
+	case c.HeldTasks > 0:
+		return fmt.Sprintf("%d tasks", c.HeldTasks)
+	}
+	return "—"
 }
 
 // dueText is when c is due as a person reads it: its schedule or interval,
@@ -424,6 +454,9 @@ func writeConnector(w io.Writer, c server.ConnectorView, now time.Time) {
 		row("last error", "%s, %d in a row: %s", last(c.LastErrorTS), c.Failures, *c.LastError)
 	}
 	row("last delivery", "%s", last(c.LastDeliveryTS))
+	if c.HeldTS != nil {
+		row("hold", "held since %s by %s, %d queued tasks wait", localTime(*c.HeldTS), orDash(c.HoldDecidedBy), c.HeldTasks)
+	}
 	if fill := c.FirstFill; fill != nil {
 		switch fill.State {
 		case store.FirstFillNone:
@@ -446,9 +479,9 @@ func writeConnector(w io.Writer, c server.ConnectorView, now time.Time) {
 			}
 			row(label, "%s   uncached input %d, cache write %d, cache read %d, output %d", stage, t.UncachedInput, t.CacheWrite, t.CacheRead, t.Output)
 		}
-		if fill.State == store.FirstFillHeld {
-			row("release", "ingestion connectors release %s", c.Name)
-		}
+	}
+	if c.HeldTS != nil || (c.FirstFill != nil && c.FirstFill.State == store.FirstFillHeld) {
+		row("release", "ingestion connectors release %s", c.Name)
 	}
 	_ = table.Flush()
 }
@@ -472,17 +505,30 @@ func runConnectorsRun(cmd *cobra.Command, args []string) error {
 	return err
 }
 
-func runConnectorsRelease(cmd *cobra.Command, args []string) error {
+func runConnectorsHold(cmd *cobra.Command, args []string) error {
 	api, _ := cmd.Flags().GetString("api")
-	var answer server.FirstFillAnswer
+	var answer server.HoldAnswer
 	_, _, err := callJSON(cmd.Context(), configPath(cmd), api, call{
-		Route: server.RouteFirstFill, Target: "/api/v1/connectors/" + url.PathEscape(args[0]) + "/first-fill",
-		Header: http.Header{"Content-Type": {"application/json"}}, Body: []byte(`{"state":"released"}`),
+		Route: server.RouteConnectorHold, Target: "/api/v1/connectors/" + url.PathEscape(args[0]) + "/hold",
 	}, &answer)
 	if err != nil {
 		return refusedAsUsage(err)
 	}
-	_, err = fmt.Fprintf(cmd.OutOrStdout(), "Released %s's first fill, and queued the %d tasks it held.\n", answer.Connector, answer.Released)
+	_, err = fmt.Fprintf(cmd.OutOrStdout(), "Held %s since %s, and %d queued tasks wait until `ingestion connectors release %s`.\n",
+		answer.Connector, localTime(answer.HeldTS), answer.Held, answer.Connector)
+	return err
+}
+
+func runConnectorsRelease(cmd *cobra.Command, args []string) error {
+	api, _ := cmd.Flags().GetString("api")
+	var answer server.ReleaseAnswer
+	_, _, err := callJSON(cmd.Context(), configPath(cmd), api, call{
+		Route: server.RouteConnectorRelease, Target: "/api/v1/connectors/" + url.PathEscape(args[0]) + "/release",
+	}, &answer)
+	if err != nil {
+		return refusedAsUsage(err)
+	}
+	_, err = fmt.Fprintf(cmd.OutOrStdout(), "Released %s, and queued the %d tasks it held.\n", answer.Connector, answer.Released)
 	return err
 }
 

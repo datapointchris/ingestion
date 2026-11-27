@@ -27,9 +27,13 @@ const (
 	ScopeConnectorsRead = "ingestion.connectors.read"
 	// ScopeConnectorsRun admits a caller to run a connector now.
 	ScopeConnectorsRun = "ingestion.connectors.run"
-	// ScopeFirstFillsRelease admits a caller to release a connector's first
-	// fill, which sends every item it held on to the model stages.
-	ScopeFirstFillsRelease = "ingestion.first-fills.release"
+	// ScopeConnectorsHold admits a caller to hold a connector, which keeps
+	// its polls and every queued task of its items from the claims.
+	ScopeConnectorsHold = "ingestion.connectors.hold"
+	// ScopeConnectorsRelease admits a caller to release a connector's hold
+	// and its first fill. That sends every task they held to the claims, and
+	// spends the model stages on every item the fill held.
+	ScopeConnectorsRelease = "ingestion.connectors.release"
 	// ScopeItemsDrop admits a caller to drop a file into a drop connector.
 	ScopeItemsDrop = "ingestion.items.drop"
 )
@@ -128,6 +132,13 @@ type ConnectorView struct {
 	// FinishedTS is when a connector scheduled once ran a poll that ended
 	// done, after which the scheduler never runs it, and null until then.
 	FinishedTS *string `json:"finished_ts"`
+	// HeldTS is when a person held the connector, and HoldDecidedBy who held
+	// it. Both are null while it is not held.
+	HeldTS        *string `json:"held_ts"`
+	HoldDecidedBy *string `json:"hold_decided_by"`
+	// HeldTasks counts the queued tasks held by the connector, through a
+	// person's hold or its first fill.
+	HeldTasks int `json:"held_tasks"`
 	// FirstFill is answered on one connector alone.
 	FirstFill *FirstFillView `json:"first_fill,omitempty"`
 }
@@ -152,19 +163,26 @@ type RunAnswer struct {
 	DueAt         string  `json:"due_at"`
 }
 
-// FirstFillRequest is what PATCH /api/v1/connectors/{name}/first-fill reads.
-// Released is the one state a person sets.
-type FirstFillRequest struct {
-	State string `json:"state"`
-}
-
-// FirstFillAnswer is what the PATCH answers: schemas/first-fill.schema.json.
-type FirstFillAnswer struct {
+// HoldAnswer is what POST /api/v1/connectors/{name}/hold answers:
+// schemas/connector-hold.schema.json.
+type HoldAnswer struct {
 	SchemaVersion int    `json:"schema_version"`
 	Connector     string `json:"connector"`
-	State         string `json:"state"`
+	// HeldTS and HoldDecidedBy are the first hold's, which a second hold
+	// keeps.
+	HeldTS        string `json:"held_ts"`
+	HoldDecidedBy string `json:"hold_decided_by"`
+	// Held counts the queued tasks held by the connector now.
+	Held int `json:"held"`
+}
+
+// ReleaseAnswer is what POST /api/v1/connectors/{name}/release answers:
+// schemas/connector-release.schema.json.
+type ReleaseAnswer struct {
+	SchemaVersion int    `json:"schema_version"`
+	Connector     string `json:"connector"`
 	// Released counts the held queued tasks that this request returned to the
-	// claims, which is 0 for a fill already released.
+	// claims, which is 0 for a connector already released.
 	Released int `json:"released"`
 }
 
@@ -197,9 +215,9 @@ type ConnectorConfig struct {
 	Log   *slog.Logger
 }
 
-// ConnectorRoutes are the routes for a person to apply the declarations, read
-// and run each connector, release a first fill, drop a file and push a link or
-// a memo.
+// ConnectorRoutes are the routes for a person to apply the declarations, read,
+// run, hold and release each connector, drop a file and push a link or a
+// memo.
 func ConnectorRoutes(cfg ConnectorConfig) Routes {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
@@ -213,7 +231,8 @@ func ConnectorRoutes(cfg ConnectorConfig) Routes {
 		r.Handle(RouteConnectors, h.list)
 		r.Handle(RouteConnector, h.show)
 		r.Handle(RouteConnectorRuns, h.run)
-		r.Handle(RouteFirstFill, h.firstFill)
+		r.Handle(RouteConnectorHold, h.hold)
+		r.Handle(RouteConnectorRelease, h.release)
 		r.Handle(RouteConnectorDrops, h.drop)
 		r.Handle(RouteItemsPush, h.push)
 	}
@@ -406,6 +425,7 @@ func (h connectorHandlers) view(w http.ResponseWriter, r *http.Request, c connec
 		Items: n.Items, Waiting: n.Waiting, Review: n.Review, Failed: n.Failed,
 		Schedule: optional(c.Schedule), DueInterval: optional(c.DueInterval), Freshness: optional(c.Freshness),
 		DueAt: cur.DueAt, Overdue: overdue, OverdueSince: optional(since), FinishedTS: finishedTS(c, cur),
+		HeldTS: cur.HeldTS, HoldDecidedBy: cur.HoldDecidedBy, HeldTasks: n.HeldTasks,
 	}, true
 }
 
@@ -479,40 +499,58 @@ func (h connectorHandlers) run(w http.ResponseWriter, r *http.Request) {
 	JSON(w, status, answer)
 }
 
-// firstFill releases a connector's first fill, which lets every item it holds
-// through the model stages. It finds the fill by the connector's cursor, so a
-// connector that a later set dropped can still be released. Releasing a fill
-// already released returns no task.
-func (h connectorHandlers) firstFill(w http.ResponseWriter, r *http.Request) {
-	var body FirstFillRequest
-	if !decode(w, r, &body) {
-		return
-	}
-	if body.State != store.FirstFillReleased {
-		Refuse(w, http.StatusBadRequest, CodeInvalidBody, "a first fill's state is set to %s alone, not %q", store.FirstFillReleased, body.State)
-		return
-	}
+// hold holds a connector for the caller: the scheduler runs it no more, and
+// no claim takes its queued poll or any queued task of an item it sighted. A
+// task already leased runs to its end. It finds the connector by its cursor,
+// as release does.
+func (h connectorHandlers) hold(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	var found bool
-	var released int
+	caller, _ := goapiauth.IdentityFrom(r.Context())
+	var cur store.Cursor
+	var held int
 	err := h.cfg.Store.Update(r.Context(), func(tx *store.Tx) error {
 		var err error
-		if _, found, err = tx.Cursor(r.Context(), name); err != nil || !found {
-			return err
-		}
-		released, err = tx.ReleaseFirstFill(r.Context(), name)
+		cur, held, err = tx.HoldConnector(r.Context(), name, requester(caller))
 		return err
 	})
-	if err != nil {
-		h.internal(w, r, "release the first fill", err)
-		return
-	}
-	if !found {
+	if errors.Is(err, store.ErrNoCursor) {
 		Refuse(w, http.StatusNotFound, CodeConnectorNotFound, "no set applied has declared a connector %s", name)
 		return
 	}
-	h.cfg.Log.Info("released a first fill", "connector", name, "tasks", released)
-	JSON(w, http.StatusOK, FirstFillAnswer{SchemaVersion: 1, Connector: name, State: store.FirstFillReleased, Released: released})
+	if err != nil {
+		h.internal(w, r, "hold the connector", err)
+		return
+	}
+	h.cfg.Log.Info("held a connector", "connector", name, "held_by", text(cur.HoldDecidedBy), "tasks", held)
+	JSON(w, http.StatusOK, HoldAnswer{SchemaVersion: 1, Connector: name, HeldTS: text(cur.HeldTS), HoldDecidedBy: text(cur.HoldDecidedBy), Held: held})
+}
+
+// release lifts a person's hold on a connector and releases its first fill,
+// which returns every task they held to the claims in its place, and lets
+// every item the fill held through the model stages. It finds the connector
+// by its cursor, so a connector that a later set dropped can still be
+// released. Releasing a connector already released returns no task.
+func (h connectorHandlers) release(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	var released int
+	err := h.cfg.Store.Update(r.Context(), func(tx *store.Tx) error {
+		var err error
+		released, err = tx.ReleaseConnector(r.Context(), name)
+		return err
+	})
+	if errors.Is(err, store.ErrNoCursor) {
+		Refuse(w, http.StatusNotFound, CodeConnectorNotFound, "no set applied has declared a connector %s", name)
+		return
+	}
+	if err != nil {
+		h.internal(w, r, "release the connector", err)
+		return
+	}
+	if h.cfg.Scheduler != nil {
+		h.cfg.Scheduler.Wake()
+	}
+	h.cfg.Log.Info("released a connector", "connector", name, "tasks", released)
+	JSON(w, http.StatusOK, ReleaseAnswer{SchemaVersion: 1, Connector: name, Released: released})
 }
 
 // drop lands the body as one file dropped into a drop connector, through its

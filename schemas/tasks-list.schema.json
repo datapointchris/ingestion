@@ -24,7 +24,7 @@
           "stage": {"enum": ["poll", "land", "parse", "structure", "contents", "scan", "topics", "quality", "quality-arm", "note", "model-read", "prompt-proposal", "deliver", "delete", "refresh-metrics", "comments"]},
           "capability": {"description": "What a worker needs to claim the task: poll:<source> for a poll, parse:<extractor> for a parse, deliver:<deliverer> for a delivery, delete:<source> for a delete and refresh-metrics:<source> for a refresh of metrics.", "type": "string"},
           "state": {"enum": ["queued", "leased", "done", "failed"]},
-          "held_by": {"description": "The connector whose first fill holds this queued task until a person releases it.", "type": ["string", "null"]},
+          "held_by": {"description": "The connector that holds this queued task, by a person's hold or its first fill, until a person releases it.", "type": ["string", "null"]},
           "lapsed": {"description": "The task is leased and its lease ran out, so the next claim takes it.", "type": "boolean"},
           "lease_holder": {"description": "The worker that claimed the task last.", "type": ["string", "null"]},
           "lease_expires_ts": {"type": ["string", "null"], "format": "date-time"},

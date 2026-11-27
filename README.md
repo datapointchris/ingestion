@@ -230,8 +230,9 @@ client_id = "slate-svc-ingestion"
   needs `ingestion.review.place`. One that marks an item `low-quality` or `read` for a person
   needs `ingestion.marks.write`, and one that promotes a gate family `ingestion.trust.promote`.
   One that asks for the read of a video's top comments needs `ingestion.comments.read`.
-  Releasing a connector's first fill spends the model stages on every
-  item it held, so it takes `ingestion.first-fills.release`, which no other scope grants.
+  One that holds a connector needs `ingestion.connectors.hold`. A release spends the model
+  stages on every item that the connector's first fill held. So releasing takes
+  `ingestion.connectors.release`, and no other scope grants it.
 
 `ingestion auth login`, `auth status` and `auth logout` hold a person's login. `ingestion tasks
 list` reads the service's open tasks and the workers it has heard from:
@@ -355,13 +356,14 @@ whatever `HEAD` holds, such as for a rollback to an older commit.
 `ingestion connectors list` prints each connector in force:
 
 ```text
-     CONNECTOR    MODE  APPLIED         LAST DELIVERY  ITEMS  WAITING  REVIEW  FAILED                                       DUE
-  books-folder  folder  5519f33                     —      0        0       0       0  */15 * * * * · next 2026-11-25 00:00 EST
-   feed-reader    poll  5519f33                     —      0        0       0       0       @hourly · next 2026-11-25 00:00 EST
-reddit-exports    drop  5519f33  2026-11-24 23:50 EST      1        0       0       0     every 30d · next 2026-12-24 23:50 EST
+     CONNECTOR    MODE  APPLIED         LAST DELIVERY  ITEMS  WAITING  REVIEW  FAILED             HELD                                       DUE
+  books-folder  folder  5519f33                     —      0        0       0       0  held · 0 tasks  */15 * * * * · next 2026-11-25 00:00 EST
+   feed-reader    poll  5519f33                     —      0        0       0       0               —       @hourly · next 2026-11-25 00:00 EST
+reddit-exports    drop  5519f33  2026-11-24 23:50 EST      1        0       0       0               —     every 30d · next 2026-12-24 23:50 EST
 ```
 
-`ingestion connectors show <name>` adds its source, its tags, its last run and its first fill.
+`ingestion connectors show <name>` adds its source, its tags, its last run, a person's hold and
+its first fill.
 `--json` on either prints the shape in `schemas/connectors-list.schema.json`. REVIEW counts what
 `ingestion review list` lists, including an item whose parse failed. FAILED counts an item whose
 newest task past its parse failed.
@@ -463,10 +465,18 @@ newest task past its parse failed.
     does not declare.
 - **A connector's first fill runs the first of its items to reach a model stage, and holds the
   rest there.** `show` prints that item and its tokens by stage. `ingestion connectors release
-  <name>` sends `PATCH /api/v1/connectors/<name>/first-fill` with `{"state": "released"}`, which
-  queues every model task the fill held. The hold lives in the store, so it survives a restart. A
-  connector that a later set dropped can still be released. An item that two connectors sighted
-  waits while either holds it.
+  <name>` sends `POST /api/v1/connectors/<name>/release`, which queues every model task the fill
+  held. The hold lives in the store, so it survives a restart. A connector that a later set
+  dropped can still be released. An item that two connectors sighted waits while either holds it.
+- **`ingestion connectors hold <name>` pauses a connector until `release` returns its work.** It
+  sends `POST /api/v1/connectors/<name>/hold`. The scheduler runs no poll or folder scan of a
+  held connector. No worker claims its queued poll. No worker claims any queued task of an item
+  that it sighted, at any stage. While the connector is held, the store makes each new task of
+  such an item held. Each task that a worker already leased runs to its end. The cursor keeps
+  when and by whom the connector was held, so the hold survives a restart and ships with the
+  cursor. `list` and `show` read it held, with the queued tasks it holds. `release` lifts the
+  hold and releases the first fill in one write. Each task they held returns in its place by when
+  it was made, so a held folder's replay resumes where it stood.
 
 ### A Reddit export lands each save once, under its post's or comment's key
 
@@ -928,8 +938,10 @@ $ ingestion tasks retry c2e134a22919ae6efb0bbee0c02b0fb1
 Task c2e134a22919ae6efb0bbee0c02b0fb1, quality on reddit/t3_bb2, is queued.
 ```
 
-A connector's first fill holds the item's task as `first-fill` until `ingestion connectors
-release`. `tasks retry` posts to `/api/v1/tasks/{id}/retries`, and its `--json` prints
+When a connector's first fill holds the item's task, the task waits as `first-fill`. When a
+person holds the connector, the task waits as `held`. Either waits until `ingestion connectors
+release`.
+`tasks retry` posts to `/api/v1/tasks/{id}/retries`, and its `--json` prints
 `schemas/task-retry.schema.json`. It queues a failed task again, prints a queued or leased task as
 it stands, and refuses a done one.
 

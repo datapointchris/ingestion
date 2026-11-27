@@ -84,7 +84,8 @@ func (s *Scheduler) Run(ctx context.Context) {
 }
 
 // Pass runs each poll and folder connector in the set in force whose due time
-// has come, and answers the earliest due time left. One connector's failed run
+// has come, and answers the earliest due time left. It runs no connector that
+// a person holds, and its release wakes the scheduler. One connector's failed run
 // is recorded on its cursor and logged, and leaves the rest to run. It first
 // rewrites each cursor whose stale time differs from what its freshness gives.
 func (s *Scheduler) Pass(ctx context.Context) (time.Time, error) {
@@ -112,7 +113,7 @@ func (s *Scheduler) Pass(ctx context.Context) (time.Time, error) {
 				failed = append(failed, fmt.Errorf("keep connector %s's stale time: %w", c.Name, err))
 			}
 		}
-		if !c.Scheduled() || Finished(c, cur) {
+		if !c.Scheduled() || Finished(c, cur) || cur.HeldTS != nil {
 			continue
 		}
 		due, err := time.Parse(store.StampLayout, cur.DueAt)

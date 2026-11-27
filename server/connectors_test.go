@@ -23,10 +23,13 @@ import (
 // another file under that key is refused. A poll connector's run makes one
 // task. A drop connector's first fill runs one item through the model stages
 // and holds the rest, across a service restart, until a person releases it.
-// An apply that replaces a commit not in force is refused, and a later set
-// that drops the connector leaves its fill releasable. Each answer holds to its
-// schema.
-func TestADropRetriedUnderItsKeyLandsOnceAndAFirstFillHoldsAcrossARestartUntilReleased(t *testing.T) {
+// A person's hold on the poll connector keeps its queued poll from a claim
+// across the restart, and its release returns it. An apply that replaces a
+// commit not in force is refused, and a later set that drops the connector
+// leaves it holdable and releasable. A task made for its item while it is
+// held is made held, and its release returns that task and the fill's in
+// their order. Each answer holds to its schema.
+func TestADropRetriedUnderItsKeyLandsOnceAndAFirstFillOrAHoldHoldsAcrossARestartUntilReleased(t *testing.T) {
 	ctx := t.Context()
 	dir := t.TempDir()
 	provider := authtest.NewProvider(t)
@@ -143,17 +146,23 @@ func TestADropRetriedUnderItsKeyLandsOnceAndAFirstFillHoldsAcrossARestartUntilRe
 	}); err != nil {
 		t.Fatal(err)
 	}
-	claim := func(worker string) []store.Leased {
+	claim := func(worker string, capabilities ...string) []store.Leased {
 		t.Helper()
-		leased, err := st.Claim(ctx, store.Claim{Worker: store.Worker{ID: worker, Capabilities: []string{"model"}}, Max: 10, Lease: time.Minute})
+		leased, err := st.Claim(ctx, store.Claim{Worker: store.Worker{ID: worker, Capabilities: capabilities}, Max: 10, Lease: time.Minute})
 		if err != nil {
 			t.Fatal(err)
 		}
 		return leased
 	}
-	if leased := claim("worker-1"); len(leased) != 1 || *leased[0].ItemKey != items[0] {
+	if leased := claim("worker-1", "model"); len(leased) != 1 || *leased[0].ItemKey != items[0] {
 		t.Fatalf("a claim under the first fill leased %+v, want the first item's task alone", leased)
 	}
+	status, raw = send(http.MethodPost, "/api/v1/connectors/feeds/hold", nil, "")
+	var held server.HoldAnswer
+	if status != http.StatusOK || json.Unmarshal(raw, &held) != nil || held.Held != 1 || held.HoldDecidedBy == "" {
+		t.Fatalf("holding feeds answered %d %s, want its queued poll held", status, raw)
+	}
+	validate(t, schemas, "connector-hold", raw)
 
 	stop()
 	start()
@@ -166,8 +175,23 @@ func TestADropRetriedUnderItsKeyLandsOnceAndAFirstFillHoldsAcrossARestartUntilRe
 	if f := shown.FirstFill; f.State != store.FirstFillHeld || f.Held != 1 || f.ItemKey == nil || *f.ItemKey != items[0] || shown.Waiting != 2 {
 		t.Errorf("after a restart the first fill is %+v with %d waiting, want held on %s with 1 behind it and both waiting at the model stage", *f, shown.Waiting, items[0])
 	}
-	if leased := claim("worker-2"); len(leased) != 0 {
-		t.Errorf("a claim after a restart leased %+v, want none while the fill holds", leased)
+	status, raw = send(http.MethodGet, "/api/v1/connectors/feeds", nil, "")
+	var feeds server.ConnectorView
+	if status != http.StatusOK || json.Unmarshal(raw, &feeds) != nil || feeds.HeldTS == nil || feeds.HeldTasks != 1 {
+		t.Errorf("show feeds after a restart answered %d %s, want it held with its poll", status, raw)
+	}
+	validate(t, schemas, "connectors-list#connector", raw)
+	if leased := claim("worker-2", "model", "poll:rss-feeds"); len(leased) != 0 {
+		t.Errorf("a claim after a restart leased %+v, want none while the fill and the hold hold", leased)
+	}
+	status, raw = send(http.MethodPost, "/api/v1/connectors/feeds/release", nil, "")
+	var released server.ReleaseAnswer
+	if status != http.StatusOK || json.Unmarshal(raw, &released) != nil || released.Released != 1 {
+		t.Fatalf("releasing feeds answered %d %s, want its poll returned", status, raw)
+	}
+	validate(t, schemas, "connector-release", raw)
+	if leased := claim("worker-2", "poll:rss-feeds"); len(leased) != 1 || leased[0].ID != *run.TaskID {
+		t.Errorf("a claim after the release leased %+v, want the poll task %s", leased, *run.TaskID)
 	}
 
 	feedsOnly := `"connectors": [{"name": "feeds", "mode": "poll", "source": "rss-feeds", "schedule": "@hourly", "zone": "outside"}]}`
@@ -178,12 +202,25 @@ func TestADropRetriedUnderItsKeyLandsOnceAndAFirstFillHoldsAcrossARestartUntilRe
 	if status, raw := send(http.MethodPut, "/api/v1/declarations", jsonBody, `{"commit": "2222222", "replaces": "0123456789abcdef0123456789abcdef01234567", `+feedsOnly); status != http.StatusOK {
 		t.Fatalf("an apply dropping exports answered %d %s", status, raw)
 	}
-	status, raw = send(http.MethodPatch, "/api/v1/connectors/exports/first-fill", jsonBody, `{"state": "released"}`)
-	if status != http.StatusOK {
-		t.Fatalf("releasing a dropped connector's fill answered %d %s", status, raw)
+	if status, raw := send(http.MethodPost, "/api/v1/connectors/exports/hold", nil, ""); status != http.StatusOK {
+		t.Fatalf("holding a dropped connector answered %d %s", status, raw)
 	}
-	validate(t, schemas, "first-fill", raw)
-	if leased := claim("worker-2"); len(leased) != 1 || *leased[0].ItemKey != items[1] {
-		t.Errorf("a claim after the release leased %+v, want the held item's task", leased)
+	if err := st.Update(ctx, func(tx *store.Tx) error {
+		_, err := tx.Enqueue(ctx, store.Task{ItemKey: &items[0], Stage: store.StageScan, Capability: "scan"})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if leased := claim("worker-3", "model", "scan"); len(leased) != 0 {
+		t.Errorf("a claim while exports is held leased %+v, want none", leased)
+	}
+	status, raw = send(http.MethodPost, "/api/v1/connectors/exports/release", nil, "")
+	if status != http.StatusOK || json.Unmarshal(raw, &released) != nil || released.Released != 2 {
+		t.Fatalf("releasing a dropped connector answered %d %s, want the fill's task and the hold's returned", status, raw)
+	}
+	leased := claim("worker-3", "model", "scan")
+	if len(leased) != 2 || *leased[0].ItemKey != items[1] || leased[0].Stage != store.StageQuality ||
+		*leased[1].ItemKey != items[0] || leased[1].Stage != store.StageScan {
+		t.Errorf("a claim after the release leased %+v, want the held quality task, then the scan made while exports was held", leased)
 	}
 }
