@@ -94,9 +94,9 @@
         "tags": {"description": "The tags the connector or its source gave this arrival, which the side gate reads first.", "type": "array", "items": {"type": "string"}},
         "zone": {"$ref": "#/$defs/zone"},
         "cursor_position": {"description": "The connector's cursor where this arrival was read.", "type": ["string", "null"]},
-        "metrics": {"description": "The source's counts by name, such as a video's duration_s, views, likes and comments. Each name holds the value from the newest of the connector's arrivals that carried it. No outsider wrote them. Absent from a record shipped before the store kept them.", "type": "object", "propertyNames": {"pattern": "^[a-z][a-z0-9_]*$"}, "additionalProperties": {"type": "integer"}},
-        "first_seen_ts": {"$ref": "#/$defs/timestamp"},
-        "last_seen_ts": {"$ref": "#/$defs/timestamp"}
+        "metrics": {"description": "The source's counts by name, such as a video's duration_s, views, likes and comments. Each name holds the newest value that carried it, from the connector's arrivals or from the daily refresh of an item waiting in review. No outsider wrote them. Absent from a record shipped before the store kept them.", "type": "object", "propertyNames": {"pattern": "^[a-z][a-z0-9_]*$"}, "additionalProperties": {"type": "integer"}},
+        "first_seen_ts": {"description": "When the connector first sighted the item.", "$ref": "#/$defs/timestamp"},
+        "last_seen_ts": {"description": "When the store last wrote this sighting, on an arrival or on a refresh that changed its metrics.", "$ref": "#/$defs/timestamp"}
       }
     },
     "blobs": {
