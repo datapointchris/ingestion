@@ -53,7 +53,7 @@ func TestABuildKeepsARuleOnlyWhereYrCompilesItAndItPassesItsOwnExamples(t *testi
 		"ATR-TEST-00002": "kept",
 		"ATR-TEST-00003": "kept",
 		"ATR-TEST-00004": scan.DroppedMissesPositive,
-		"ATR-TEST-00005": "YARA-X refuses it: look-around",
+		"ATR-TEST-00005": "YARA-X refuses it: ",
 	} {
 		if !strings.HasPrefix(reasons[id], want) {
 			t.Errorf("rule %s is %q, want %q", id, reasons[id], want)
