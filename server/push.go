@@ -144,9 +144,6 @@ func (h connectorHandlers) push(w http.ResponseWriter, r *http.Request) {
 	case errors.As(err, &undeclared):
 		Refuse(w, http.StatusUnprocessableEntity, CodeDestinationNotDeclared, "%v, so nothing was stored", undeclared)
 		return
-	case errors.Is(err, landing.ErrInvalidArrival):
-		Refuse(w, http.StatusUnprocessableEntity, CodeInvalidLink, "%v, so nothing was stored", err)
-		return
 	case err != nil:
 		h.internal(w, r, "land the push", err)
 		return
