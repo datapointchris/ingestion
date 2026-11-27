@@ -1173,12 +1173,12 @@ Proposal 3f0c9a2e41b7d8c5e6f1a0b9c8d7e6f5 changes the quality prompt at v1-<dige
 
 Where the read gate reads an item by a model and the read carries no person's note, the same write
 queues one task of capability `note`, ahead of the model read. A worker whose config names a
-`[model]` adapter claims it. It puts the item's media type, title, URL and the first 2,000
-characters of its reading parse to the model, through `prompts/note/prompt.tmpl` and the lens's
-file in `prompts/note/lenses/`. The lens's context goes beside them where the worker opened a
-reader for the lens. The answer holds to `prompts/note/answer.schema.json`: one to five questions
-for the read, why the item was likely saved, how it bears on the owner's current work, a summary,
-a one-line idea and a confidence.
+`[model]` adapter claims it. It puts the item's media type, title, URL and the opening of its
+reading parse to the model, through `prompts/note/prompt.tmpl` and the lens's file in
+`prompts/note/lenses/`. The opening is cut at a fixed length, and the prompt says where it stops.
+The lens's context goes beside them where the worker opened a reader for the lens. The answer
+holds to `prompts/note/answer.schema.json`: questions for the read, why the item was likely saved,
+how it bears on the owner's current work, a summary, a one-line idea and a confidence.
 
 - **A draft at or above the floor becomes the read's note.** The read gate appends a read by a
   model, decided by the draft's run, with cause `note-draft`. The model read then answers the
