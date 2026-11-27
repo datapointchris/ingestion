@@ -30,7 +30,7 @@ func TestASetRefusesAYPLConnectorThatCannotRun(t *testing.T) {
 		"channel-deletes": poll + "schedule: \"@hourly\"\nafter_landing: delete\nsource_parameters:\n  channel: UCtestchannel\n",
 		"channel-once":    poll + "schedule: once\nsource_parameters:\n  channel: UCtestchannel\n",
 		"playlist-kept":   poll + "schedule: \"@every 30m\"\nsource_parameters:\n  playlist: capture\n",
-		"pushed":          head + "mode: push\ndue_interval: 7d\nsource_parameters:\n  channel: UCtestchannel\n",
+		"pushed":          "source: ypl\nmode: push\ndue_interval: 7d\nsource_parameters:\n  channel: UCtestchannel\n",
 	}
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "connectors"), 0o755); err != nil {

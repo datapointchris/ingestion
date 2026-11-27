@@ -39,6 +39,7 @@ import (
 	"github.com/datapointchris/ingestion/sections"
 	"github.com/datapointchris/ingestion/sources"
 	"github.com/datapointchris/ingestion/store"
+	"github.com/datapointchris/ingestion/topics"
 	"github.com/datapointchris/ingestion/worker"
 )
 
@@ -50,7 +51,7 @@ const (
 
 // workerHandlers lists the stage handlers for a worker to run: each
 // extractor's, the structure's where pdf-structure is installed, the scan's
-// where scanner is installed, the contents stage's, the quality gate's, its
+// where scanner is installed, the contents stage's, the topics stage's, the quality gate's, its
 // arm's, the note's and the prompt proposal's draft where port is open, the
 // model read's where both are, each of deliverers by its name, each handler
 // of opened, which openSources answers, and the comments stage's where port is
@@ -71,6 +72,7 @@ func workerHandlers(client *worker.Client, deliverers map[string]deliver.Deliver
 		quality := modelstage.Settings{Model: models.Quality.Model, Effort: models.Quality.Effort}
 		handlers = append(handlers,
 			contents.NewHandler(port, client, modelstage.Settings{Model: models.Contents.Model, Effort: models.Contents.Effort}, log),
+			topics.NewHandler(port, client, modelstage.Settings{Model: models.Topics.Model, Effort: models.Topics.Effort}, log),
 			qualitygate.NewHandler(port, client, contexts, quality, log), qualitygate.NewArmHandler(port, client, contexts, quality, log),
 			note.NewHandler(port, client, contexts, modelstage.Settings{Model: models.Note.Model, Effort: models.Note.Effort}, log),
 			promptproposal.NewHandler(port, modelstage.Settings{Model: models.PromptProposal.Model, Effort: models.PromptProposal.Effort}, log))
@@ -189,6 +191,7 @@ func logModels(models modelConfig, log *slog.Logger) {
 	}
 	log.Info("each model stage asks its run for a model at an effort",
 		"contents", asked(models.Contents, contents.DefaultModel, contents.DefaultEffort),
+		"topics", asked(models.Topics, topics.DefaultModel, topics.DefaultEffort),
 		"quality", asked(models.Quality, qualitygate.DefaultModel, qualitygate.DefaultEffort),
 		"note", asked(models.Note, note.DefaultModel, note.DefaultEffort),
 		"model-read", asked(models.ModelRead, modelread.DefaultModel, modelread.DefaultEffort),
@@ -363,6 +366,9 @@ var workerRunCmd = &cobra.Command{
 		"  [model.contents]   what the contents stage asks its run for\n" +
 		"  model              the model (default " + contents.DefaultModel + ")\n" +
 		"  effort             the effort (default " + contents.DefaultEffort + ")\n" +
+		"  [model.topics]     what the topics stage asks its run for\n" +
+		"  model              the model (default " + topics.DefaultModel + ")\n" +
+		"  effort             the effort (default " + topics.DefaultEffort + ")\n" +
 		"  [model.quality]    what the quality gate asks its run for\n" +
 		"  model              the model (default " + qualitygate.DefaultModel + ")\n" +
 		"  effort             the effort (default " + qualitygate.DefaultEffort + ")\n" +

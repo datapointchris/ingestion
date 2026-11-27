@@ -14,7 +14,13 @@ import (
 // depth first, in the order Reddit sorted them. A comment that its author
 // deleted or a moderator removed is left out, and its replies are kept. Each
 // unit's label is its author.
-var ThreadText = Extractor{Name: "thread-text", Version: "1", MediaType: redditexport.MediaTypeSave, Extract: threadText}
+var ThreadText = Extractor{
+	Name: "thread-text", Version: "1", MediaType: redditexport.MediaTypeSave,
+	Extract: func(ctx context.Context, body io.Reader) (Read, error) {
+		units, err := threadText(ctx, body)
+		return Read{Units: units}, err
+	},
+}
 
 // save is a Reddit save as redditexport splits it: the thing saved, and its
 // thread as Reddit answers it, a listing of the post and then a listing of its

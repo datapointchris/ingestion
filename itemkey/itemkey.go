@@ -143,7 +143,7 @@ func FromFileSHA256(sum string) (string, error) {
 	return File + "/" + sum[:16], nil
 }
 
-// FromMemo is the key of a memo or typed text, from the caller that sent it
+// FromMemo is the key of a memo's recording, from the caller that sent it
 // and the Idempotency-Key it sent, so a retry lands on the first attempt's item.
 func FromMemo(caller, idempotencyKey string) (string, error) {
 	if caller == "" || idempotencyKey == "" {

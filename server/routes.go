@@ -64,7 +64,7 @@ var (
 	RouteBlobWrite      = Route{"PUT /api/v1/blobs/{sha256}", ScopeTasksClaim, RepeatByContent}
 	RouteBlobsUnpaired  = Route{"GET /api/v1/blobs/unpaired", "", RepeatRead}
 	RouteItems          = Route{"GET /api/v1/items", ScopeItemsRead, RepeatRead}
-	RouteItemsPush      = Route{"POST /api/v1/items", "", RepeatKeyed}
+	RouteItemsPush      = Route{"POST /api/v1/items", ScopeItemsPush, RepeatKeyed}
 	RouteItem           = Route{"GET /api/v1/items/{key}", ScopeItemsRead, RepeatRead}
 	RouteItemParse      = Route{"GET /api/v1/items/{key}/parse", ScopeItemsRead, RepeatRead}
 	RouteReplays        = Route{"POST /api/v1/replays", ScopeItemsReplay, RepeatKeyed}

@@ -135,6 +135,7 @@ type modelConfig struct {
 		Command string `toml:"command"`
 	} `toml:"claude-cli"`
 	Contents       stageModel `toml:"contents"`
+	Topics         stageModel `toml:"topics"`
 	Quality        stageModel `toml:"quality"`
 	Note           stageModel `toml:"note"`
 	ModelRead      stageModel `toml:"model-read"`

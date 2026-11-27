@@ -30,7 +30,7 @@
       "properties": {
         "name": {"type": "string"},
         "mode": {"enum": ["poll", "push", "folder", "drop"]},
-        "zone": {"description": "The connector's default zone for what it carries.", "enum": ["outside", "owner"]},
+        "zone": {"description": "The connector's default zone for what it carries. It is null for a push connector, because the route sets each item's zone by what the push carries: a link lands outside, and a memo as the owner's.", "enum": ["outside", "owner", null]},
         "source": {"description": "The external feed the connector reads, by its name in the data catalog.", "type": "string"},
         "tags": {"description": "The tags every item the connector lands carries.", "type": "array", "items": {"type": "string"}},
         "applied_commit": {"description": "The commit of the set in force.", "type": "string"},

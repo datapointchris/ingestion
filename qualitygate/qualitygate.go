@@ -142,11 +142,15 @@ func Decision(a Answer, run string) store.Decision {
 // QueueAfterScan queues the item's quality task in the write that ends its
 // scan done, where the scan read the newest parse, no person placed the item,
 // and the item never held a quality task. It queues one on an item that a tag
-// or a rule places. A connector's first fill holds it past the first item. A
-// later scan queues none. The gate runs again only through a replay that a
-// person confirms, or through `tasks retry` on a failed task.
+// or a rule places, and none on an item that store.Item.SkipsQualityGate
+// names. A connector's first fill holds it past the first item. A later scan
+// queues none. The gate runs again only through a replay that a person
+// confirms, or through `tasks retry` on a failed task.
 func QueueAfterScan(ctx context.Context, tx *store.Tx, task store.Task) error {
 	key := *task.ItemKey
+	if item, _, err := tx.Item(ctx, key); err != nil || item.SkipsQualityGate() {
+		return err
+	}
 	outputs, err := tx.Outputs(ctx, key)
 	if err != nil || !store.ReadingParseScanned(outputs) {
 		return err
@@ -210,7 +214,7 @@ func DecideAfterAnswer(ctx context.Context, tx *store.Tx, task store.Task) error
 // over its reading parse, and no person placed the item.
 func due(r store.ItemRecords, open bool) bool {
 	side, sided := r.NewestDecision(store.GateSide)
-	return unanswered(r.Outputs, open) && (!sided || !side.ByPerson())
+	return !r.Item.SkipsQualityGate() && unanswered(r.Outputs, open) && (!sided || !side.ByPerson())
 }
 
 // measurementDue says whether a measurement replay runs the gate on an item:
@@ -219,7 +223,7 @@ func due(r store.ItemRecords, open bool) bool {
 // placement.
 func measurementDue(r store.ItemRecords, open bool) bool {
 	_, labeled := r.ReviewPlacement()
-	return unanswered(r.Outputs, open) && labeled
+	return !r.Item.SkipsQualityGate() && unanswered(r.Outputs, open) && labeled
 }
 
 // armDue says whether the arm runs on an item: the item is labeled, the gate
@@ -295,7 +299,7 @@ func replayable(st *store.Store, stage string, model *string, isDue func(r store
 				return false, err
 			}
 			_, open, err := tx.OpenTask(ctx, item.Key, stage)
-			if err != nil || !isDue(store.ItemRecords{Outputs: outputs, Decisions: decisions}, open) {
+			if err != nil || !isDue(store.ItemRecords{Item: item, Outputs: outputs, Decisions: decisions}, open) {
 				return false, err
 			}
 			_, err = tx.Enqueue(ctx, store.Task{ItemKey: &item.Key, Stage: stage, Capability: stage, Model: model})

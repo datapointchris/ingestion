@@ -171,6 +171,7 @@ var modelStageQuotes = []struct {
 	quotes ParsePick
 }{
 	{StageContents, ParsePick{Extractor: ExtractorPDFText}},
+	{StageTopics, ParsePick{}},
 	{StageQuality, ParsePick{}},
 	{StageQualityArm, ParsePick{}},
 	{StageNote, ParsePick{}},
@@ -188,6 +189,18 @@ var modelStages = func() []string {
 
 // ModelStages are the stages that read an item with a model.
 func ModelStages() []string { return slices.Clone(modelStages) }
+
+// LineModelStages are the model stages on the line, in its order: each one
+// that ItemRecords.WaitingAt may answer.
+func LineModelStages() []string {
+	var out []string
+	for _, step := range line {
+		if slices.Contains(modelStages, step) {
+			out = append(out, step)
+		}
+	}
+	return out
+}
 
 // Enqueue adds a queued task for task's item, connector, proposal or source,
 // stage and capability, and answers it as written. A model stage's task for

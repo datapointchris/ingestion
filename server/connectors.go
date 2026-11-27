@@ -98,14 +98,17 @@ type ConnectorsAnswer struct {
 
 // ConnectorView is one applied connector, its counts and its due time.
 type ConnectorView struct {
-	Name           string     `json:"name"`
-	Mode           string     `json:"mode"`
-	Zone           store.Zone `json:"zone"`
-	Source         string     `json:"source"`
-	Tags           []string   `json:"tags"`
-	AppliedCommit  string     `json:"applied_commit"`
-	LastRunTS      *string    `json:"last_run_ts"`
-	LastDeliveryTS *string    `json:"last_delivery_ts"`
+	Name string `json:"name"`
+	Mode string `json:"mode"`
+	// Zone is nil for a push connector, whatever the stored set holds, because
+	// the route sets each item's zone by what the push carries: a link lands
+	// outside, and a memo as the owner's.
+	Zone           *store.Zone `json:"zone"`
+	Source         string      `json:"source"`
+	Tags           []string    `json:"tags"`
+	AppliedCommit  string      `json:"applied_commit"`
+	LastRunTS      *string     `json:"last_run_ts"`
+	LastDeliveryTS *string     `json:"last_delivery_ts"`
 	// LastError is why the last run failed, null since one succeeded, and
 	// Failures counts the failed runs since then.
 	LastError   *string `json:"last_error"`
@@ -195,7 +198,8 @@ type ConnectorConfig struct {
 }
 
 // ConnectorRoutes are the routes for a person to apply the declarations, read
-// and run each connector, release a first fill, drop a file and push a link.
+// and run each connector, release a first fill, drop a file and push a link or
+// a memo.
 func ConnectorRoutes(cfg ConnectorConfig) Routes {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
@@ -391,8 +395,12 @@ func (h connectorHandlers) view(w http.ResponseWriter, r *http.Request, c connec
 		tags = []string{}
 	}
 	since, overdue := connectors.OverdueSince(c, cur, h.cfg.Store.Now())
+	var zone *store.Zone
+	if c.Zone != "" && c.Mode != connectors.ModePush {
+		zone = &c.Zone
+	}
 	return ConnectorView{
-		Name: c.Name, Mode: c.Mode, Zone: c.Zone, Source: c.Source, Tags: tags, AppliedCommit: commit,
+		Name: c.Name, Mode: c.Mode, Zone: zone, Source: c.Source, Tags: tags, AppliedCommit: commit,
 		LastRunTS: cur.LastRunTS, LastDeliveryTS: cur.LastDeliveryTS,
 		LastError: cur.LastError, LastErrorTS: cur.LastErrorTS, Failures: cur.Failures,
 		Items: n.Items, Waiting: n.Waiting, Review: n.Review, Failed: n.Failed,
@@ -515,7 +523,6 @@ func (h connectorHandlers) firstFill(w http.ResponseWriter, r *http.Request) {
 // refuses answers 422. A drop that stopped partway answers 500 and keeps no
 // answer under its key, so the same drop sent again lands the rest.
 func (h connectorHandlers) drop(w http.ResponseWriter, r *http.Request) {
-	key := requestKey(r)
 	c, _, ok := h.connector(w, r)
 	if !ok {
 		return
@@ -540,29 +547,68 @@ func (h connectorHandlers) drop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sum := sha256.Sum256(body)
-	caller := callerOf(r)
 	fingerprint := fingerprintOf(store.KeyedRouteDrops, c.Name, name, mediaType, hex.EncodeToString(sum[:]))
+	answer, ok := h.landKeyed(w, r, keyedLanding{
+		route: store.KeyedRouteDrops, connector: c,
+		fingerprint: func() (string, bool) { return fingerprint, true },
+		land: func() ([]landing.Landed, string, bool) {
+			landed, err := connectors.LandDrop(r.Context(), h.cfg.Lander, connectors.Drop{Connector: c, Name: name, MediaType: mediaType, Body: body})
+			if connectors.IsRefused(err) {
+				h.cfg.Log.Warn("a drop was refused", "connector", c.Name, "error", err)
+				Refuse(w, http.StatusUnprocessableEntity, CodeInvalidDrop, "%s did not land the file: %v", c.Name, err)
+				return nil, "", false
+			}
+			if err != nil {
+				// Each item landed so far is found again, so a second drop lands the rest.
+				h.cfg.Log.ErrorContext(r.Context(), "a drop stopped partway", "connector", c.Name, "error", err)
+				Refuse(w, http.StatusInternalServerError, CodeInternal,
+					"the server could not land every item the file holds, and dropping it again lands the rest")
+				return nil, "", false
+			}
+			return landed, fingerprint, true
+		},
+	})
+	if ok {
+		h.cfg.Log.Info("landed a drop", "connector", c.Name, "items", len(answer.Items), "sha256", hex.EncodeToString(sum[:]))
+	}
+}
+
+// keyedLanding is one keyed request that lands bytes through a connector: the
+// route that keys it, the connector, and its two steps. Each step answers
+// false once it has refused the request itself.
+type keyedLanding struct {
+	route     string
+	connector connectors.Connector
+	// fingerprint names what the request sent, where its key already
+	// answered one, and lands nothing.
+	fingerprint func() (string, bool)
+	// land lands the request's bytes outside any write. It answers what
+	// landed and the request's fingerprint.
+	land func() ([]landing.Landed, string, bool)
+}
+
+// landKeyed runs k, as Stripe's API keys a request. Where the caller's
+// Idempotency-Key already answered a request, it answers a replay: 200 with
+// the first answer where the fingerprints match, and 409 where they differ.
+// Otherwise it lands the bytes. Then one write checks the key again, keeps the
+// answer and stamps the connector delivered. It answers 201 with what landed
+// and returns it, and false where it answered anything else.
+func (h connectorHandlers) landKeyed(w http.ResponseWriter, r *http.Request, k keyedLanding) (PushAnswer, bool) {
+	caller, key := callerOf(r), requestKey(r)
 	prior, found, err := h.cfg.Store.KeyedRequest(r.Context(), caller, key)
 	if err != nil {
-		h.internal(w, r, "read the drop's key", err)
-		return
+		h.internal(w, r, "read the request's key", err)
+		return PushAnswer{}, false
 	}
 	if found {
-		h.answerReplay(w, prior, fingerprint)
-		return
+		if fingerprint, ok := k.fingerprint(); ok {
+			h.answerReplay(w, prior, fingerprint)
+		}
+		return PushAnswer{}, false
 	}
-	landed, err := connectors.LandDrop(r.Context(), h.cfg.Lander, connectors.Drop{Connector: c, Name: name, MediaType: mediaType, Body: body})
-	if connectors.IsRefused(err) {
-		h.cfg.Log.Warn("a drop was refused", "connector", c.Name, "error", err)
-		Refuse(w, http.StatusUnprocessableEntity, CodeInvalidDrop, "%s did not land the file: %v", c.Name, err)
-		return
-	}
-	if err != nil {
-		// Each item landed so far is found again, so a second drop lands the rest.
-		h.cfg.Log.ErrorContext(r.Context(), "a drop stopped partway", "connector", c.Name, "error", err)
-		Refuse(w, http.StatusInternalServerError, CodeInternal,
-			"the server could not land every item the file holds, and dropping it again lands the rest")
-		return
+	landed, fingerprint, ok := k.land()
+	if !ok {
+		return PushAnswer{}, false
 	}
 	keys := make([]string, len(landed))
 	for i, l := range landed {
@@ -571,7 +617,7 @@ func (h connectorHandlers) drop(w http.ResponseWriter, r *http.Request) {
 	zones, err := h.cfg.Store.ItemZones(r.Context(), keys)
 	if err != nil {
 		h.internal(w, r, "read the landed items", err)
-		return
+		return PushAnswer{}, false
 	}
 	answer := PushAnswer{SchemaVersion: 1, Items: make([]PushedItem, len(landed))}
 	for i, l := range landed {
@@ -584,21 +630,21 @@ func (h connectorHandlers) drop(w http.ResponseWriter, r *http.Request) {
 			replay = &prior
 			return err
 		}
-		if err := h.keep(r, tx, caller, key, store.KeyedRouteDrops, c.Name, fingerprint, http.StatusCreated, answer); err != nil {
+		if err := h.keep(r, tx, caller, key, k.route, k.connector.Name, fingerprint, http.StatusCreated, answer); err != nil {
 			return err
 		}
-		return connectors.Delivered(r.Context(), tx, c)
+		return connectors.Delivered(r.Context(), tx, k.connector)
 	})
-	if err != nil {
-		h.internal(w, r, "record the drop", err)
-		return
-	}
-	if replay != nil {
+	switch {
+	case err != nil:
+		h.internal(w, r, "record the landing", err)
+		return PushAnswer{}, false
+	case replay != nil:
 		h.answerReplay(w, *replay, fingerprint)
-		return
+		return PushAnswer{}, false
 	}
-	h.cfg.Log.Info("landed a drop", "connector", c.Name, "items", len(landed), "sha256", hex.EncodeToString(sum[:]))
 	JSON(w, http.StatusCreated, answer)
+	return answer, true
 }
 
 // keep records a keyed request's answer in tx, beside the write it answers.

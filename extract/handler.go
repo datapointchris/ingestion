@@ -99,14 +99,14 @@ func (h handler) Run(ctx context.Context, task worker.Task) worker.Result {
 	defer func() { _ = body.Close() }()
 	runCtx, cancel := bounded(ctx, h.extractor)
 	defer cancel()
-	units, err := h.extractor.Extract(runCtx, body)
+	read, err := h.extractor.Extract(runCtx, body)
 	if err != nil && ctx.Err() == nil && errors.Is(runCtx.Err(), context.DeadlineExceeded) {
 		return failed(h.extractor, fmt.Sprintf("%s ran past its %s limit", h.extractor.Name, h.extractor.Timeout))
 	}
 	if err != nil {
 		return failed(h.extractor, err.Error())
 	}
-	return parsed(h.extractor, Read{Units: units})
+	return parsed(h.extractor, read)
 }
 
 // readHandler runs the parse tasks of an extractor that ReadsURL: it reads

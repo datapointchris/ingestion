@@ -53,6 +53,7 @@ import (
 const (
 	VerdictReview = store.VerdictReview
 	VerdictDrop   = store.VerdictDrop
+	VerdictSplit  = store.VerdictSplit
 )
 
 // Causes that the gates write. A person's decision carries the aspect the
@@ -74,6 +75,13 @@ const (
 	// that a connector declaring person_sorts sighted, where the quality gate
 	// passed it with a side guess. The review queue shows the guess beside it.
 	CausePersonSorts = "person-sorts"
+	// CauseOwnersWords sends to review an item that no tag or rule placed and
+	// that holds the owner's own words, as store.Item.SkipsQualityGate names
+	// one. The quality gate never reads it, so no guess can place it.
+	CauseOwnersWords = "owners-words"
+	// CauseTopics splits a memo once its topics are landed, each an item that
+	// the gates place on its own. Its verdict is VerdictSplit.
+	CauseTopics = store.CauseTopics
 	// CauseGateWouldDrop sends to review an item that the quality gate
 	// dropped, where a family of the item has not earned hiding it.
 	// CauseQualityDrop drops one that every family's trust hides, and keeps its
@@ -149,6 +157,7 @@ var ReviewReasons = []ReviewReason{
 		CausePersonSorts, "a connector that sighted it declares person_sorts, so its guess only shows",
 		"its connector leaves the side to you, the guess beside it",
 	},
+	{CauseOwnersWords, "it holds your own words, such as a memo's topic, which the quality gate never reads", "your own words"},
 	{CauseTagsDisagree, "its sightings' tags name destinations on two sides", "tags name both sides"},
 	{CauseNoGuess, "no tag or rule placed it, and the quality gate gave no answer", "no rule, no answer"},
 	{CauseGateError, "the side gate could not read the set in force or its sightings", "the gate could not read the set or the sightings"},
@@ -442,12 +451,30 @@ func gate(ctx context.Context, tx *store.Tx, key string, log *slog.Logger, reope
 	if err != nil || !store.ReadingParseScanned(outputs) {
 		return nil, err
 	}
+	item, _, err := tx.Item(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	if split, waits, err := byTopics(ctx, tx, item); err != nil || waits {
+		return nil, err
+	} else if split != nil {
+		if sided && sameDecision(newest, *split) {
+			return nil, nil
+		}
+		set, _, sightings, err := inputs(ctx, tx, key)
+		if err != nil {
+			return nil, err
+		}
+		return decide(ctx, tx, key, *split, set, sightings, nil, nil)
+	}
 	set, accepted, sightings, err := inputs(ctx, tx, key)
 	side, ruled := BeforeModel(set, accepted, key, sightings)
 	switch {
 	case err != nil:
 		log.ErrorContext(ctx, "the side gate could not read what it decides from, so the item waits in review", "item", key, "error", err)
 		side = store.Decision{Gate: store.GateSide, Verdict: VerdictReview, DecidedBy: ByGate, Cause: CauseGateError}
+	case !ruled && item.SkipsQualityGate():
+		side = store.Decision{Gate: store.GateSide, Verdict: VerdictReview, DecidedBy: ByGate, Cause: CauseOwnersWords}
 	case !ruled:
 		var held *store.Decision
 		if sided {
@@ -463,6 +490,26 @@ func gate(ctx context.Context, tx *store.Tx, key string, log *slog.Logger, reope
 		return nil, nil
 	}
 	return decide(ctx, tx, key, side, set, sightings, nil, nil)
+}
+
+// byTopics is the side decision on item where it is a memo, as
+// store.Item.SplitsIntoTopics names one: split once its topics are landed, and
+// true while its topics task is open, so the memo waits at the topics stage
+// and no tag or rule places it first. A memo with neither, such as one whose
+// topics task failed, and any other item, fall to the rungs below.
+func byTopics(ctx context.Context, tx *store.Tx, item store.Item) (*store.Decision, bool, error) {
+	if !item.SplitsIntoTopics() {
+		return nil, false, nil
+	}
+	topics, err := tx.Topics(ctx, item.Key)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(topics) > 0 {
+		return &store.Decision{Gate: store.GateSide, Verdict: VerdictSplit, DecidedBy: ByGate, Cause: CauseTopics}, false, nil
+	}
+	_, open, err := tx.OpenTask(ctx, item.Key, store.StageTopics)
+	return nil, open, err
 }
 
 // byQuality is the side gate's decision on the item under key, which no tag

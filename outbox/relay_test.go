@@ -159,6 +159,12 @@ func TestAnItemGainsEachStageRecordAndEachChangeReachesTheCollectorOnce(t *testi
 		}); err != nil {
 			return err
 		}
+		if _, err := tx.PutTopics(ctx, []store.Topic{{
+			ItemKey: key, N: 1, ChildKey: key + "#2", FirstUnit: 1, LastUnit: 1, Title: "A topic", Idea: "Its idea.",
+			Producer: "topic-splitter", ProducerVersion: "1-3f9a0b2c", InputProducer: "audio-whisper", InputVersion: "1",
+		}}); err != nil {
+			return err
+		}
 		connector := "reddit-exports"
 		family, version, verdict, run := connector+"@1-3f9a0b2c@claude-haiku@medium", "1-3f9a0b2c", "drop", "model:8812"
 		if err := tx.PutGateTrust(ctx, store.GateTrust{

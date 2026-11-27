@@ -30,7 +30,7 @@ import (
 )
 
 // builtin is every extractor that ingestion holds of its own.
-var builtin = []Extractor{ThreadText, PDFText, PDFDocling}
+var builtin = []Extractor{ThreadText, PDFText, PDFDocling, AudioWhisper}
 
 // registered is every extractor that a source registered.
 var registered []Extractor
@@ -114,11 +114,15 @@ type Extractor struct {
 	// new one.
 	Version   string
 	MediaType string
+	// AlsoReads names each other media type that the extractor is primary
+	// for, such as each audio container that a memo arrives in.
+	AlsoReads []string
 	// Program is the absolute path of the extractor's program, and empty for
 	// one written in Go. A worker runs it only where the program is installed.
 	Program string
-	// Extract reads body and answers its units in order.
-	Extract func(ctx context.Context, body io.Reader) ([]Unit, error)
+	// Extract reads body and answers its units in order, with the answer
+	// that its parse keeps, such as what a transcript heard.
+	Extract func(ctx context.Context, body io.Reader) (Read, error)
 	// Timeout bounds one run of Extract, and none where it is zero. A run
 	// past it fails its task, so a program that hangs on one item's bytes
 	// frees its worker slot and the item waits in review.
@@ -215,10 +219,12 @@ func NewRegistry(extractors ...Extractor) (*Registry, error) {
 		if e.Secondary {
 			continue
 		}
-		if held, taken := r.byType[e.MediaType]; taken {
-			return nil, fmt.Errorf("extractors %s and %s are both primary for %s", held.Name, e.Name, e.MediaType)
+		for _, mediaType := range append([]string{e.MediaType}, e.AlsoReads...) {
+			if held, taken := r.byType[mediaType]; taken {
+				return nil, fmt.Errorf("extractors %s and %s are both primary for %s", held.Name, e.Name, mediaType)
+			}
+			r.byType[mediaType] = e
 		}
-		r.byType[e.MediaType] = e
 		if e.LinkKind == "" {
 			continue
 		}

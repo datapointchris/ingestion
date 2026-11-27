@@ -39,12 +39,12 @@ func TestASaveParsesAsItsPostThenEachCommentDepthFirst(t *testing.T) {
 			[]string{"u/op2: Its post", "u/dave: Saved words"},
 		},
 	} {
-		units, err := extract.ThreadText.Extract(t.Context(), strings.NewReader(tc.save))
+		read, err := extract.ThreadText.Extract(t.Context(), strings.NewReader(tc.save))
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
 		var got []string
-		for _, u := range units {
+		for _, u := range read.Units {
 			got = append(got, *u.Label+": "+u.Text)
 		}
 		if strings.Join(got, "|") != strings.Join(tc.want, "|") {

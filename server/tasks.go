@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"maps"
 	"net/http"
@@ -924,7 +925,13 @@ func leaseOf(w http.ResponseWriter, seconds int) (time.Duration, bool) {
 // field is refused with 422 naming it, apart from a body that does not parse,
 // so a worker built ahead of the service can tell the two apart.
 func decode(w http.ResponseWriter, r *http.Request, into any) bool {
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<20))
+	return decodeFrom(w, http.MaxBytesReader(w, r.Body, 64<<20), into)
+}
+
+// decodeFrom is decode over body, a request's body that the caller has
+// already bounded.
+func decodeFrom(w http.ResponseWriter, body io.Reader, into any) bool {
+	decoder := json.NewDecoder(body)
 	decoder.DisallowUnknownFields()
 	err := decoder.Decode(into)
 	if err == nil {

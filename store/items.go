@@ -269,7 +269,7 @@ type Condition struct {
 
 // line is every stage and gate, in the order that an item passes them.
 var line = []string{
-	StageLand, StageParse, StageStructure, StageContents, StageSections, StageScan, StageQuality, GateSide, GateRead, StageNote,
+	StageLand, StageParse, StageStructure, StageContents, StageSections, StageScan, StageTopics, StageQuality, GateSide, GateRead, StageNote,
 	StageModelRead, StageDeliver,
 }
 
@@ -307,6 +307,7 @@ var reached = map[string]string{
 	StageContents:  "structured",
 	StageSections:  "sectioned",
 	StageScan:      "scanned",
+	StageTopics:    "scanned",
 	StageQuality:   "gated",
 	GateSide:       "placed",
 	GateRead:       "read",
@@ -315,11 +316,13 @@ var reached = map[string]string{
 	StageDeliver:   "delivered",
 }
 
-// PhaseReview is the phase of an item that waits on a person's placement, and
-// PhaseShelved of one that waits on the shelf for a person to open it.
+// PhaseReview is the phase of an item that waits on a person's placement,
+// PhaseShelved of one that waits on the shelf for a person to open it, and
+// PhaseSplit of a memo whose topics are landed, each routed on its own.
 const (
 	PhaseReview  = "review"
 	PhaseShelved = "shelved"
+	PhaseSplit   = "split"
 )
 
 // ShelfStanding is where the item stands on the shelf, read from its newest
@@ -342,7 +345,8 @@ func (r ItemRecords) ShelfStanding() string {
 }
 
 // Phase is the item's phase in the words of schemas/items-list.schema.json:
-// dropped where the newest side decision drops it, review where WaitsOnPerson
+// dropped where the newest side decision drops it, split where it splits a
+// memo into its topics, review where WaitsOnPerson
 // says it waits, shelved where it waits on the shelf for a person to open it,
 // failed where another stage on the line holds a newest task
 // that failed, dropped where the quality gate drops it before any side
@@ -355,6 +359,9 @@ func (r ItemRecords) Phase() string {
 	side, sided := r.NewestDecision(GateSide)
 	if sided && side.Verdict == VerdictDrop {
 		return "dropped"
+	}
+	if sided && side.Verdict == VerdictSplit {
+		return PhaseSplit
 	}
 	if _, _, waits := r.WaitsOnPerson(); waits {
 		return PhaseReview

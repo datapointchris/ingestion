@@ -10,6 +10,7 @@
     {"$ref": "#/$defs/outputs"},
     {"$ref": "#/$defs/parse_units"},
     {"$ref": "#/$defs/sections"},
+    {"$ref": "#/$defs/topics"},
     {"$ref": "#/$defs/deliveries"},
     {"$ref": "#/$defs/tasks"},
     {"$ref": "#/$defs/cursors"},
@@ -90,6 +91,16 @@
       "additionalProperties": false,
       "properties": {
         "title": {"type": ["string", "null"]}
+      }
+    },
+    "topics": {
+      "title": "topics",
+      "description": "One topic of a memo, as a model named it over the memo's transcript.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "title": {"description": "The topic's title, which its item takes too.", "type": "string"},
+        "idea": {"description": "The topic's idea in one sentence.", "type": "string"}
       }
     },
     "deliveries": {
