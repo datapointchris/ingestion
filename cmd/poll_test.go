@@ -70,8 +70,8 @@ func newVideoPipeline(t *testing.T) *pipeline {
 	t.Helper()
 	captions, err := extract.NewRegistry(extract.Extractor{
 		Name: "test-captions", Version: "1", MediaType: videoMediaType,
-		Extract: func(context.Context, io.Reader) ([]extract.Unit, error) {
-			return nil, errors.New("a video holds no bytes")
+		Extract: func(context.Context, io.Reader) (extract.Read, error) {
+			return extract.Read{}, errors.New("a video holds no bytes")
 		},
 	})
 	if err != nil {

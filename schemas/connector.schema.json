@@ -5,7 +5,7 @@
   "description": "What connectors/<name>.yml holds in a directory that `ingestion connectors apply` sends, and each entry of an applied set's connectors. A poll or a folder runs on its schedule. A drop or a push runs as its items arrive, and is due its due_interval after its last delivery. The service checks each declaration against this file.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["name", "mode", "source", "zone"],
+  "required": ["name", "mode", "source"],
   "properties": {
     "name": {"description": "The connector's name, which its file is named for.", "type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
     "mode": {"enum": ["poll", "push", "folder", "drop"]},
@@ -15,13 +15,13 @@
     "due_interval": {"description": "How long after its last delivery a drop or a push is due again.", "$ref": "#/$defs/interval"},
     "freshness": {"description": "How long a poll or a folder may go without a delivery before it reads overdue.", "$ref": "#/$defs/interval"},
     "tags": {"description": "The tags every item the connector lands carries on its sighting.", "type": "array", "items": {"$ref": "#/$defs/tag"}, "uniqueItems": true},
-    "zone": {"description": "Who writes the content the connector carries, as its items' default: outside for an outsider, owner for the owner.", "enum": ["outside", "owner"]},
+    "zone": {"description": "Who writes the content the connector carries, as its items' default: outside for an outsider, owner for the owner. A push connector needs none, because the push route reads the zone from each request: a link lands outside and a memo's audio as the owner's. Every other mode names one.", "enum": ["outside", "owner"]},
     "read_rule": {"description": "How an item the connector landed is read where no tag's rule decides: as-is, or a model read. Left out, the side's default decides.", "enum": ["as-is", "model"]},
     "root": {"description": "The [serve.homes] root a folder connector reads.", "type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
     "path": {"description": "The directory below the root a folder connector reads, with forward slashes. Left out, it reads the whole root.", "type": "string"},
     "format": {"description": "The drop handler that splits a drop connector's file into items, by the name the build registers it under. Left out, a dropped file lands as one item.", "type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
     "after_landing": {"description": "What a poll's source does with each item once it has landed. delete removes it, such as a save from a capture playlist, through the deleter its source registers. Left out, the source keeps it.", "enum": ["delete"]},
-    "person_sorts": {"description": "true keeps the quality gate's side guess from placing an item the connector sighted. The item waits in review as person-sorts, with the guess beside it. A tag or a routing rule still places it first.", "type": "boolean"},
+    "person_sorts": {"description": "true keeps the quality gate's side guess from placing an item the connector sighted. The item waits in review as person-sorts, with any guess beside it. An item in the owner's zone has none, because the quality gate never reads it. A tag or a routing rule still places it first.", "type": "boolean"},
     "source_parameters": {"description": "The source's own settings for this connector, such as the playlist that a video source reads. The source names the keys it takes and checks each value when the set is applied. A source that takes none refuses them.", "type": "object", "additionalProperties": {"type": "string"}}
   },
   "allOf": [
@@ -45,6 +45,10 @@
     {
       "if": {"properties": {"mode": {"const": "drop"}}},
       "else": {"properties": {"format": false}}
+    },
+    {
+      "if": {"properties": {"mode": {"const": "push"}}},
+      "else": {"required": ["zone"]}
     }
   ],
   "$defs": {

@@ -171,6 +171,7 @@ var modelStageQuotes = []struct {
 	quotes ParsePick
 }{
 	{StageContents, ParsePick{Extractor: ExtractorPDFText}},
+	{StageTopics, ParsePick{}},
 	{StageQuality, ParsePick{}},
 	{StageQualityArm, ParsePick{}},
 	{StageNote, ParsePick{}},

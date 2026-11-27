@@ -27,6 +27,7 @@ import (
 
 //go:embed quality/prompt.tmpl quality/answer.schema.json
 //go:embed contents/prompt.tmpl contents/answer.schema.json
+//go:embed topics/prompt.tmpl topics/answer.schema.json
 //go:embed model-read/prompt.tmpl model-read/answer.schema.json model-read/lenses/*.tmpl
 //go:embed prompt-proposal/prompt.tmpl prompt-proposal/answer.schema.json
 //go:embed note/prompt.tmpl note/answer.schema.json note/lenses/*.tmpl
@@ -60,6 +61,10 @@ var Quality = load("quality", "1", nil)
 
 // Contents is the contents stage's prompt.
 var Contents = load("contents", "1", nil)
+
+// Topics is the topics stage's prompt, which splits a memo's transcript into
+// its topics.
+var Topics = load("topics", "1", nil)
 
 // Comments is the prompt that reads what a video's top comments say about it.
 var Comments = load("comments", "1", nil)

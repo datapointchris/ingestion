@@ -397,7 +397,11 @@ func runConnectorsShow(cmd *cobra.Command, args []string) error {
 }
 
 func writeConnector(w io.Writer, c server.ConnectorView, now time.Time) {
-	_, _ = fmt.Fprintf(w, "%s   %s   applied %s   zone %s   due %s\n", c.Name, c.Mode, shortCommit(c.AppliedCommit), c.Zone, dueText(c, now))
+	zone := "per request"
+	if c.Zone != nil {
+		zone = string(*c.Zone)
+	}
+	_, _ = fmt.Fprintf(w, "%s   %s   applied %s   zone %s   due %s\n", c.Name, c.Mode, shortCommit(c.AppliedCommit), zone, dueText(c, now))
 	table := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	row := func(label, format string, args ...any) {
 		_, _ = fmt.Fprintf(table, "  %s\t"+format+"\n", append([]any{label}, args...)...)

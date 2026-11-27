@@ -53,6 +53,7 @@ import (
 const (
 	VerdictReview = store.VerdictReview
 	VerdictDrop   = store.VerdictDrop
+	VerdictSplit  = store.VerdictSplit
 )
 
 // Causes that the gates write. A person's decision carries the aspect the
@@ -72,8 +73,11 @@ const (
 	CauseGateError = "gate-error"
 	// CausePersonSorts sends to review an item that no tag or rule placed and
 	// that a connector declaring person_sorts sighted, where the quality gate
-	// passed it with a side guess. The review queue shows the guess beside it.
+	// passed it or never reads it. The review queue shows any guess beside it.
 	CausePersonSorts = "person-sorts"
+	// CauseTopics splits a memo once its topics are landed, each an item that
+	// the gates place on its own. Its verdict is VerdictSplit.
+	CauseTopics = store.CauseTopics
 	// CauseGateWouldDrop sends to review an item that the quality gate
 	// dropped, where a family of the item has not earned hiding it.
 	// CauseQualityDrop drops one that every family's trust hides, and keeps its
@@ -146,8 +150,8 @@ var ReviewReasons = []ReviewReason{
 	},
 	{CauseBelowFloor, "the quality gate guessed fleet, or its guess fell below its floor", "fleet guess, or below its floor"},
 	{
-		CausePersonSorts, "a connector that sighted it declares person_sorts, so its guess only shows",
-		"its connector leaves the side to you, the guess beside it",
+		CausePersonSorts, "a connector that sighted it declares person_sorts, so a guess only shows, as on a memo's topic, which the quality gate never reads",
+		"its connector leaves the side to you, any guess beside it",
 	},
 	{CauseTagsDisagree, "its sightings' tags name destinations on two sides", "tags name both sides"},
 	{CauseNoGuess, "no tag or rule placed it, and the quality gate gave no answer", "no rule, no answer"},
@@ -232,13 +236,15 @@ func BeforeModel(set connectors.Set, accepted []store.RoutingRule, key string, s
 }
 
 // byGuess is the side decision on the quality gate's guess, and review for
-// want of one. Where a person sorts the item, a guess sends it to review.
+// want of one. Where a person sorts the item, it waits in review as
+// person-sorts, guess or none, so an item that the gate never reads waits
+// there too.
 func byGuess(guess *Guess, personSorts bool) store.Decision {
-	if guess == nil {
-		return store.Decision{Gate: store.GateSide, Verdict: VerdictReview, DecidedBy: ByGate, Cause: CauseNoGuess}
-	}
 	if personSorts {
 		return store.Decision{Gate: store.GateSide, Verdict: VerdictReview, DecidedBy: ByGate, Cause: CausePersonSorts}
+	}
+	if guess == nil {
+		return store.Decision{Gate: store.GateSide, Verdict: VerdictReview, DecidedBy: ByGate, Cause: CauseNoGuess}
 	}
 	confidence := guess.Confidence
 	d := store.Decision{Gate: store.GateSide, DecidedBy: ByModel(guess.Run), Confidence: &confidence}
@@ -442,6 +448,18 @@ func gate(ctx context.Context, tx *store.Tx, key string, log *slog.Logger, reope
 	if err != nil || !store.ReadingParseScanned(outputs) {
 		return nil, err
 	}
+	if split, waits, err := byTopics(ctx, tx, key); err != nil || waits {
+		return nil, err
+	} else if split != nil {
+		if sided && sameDecision(newest, *split) {
+			return nil, nil
+		}
+		set, _, sightings, err := inputs(ctx, tx, key)
+		if err != nil {
+			return nil, err
+		}
+		return decide(ctx, tx, key, *split, set, sightings, nil, nil)
+	}
 	set, accepted, sightings, err := inputs(ctx, tx, key)
 	side, ruled := BeforeModel(set, accepted, key, sightings)
 	switch {
@@ -463,6 +481,27 @@ func gate(ctx context.Context, tx *store.Tx, key string, log *slog.Logger, reope
 		return nil, nil
 	}
 	return decide(ctx, tx, key, side, set, sightings, nil, nil)
+}
+
+// byTopics is the side decision on the item under key where it is a memo, as
+// store.Item.SplitsIntoTopics names one: split once its topics are landed, and
+// true while its topics task is open, so the memo waits at the topics stage
+// and no tag or rule places it first. A memo with neither, such as one whose
+// topics task failed, and any other item, fall to the rungs below.
+func byTopics(ctx context.Context, tx *store.Tx, key string) (*store.Decision, bool, error) {
+	item, _, err := tx.Item(ctx, key)
+	if err != nil || !item.SplitsIntoTopics() {
+		return nil, false, err
+	}
+	topics, err := tx.Topics(ctx, key)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(topics) > 0 {
+		return &store.Decision{Gate: store.GateSide, Verdict: VerdictSplit, DecidedBy: ByGate, Cause: CauseTopics}, false, nil
+	}
+	_, open, err := tx.OpenTask(ctx, key, store.StageTopics)
+	return nil, open, err
 }
 
 // byQuality is the side gate's decision on the item under key, which no tag

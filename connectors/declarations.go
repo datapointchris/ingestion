@@ -80,10 +80,13 @@ type Connector struct {
 	DueInterval string `json:"due_interval,omitempty" yaml:"due_interval"`
 	// Freshness is how long a poll or a folder may go without a delivery
 	// before it reads overdue.
-	Freshness string     `json:"freshness,omitempty" yaml:"freshness"`
-	Tags      []string   `json:"tags" yaml:"tags"`
-	Zone      store.Zone `json:"zone" yaml:"zone"`
-	ReadRule  string     `json:"read_rule,omitempty" yaml:"read_rule"`
+	Freshness string   `json:"freshness,omitempty" yaml:"freshness"`
+	Tags      []string `json:"tags" yaml:"tags"`
+	// Zone is who writes what the connector carries, as its items' default.
+	// A push connector names none, since its route reads the zone from each
+	// request.
+	Zone     store.Zone `json:"zone,omitempty" yaml:"zone"`
+	ReadRule string     `json:"read_rule,omitempty" yaml:"read_rule"`
 	// Root names the [serve.homes] root a folder connector reads, and Path
 	// the directory below it.
 	Root string `json:"root,omitempty" yaml:"root"`

@@ -1,0 +1,22 @@
+Split the transcript of one voice memo into its topics. Answer only through the schema you are given.
+
+The memo is the owner's own words, spoken aloud and transcribed by a speech model, so a word may be misheard or a sentence may run on. The transcript is quoted between the two MEMO lines below, one numbered segment per line. Each segment names the stretch of the recording that it covers.
+
+Segments in the memo: {{len .Segments}}
+
+----- MEMO -----
+{{- range .Segments}}
+[{{.N}}] {{.Span}} {{.Text}}
+{{- end}}
+----- MEMO END -----
+
+A topic is one subject that the memo talks about, such as an idea, a task, a question or something to look into. A memo about one subject is one topic. Where the owner comes back to an earlier subject later in the memo, the later part is a topic of its own.
+
+List the topics in the memo's order. Each topic holds a run of whole segments:
+
+- first_unit: the number of the topic's first segment.
+- last_unit: the number of the topic's last segment.
+- title: a short title for the topic, under ten words, in the owner's terms.
+- idea: the topic's point in one sentence, as the owner would put it.
+
+The first topic starts at segment 1. Each later topic starts at the segment right after the last segment of the topic before it. The last topic ends at segment {{len .Segments}}. So every segment belongs to exactly one topic.

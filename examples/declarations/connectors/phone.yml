@@ -1,7 +1,10 @@
-# A push connector takes what a phone shares.
+# A push connector takes what a phone shares: a link, which lands outside, or
+# a memo's audio, which lands as the owner's. The route reads the zone from
+# each request, so the connector names none. A memo splits into one item per
+# topic, and person_sorts leaves each topic in review for the person to sort.
 name: phone
 mode: push
 source: phone-shares
 due_interval: 7d
-zone: outside
+person_sorts: true
 tags: []

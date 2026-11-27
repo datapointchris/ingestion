@@ -30,7 +30,8 @@ never ahead of it. A stage's code goes in its own package:
 | `contents` | the model stage that reads the printed contents pages of a long PDF whose outline gives it no sections: the hook after a structure, which queues the task on a book's first profile and places a stored answer again on a later one, its prompt's data for `modelstage`'s handler, and the placement that serve runs on its answer, which maps each entry's printed page to a PDF page by label or offset, the offset voted by the pages its entries' titles open where the book prints no page numbers, searches near it for the title, and writes producer `contents` sections through `sections.Write` |
 | `isolatedprocess` | the one door that starts a program over outsider bytes, in a temporary directory of its own with an environment that holds no secret |
 | `scan` | the scanner, which runs YARA-X's `yr` over a parse's text or over one sentence, its stored findings, `build-rules`, which converts Agent Threat Rules and tests each by its own examples, and `Suggests`, which reads the kind that each of ingestion's own rules declares where its match lists what an item suggests |
-| `qualitygate` | the model stage that reads the opening of every item that no person placed, a tag's or rule's included, and answers its quality, genre, domains, themes, a one-line idea, a sentence of reason on its verdict, a side guess, and a fit to the `fleet` lens's context where the worker reads one: the write after the scan that queues its task, its prompt's data and answer for `modelstage`'s handler, and the decision that its answer appends, in the write that starts each sighting connector's family; and its arm, the same prompt asked of the model that a replay names, over labeled items, kept at the `quality-arm` stage off the item's line, which decides nothing |
+| `topics` | the model stage that splits a memo, the owner's own words, into one item per topic. Its hook after the scan queues a memo's task once. Its handler keeps an answer only where its topics cover each unit once, in order. Its hook after the answer writes the `topics` rows, and lands each topic under `<memo key>#<n>` with a parse of its units and a scan |
+| `qualitygate` | the model stage that reads the opening of each outsider's item that no person placed, a tag's or rule's included. Its answer gives the item's quality, genre, domains, themes, a one-line idea and a side guess, with a sentence of reason on its verdict. Where the worker reads the `fleet` lens's context, the answer gives a fit to it too. The package holds the write after the scan that queues the task, the prompt's data and answer for `modelstage`'s handler, and the decision that the answer appends. That write starts each sighting connector's family. Its arm asks the same prompt of the model that a replay names, over labeled items. The arm's answers stay at the `quality-arm` stage, off the item's line, and decide nothing. The gate never reads an item in the owner's zone, as `store.Item.SkipsQualityGate` names one |
 | `gatetrust` | each connector's family under one version of the quality gate's prompt, answered by one model at one effort, declared as an `earnedtrust.Family` at its cautious pace, and the trust it earns: a person's `low-quality` or `read` mark and whether it agrees with the gate's answer, a placement on a destination of a drop the gate showed or hid, which disagrees, a person's promote, the standing that earnedtrust reads from each family's decisions, counting each item once under its newest answer, which `Settle` reads again once serve listens and `Reanswered` once the gate answers an item again, and `Shows`, which `route` asks whether a drop shows in review or is hidden |
 | `route` | the side gate and the read gate, which serve runs in the write that ends each stage between the parse and them, once the item's reading parse is scanned, in the write that applies a changed set, and in the write that lands another connector's sighting: a sighting's tags, then a declared rule, then a rule that a person accepted, a keep before a block, whose seeded review share waits in review as `rule-would-hide`, then the quality gate's drop, shown in review as `gate-would-drop` or hidden as `quality-drop` as `gatetrust` decides once per answer, its review, or its guess at or above its confidence floor where no connector declares that a person sorts its side, else review, with a person's placement withdrawing the item's queued quality task; `ReviewReasons`, the one table of why an item waits in review, which the CLI's help and the TUI read; a person's placement from review, or from a push that names its destination, which decides the read as is too, and which only a push makes on a push-only destination; `Due`, the one predicate for where an item is due a delivery, which holds a chapter until its book's delivery settles, and `ModelReadDue`, the one for where it is due a model read under a lens whose prompt the build holds and that no read answering its note already holds, which each decision's write reconciles, queueing a delivery, the note's draft or a model read and withdrawing each where a drop or a move stops it; `AfterDraft`, the read gate's decision on the note's draft, a read of it by a model at or above `[note] floor` and a review as `note-unclear` below it, and a person's placement with no note of a drafted item, which takes the draft; and each chapter's copy of its book's newest side and read decisions, which every decision on the book passes on; and in `verbs.go`, the sort verbs: `SortItem`, which places an item on the first destination whose deliverer is its verb's, returns a learning sort that the gate did not pass to review as `learning-refused`, or puts the item on the shelf with read verdict `shelf`, `OpenShelved`, which a person's opening of a shelved item runs, and which queues a summary's model read once under its lens, and `RemoveShelved`, which takes an item off the shelf and keeps what it holds |
 | `note` | the model stage that drafts the note of an item read by a model where no person wrote one: its questions for the read, why the item was likely saved, how it bears on the owner's current work, a summary, an idea and a confidence, from the title, the URL and the opening of the reading parse beside the lens's context; its prompt's data and answer for `modelstage`'s handler |
@@ -92,8 +93,15 @@ pin and publish them. The `Dockerfile` builds the one image that `serve` and `wo
 ## Every item passes one line of stages
 
 ```text
-land → parse → structure → contents → sections → scan → quality gate → side → read → note → model read → deliver
+land → parse → structure → contents → sections → scan → topics → quality gate → side → read → note → model read → deliver
 ```
+
+Only a memo passes the topics stage, and a memo passes no quality gate. `audio-whisper` parses
+its recording, one unit per segment of speech, in the heavy slot group. Its scan then queues
+`topics`. That stage's answer splits the transcript into runs of units. serve lands each run as a
+topic, an item of the owner's under `<memo key>#<n>` with the memo as its parent. Each topic takes
+a sighting from each of the memo's connectors and a parse of its units, and passes the line from
+its scan on. The memo itself reads `split` once its topics land, and routes nothing of its own.
 
 A PDF's structure, contents and sections run beside its scan, and only a PDF passes them. Only a
 PDF of `sections.WholeFilePages` pages or more whose outline gives it no sections passes the
@@ -124,6 +132,10 @@ Docling, and the newest done parse otherwise.
 - **A rule placed before the model always wins over it.** A tag or a routing rule decides first.
   The quality gate answers the item too, so its connector's family earns trust from every
   answer, and the rule's placement stands. The model drops an item only above a high confidence.
+- **The quality gate never reads the owner's own words.** It judges what an outsider wrote, so
+  `store.Item.SkipsQualityGate` names each item in the owner's zone, and no scan queues its task.
+  Such an item has no guess to place it. Where its connector declares `person_sorts`, as the
+  phone's does, it waits in review as `person-sorts`, and otherwise as `no-guess`.
 - **A rule that a person accepted is a row of `routing_rules`, and a hand-written one stays in
   the declaration set.** `AcceptRule` and `RetireRule` append a version through `PUT
   /api/v1/routing-rules/{name}` and its retire route, under `ingestion.routing-rules.write`. The
@@ -174,6 +186,11 @@ Docling, and the newest done parse otherwise.
   `youtube-captions` for a YouTube video's link. The service stores nothing that it did not fetch
   through an extractor, so the push route refuses any other link before it writes. The item lands
   under the URL that its source names it by, so its URL is the same whichever connector landed it.
+- **The push route tells a memo from a link by the body's opening.** An iPhone Shortcut sends a
+  file's bytes under a Content-Type that it does not choose. So the route reads the first bytes.
+  It reads a `{` as a link's JSON. `server.SniffMemo` reads an M4A, MP3 or WAV header as a memo. Any other body
+  answers 415 `media_not_read` before anything is stored. A memo's key, `memo/<hash>`, hashes the
+  caller and the `Idempotency-Key`, so a retry lands on the first attempt's item.
 - **A push-only destination takes a push's placement alone**, such as `psyche`, whose program the
   push hands the item to. No deliverer reaches it, so review leaves it out and refuses it, and no
   tag, rule or side default may name it.

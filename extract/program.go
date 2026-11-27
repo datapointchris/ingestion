@@ -35,16 +35,16 @@ const lineMax = 64 << 20
 func Program(name, version, mediaType, path string, args ...string) Extractor {
 	return Extractor{
 		Name: name, Version: version, MediaType: mediaType, Program: path, Timeout: ProgramTimeout,
-		Extract: func(ctx context.Context, body io.Reader) ([]Unit, error) {
+		Extract: func(ctx context.Context, body io.Reader) (Read, error) {
 			var units []Unit
 			_, err := isolatedprocess.Run(ctx, isolatedprocess.Command{
 				Path: path, Args: args, Stdin: body,
 				Stdout: func(r io.Reader) (err error) { units, err = readUnits(r); return err },
 			})
 			if err != nil {
-				return nil, err
+				return Read{}, err
 			}
-			return units, nil
+			return Read{Units: units}, nil
 		},
 	}
 }

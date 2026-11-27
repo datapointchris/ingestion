@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"strings"
+
+	"github.com/datapointchris/ingestion/itemkey"
 )
 
 // Each record's JSON names are its table's column names, which
@@ -46,7 +48,10 @@ const (
 	// its structure or its contents, which queues no task.
 	StageSections = "sections"
 	StageScan     = "scan"
-	StageQuality  = "quality"
+	// StageTopics is a model's split of a memo's transcript into one child
+	// item per topic, where an outsider's item passes the quality gate.
+	StageTopics  = "topics"
+	StageQuality = "quality"
 	// StageNote is a model's draft of the note that a model read answers,
 	// where the read decision carries no person's note.
 	StageNote      = "note"
@@ -116,6 +121,24 @@ const MediaTypeChapter = "application/x-book-chapter"
 func (i Item) PlacedThroughParent() bool {
 	return i.MediaType == MediaTypeChapter && i.ParentKey != nil
 }
+
+// MediaTypeMemoTopic is one topic of a memo: a child item that holds the
+// memo's units from its first to its last, and is placed as an item of its
+// own.
+const MediaTypeMemoTopic = "application/x-memo-topic"
+
+// SplitsIntoTopics says whether the item is a memo, the owner's own words
+// keyed by its caller and Idempotency-Key, which the topics stage splits into
+// one child per topic. A memo passes no quality gate, and routes nothing of its
+// own once it is split.
+func (i Item) SplitsIntoTopics() bool {
+	return i.Zone == Owner && i.ParentKey == nil && strings.HasPrefix(i.Key, itemkey.Memo+"/") && !strings.Contains(i.Key, "#")
+}
+
+// SkipsQualityGate says whether the quality gate never reads the item. The
+// gate judges what an outsider wrote, so an item in the owner's zone, such as
+// a memo or one of its topics, skips it, and its side waits on a person.
+func (i Item) SkipsQualityGate() bool { return i.Zone == Owner }
 
 // Sighting is one connector's arrival of an item.
 type Sighting struct {
@@ -416,7 +439,14 @@ const (
 	// VerdictShelf is the read gate's verdict on an item that a person put on
 	// the shelf: nothing reads it until the person opens it.
 	VerdictShelf = "shelf"
+	// VerdictSplit is the side gate's verdict on a memo once its topics are
+	// landed. The memo routes nothing of its own, and each topic is placed as
+	// an item of its own.
+	VerdictSplit = "split"
 )
+
+// CauseTopics is the cause of a memo's split, which the topics stage made.
+const CauseTopics = "topics"
 
 // The causes of a person's read decisions on a shelved item. CauseShelfOpen
 // opens it, and CauseShelfRemove takes it off the shelf, keeping the newest

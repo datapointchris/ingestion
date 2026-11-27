@@ -71,6 +71,10 @@ var Tables = []Table{
 		Name: "sections", Key: []string{"item_key", "producer", "producer_version", "n"}, Stamp: []string{"created_ts"},
 		Text: []string{"title"}, Writes: Appends,
 	},
+	{
+		Name: "topics", Key: []string{"item_key", "n"}, Stamp: []string{"created_ts"},
+		Text: []string{"title", "idea"}, Writes: Appends,
+	},
 	{Name: "replays", Key: []string{"id"}, Stamp: []string{"requested_ts"}, Writes: Appends},
 	{Name: "decisions", Key: []string{"item_key", "gate", "sequence"}, Stamp: []string{"decided_ts"}, JSON: []string{"presented"}, Writes: Appends},
 	{

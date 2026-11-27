@@ -39,6 +39,7 @@ import (
 	"github.com/datapointchris/ingestion/sections"
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
+	"github.com/datapointchris/ingestion/topics"
 )
 
 const (
@@ -141,7 +142,8 @@ func afterStageUnder(log *slog.Logger, noteFloor float64) server.AfterStage {
 		)},
 		store.StageStructure: {sections.AfterStructure, contents.AfterStructure(log), sections.QueueDoclingParse},
 		store.StageContents:  {contents.AfterAnswer(log)},
-		store.StageScan:      {qualitygate.QueueAfterScan},
+		store.StageScan:      {qualitygate.QueueAfterScan, topics.QueueAfterScan},
+		store.StageTopics:    {topics.AfterAnswer(log)},
 		store.StageQuality:   {qualitygate.DecideAfterAnswer, route.RedraftAfterAnswer},
 		store.StageNote:      {route.AfterDraft(noteFloor)},
 		store.StageDeliver:   {route.AfterDelivery},

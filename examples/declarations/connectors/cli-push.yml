@@ -1,8 +1,8 @@
 # A push connector takes each new link that `ingestion push` lands from a
-# person's machine.
+# person's machine. The route lands a link outside, so the connector names no
+# zone.
 name: cli-push
 mode: push
 source: cli-pushes
 due_interval: 30d
-zone: outside
 tags: []

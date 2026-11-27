@@ -98,14 +98,16 @@ type ConnectorsAnswer struct {
 
 // ConnectorView is one applied connector, its counts and its due time.
 type ConnectorView struct {
-	Name           string     `json:"name"`
-	Mode           string     `json:"mode"`
-	Zone           store.Zone `json:"zone"`
-	Source         string     `json:"source"`
-	Tags           []string   `json:"tags"`
-	AppliedCommit  string     `json:"applied_commit"`
-	LastRunTS      *string    `json:"last_run_ts"`
-	LastDeliveryTS *string    `json:"last_delivery_ts"`
+	Name string `json:"name"`
+	Mode string `json:"mode"`
+	// Zone is nil for a push connector that names none, whose route reads
+	// the zone from each request.
+	Zone           *store.Zone `json:"zone"`
+	Source         string      `json:"source"`
+	Tags           []string    `json:"tags"`
+	AppliedCommit  string      `json:"applied_commit"`
+	LastRunTS      *string     `json:"last_run_ts"`
+	LastDeliveryTS *string     `json:"last_delivery_ts"`
 	// LastError is why the last run failed, null since one succeeded, and
 	// Failures counts the failed runs since then.
 	LastError   *string `json:"last_error"`
@@ -195,7 +197,8 @@ type ConnectorConfig struct {
 }
 
 // ConnectorRoutes are the routes for a person to apply the declarations, read
-// and run each connector, release a first fill, drop a file and push a link.
+// and run each connector, release a first fill, drop a file and push a link or
+// a memo.
 func ConnectorRoutes(cfg ConnectorConfig) Routes {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
@@ -391,8 +394,12 @@ func (h connectorHandlers) view(w http.ResponseWriter, r *http.Request, c connec
 		tags = []string{}
 	}
 	since, overdue := connectors.OverdueSince(c, cur, h.cfg.Store.Now())
+	var zone *store.Zone
+	if c.Zone != "" {
+		zone = &c.Zone
+	}
 	return ConnectorView{
-		Name: c.Name, Mode: c.Mode, Zone: c.Zone, Source: c.Source, Tags: tags, AppliedCommit: commit,
+		Name: c.Name, Mode: c.Mode, Zone: zone, Source: c.Source, Tags: tags, AppliedCommit: commit,
 		LastRunTS: cur.LastRunTS, LastDeliveryTS: cur.LastDeliveryTS,
 		LastError: cur.LastError, LastErrorTS: cur.LastErrorTS, Failures: cur.Failures,
 		Items: n.Items, Waiting: n.Waiting, Review: n.Review, Failed: n.Failed,

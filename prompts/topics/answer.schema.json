@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/datapointchris/ingestion/prompts/topics/answer.schema.json",
+  "title": "The topics stage's answer",
+  "description": "Each topic of one voice memo, in the memo's order, as a run of its transcript's segments numbered from 1. The store keeps it whole as the output's answer. serve lands each topic as an item of its own once the topics hold every segment once, in order.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["topics"],
+  "properties": {
+    "topics": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 200,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["first_unit", "last_unit", "title", "idea"],
+        "properties": {
+          "first_unit": {"description": "The number of the topic's first segment.", "type": "integer", "minimum": 1},
+          "last_unit": {"description": "The number of the topic's last segment.", "type": "integer", "minimum": 1},
+          "title": {"description": "A short title for the topic, in the owner's terms.", "type": "string", "minLength": 1, "maxLength": 200},
+          "idea": {"description": "The topic's point in one sentence.", "type": "string", "minLength": 1, "maxLength": 600}
+        }
+      }
+    }
+  }
+}
