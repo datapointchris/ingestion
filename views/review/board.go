@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"maps"
 	"os/exec"
-	"strings"
 	"sync/atomic"
 	"time"
 
@@ -19,7 +18,6 @@ import (
 
 	"github.com/datapointchris/ingestion/note"
 	"github.com/datapointchris/ingestion/qualitygate"
-	"github.com/datapointchris/ingestion/redditexport"
 	"github.com/datapointchris/ingestion/server"
 )
 
@@ -35,6 +33,12 @@ type Service interface {
 	// `ingestion review drop` print.
 	Place(ctx context.Context, key string, body server.PlaceRequest) (string, error)
 	Drop(ctx context.Context, key string, body server.DropRequest) (string, error)
+	// Mark posts a person's mark on the item, low-quality or read, and
+	// answers the sentence `ingestion items mark` prints.
+	Mark(ctx context.Context, key, mark string) (string, error)
+	// Comments asks for the read of what the item's top comments say, and
+	// answers how it stands.
+	Comments(ctx context.Context, key string) (server.ReviewComments, error)
 }
 
 // The sources' names, as the strip and the ? overlay name them.
@@ -43,11 +47,14 @@ const (
 	sourceParses = "parse"
 )
 
-// The groupings v cycles. The first is the default, which a remembered display overrides on screen.
+// The groupings v cycles, as server.PresentedGroupings names them. The first is the default, which
+// a remembered display overrides on screen.
 const (
-	byReason = "reason"
-	bySource = "source"
-	byNone   = "none"
+	byReason    = "reason"
+	byConnector = "connector"
+	byChannel   = "channel"
+	byVerdict   = "verdict"
+	byNone      = "none"
 )
 
 // held is one read of the queue, each item decoded once off the screen's loop. readFrom is when the
@@ -110,6 +117,16 @@ type Board struct {
 	// drew under, which a decided row passes the cursor along.
 	drawn   []string
 	drawnIn map[string]string
+	// ranked is every shown row's key in the order the sort in force put them, before grouping.
+	// grouping names how the last frame grouped its rows, and sortAt is the sort in force, as an
+	// index into sorts.
+	ranked   []string
+	grouping string
+	sortAt   int
+	// cursorKey is the row the cursor rests on, and cursorAt when it came to rest there, which a
+	// decision's presented card counts from.
+	cursorKey string
+	cursorAt  time.Time
 }
 
 // NewBoard declares the board's reads, reading nothing yet.
@@ -187,6 +204,9 @@ func (b *Board) readParse(ctx context.Context) (map[string]parsed, string, error
 // reads only the row it stops on.
 func (b *Board) CursorOn(key string) {
 	b.cursor.Store(&key)
+	if key != b.cursorKey {
+		b.cursorKey, b.cursorAt = key, time.Now()
+	}
 	if _, read := b.parses.Value()[key]; !read {
 		if _, listed := b.queue.Value().item(key); listed {
 			b.parses.Force()
@@ -199,8 +219,11 @@ func (b *Board) Sources() []gotermboard.Refresher {
 	return []gotermboard.Refresher{b.queue, b.parses}
 }
 
-// Groupings is gotermboard.Board's: why each item waits, the default, then its source, or none.
-func (b *Board) Groupings() []string { return []string{byReason, bySource, byNone} }
+// Groupings is gotermboard.Board's: why each item waits, the default, then its connector, its
+// channel, the gate's verdict, or none.
+func (b *Board) Groupings() []string {
+	return []string{byReason, byConnector, byChannel, byVerdict, byNone}
+}
 
 // TwoLines is gotermboard.TwoLineBoard's: each row's key and the gate's idea sit dim under it.
 func (b *Board) TwoLines() bool { return true }
@@ -237,22 +260,3 @@ func (b *Board) AwaitWrites(announce func(doing []string)) []keywrites.Ended {
 
 // Writing says a write a key started runs or waits.
 func (b *Board) Writing() bool { return b.writes.Writing() }
-
-// sourceOf is what the SOURCE column draws for an item: the source's own field where a sighting
-// carries one, as r/golang for a Reddit save's subreddit, and else the connector that brought it.
-func sourceOf(it item) string {
-	for _, s := range it.Sightings {
-		if sub := s.Fields[redditexport.FieldSubreddit]; sub != "" {
-			return "r/" + sub
-		}
-		for _, name := range sortedKeys(s.Fields) {
-			if v := s.Fields[name]; v != "" {
-				return v
-			}
-		}
-	}
-	if len(it.Connectors) > 0 {
-		return strings.Join(it.Connectors, ", ")
-	}
-	return "—"
-}

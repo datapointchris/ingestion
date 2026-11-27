@@ -7,7 +7,8 @@
 -- rules_version is the scanner rules' version that made findings: a scan's
 -- over its parse, and a model read's over its suggestion sentence.
 -- note_digest is the hex SHA-256 of the note that a model read answered, and
--- null where it answered none.
+-- null where it answered none. quality, fit, side_guess and side_confidence
+-- are the quality gate's, fit null where the gate read no context.
 
 CREATE TABLE IF NOT EXISTS outputs (
     item_key         TEXT NOT NULL REFERENCES items (key),
@@ -30,6 +31,7 @@ CREATE TABLE IF NOT EXISTS outputs (
     findings         TEXT,
     rules_version    TEXT,
     quality          INTEGER,
+    fit              INTEGER,
     side_guess       TEXT,
     side_confidence  REAL,
     text             TEXT,

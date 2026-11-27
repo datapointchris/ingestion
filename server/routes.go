@@ -69,6 +69,7 @@ var (
 	RouteReviewDrop     = Route{"POST /api/v1/review/{key}/drop", ScopeReviewPlace, RepeatByContent}
 	RouteGateAgreement  = Route{"GET /api/v1/gates/agreement", ScopeItemsRead, RepeatRead}
 	RouteItemMarks      = Route{"POST /api/v1/items/{key}/marks", ScopeMarksWrite, RepeatByContent}
+	RouteItemComments   = Route{"POST /api/v1/items/{key}/comments", ScopeCommentsRead, RepeatByContent}
 	RouteGateTrust      = Route{"GET /api/v1/gates/trust", ScopeItemsRead, RepeatRead}
 	// RouteGateTrustPromote's family is <connector>@<prompt version>@<model>@<effort>.
 	RouteGateTrustPromote = Route{"POST /api/v1/gates/trust/{family}/promote", ScopeTrustPromote, RepeatByContent}

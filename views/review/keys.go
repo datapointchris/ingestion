@@ -8,14 +8,18 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/datapointchris/gotermboard"
 	"github.com/datapointchris/gotermboard/keywrites"
 	"github.com/datapointchris/gotermboard/terminalcontrol"
 
+	"github.com/datapointchris/ingestion/connectors"
+	"github.com/datapointchris/ingestion/gatetrust"
 	"github.com/datapointchris/ingestion/route"
 	"github.com/datapointchris/ingestion/server"
+	"github.com/datapointchris/ingestion/ypl"
 )
 
 // Actions is gotermboard.Keyed's: the review's keys, each acting on the item under the cursor.
@@ -33,10 +37,79 @@ func (b *Board) Actions() []gotermboard.Action {
 		actions = append(actions, digit)
 	}
 	return append(actions,
-		gotermboard.Action{Keys: []string{"x"}, Label: "drop the item, which keeps its row, after asking what decided it: a field of its source such as its subreddit, its title, its theme, or none", Footer: "x drop", Run: b.onItem(b.drop)},
+		gotermboard.Action{Keys: []string{KeyFleetRelate}, Label: "fleet relate: place the item on the first destination on the fleet side, at once, as your decision, " +
+			"so a model reads it under the fleet lens against your current work, unless its connector's read rule reads it as is", Footer: KeyFleetRelate + " fleet relate", Run: b.onItem(b.fleetRelate)},
+		gotermboard.Action{Keys: []string{KeyDrop}, Label: "drop the item, which keeps its row, after asking what decided it: its channel or another field of its source such as its subreddit, its title, its theme, its low quality, or none", Footer: KeyDrop + " drop", Run: b.onItem(b.drop)},
+		gotermboard.Action{Keys: []string{KeyLowQuality}, Label: "mark the item low quality: it held nothing worth keeping. The mark teaches the quality gate and leaves the item waiting", Footer: KeyLowQuality + " low quality", Run: b.onItem(b.mark(gatetrust.MarkLowQuality))},
+		gotermboard.Action{Keys: []string{KeyRead}, Label: "mark the item read: it was read and gave what was wanted. The mark teaches the quality gate and leaves the item waiting", Footer: KeyRead + " read", Run: b.onItem(b.mark(gatetrust.MarkRead))},
+		gotermboard.Action{Keys: []string{KeyComments}, Label: "read what the video's top comments say about it: one model call, once per item, whose answer the card shows once it lands. A second c shows how the read stands", Footer: KeyComments + " comments", Run: b.onItem(b.comments)},
 		gotermboard.Action{Keys: []string{"n"}, Label: "write a note on the item in $VISUAL or $EDITOR: the questions and why it was saved, which a model read answers. Then pick the destination it is placed on with the note", Footer: "n note", Run: b.onItem(b.note)},
 		gotermboard.Action{Keys: []string{"o"}, Label: "open the item's URL in the browser", Footer: "o open", Run: b.onItem(b.openURL)},
+		gotermboard.Action{Keys: []string{"s"}, Label: "next sort: newest made at its source, the gate's quality, likes per view, shortest, then the gate's fit to your current work", Footer: "s sort", Run: func(m *gotermboard.Model) tea.Cmd {
+			b.sortAt = (b.sortAt + 1) % len(sorts)
+			m.Say("sorted by " + sorts[b.sortAt] + ", " + sortWords[sorts[b.sortAt]])
+			m.Rebuild()
+			return nil
+		}},
 	)
+}
+
+// The keys of the sort verbs and the marks that the tab binds beside the digits.
+const (
+	KeyFleetRelate = "F"
+	KeyDrop        = "d"
+	KeyLowQuality  = "x"
+	KeyRead        = "r"
+	KeyComments    = "c"
+)
+
+// fleetRelate places it on the first destination that the set in force declares on the fleet
+// side, as its digit would.
+func (b *Board) fleetRelate(m *gotermboard.Model, it item) tea.Cmd {
+	destinations := b.queue.Value().destinations
+	if missing := destinationsMissing(destinations); missing != "" {
+		m.Say(missing)
+		return nil
+	}
+	n := slices.IndexFunc(destinations, func(d server.ReviewDestination) bool { return d.Side != nil && *d.Side == connectors.SideFleet })
+	if n < 0 || n > 8 {
+		m.Say("no destination among the first nine on the fleet side, so " + KeyFleetRelate + " places nothing")
+		return nil
+	}
+	return b.place(m, it, n+1, nil, "")
+}
+
+// mark posts the person's mark on it. The item stays in the queue, since a mark decides nothing,
+// and the queue is read again once the drain ends, as every write's is, because one reread serves
+// every write the drain ran.
+func (b *Board) mark(mark string) func(*gotermboard.Model, item) tea.Cmd {
+	return func(m *gotermboard.Model, it item) tea.Cmd {
+		key := it.Key
+		return b.writes.Start(m, keywrites.Write{Doing: "marking " + key + " " + mark, Run: func() (string, error) {
+			return b.service.Mark(b.ctx, key, mark)
+		}}, b.reread)
+	}
+}
+
+// comments asks for the read of what it's top comments say, or says how the read stands. The
+// queue is read again once the request lands, so the card shows the read's state.
+func (b *Board) comments(m *gotermboard.Model, it item) tea.Cmd {
+	if !commentsReadable(it) {
+		m.Say("this build reads the comments of no " + it.MediaType + ", so " + KeyComments + " reads nothing")
+		return nil
+	}
+	if it.Comments != nil && it.Comments.State != server.CommentsReading {
+		m.Say("the comments of " + outsider(it.Key) + ": " + outsider(commentsWords(it.Comments)))
+		return nil
+	}
+	key := it.Key
+	return b.writes.Start(m, keywrites.Write{Doing: "asking for the comments of " + key, Run: func() (string, error) {
+		c, err := b.service.Comments(b.ctx, key)
+		if err != nil {
+			return "", err
+		}
+		return "the comments of " + key + ": " + commentsWords(&c), nil
+	}}, b.reread)
 }
 
 // onItem runs act on the item under the cursor. A key on a group or on nothing does nothing. A key
@@ -71,6 +144,7 @@ func (b *Board) place(m *gotermboard.Model, it item, n int, note *string, noteFi
 	}
 	key, name := it.Key, destinations[n-1].Name
 	body := server.PlaceRequest{Destination: name, Note: note}
+	body.Presented, body.DecidedAfterMS = b.presented(key, time.Now())
 	return b.writeRow(m, key, "placing "+key+" on "+name, func() (string, error) {
 		said, err := b.service.Place(b.ctx, key, body)
 		if noteFile == "" {
@@ -97,6 +171,7 @@ func (b *Board) drop(m *gotermboard.Model, it item) tea.Cmd {
 		Answer: func(picked string) tea.Cmd {
 			i := slices.IndexFunc(causes, func(c cause) bool { return c.key == picked })
 			body := server.DropRequest{Cause: causes[i].cause}
+			body.Presented, body.DecidedAfterMS = b.presented(key, time.Now())
 			return b.writeRow(m, key, "dropping "+key, func() (string, error) { return b.service.Drop(b.ctx, key, body) })
 		},
 	})
@@ -107,15 +182,29 @@ func (b *Board) drop(m *gotermboard.Model, it item) tea.Cmd {
 // cause the drop records, empty for none.
 type cause struct{ key, label, cause string }
 
-// causesOf is what can have decided a drop of it: each field that its sightings carry, such as a
-// subreddit, keyed by its first letter where that is free, then its title, its theme, and none. A
-// field whose name the server would refuse as a cause is left out.
+// causesOf is what can have decided a drop of it: its channel where it has one, each other field
+// that its sightings carry, such as a subreddit, keyed by its first letter where that is free,
+// then its title, its theme, its low quality, and none. A video's channel fields are its channel,
+// and a field whose name the server would refuse as a cause is left out.
 func causesOf(it item) []cause {
-	causes := []cause{{"t", route.CauseTitle, route.CauseTitle}, {"h", route.CauseTheme, route.CauseTheme}, {"n", "none, so it is kept as " + route.CauseUnstated, ""}}
-	taken := map[string]bool{"t": true, "h": true, "n": true, route.CauseTitle: true, route.CauseTheme: true}
+	causes := []cause{
+		{"t", route.CauseTitle, route.CauseTitle},
+		{"h", route.CauseTheme, route.CauseTheme},
+		{"l", "low quality, which holds nothing worth keeping", route.CauseLowQuality},
+		{"n", "none, so it is kept as " + route.CauseUnstated, ""},
+	}
+	taken := map[string]bool{"t": true, "h": true, "l": true, "n": true, route.CauseTitle: true, route.CauseTheme: true, route.CauseLowQuality: true}
 	var fields []cause
+	if channel := channelOf(it); channel != "" && !strings.HasPrefix(channel, "r/") {
+		fields = append(fields, cause{"c", outsider(route.CauseChannel + ", " + channel), route.CauseChannel})
+		taken["c"], taken[route.CauseChannel] = true, true
+	}
+	channelFields := map[string]bool{ypl.FieldChannelTitle: true, ypl.FieldChannelID: true}
 	for _, s := range it.Sightings {
 		for _, name := range sortedKeys(s.Fields) {
+			if channelFields[name] {
+				continue
+			}
 			spelled := strings.ReplaceAll(strings.ToLower(name), "_", "-")
 			if taken[spelled] || !server.ValidCause(spelled) {
 				continue

@@ -2,7 +2,8 @@
 // registers it once from its own init. A registration names the rules for
 // the source's connectors, the scopes for its service client, and an opener
 // for each stage that a worker runs for it: its poll, its delete, its
-// refresh of metrics and its extractors. A set checks its connectors
+// refresh of metrics, its extractors and its reader of comments, which the
+// comments stage asks a model about. A set checks its connectors
 // against the same registration, through connectors.RegisterSource, and the
 // builtin extractors take its extractors, through extract.Register. A worker
 // opens one client per [source.<name>] table and asks the registration for
@@ -16,6 +17,7 @@ import (
 	"net/http"
 	"slices"
 
+	"github.com/datapointchris/ingestion/comments"
 	"github.com/datapointchris/ingestion/connectors"
 	"github.com/datapointchris/ingestion/deletion"
 	"github.com/datapointchris/ingestion/extract"
@@ -52,6 +54,10 @@ type Registration struct {
 	// an item that holds no bytes at the source, through the reader that its
 	// Open opens on the source's client.
 	Extractors []extract.Extractor
+	// Comments reads the top comments of the source's items of one media
+	// type, which the comments stage asks a model about. A source whose
+	// items carry no comments leaves it nil.
+	Comments *comments.Source
 }
 
 var registered = map[string]Registration{}
@@ -64,6 +70,9 @@ func Register(r Registration) {
 		Name: r.Name, Polls: r.Poller != nil, Deletes: r.Deleter != nil, RefreshesMetrics: r.Refresher != nil, Rules: r.Rules,
 	})
 	extract.Register(r.Extractors...)
+	if r.Comments != nil {
+		comments.Register(r.Comments.MediaType)
+	}
 	registered[r.Name] = r
 }
 

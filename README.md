@@ -70,6 +70,11 @@ effort = "medium"
 [model.prompt-proposal]
 model = "sonnet"
 effort = "medium"
+
+# What the read of a video's top comments asks its run for.
+[model.comments]
+model = "haiku"
+effort = "medium"
 ```
 
 With no adapter named, ingestion still lands, parses, scans and routes every item by its rules.
@@ -211,6 +216,7 @@ client_id = "slate-svc-ingestion"
   sightings' fields without `ingestion.items.read`. One that places items from it for a person
   needs `ingestion.review.place`. One that marks an item `low-quality` or `read` for a person
   needs `ingestion.marks.write`, and one that promotes a gate family `ingestion.trust.promote`.
+  One that asks for the read of a video's top comments needs `ingestion.comments.read`.
   Releasing a connector's first fill spends the model stages on every
   item it held, so it takes `ingestion.first-fills.release`, which no other scope grants.
 
@@ -817,12 +823,16 @@ the bound that `qualitygate`'s `openingRunes` sets. It puts them to the model th
   verdict of `pass`, `drop` or `unsure`, one sentence of `reason` on the verdict, and a side of
   `personal`, `fleet` or `unsure`, each with its confidence. An answer that breaks the schema
   fails the task rather than being patched.
+- **The gate answers a fit to the owner's current work where it reads one.** A worker whose
+  `[lens.fleet.context]` table opens quotes that context in the prompt, and the answer's `fit`
+  runs from 0 to 10. With no context read, `fit` is null. The review tab sorts by it.
 - **A drop needs a confidence at or above `qualitygate.DropFloor`.** A drop below it, or an
   `unsure`, sends the item to review. A confident drop waits in review as `gate-would-drop` until
   the item's family has earned hiding it, as the next section says. A drop is soft: a dropped item
   keeps its row, its one-line idea and its reason, and `items show` prints them.
 - **The prompt's version is its number and a digest of `prompt.tmpl` and `answer.schema.json`.**
-  A change to either writes the gate's outputs beside the old ones.
+  A change to either writes the gate's outputs beside the old ones. It also starts a new family
+  for every connector, which shows every drop in review again until it earns trust.
 - **Each call is dispatched once.** The worker stores the dispatch in the write that ends its
   lease. Until the run answers, the task goes back with a backoff that doubles up to a cap, so a
   waiting item holds no worker slot. The next claim reads the stored dispatch's run, even on a
@@ -1035,22 +1045,50 @@ the service's client id beside the login.
 ### `ingestion tui` reads each waiting item whole, and one key decides it
 
 `ingestion tui` opens a terminal board with a tab per view. Its `review` tab lists the review
-queue, grouped by why each item waits. Each row shows the item's source, such as `r/golang`, the
-quality gate's verdict and confidence, its quality estimate, its side guess and confidence, how
-long the item has waited, and its title. The side panel reads the item under the cursor: its URL,
-the gate's whole answer, the note's draft where a model drafted one, the scan's findings, and its
-text, the post first and then each comment.
-`enter` reads it full screen.
+queue, grouped by why each item waits. Each row shows the item's channel, such as a video's
+channel or `r/golang`, and why it waits. Then come the quality gate's verdict and confidence, its
+quality estimate, its fit, and its side guess and confidence. A video's row adds its length,
+views and likes per view. Each row ends on how long ago the item was made at its source, and its
+title. The side panel reads the item under the cursor. It opens on the card:
+
+- the channel, the length and the upload day
+- the views, likes and comments, and the likes per view
+- the gate's quality, fit, verdict, reason and side hint
+- `gate-would-drop` where the gate would drop it, and how the read of its comments stands
+
+Under the card come its URL, the gate's whole answer, the note's draft where a model drafted one,
+the scan's findings, and its text, the post first and then each comment. `enter` reads it full
+screen.
+
+`s` cycles the sort: newest made at its source, the gate's quality, likes per view, shortest
+first, and the gate's fit. An item with no value for the sort comes after every item with one.
+`v` cycles the grouping: why each item waits, its connector, its channel, the gate's verdict, or
+none. `/` filters the rows by any word of the title or the channel, and of the URL, the gate's
+idea and themes, or a sighting's fields.
 
 | Key | Does |
 | --- | --- |
 | `1`–`9` | places the item on the destination numbered with that digit under the strip, taking the note's draft where the item holds one |
-| `x` | drops it, after asking what decided it: a field of its source such as its subreddit, its title, its theme, or none |
+| `F` | fleet relate: places it on the first destination on the fleet side, so a model reads it against the owner's current work |
+| `d` | drops it, after asking what decided it: its channel or another field of its source such as its subreddit, its title, its theme, its low quality, or none |
+| `x` | marks it `low-quality`, which counts on its gate families and leaves it waiting |
+| `r` | marks it `read`, which counts on its gate families and leaves it waiting |
+| `c` | asks once what a video's top comments say, as the next section tells |
 | `n` | writes a note in `$VISUAL` or `$EDITOR`, which a model read answers, then places the item with it on the destination picked |
 | `o` | opens its URL in the browser, where it is an http or https address |
 
-Each key posts to the routes that `review place` and `review drop` post to, under the same login,
-so the decision is the person's. A decided item leaves the table at once, and the cursor moves on
+Each key posts to the routes that `review place`, `review drop` and `items mark` post to, under
+the same login, so the decision is the person's. A placement or a drop also keeps `presented`,
+the card as the tab drew it:
+
+- the sort and grouping in force
+- the item's rank under the sort, its position among the rows drawn, and how many were drawn
+- the gate's quality, fit, verdict and side guess, with their confidences
+- when the cursor came to rest on it
+
+`decided_after_ms` counts the milliseconds from then to the decision. Both sit on the side
+decision, and ship on the record channel, so a reader can measure how the card's order and
+numbers sway a decision. `review place` and `review drop` send neither. A decided item leaves the table at once, and the cursor moves on
 through its group. A decision that fails puts the item back with the server's answer on it, and a
 note that was not placed stays in its file, which the footer names. Quitting waits for every
 decision sent.
@@ -1060,6 +1098,29 @@ so an escape sequence in it cannot set the clipboard or clear the screen. Its ma
 typed. `--once` prints one frame at `COLUMNS` by `LINES`, and `--json` the snapshot it is drawn
 from, in `schemas/tui-review.schema.json`. Where the queue was not read, each still prints, then
 exits as `review list` would, 4 where the server gave no answer.
+
+### `c` reads what a video's top comments say, once, when a person asks
+
+`c` on a video's card posts to `POST /api/v1/items/{key}/comments`, under
+`ingestion.comments.read`, and the answer holds to `schemas/item-comments.schema.json`. The first
+request queues one task of capability `comments`. Each later request answers how that read
+stands, so nothing reads comments in a batch.
+
+- **A worker with a model port and a source that reads comments claims it.** ypl is that source.
+  The worker reads up to 100 of the video's top comments through ypl, clipping each one. It asks
+  the model through `prompts/comments/prompt.tmpl` on `[model.comments]`, which defaults to haiku
+  at medium.
+- **The answer holds to `prompts/comments/answer.schema.json`.** It gives a summary, up to four
+  points of praise and four of criticism, and a tone of `positive`, `mixed`, `negative` or `none`.
+- **The answer is outsider text.** A model wrote it over strangers' comments, so the store keeps
+  it as the output's `answer`, which ships only as `ingestion.text`. It keeps none of the
+  comments themselves.
+- **The card shows the answer under "What the comments say" once it lands.**
+- **The stage sits on no item's line.** It moves no phase, places nothing and delivers nothing.
+- **A video whose comments are off, or that holds none, fails its task with no model call.**
+  `tasks retry` asks again, and so does a failed run.
+- **The route refuses other items.** An item whose media type no source reads comments of gets
+  422 `comments_not_read`.
 
 ### `gates agreement` counts how often each gate's answer matched a person's placement
 

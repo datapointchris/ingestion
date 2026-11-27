@@ -314,6 +314,34 @@ func (c *Client) Videos(ctx context.Context, ids []string) ([]Video, error) {
 	return out, nil
 }
 
+// VideoComments is up to 100 of a video's top-level comments, those YouTube
+// ranks most relevant first, as ypl answers them. Comments is empty and
+// CommentsDisabled true for a video whose comments are off.
+type VideoComments struct {
+	VideoID          string    `json:"video_id"`
+	CommentsDisabled bool      `json:"comments_disabled"`
+	Comments         []Comment `json:"comments"`
+}
+
+// Comment is one top-level comment on a video, in plain text.
+type Comment struct {
+	ID              string  `json:"id"`
+	Author          string  `json:"author"`
+	AuthorChannelID *string `json:"author_channel_id"`
+	Text            string  `json:"text"`
+	LikeCount       int64   `json:"like_count"`
+	ReplyCount      int64   `json:"reply_count"`
+	PublishedAt     string  `json:"published_at"`
+}
+
+// Comments reads up to 100 of video's top-level comments from YouTube now, in
+// one read that costs ypl one unit of the day's quota.
+func (c *Client) Comments(ctx context.Context, video string) (VideoComments, error) {
+	var out VideoComments
+	err := c.do(ctx, http.MethodGet, "/api/v1/youtube/videos/"+url.PathEscape(video)+"/comments", nil, http.StatusOK, &out)
+	return out, err
+}
+
 // DeletePlaylistItem deletes item from playlist on YouTube. ypl answers an item
 // already gone as deleted.
 func (c *Client) DeletePlaylistItem(ctx context.Context, playlist, item string) error {

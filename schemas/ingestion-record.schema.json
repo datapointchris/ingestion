@@ -35,8 +35,28 @@
       "enum": ["outside", "owner"]
     },
     "sha256": {"description": "A SHA-256, in lowercase hex.", "type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "stage": {"description": "A stage that writes an output or holds a task. A poll's task fetches a connector's source before any item lands. quality-arm is the quality gate's prompt asked of the model that its task names, as a measurement, and sits on no item's line. note drafts a model read's note where the read carries no person's note. structure profiles a PDF's outline, page labels, creation date, title and fonts. contents is a model's reading of the printed contents pages of a PDF whose outline gave it no sections. delete removes a landed item from the source of a connector that declares after_landing delete, and sits on no item's line. prompt-proposal drafts a prompt proposal from the quality gate's misses, and sits on no item's line. refresh-metrics reads again, at a source, the metrics of each item in review that a connector of the source sighted, writes them onto those sightings, and sits on no item's line.", "enum": ["poll", "land", "parse", "structure", "contents", "scan", "quality", "quality-arm", "note", "model-read", "deliver", "delete", "prompt-proposal", "refresh-metrics"]},
+    "stage": {"description": "A stage that writes an output or holds a task. A poll's task fetches a connector's source before any item lands. quality-arm is the quality gate's prompt asked of the model that its task names, as a measurement, and sits on no item's line. note drafts a model read's note where the read carries no person's note. structure profiles a PDF's outline, page labels, creation date, title and fonts. contents is a model's reading of the printed contents pages of a PDF whose outline gave it no sections. delete removes a landed item from the source of a connector that declares after_landing delete, and sits on no item's line. prompt-proposal drafts a prompt proposal from the quality gate's misses, and sits on no item's line. comments reads what a video's top comments say about it, when a person asks on its review card, and sits on no item's line. refresh-metrics reads again, at a source, the metrics of each item in review that a connector of the source sighted, writes them onto those sightings, and sits on no item's line.", "enum": ["poll", "land", "parse", "structure", "contents", "scan", "quality", "quality-arm", "note", "model-read", "deliver", "delete", "prompt-proposal", "refresh-metrics", "comments"]},
     "timestamp": {"type": "string", "format": "date-time"},
+    "presented": {
+      "description": "A review card as the person saw it when they decided, so a stated preference reads beside how the card was shown: the sort and grouping in force, its rank under the sort and its position among the rows drawn from 1, how many rows were drawn, the quality gate's quality, fit, verdict and side guess with their confidences, null where the gate gave none, and when the card was drawn.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sort", "grouping", "rank", "position", "shown", "quality", "fit", "verdict", "verdict_confidence", "side", "side_confidence", "drawn_ts"],
+      "properties": {
+        "sort": {"enum": ["newest", "quality", "likes-per-view", "length", "fit"]},
+        "grouping": {"enum": ["reason", "connector", "channel", "verdict", "none"]},
+        "rank": {"type": "integer", "minimum": 1},
+        "position": {"type": "integer", "minimum": 1},
+        "shown": {"type": "integer", "minimum": 1},
+        "quality": {"type": ["integer", "null"], "minimum": 1, "maximum": 10},
+        "fit": {"type": ["integer", "null"], "minimum": 0, "maximum": 10},
+        "verdict": {"enum": ["pass", "drop", "unsure", null]},
+        "verdict_confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "side": {"enum": ["personal", "fleet", "unsure", null]},
+        "side_confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "drawn_ts": {"type": "string", "format": "date-time"}
+      }
+    },
     "severity": {"description": "A scan finding's severity, from least to most severe.", "enum": ["info", "low", "medium", "high", "critical"]},
     "finding": {
       "description": "One scan finding without its span: its rule, its severity and where its match sits.",
@@ -161,6 +181,7 @@
         },
         "rules_version": {"description": "The scanner rules' version that made the findings: a scan's over its parse, and a model read's over its suggestion sentence.", "type": ["string", "null"]},
         "quality": {"description": "The quality gate's score.", "type": ["integer", "null"], "minimum": 0, "maximum": 10},
+        "fit": {"description": "The quality gate's 0 to 10 of how well the item bears on the owner's current work, and null where the gate read no context of that work.", "type": ["integer", "null"], "minimum": 0, "maximum": 10},
         "side_guess": {"description": "The quality gate's guess at the side.", "enum": ["personal", "fleet", "unsure", null]},
         "side_confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
         "created_ts": {"$ref": "#/$defs/timestamp"},
@@ -251,6 +272,8 @@
         "note": {"description": "The questions and why the item was saved, as a person wrote them, on their placement and on the model read it chose.", "type": ["string", "null"]},
         "lens": {"description": "How a model read takes the item, on a read decision whose verdict is model: the side's lens.", "type": ["string", "null"]},
         "client_id": {"description": "The client that sent a person's decision, such as a service sending it under the person's login.", "type": ["string", "null"]},
+        "presented": {"anyOf": [{"$ref": "#/$defs/presented"}, {"type": "null"}]},
+        "decided_after_ms": {"description": "How long after its review card was drawn the person decided, in milliseconds, and null where no card preceded the decision.", "type": ["integer", "null"], "minimum": 0},
         "decided_ts": {"$ref": "#/$defs/timestamp"}
       }
     },

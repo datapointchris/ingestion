@@ -95,7 +95,7 @@ func (p *pipeline) lensReaders(t *testing.T, api string, log *slog.Logger) lens.
 // with contexts as its lenses' context readers.
 func (p *pipeline) noteDrafter(t *testing.T, models modelConfig, contexts lens.Readers) worker.Handler {
 	t.Helper()
-	handlers := workerHandlers(p.worker, nil, nil, openModelPort(t.Context(), models, p.provider.URL, quiet), nil, contexts, models, quiet)
+	handlers := workerHandlers(p.worker, nil, openedSources{}, openModelPort(t.Context(), models, p.provider.URL, quiet), nil, contexts, models, quiet)
 	i := slices.IndexFunc(handlers, func(h worker.Handler) bool { return h.Capability() == note.Capability })
 	if i < 0 {
 		t.Fatal("the worker holds no note handler")

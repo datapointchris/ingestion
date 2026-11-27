@@ -22,7 +22,7 @@ const (
 // countsKeptOverZero are the counts that ypl answers as 0 where YouTube hides
 // them, as an owner can hide likes. A refresh leaves out each one that reads
 // 0, so a count that YouTube hides keeps the one measured before.
-var countsKeptOverZero = []string{"views", "likes", "comments"}
+var countsKeptOverZero = []string{MetricViews, MetricLikes, MetricComments}
 
 // Refresher reads again the metrics of the videos that a refresh names,
 // through ypl's details read, MaxVideos to a request.

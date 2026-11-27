@@ -7,7 +7,7 @@
   "additionalProperties": false,
   "required": ["schema_version", "items"],
   "properties": {
-    "schema_version": {"const": 2},
+    "schema_version": {"const": 3},
     "items": {
       "type": "array",
       "items": {
@@ -40,6 +40,20 @@
           "note_draft": {
             "description": "The note stage's newest done draft, in the shape prompts/note/answer.schema.json holds: the questions for a model read to answer, why the item was likely saved, how it bears on the owner's current work, a summary, a one-line idea and a confidence. Null where none was drafted. A model wrote it from the item, so it takes the item's zone. Placing the item with no note takes the draft.",
             "type": ["object", "null"]
+          },
+          "media_type": {"type": "string"},
+          "source_ts": {"description": "When the item's artifact was made at its source, such as a video's upload, and null where the source gave none.", "type": ["string", "null"], "format": "date-time"},
+          "comments": {
+            "description": "The read of what the item's top comments say, which a person asks for on its review card with POST /api/v1/items/{key}/comments. reading while its task or its run has not ended, done with the answer in the shape prompts/comments/answer.schema.json holds, and failed where its task failed, which `ingestion tasks retry` asks again. Null where nobody asked. A model wrote the answer over strangers' comments, so it is outsider text.",
+            "type": ["object", "null"],
+            "additionalProperties": false,
+            "required": ["state", "answer", "task_id", "error"],
+            "properties": {
+              "state": {"enum": ["reading", "done", "failed"]},
+              "answer": {"type": ["object", "null"]},
+              "task_id": {"type": ["string", "null"]},
+              "error": {"description": "Why the read failed, and null unless it did.", "type": ["string", "null"]}
+            }
           },
           "connectors": {"type": "array", "items": {"type": "string"}},
           "sightings": {

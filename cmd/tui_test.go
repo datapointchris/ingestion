@@ -160,20 +160,36 @@ func TestTheReviewTabShowsTheGatesAnswerAndDecidesByKey(t *testing.T) {
 		t.Fatalf("the cursor starts on %q, want the first waiting save", m.Cursor())
 	}
 	runKey(t, m, letter('x'))
+	if n := p.count(t, `SELECT count(*) FROM marks WHERE item_key = ? AND mark = 'low-quality'`, "reddit/t3_bb2"); n != 1 || m.Cursor() != "reddit/t3_bb2" {
+		t.Errorf("after x the hostile save holds %d low-quality marks and the cursor is on %q, want one mark and the save still waiting", n, m.Cursor())
+	}
+	runKey(t, m, letter('d'))
 	runKey(t, m, letter('s'))
-	if _, side, _ := p.decisions(t, "reddit/t3_bb2"); side.Destination != nil || side.DecidedBy != "person:person" || side.Cause != "subreddit" ||
+	_, side, _ := p.decisions(t, "reddit/t3_bb2")
+	if side.Destination != nil || side.DecidedBy != "person:person" || side.Cause != "subreddit" ||
 		side.ClientID == nil || *side.ClientID != "ingestion-cli-test" {
-		t.Errorf("after x then s the hostile save holds %+v, want the person's drop for its subreddit", side)
+		t.Errorf("after d then s the hostile save holds %+v, want the person's drop for its subreddit", side)
+	}
+	if pr := side.Presented; pr == nil || pr.Sort != "newest" || pr.Grouping != "reason" || pr.Rank < 1 || pr.Position != 1 || pr.Shown != 2 ||
+		pr.Quality == nil || *pr.Quality != 7 || pr.Verdict == nil || *pr.Verdict != qualitygate.AnswerDrop || pr.Side == nil || *pr.Side != connectors.SidePersonal ||
+		side.DecidedAfterMS == nil || *side.DecidedAfterMS < 0 {
+		t.Errorf("the drop keeps presented %s after %v ms, want the first of two cards under newest and reason with the gate's drop and side guess",
+			jsonOf(side.Presented), side.DecidedAfterMS)
 	}
 
 	if m.Cursor() != "reddit/t3_cc3" {
 		t.Fatalf("after the drop the cursor is on %q, want the next waiting save", m.Cursor())
 	}
+	runKey(t, m, letter('r'))
+	if n := p.count(t, `SELECT count(*) FROM marks WHERE item_key = ? AND mark = 'read'`, "reddit/t3_cc3"); n != 1 {
+		t.Errorf("after r the save holds %d read marks, want one", n)
+	}
 	runKey(t, m, letter('n'))
 	runKey(t, m, letter('2'))
 	if _, side, read := p.decisions(t, "reddit/t3_cc3"); side.Verdict != connectors.SideFleet || side.Destination == nil || *side.Destination != "work-inbox" ||
-		side.Note == nil || *side.Note != "why save this?" || read.Verdict != connectors.ReadModel {
-		t.Errorf("after n, a note and 2 the save holds %+v and read %+v, want the person's placement on work-inbox with the note, read by a model", side, read)
+		side.Note == nil || *side.Note != "why save this?" || read.Verdict != connectors.ReadModel ||
+		side.Presented == nil || side.Presented.Position != 1 || side.Presented.Shown != 1 || side.DecidedAfterMS == nil || read.Presented != nil {
+		t.Errorf("after n, a note and 2 the save holds %+v and read %+v, want the person's placement on work-inbox with the note and its card, read by a model", side, read)
 	}
 	if left := board.Snapshot(time.Now()).Items; len(left) != 0 {
 		t.Errorf("after both decisions the tab still lists %s", jsonOf(left))

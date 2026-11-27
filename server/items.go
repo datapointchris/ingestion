@@ -278,16 +278,18 @@ type FindingView struct {
 
 // DecisionView is one gate's decision.
 type DecisionView struct {
-	Gate        string   `json:"gate"`
-	Verdict     string   `json:"verdict"`
-	DecidedBy   string   `json:"decided_by"`
-	Confidence  *float64 `json:"confidence"`
-	Cause       string   `json:"cause"`
-	Destination *string  `json:"destination"`
-	Note        *string  `json:"note"`
-	Lens        *string  `json:"lens"`
-	ClientID    *string  `json:"client_id"`
-	DecidedTS   string   `json:"decided_ts"`
+	Gate           string           `json:"gate"`
+	Verdict        string           `json:"verdict"`
+	DecidedBy      string           `json:"decided_by"`
+	Confidence     *float64         `json:"confidence"`
+	Cause          string           `json:"cause"`
+	Destination    *string          `json:"destination"`
+	Note           *string          `json:"note"`
+	Lens           *string          `json:"lens"`
+	ClientID       *string          `json:"client_id"`
+	Presented      *store.Presented `json:"presented"`
+	DecidedAfterMS *int64           `json:"decided_after_ms"`
+	DecidedTS      string           `json:"decided_ts"`
 }
 
 // DeliveryView is one delivery to one destination.
@@ -674,7 +676,8 @@ type SectionView struct {
 func decisionView(d store.Decision) DecisionView {
 	return DecisionView{
 		Gate: d.Gate, Verdict: d.Verdict, DecidedBy: d.DecidedBy, Confidence: d.Confidence, Cause: d.Cause,
-		Destination: d.Destination, Note: d.Note, Lens: d.Lens, ClientID: d.ClientID, DecidedTS: d.DecidedTS,
+		Destination: d.Destination, Note: d.Note, Lens: d.Lens, ClientID: d.ClientID,
+		Presented: d.Presented, DecidedAfterMS: d.DecidedAfterMS, DecidedTS: d.DecidedTS,
 	}
 }
 

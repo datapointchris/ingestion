@@ -134,6 +134,9 @@ func TestTheClientHoldsWhatYPLsSuiteWrites(t *testing.T) {
 	} else {
 		_ = audio.Body.Close()
 	}
+	if _, err := c.Comments(ctx, "testvid0001"); err != nil {
+		t.Error(err)
+	}
 	if got, want := slices.Sorted(maps.Keys(reached)), slices.Sorted(slices.Values(Scopes)); !slices.Equal(got, want) {
 		t.Errorf("the client's routes need the scopes %v, and Scopes is %v", got, want)
 	}

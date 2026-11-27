@@ -83,11 +83,14 @@ const (
 	CauseSideDefault = "side-default"
 	// CauseUnstated is a person's placement that names no cause.
 	CauseUnstated = "unstated"
-	// CauseTitle and CauseTheme are a person's causes naming the item's title
-	// or its theme. A person may also name a field of a sighting, such as
-	// subreddit.
-	CauseTitle = "title"
-	CauseTheme = "theme"
+	// CauseTitle, CauseTheme, CauseChannel and CauseLowQuality are a person's
+	// causes naming the item's title, its theme, the channel that published
+	// it, or that it held nothing worth keeping. A person may also name a
+	// field of a sighting, such as subreddit.
+	CauseTitle      = "title"
+	CauseTheme      = "theme"
+	CauseChannel    = "channel"
+	CauseLowQuality = "low-quality"
 	// CausePush is a person's push that named its destination, at the side
 	// gate and at the read gate.
 	CausePush = "push"
@@ -936,6 +939,11 @@ type Placement struct {
 	Pushed   bool
 	Login    string
 	ClientID string
+	// Presented is the review card as drawn when the person decided, and
+	// DecidedAfterMS how long after the drawing they decided. The side
+	// decision keeps both, and the read decision after it neither.
+	Presented      *store.Presented
+	DecidedAfterMS *int64
 }
 
 // NotDeclaredError is a placement naming a destination that the set in force
@@ -1010,7 +1018,10 @@ func Place(ctx context.Context, tx *store.Tx, key string, p Placement) ([]store.
 	case p.Cause == "":
 		p.Cause = CauseUnstated
 	}
-	side := store.Decision{Gate: store.GateSide, Verdict: VerdictDrop, DecidedBy: ByPerson(p.Login), Cause: p.Cause, Note: p.Note}
+	side := store.Decision{
+		Gate: store.GateSide, Verdict: VerdictDrop, DecidedBy: ByPerson(p.Login), Cause: p.Cause, Note: p.Note,
+		Presented: p.Presented, DecidedAfterMS: p.DecidedAfterMS,
+	}
 	if p.ClientID != "" {
 		side.ClientID = &p.ClientID
 	}

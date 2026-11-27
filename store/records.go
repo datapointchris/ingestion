@@ -72,6 +72,11 @@ const StageRefreshMetrics = "refresh-metrics"
 // phase, decision or delivery.
 const StageQualityArm = "quality-arm"
 
+// StageComments is a model's reading of what a video's top comments say about
+// it, which a person asks for on one review card. It sits on no item's line,
+// so its tasks and outputs move no item's phase, decision or delivery.
+const StageComments = "comments"
+
 // Gates, each deciding by an appended decision.
 const (
 	GateQuality = "quality"
@@ -278,8 +283,11 @@ type Output struct {
 	BlobSHA256    *string   `json:"blob_sha256"`
 	Findings      []Finding `json:"findings"`
 	// RulesVersion is the scanner rules' version that made Findings.
-	RulesVersion   *string  `json:"rules_version"`
-	Quality        *int     `json:"quality"`
+	RulesVersion *string `json:"rules_version"`
+	Quality      *int    `json:"quality"`
+	// Fit is the quality gate's 0 to 10 of how the item bears on the
+	// owner's current work, and nil where the gate read no context.
+	Fit            *int     `json:"fit"`
 	SideGuess      *string  `json:"side_guess"`
 	SideConfidence *float64 `json:"side_confidence"`
 	Spans          []Span   `json:"spans"`
@@ -339,9 +347,34 @@ type Decision struct {
 	Destination *string  `json:"destination"`
 	Note        *string  `json:"note"`
 	// Lens is set on a read decision whose verdict is model.
-	Lens      *string `json:"lens"`
-	ClientID  *string `json:"client_id"`
-	DecidedTS string  `json:"decided_ts"`
+	Lens     *string `json:"lens"`
+	ClientID *string `json:"client_id"`
+	// Presented is the card as the person saw it when they decided, and
+	// DecidedAfterMS how long after it was drawn they decided. Both are nil
+	// on a decision that no card preceded, such as a rule's or a command's.
+	Presented      *Presented `json:"presented"`
+	DecidedAfterMS *int64     `json:"decided_after_ms"`
+	DecidedTS      string     `json:"decided_ts"`
+}
+
+// Presented is a review card as a person saw it when they decided: the sort
+// and grouping in force, the card's rank under that sort and its position
+// among the rows drawn, how many rows were drawn, the quality gate's quality,
+// fit, verdict and side guess with their confidences, and when the card was
+// drawn. Each holds no outsider text, so it ships as a record.
+type Presented struct {
+	Sort              string   `json:"sort"`
+	Grouping          string   `json:"grouping"`
+	Rank              int      `json:"rank"`
+	Position          int      `json:"position"`
+	Shown             int      `json:"shown"`
+	Quality           *int     `json:"quality"`
+	Fit               *int     `json:"fit"`
+	Verdict           *string  `json:"verdict"`
+	VerdictConfidence *float64 `json:"verdict_confidence"`
+	Side              *string  `json:"side"`
+	SideConfidence    *float64 `json:"side_confidence"`
+	DrawnTS           string   `json:"drawn_ts"`
 }
 
 // Each verdict beside a side: the quality gate's pass, and either gate's drop

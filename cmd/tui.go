@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -57,14 +58,23 @@ func tuiTabList() []tuiTab {
 		{
 			tabReview,
 			"review lists the items that wait on a person's placement, grouped by why each waits,\n" +
-				"with the gate's verdict and confidence, its quality estimate, its side guess and how\n" +
-				"long the item has waited. The side panel reads the item under the cursor: its URL,\n" +
-				"the quality gate's whole answer, the scan's findings, and its text, the post first\n" +
-				"and then each comment. enter reads it full screen. A digit places the item on the\n" +
-				"destination numbered with it under the strip. x drops it after asking what decided\n" +
-				"it. n writes a note in $VISUAL or $EDITOR, then places the item with the note on the\n" +
-				"destination you pick. o opens its URL. Each key calls the routes that `ingestion\n" +
-				"review place` and `drop` call, under the same login, so the decision is yours.",
+				"with the channel, the gate's verdict and confidence, its quality estimate, its fit to\n" +
+				"your current work, its side guess, the source's length, views and likes per view, and\n" +
+				"how long ago the item was made at its source. v groups by why it waits, connector,\n" +
+				"channel, the gate's verdict or none, and s sorts newest, by quality, by likes per view,\n" +
+				"shortest first or by fit. / filters on the title and the channel. The side panel reads\n" +
+				"the item under the cursor: its card, the quality gate's whole answer with its reason,\n" +
+				"the scan's findings, and its text. enter reads it full screen.\n" +
+				"\n" +
+				"A digit places the item on the destination numbered with it under the strip, and F\n" +
+				"on the first destination on the fleet side. d drops it after asking what decided it.\n" +
+				"n writes a note in $VISUAL or $EDITOR, then places the item with the note on the\n" +
+				"destination you pick. Each decision keeps the card as it was drawn and how long you\n" +
+				"took. x marks the item low quality and r marks it read, which teaches the gate and\n" +
+				"leaves the item waiting. c reads what a video's top comments say, with one model call\n" +
+				"that the card shows once it lands. o opens its URL. Each key calls the routes that\n" +
+				"`ingestion review place`, `review drop` and `items mark` call, under the same login,\n" +
+				"so the decision is yours.",
 			func(ctx context.Context, o tuiOptions) tuiBoard {
 				return reviewTab{review.NewBoard(ctx, reviewService(o), review.Outside{Open: openInBrowser})}
 			},
@@ -234,6 +244,26 @@ func (s reviewService) Drop(ctx context.Context, key string, body server.DropReq
 		return "", refusalWords(err)
 	}
 	return placedSentence(answer), nil
+}
+
+func (s reviewService) Mark(ctx context.Context, key, mark string) (string, error) {
+	encoded, err := json.Marshal(server.MarkRequest{Mark: mark})
+	if err != nil {
+		return "", err
+	}
+	var answer server.MarkAnswer
+	if _, err := sendJSON(ctx, s.config, s.api, server.RouteItemMarks, "/api/v1/items/"+url.PathEscape(key)+"/marks", encoded, &answer); err != nil {
+		return "", refusalWords(err)
+	}
+	return markedSentence(answer), nil
+}
+
+func (s reviewService) Comments(ctx context.Context, key string) (server.ReviewComments, error) {
+	var answer server.ItemCommentsAnswer
+	if _, err := sendJSON(ctx, s.config, s.api, server.RouteItemComments, "/api/v1/items/"+url.PathEscape(key)+"/comments", []byte("{}"), &answer); err != nil {
+		return server.ReviewComments{}, refusalWords(err)
+	}
+	return answer.Comments, nil
 }
 
 // refusalWords is err with a refusal cut to the message the server gave, which the strip and the

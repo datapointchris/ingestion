@@ -289,9 +289,9 @@ func arrival(v Video, externalKey string, fields map[string]string) server.Repor
 // metrics are v's counts as a sighting keeps them, and its length where it
 // has one.
 func (v Video) metrics() map[string]int64 {
-	out := map[string]int64{"views": count(v.ViewCount), "likes": count(v.LikeCount), "comments": count(v.CommentCount)}
+	out := map[string]int64{MetricViews: count(v.ViewCount), MetricLikes: count(v.LikeCount), MetricComments: count(v.CommentCount)}
 	if v.DurationSeconds != nil {
-		out["duration_s"] = *v.DurationSeconds
+		out[MetricDuration] = *v.DurationSeconds
 	}
 	return out
 }
