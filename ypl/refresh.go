@@ -2,11 +2,6 @@ package ypl
 
 import (
 	"context"
-	"errors"
-	"net/http"
-	"net/url"
-
-	"golang.org/x/oauth2"
 
 	"github.com/datapointchris/ingestion/metricsrefresh"
 )
@@ -19,18 +14,26 @@ const (
 	// countUnreported is a video that ypl left out of its answer, such as a
 	// deleted or private one, which keeps the metrics it has.
 	countUnreported = "unreported"
+	// countUnread is a video in a request that failed, which a retry of the
+	// refresh reads.
+	countUnread = "unread"
 )
 
+// countsKeptOverZero are the counts that ypl answers as 0 where YouTube hides
+// them, as an owner can hide likes. A refresh leaves out each one that reads
+// 0, so a count that YouTube hides keeps the one measured before.
+var countsKeptOverZero = []string{"views", "likes", "comments"}
+
 // Refresher reads again the metrics of the videos that a refresh names,
-// through ypl's details read, MaxVideos to a request. ypl charges one quota
-// unit for each page of 50 ids.
+// through ypl's details read, MaxVideos to a request.
 type Refresher struct{ client *Client }
 
 // NewRefresher is the refresher that reads ypl through client.
 func NewRefresher(client *Client) Refresher { return Refresher{client: client} }
 
 // Refresh reads the details of each video in keys, and answers each one's
-// views, likes, comments and length by its key.
+// views, likes, comments and length by its key. Where a request fails, the
+// answer keeps every video that the requests before it read.
 func (r Refresher) Refresh(ctx context.Context, keys []string) metricsrefresh.Outcome {
 	out := metricsrefresh.Outcome{Metrics: map[string]map[string]int64{}, Counts: map[string]int{}}
 	keyOf := map[string]string{}
@@ -50,45 +53,30 @@ func (r Refresher) Refresh(ctx context.Context, keys []string) metricsrefresh.Ou
 		return out
 	}
 	videos, err := r.client.Videos(ctx, ids)
-	if err != nil {
-		return refreshFailed(err)
-	}
 	for _, v := range videos {
 		if key, ok := keyOf[v.ID]; ok {
-			out.Metrics[key] = v.metrics()
+			out.Metrics[key] = refreshed(v)
 		}
+	}
+	if err != nil {
+		reason := err.Error()
+		f := classify(err)
+		out.Error, out.Wait, out.NoAnswer, out.Final = &reason, f.Wait, f.Wait > 0 && !f.Asked, f.Final
+		out.Counts[countUnread] = len(ids) - len(out.Metrics)
+		return out
 	}
 	out.Counts[countUnreported] = len(ids) - len(out.Metrics)
 	return out
 }
 
-// refreshFailed is a refresh that err stopped. Where ypl sent a Retry-After,
-// as while its day's quota is spent, or was busy, paused or limiting the
-// caller, the refresh waits. It waits too where ypl gave no answer, as while
-// it restarts or a gateway before it fails. A refusal of the request itself,
-// any 4xx but 408 and 429, is final. Any other failure, such as ypl failing to
-// read YouTube or the identity provider refusing the token, reads again
-// boundedly.
-func refreshFailed(err error) metricsrefresh.Outcome {
-	reason := err.Error()
-	out := metricsrefresh.Outcome{Error: &reason}
-	var refusal *Error
-	var token *oauth2.RetrieveError
-	var unanswered *url.Error
-	switch {
-	case errors.As(err, &token):
-	case errors.As(err, &refusal) && refusal.RetryAfter > 0:
-		out.Wait = refusal.RetryAfter
-	case errors.As(err, &refusal) && (waitCodes[refusal.Code] || refusal.Status == http.StatusTooManyRequests):
-		out.Wait = busyRetry
-	case errors.As(err, &refusal) && refusal.Code == "" &&
-		(refusal.Status == http.StatusRequestTimeout || refusal.Status >= http.StatusInternalServerError):
-		out.Wait = unansweredRetry
-	case errors.As(err, &refusal):
-		out.Final = refusal.Status >= http.StatusBadRequest && refusal.Status < http.StatusInternalServerError &&
-			refusal.Status != http.StatusRequestTimeout
-	case errors.As(err, &unanswered):
-		out.Wait = unansweredRetry
+// refreshed is v's metrics as a refresh keeps them, with no count in
+// countsKeptOverZero that reads 0.
+func refreshed(v Video) map[string]int64 {
+	metrics := v.metrics()
+	for _, name := range countsKeptOverZero {
+		if metrics[name] == 0 {
+			delete(metrics, name)
+		}
 	}
-	return out
+	return metrics
 }

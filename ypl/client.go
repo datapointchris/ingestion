@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -14,6 +15,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/datapointchris/goapiauth"
+	"golang.org/x/oauth2"
 
 	"github.com/datapointchris/ingestion/extract"
 )
@@ -142,6 +146,76 @@ func (e *Error) Error() string {
 		msg += ": " + e.Message
 	}
 	return msg
+}
+
+// How long a call waits before asking again: where ypl was busy and sent no
+// Retry-After, and where ypl gave no answer.
+const (
+	busyRetry       = time.Minute
+	unansweredRetry = 5 * time.Minute
+)
+
+// waitCodes are ypl's refusals that say to ask again after its Retry-After,
+// because nothing about the request failed. ypl's suite writes the codes that
+// its wire package spells to refusal-codes.json, and ypl takes the identity
+// provider's code from goapiauth. wire_test.go holds these to both.
+var waitCodes = map[string]bool{
+	"youtube_reads_busy": true, "youtube_reads_paused": true, "shutting_down": true,
+	"youtube_rate_limited": true, "youtube_data_api_busy": true, goapiauth.CodeIdentityProviderUnavailable: true,
+}
+
+// finalCodes are ypl's refusals that no wait clears, though ypl sends them as
+// a 5xx: a ypl with no yt-dlp refuses every read that needs one.
+var finalCodes = map[string]bool{"youtube_reads_unavailable": true}
+
+// failure is how a call through ypl failed, which each stage maps to its own
+// outcome. Wait is how long to wait before asking again, spending no
+// attempt. Asked says that ypl asked for the wait. Where Asked is false, the
+// wait is for an answer that never came. Final says that no wait clears the
+// refusal. A failure with neither asks again a bounded number of times.
+type failure struct {
+	Wait  time.Duration
+	Asked bool
+	Final bool
+}
+
+// classify reads err from a call through ypl:
+//
+//   - A refusal that carries a Retry-After waits that long, as while the
+//     day's quota is spent.
+//   - A refusal whose code says ypl is busy, paused, stopping or limiting the
+//     caller, or a 429, waits busyRetry.
+//   - A 408 or a 5xx with no code came from a gateway in front of ypl, so it
+//     waits unansweredRetry, as no answer does.
+//   - Any other 4xx refused the request itself, so it is final, as is a
+//     refusal in finalCodes.
+//   - No answer at all, as while ypl restarts, waits unansweredRetry.
+//   - Anything else asks again boundedly. That covers ypl failing to read
+//     YouTube, the identity provider refusing the token, and a request that
+//     cannot be sent, such as one to an address with no scheme.
+func classify(err error) failure {
+	var refusal *Error
+	var token *oauth2.RetrieveError
+	var request *url.Error
+	var network net.Error
+	switch {
+	case errors.As(err, &token):
+	case errors.As(err, &refusal):
+		switch {
+		case refusal.RetryAfter > 0:
+			return failure{Wait: refusal.RetryAfter, Asked: true}
+		case waitCodes[refusal.Code] || refusal.Status == http.StatusTooManyRequests:
+			return failure{Wait: busyRetry, Asked: true}
+		case refusal.Code == "" && (refusal.Status == http.StatusRequestTimeout || refusal.Status >= http.StatusInternalServerError):
+			return failure{Wait: unansweredRetry}
+		case finalCodes[refusal.Code] || refusal.Status >= http.StatusBadRequest && refusal.Status < http.StatusInternalServerError &&
+			refusal.Status != http.StatusRequestTimeout:
+			return failure{Final: true}
+		}
+	case errors.As(err, &request) && errors.As(request.Err, &network):
+		return failure{Wait: unansweredRetry}
+	}
+	return failure{}
 }
 
 // maxAnswer bounds the answer a read decodes: a playlist of 5,000 items, 500

@@ -28,7 +28,7 @@ func (s Set) SourceConnectors(source string) []string {
 // connector of source in s sighted. These are the items whose metrics a
 // refresh of source reads again.
 func InReview(ctx context.Context, tx *store.Tx, s Set, source string) ([]string, error) {
-	return tx.ReviewKeysSightedBy(ctx, s.SourceConnectors(source))
+	return tx.ReviewKeysSightedBy(ctx, s.SourceConnectors(source), "")
 }
 
 // MetricsRefreshed counts what a refresh's report wrote: the items it read
@@ -42,9 +42,10 @@ type MetricsRefreshed struct {
 
 // RefreshMetrics writes, in tx, each item's metrics in read onto every
 // sighting of it by a connector of source in the set in force, as a refresh
-// of source read them again. It changes the metrics alone, so it lands
-// nothing, and queues no delete and no gate. It refuses a metric whose name
-// is not a metric's with store.ErrInvalidMetric.
+// of source read them again, and stamps each such sighting as read. It
+// changes the metrics and that stamp alone, so it lands nothing, and queues
+// no delete and no gate. It refuses a metric whose name is not a metric's
+// with store.ErrInvalidMetric.
 func RefreshMetrics(ctx context.Context, tx *store.Tx, source string, read map[string]map[string]int64) (MetricsRefreshed, error) {
 	out := MetricsRefreshed{Items: len(read)}
 	if len(read) == 0 {

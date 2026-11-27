@@ -474,11 +474,15 @@ func record(ctx context.Context, tx *store.Tx, a Arrival, key string, w *Written
 		maps.Copy(next.Fields, a.Fields)
 	}
 	if len(a.Metrics) > 0 {
-		next.Metrics = maps.Clone(next.Metrics)
-		if next.Metrics == nil {
-			next.Metrics = map[string]int64{}
+		metrics := maps.Clone(next.Metrics)
+		if metrics == nil {
+			metrics = map[string]int64{}
 		}
-		maps.Copy(next.Metrics, a.Metrics)
+		maps.Copy(metrics, a.Metrics)
+		if !had || !maps.Equal(metrics, next.Metrics) {
+			read := store.Stamp(tx.Now())
+			next.Metrics, next.MetricsReadTS = metrics, &read
+		}
 	}
 	if a.ExternalKey != "" {
 		next.ExternalKey = a.ExternalKey

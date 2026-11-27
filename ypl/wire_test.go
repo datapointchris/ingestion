@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/datapointchris/goapiauth"
 )
 
 // wireDocument decodes testdata/wire/<name>.json into into, refusing a field
@@ -138,5 +140,14 @@ func TestTheClientHoldsWhatYPLsSuiteWrites(t *testing.T) {
 	wireDocument(t, "youtube_id_pattern", &pattern)
 	if channelName.String() != pattern {
 		t.Errorf("channelName is %s, and ypl takes a channel of the shape %s", channelName, pattern)
+	}
+	var codes []string
+	wireDocument(t, "refusal-codes", &codes)
+	codes = append(codes, goapiauth.CodeIdentityProviderUnavailable)
+	branched := append(slices.Sorted(maps.Keys(waitCodes)), slices.Sorted(maps.Keys(finalCodes))...)
+	for _, code := range append(branched, "video_not_started") {
+		if !slices.Contains(codes, code) {
+			t.Errorf("the client branches on refusal code %s, which ypl never sends", code)
+		}
 	}
 }

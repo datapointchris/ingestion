@@ -300,10 +300,11 @@ type Claim struct {
 	SlotGroups map[string]SlotGroup
 	Lease      time.Duration
 	// Admit, where it is not nil, runs before the claim leases each task. It
-	// answers why the set in force wants the task's work done by nobody, such
-	// as a poll of a connector that the set lacks, and "" otherwise. When it
-	// answers a reason, the claim ends the task done with that reason as its
-	// error, and leases it to nobody.
+	// answers why nobody should run the task now, and "" otherwise. Such a
+	// task may be a poll of a connector that the set in force lacks, or a
+	// refresh with no item left to read. When it answers a reason, the claim
+	// ends the task done with that reason as its error, and leases it to
+	// nobody.
 	Admit func(ctx context.Context, tx *Tx, task Task) (string, error)
 	// Lapsed, where it is not nil, runs in the claim's write whenever the
 	// claim fails a task because its leases lapsed. It gets the reason that

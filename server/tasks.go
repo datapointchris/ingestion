@@ -34,7 +34,7 @@ var (
 	errDeliveryOutsideDeliver  = errors.New("only a deliver task reports a delivery")
 	errBadDelivery             = errors.New("the delivery is not one the store records")
 	errArrivalsOutsideDonePoll = errors.New("only a poll that ends done reports arrivals or a cursor")
-	errMetricsOutsideRefresh   = errors.New("only a refresh of a source's metrics that ends done reports metrics")
+	errMetricsOutsideRefresh   = errors.New("only a refresh of a source's metrics reports metrics")
 )
 
 // MaxListed is the most tasks one list answers.
@@ -204,7 +204,8 @@ const (
 // item, and Delivery is how a deliver task's write ended. Arrivals are what a
 // poll that ends done found at its source, in source order, and Cursor the
 // connector's next position, where the poll moves it. Metrics are what a
-// refresh of a source's metrics that ends done read again. Each is written in
+// refresh of a source's metrics read again, however it ended, so a refresh
+// stopped partway keeps what it read. Each is written in
 // the same transaction that ends the lease. A poll that ends done has
 // reported every item its source holds past its cursor, so a connector
 // scheduled once never polls after it.
@@ -225,8 +226,8 @@ type ReportRequest struct {
 
 // ReportMetrics is one item's metrics as a refresh read them again at its
 // source, by name, such as a video's views. serve writes them onto each
-// sighting of the item by a connector of the task's source, and changes
-// nothing else of the sighting.
+// sighting of the item by a connector of the task's source, and stamps when
+// they were read. It changes nothing else of the sighting.
 type ReportMetrics struct {
 	Key     string           `json:"key"`
 	Metrics map[string]int64 `json:"metrics"`
@@ -448,31 +449,17 @@ func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var applied *connectors.Set
-	refreshKeys := map[string][]string{}
+	var admission connectors.Admission
+	keysOf := map[string][]string{}
 	tasks, err := h.store.Claim(r.Context(), store.Claim{
 		Worker: store.Worker{ID: body.WorkerID, Capabilities: body.Capabilities, Version: body.Version, StartedTS: body.StartedTS},
 		Max:    body.Max, MaxByCapability: body.MaxByCapability, SlotGroups: groups, Lease: lease,
 		Admit: func(ctx context.Context, tx *store.Tx, task store.Task) (string, error) {
-			if task.Stage != store.StagePoll && task.Stage != store.StageDelete && task.Stage != store.StageRefreshMetrics {
-				return "", nil
+			why, keys, err := admission.Admit(ctx, tx, task)
+			if len(keys) > 0 {
+				keysOf[task.ID] = keys
 			}
-			if applied == nil {
-				set, err := connectors.AppliedSet(ctx, tx)
-				if err != nil {
-					return "", err
-				}
-				applied = &set
-			}
-			if why := connectors.Unwanted(*applied, task); why != "" || task.Stage != store.StageRefreshMetrics || task.Source == nil {
-				return why, nil
-			}
-			keys, err := connectors.InReview(ctx, tx, *applied, *task.Source)
-			if err != nil || len(keys) == 0 {
-				return "no item that a connector of source " + *task.Source + " sighted waits in review, so nothing is read", err
-			}
-			refreshKeys[task.ID] = keys
-			return "", nil
+			return why, err
 		},
 		Lapsed: func(ctx context.Context, tx *store.Tx, task store.Task, reason string) error {
 			if task.Stage != store.StagePoll || task.Connector == nil {
@@ -491,7 +478,7 @@ func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
 			ID: t.ID, ItemKey: t.ItemKey, Connector: t.Connector, Source: t.Source, Stage: t.Stage, Capability: t.Capability, Attempts: t.Attempts,
 			LeaseToken: *t.LeaseToken, LeaseExpiresTS: *t.LeaseExpiresTS, MediaType: t.Item.MediaType, BlobSHA256: t.Item.BlobSHA256,
 			Zone: t.Item.Zone, Title: t.Item.Title, URL: t.Item.URL, LandedTS: t.Item.CreatedTS, Destination: t.Destination,
-			Model: t.Model, ProposalID: t.ProposalID, WaitedSeconds: waited(t.Task), Keys: refreshKeys[t.ID],
+			Model: t.Model, ProposalID: t.ProposalID, WaitedSeconds: waited(t.Task), Keys: keysOf[t.ID],
 		}
 		if d := t.Delivery; d != nil {
 			leased.Title, leased.URL, leased.SourceTS, leased.Path, leased.Chapter = d.Title, d.URL, d.SourceTS, d.Path, d.Chapter()
@@ -516,7 +503,7 @@ func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
 			if t.Cursor != nil {
 				leased.Cursor = t.Cursor.Position
 			}
-			if c, ok := applied.Connector(*t.Connector); ok {
+			if c, ok := admission.Connector(*t.Connector); ok {
 				if leased.Declaration, err = json.Marshal(c); err != nil {
 					h.internal(w, r, "write a connector's declaration", err)
 					return
@@ -623,7 +610,7 @@ func (h taskHandlers) report(w http.ResponseWriter, r *http.Request) {
 			return errArrivalsOutsideDonePoll
 		}
 		if len(body.Metrics) > 0 {
-			if task.Stage != store.StageRefreshMetrics || task.Source == nil || outcome.State != store.TaskDone {
+			if task.Stage != store.StageRefreshMetrics || task.Source == nil {
 				return errMetricsOutsideRefresh
 			}
 			read := make(map[string]map[string]int64, len(body.Metrics))

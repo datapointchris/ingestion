@@ -10,6 +10,11 @@
 -- records, which every write that touches the item settles. source_ts is when
 -- the artifact was made at its source, such as a Reddit post's creation, and
 -- null where the source gives no time. Landing writes it as a store stamp.
+-- A sighting's last_seen_ts is the last arrival that changed it. Its
+-- metrics_read_ts is when its counts were last taken from the source, by
+-- that arrival or by a refresh of the metrics of an item in review. A
+-- refresh writes the row without moving last_seen_ts, so written_ts stamps
+-- every write, and is null on a row written before the store kept it.
 
 CREATE TABLE IF NOT EXISTS items (
     key            TEXT PRIMARY KEY,
@@ -41,9 +46,12 @@ CREATE TABLE IF NOT EXISTS sightings (
     external_key    TEXT NOT NULL,
     first_seen_ts   TEXT NOT NULL,
     last_seen_ts    TEXT NOT NULL,
+    written_ts      TEXT,
+    metrics_read_ts TEXT,
     PRIMARY KEY (item_key, connector)
 );
-CREATE INDEX IF NOT EXISTS sightings_by_stamp ON sightings (last_seen_ts);
+DROP INDEX IF EXISTS sightings_by_stamp;
+CREATE INDEX IF NOT EXISTS sightings_by_write_stamp ON sightings (coalesce(written_ts, last_seen_ts));
 
 CREATE TABLE IF NOT EXISTS blobs (
     sha256     TEXT PRIMARY KEY,

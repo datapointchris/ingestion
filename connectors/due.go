@@ -3,6 +3,7 @@ package connectors
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strconv"
 	"strings"
@@ -24,6 +25,48 @@ func ParseSchedule(expr string) (cron.Schedule, error) {
 		expr = "CRON_TZ=UTC " + expr
 	}
 	return scheduleParser.Parse(expr)
+}
+
+// A job that serve runs on a schedule of its own, such as a weekly draft,
+// passes again after PassRetry where a pass failed. Its passes sleep at most
+// maxPassWait, so a clock that moved is met within the hour. One pass steps
+// over at most maxCatchUp times of its schedule to find the latest, so a
+// schedule of every minute after a long gap ends.
+const (
+	PassRetry   = 5 * time.Minute
+	maxPassWait = time.Hour
+	maxCatchUp  = 100000
+)
+
+// LatestDue is the latest time of schedule after anchor and at or before now,
+// and zero where none has come. Past maxCatchUp times it answers now.
+func LatestDue(schedule cron.Schedule, anchor, now time.Time) time.Time {
+	var due time.Time
+	for t, i := schedule.Next(anchor), 0; !t.IsZero() && !t.After(now); t, i = schedule.Next(t), i+1 {
+		if due = t; i == maxCatchUp {
+			return now
+		}
+	}
+	return due
+}
+
+// RunPasses calls pass until ctx ends, sleeping until the time that pass
+// answers by clock, for at least a second and at most maxPassWait. It logs
+// a failed pass as failed.
+func RunPasses(ctx context.Context, clock func() time.Time, log *slog.Logger, failed string, pass func(context.Context) (time.Time, error)) {
+	for {
+		next, err := pass(ctx)
+		if err != nil && ctx.Err() == nil {
+			log.ErrorContext(ctx, failed, "error", err)
+		}
+		timer := time.NewTimer(min(max(next.Sub(clock()), time.Second), maxPassWait))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
 }
 
 // ParseInterval reads an interval: a positive count of m, h, d or w, such as

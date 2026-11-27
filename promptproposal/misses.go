@@ -277,17 +277,6 @@ func Draft(ctx context.Context, st *store.Store, through time.Time) (store.Promp
 	return written, "", nil
 }
 
-const (
-	// maxWait bounds how long the scheduler sleeps between passes, so a clock
-	// that moved is met within the hour.
-	maxWait = time.Hour
-	// retryAfter is how long the scheduler waits after a pass failed.
-	retryAfter = 5 * time.Minute
-	// maxCatchUp bounds the schedule's times that one pass steps over to
-	// find the latest, so a schedule of every minute after a long gap ends.
-	maxCatchUp = 100000
-)
-
 // Scheduler drafts a proposal at each time that its schedule names.
 type Scheduler struct {
 	store    *store.Store
@@ -313,19 +302,7 @@ func NewScheduler(st *store.Store, expr string, log *slog.Logger) (*Scheduler, e
 
 // Run passes until ctx ends, sleeping until the schedule's next time.
 func (s *Scheduler) Run(ctx context.Context) {
-	for {
-		next, err := s.Pass(ctx)
-		if err != nil && ctx.Err() == nil {
-			s.log.ErrorContext(ctx, "a prompt proposal's pass failed", "error", err)
-		}
-		timer := time.NewTimer(min(max(next.Sub(s.store.Now()), time.Second), maxWait))
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return
-		case <-timer.C:
-		}
-	}
+	connectors.RunPasses(ctx, s.store.Now, s.log, "a prompt proposal's pass failed", s.Pass)
 }
 
 // Pass drafts for the latest time of the schedule that has come since the
@@ -339,26 +316,20 @@ func (s *Scheduler) Pass(ctx context.Context) (time.Time, error) {
 	anchor := s.started
 	newest, held, err := s.store.NewestPromptProposal(ctx)
 	if err != nil {
-		return now.Add(retryAfter), err
+		return now.Add(connectors.PassRetry), err
 	}
 	if held {
 		if anchor, err = time.Parse(store.StampLayout, newest.LabeledThrough); err != nil {
-			return now.Add(retryAfter), fmt.Errorf("read proposal %s's labeled_through: %w", newest.ID, err)
+			return now.Add(connectors.PassRetry), fmt.Errorf("read proposal %s's labeled_through: %w", newest.ID, err)
 		}
 	}
-	var due time.Time
-	for t, i := s.schedule.Next(anchor), 0; !t.IsZero() && !t.After(now); t, i = s.schedule.Next(t), i+1 {
-		if due = t; i == maxCatchUp {
-			due = now
-			break
-		}
-	}
+	due := connectors.LatestDue(s.schedule, anchor, now)
 	if due.IsZero() || !due.After(s.checked) {
 		return next, nil
 	}
 	p, why, err := Draft(ctx, s.store, due)
 	if err != nil {
-		return now.Add(retryAfter), err
+		return now.Add(connectors.PassRetry), err
 	}
 	s.checked = due
 	if why != "" {

@@ -2,8 +2,6 @@ package ypl
 
 import (
 	"context"
-	"errors"
-	"net/http"
 
 	"github.com/datapointchris/ingestion/deletion"
 )
@@ -32,12 +30,10 @@ func (d Deleter) Delete(ctx context.Context, s deletion.Sighting) deletion.Outco
 		return deletion.Outcome{}
 	}
 	reason := err.Error()
-	out := deletion.Outcome{Error: &reason}
-	var refusal *Error
-	if errors.As(err, &refusal) {
-		out.RetryAfter = refusal.RetryAfter
-		out.Final = refusal.Status >= http.StatusBadRequest && refusal.Status < http.StatusInternalServerError &&
-			refusal.Status != http.StatusRequestTimeout && refusal.Status != http.StatusTooManyRequests
+	f := classify(err)
+	out := deletion.Outcome{Error: &reason, Final: f.Final}
+	if f.Asked {
+		out.RetryAfter = f.Wait
 	}
 	return out
 }

@@ -125,7 +125,8 @@ func (t *Tx) PutItem(ctx context.Context, item Item) error {
 }
 
 // PutSighting writes one connector's arrival of an item, keeping when it was
-// first seen.
+// first seen. Where the arrival took the sighting's counts, the caller sets
+// MetricsReadTS to the write's time.
 func (t *Tx) PutSighting(ctx context.Context, s Sighting) error {
 	if s.Tags == nil {
 		s.Tags = []string{}
@@ -136,7 +137,8 @@ func (t *Tx) PutSighting(ctx context.Context, s Sighting) error {
 	if s.Metrics == nil {
 		s.Metrics = map[string]int64{}
 	}
-	s.FirstSeenTS, s.LastSeenTS = t.stamp(), t.stamp()
+	stamp := t.stamp()
+	s.FirstSeenTS, s.LastSeenTS, s.WrittenTS = stamp, stamp, &stamp
 	return t.put(ctx, table("sightings"), s)
 }
 
@@ -158,11 +160,12 @@ func CheckMetrics(metrics map[string]int64) error {
 	return nil
 }
 
-// PutSightingMetrics writes metrics onto connector's sighting of the item
-// under key, each by its name, and keeps the sighting's other metrics, fields
-// and tags. It writes nothing where the sighting already holds those values,
-// and nothing where the store holds no such sighting. It answers whether it
-// wrote.
+// PutSightingMetrics writes metrics, as a read of the source just took them,
+// onto connector's sighting of the item under key, each by its name. It keeps
+// the sighting's other metrics, its fields and tags, and when it was last
+// seen, and stamps when its metrics were read, whether or not one changed. It
+// writes nothing where the store holds no such sighting. It answers whether a
+// metric changed.
 func (t *Tx) PutSightingMetrics(ctx context.Context, key, connector string, metrics map[string]int64) (bool, error) {
 	if err := CheckMetrics(metrics); err != nil {
 		return false, err
@@ -176,25 +179,35 @@ func (t *Tx) PutSightingMetrics(ctx context.Context, key, connector string, metr
 		next = map[string]int64{}
 	}
 	maps.Copy(next, metrics)
-	if maps.Equal(next, s.Metrics) {
-		return false, nil
-	}
-	s.Metrics = next
-	return true, t.PutSighting(ctx, s)
+	changed := !maps.Equal(next, s.Metrics)
+	stamp := t.stamp()
+	s.Metrics, s.WrittenTS, s.MetricsReadTS = next, &stamp, &stamp
+	return changed, t.put(ctx, table("sightings"), s)
 }
 
 // ReviewKeysSightedBy reads, in key order, the key of each item in phase
-// review that one of connectors sighted.
-func (t *Tx) ReviewKeysSightedBy(ctx context.Context, connectors []string) ([]string, error) {
+// review that one of connectors sighted, leaving out each item whose
+// metrics such a sighting took at or after readSince, where it is not empty.
+func (t *Tx) ReviewKeysSightedBy(ctx context.Context, connectors []string, readSince string) ([]string, error) {
 	if len(connectors) == 0 {
 		return nil, nil
 	}
+	in := `(?` + strings.Repeat(", ?", len(connectors)-1) + `)`
 	args := []any{PhaseReview}
 	for _, c := range connectors {
 		args = append(args, c)
 	}
+	unread := ""
+	if readSince != "" {
+		unread = ` AND NOT EXISTS (SELECT 1 FROM sightings r WHERE r.item_key = s.item_key AND r.connector IN ` + in +
+			` AND r.metrics_read_ts >= ?)`
+		for _, c := range connectors {
+			args = append(args, c)
+		}
+		args = append(args, readSince)
+	}
 	rows, err := t.tx.QueryContext(ctx, `SELECT DISTINCT s.item_key FROM sightings s JOIN items i ON i.key = s.item_key
-		WHERE i.phase = ? AND s.connector IN (?`+strings.Repeat(", ?", len(connectors)-1)+`) ORDER BY s.item_key`, args...)
+		WHERE i.phase = ? AND s.connector IN `+in+unread+` ORDER BY s.item_key`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("select the items in review that %s sighted: %w", strings.Join(connectors, ", "), err)
 	}

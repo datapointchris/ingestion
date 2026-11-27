@@ -3,7 +3,6 @@ package ypl
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math"
 	"slices"
@@ -326,9 +325,8 @@ func withCursor(out polling.Outcome, position any) polling.Outcome {
 func failed(err error) polling.Outcome {
 	reason := err.Error()
 	out := polling.Outcome{Error: &reason}
-	var refusal *Error
-	if errors.As(err, &refusal) {
-		out.RetryAfter = refusal.RetryAfter
+	if f := classify(err); f.Asked {
+		out.RetryAfter = f.Wait
 	}
 	return out
 }

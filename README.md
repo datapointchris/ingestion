@@ -501,15 +501,24 @@ schedule = "0 5 * * *"  # cron, in UTC unless a CRON_TZ=<zone> prefix names anot
 
 - **The claim hands the task each video that waits in review then.** A video placed or dropped
   since the task was queued is not read. The worker reads every video's details in as few
-  requests as ypl's limit allows, and ypl prices each page of 50 ids at one unit of quota.
-- **`serve` writes the counts onto each ypl sighting of each video, and changes nothing else.**
-  The refresh lands nothing, queues no delete and runs no gate. A video that ypl leaves out of its
-  answer, such as a deleted one, keeps its counts. `items show` prints each sighting's metrics
-  with when they were last read.
-- **A refusal that ypl asks a wait for waits its Retry-After**, such as while the day's quota is
-  spent or its Data API calls are busy, and spends no attempt. A 4xx other than 408 or 429 fails
-  the refresh, and any other failed read tries again a bounded number of times. The next day's
-  refresh reads again either way.
+  requests as ypl's limit allows.
+- **`serve` writes the counts onto each ypl sighting of each video, and stamps when it read
+  them.** The refresh lands nothing, queues no delete and runs no gate. It leaves when the
+  sighting was last seen as it is. A video that ypl leaves out of its answer, such as a deleted
+  one, keeps its counts and its read time. `items show` prints each sighting's metrics with when
+  they were last read.
+- **A refresh leaves out a views, likes or comments count that reads 0.** ypl answers 0 for a
+  count that the owner hides, so a hidden count keeps the one measured before. A count that truly
+  falls to 0 keeps its last value too.
+- **Where a request fails partway, the counts already read are written.** A retry reads only the
+  videos that no read took since the task was queued.
+- **A refresh waits and spends no attempt in two cases.** In the first, ypl asks it to wait, as
+  while the day's quota is spent or its Data API calls are busy. In the second, ypl does not
+  answer. A worker logs no answer as a warning. A 4xx other than 408 or 429 fails the refresh. Any
+  other failed read, such as a refused token or an address with no scheme, tries again a bounded
+  number of times. The next day's refresh reads again either way.
+- **A refresh reads only the sightings of the connectors in the set in force.** Renaming or
+  removing a connector ends the refresh of each video that only it sighted.
 
 ### A video parses from its captions, or Whisper transcribes its audio
 

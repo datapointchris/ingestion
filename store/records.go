@@ -124,7 +124,15 @@ type Sighting struct {
 	CursorPosition *string          `json:"cursor_position"`
 	ExternalKey    string           `json:"external_key"`
 	FirstSeenTS    string           `json:"first_seen_ts"`
-	LastSeenTS     string           `json:"last_seen_ts"`
+	// LastSeenTS is the last arrival that changed the sighting.
+	LastSeenTS string `json:"last_seen_ts"`
+	// WrittenTS stamps every write of the row, an arrival's or a refresh's,
+	// and is nil on a row written before the store kept it.
+	WrittenTS *string `json:"written_ts"`
+	// MetricsReadTS is when the counts were last taken from the source: by
+	// an arrival that changed them, or by a refresh that read them, changed or
+	// not. It is nil where no read has taken any.
+	MetricsReadTS *string `json:"metrics_read_ts"`
 }
 
 // Blob is landed bytes, written once.

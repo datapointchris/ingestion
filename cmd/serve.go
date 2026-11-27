@@ -88,7 +88,7 @@ var serveCmd = &cobra.Command{
 		"refresh-metrics task for each source that reads its items' metrics again, such\n" +
 		"as a video's views, where a connector of that source sighted an item that waits\n" +
 		"in review. A worker with the source's [source.<name>] table reads them in one\n" +
-		"batch, and serve writes them onto those sightings alone. The refresh lands,\n" +
+		"task, and serve writes them onto those sightings alone. The refresh lands,\n" +
 		"deletes and gates nothing:\n" +
 		"\n" +
 		"  [review.refresh-metrics]\n" +

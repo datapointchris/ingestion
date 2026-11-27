@@ -16,17 +16,6 @@ import (
 // DefaultSchedule is the schedule where config names none: once a day.
 const DefaultSchedule = "0 5 * * *"
 
-const (
-	// maxWait bounds how long the scheduler sleeps between passes, so a clock
-	// that moved is met within the hour.
-	maxWait = time.Hour
-	// passRetry is how long the scheduler waits after a pass failed.
-	passRetry = 5 * time.Minute
-	// maxCatchUp bounds the schedule's times that one pass steps over to
-	// find the latest, so a schedule of every minute after a long gap ends.
-	maxCatchUp = 100000
-)
-
 // Queue queues source's refresh, in one write, where a connector of source in
 // the set in force sighted an item that waits in review, and no refresh of
 // source is queued or leased. It answers the task, or why it queued none.
@@ -89,19 +78,7 @@ func NewScheduler(st *store.Store, expr string, log *slog.Logger) (*Scheduler, e
 
 // Run passes until ctx ends, sleeping until the schedule's next time.
 func (s *Scheduler) Run(ctx context.Context) {
-	for {
-		next, err := s.Pass(ctx)
-		if err != nil && ctx.Err() == nil {
-			s.log.ErrorContext(ctx, "a metrics refresh's pass failed", "error", err)
-		}
-		timer := time.NewTimer(min(max(next.Sub(s.store.Now()), time.Second), maxWait))
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return
-		case <-timer.C:
-		}
-	}
+	connectors.RunPasses(ctx, s.store.Now, s.log, "a metrics refresh's pass failed", s.Pass)
 }
 
 // Pass queues, once, the refresh of each source that this build refreshes
@@ -115,7 +92,7 @@ func (s *Scheduler) Pass(ctx context.Context) (time.Time, error) {
 	next := s.schedule.Next(now)
 	set, err := connectors.AppliedSet(ctx, s.store)
 	if err != nil {
-		return now.Add(passRetry), err
+		return now.Add(connectors.PassRetry), err
 	}
 	var refreshed []string
 	for _, c := range set.Connectors {
@@ -128,20 +105,20 @@ func (s *Scheduler) Pass(ctx context.Context) (time.Time, error) {
 		anchor := s.started
 		newest, held, err := s.store.NewestRefreshMetrics(ctx, source)
 		if err != nil {
-			return now.Add(passRetry), err
+			return now.Add(connectors.PassRetry), err
 		}
 		if held {
 			if anchor, err = time.Parse(store.StampLayout, newest.CreatedTS); err != nil {
-				return now.Add(passRetry), fmt.Errorf("read refresh %s's created_ts: %w", newest.ID, err)
+				return now.Add(connectors.PassRetry), fmt.Errorf("read refresh %s's created_ts: %w", newest.ID, err)
 			}
 		}
-		due := s.latestDue(anchor, now)
+		due := connectors.LatestDue(s.schedule, anchor, now)
 		if due.IsZero() || !due.After(s.checked[source]) {
 			continue
 		}
 		task, why, err := Queue(ctx, s.store, source)
 		if err != nil {
-			return now.Add(passRetry), err
+			return now.Add(connectors.PassRetry), err
 		}
 		s.checked[source] = due
 		if why != "" {
@@ -151,16 +128,4 @@ func (s *Scheduler) Pass(ctx context.Context) (time.Time, error) {
 		s.log.InfoContext(ctx, "queued a metrics refresh", "source", source, "due", store.Stamp(due), "task", task.ID)
 	}
 	return next, nil
-}
-
-// latestDue is the latest time of the schedule after anchor and at or before
-// now, and zero where none has come.
-func (s *Scheduler) latestDue(anchor, now time.Time) time.Time {
-	var due time.Time
-	for t, i := s.schedule.Next(anchor), 0; !t.IsZero() && !t.After(now); t, i = s.schedule.Next(t), i+1 {
-		if due = t; i == maxCatchUp {
-			return now
-		}
-	}
-	return due
 }

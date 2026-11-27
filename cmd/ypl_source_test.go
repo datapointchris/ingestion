@@ -41,6 +41,9 @@ type standInVideo struct {
 	published string
 	// views is its view count, 1200 unless set otherwise.
 	views int
+	// likesHidden answers its like count as 0, as ypl answers a count that
+	// its owner hides.
+	likesHidden bool
 }
 
 // standInItem is one playlist item or upload.
@@ -201,10 +204,14 @@ func (s *standInYPL) videoDetails(w http.ResponseWriter, r *http.Request) {
 		if !ok || v.withheld {
 			continue
 		}
+		likes := 40
+		if v.likesHidden {
+			likes = 0
+		}
 		out = append(out, map[string]any{
 			"id": v.id, "title": v.title, "description": "A description.", "channel_id": "UCtestchannel", "channel_title": "Test channel",
 			"published_at": v.published, "privacy": "public", "duration_seconds": 754,
-			"live_broadcast_content": v.broadcast, "view_count": v.views, "like_count": 40, "comment_count": 3,
+			"live_broadcast_content": v.broadcast, "view_count": v.views, "like_count": likes, "comment_count": 3,
 		})
 	}
 	answer(w, out)
@@ -542,11 +549,13 @@ func TestAYPLChannelPollLandsEachNewUploadOnceAfterItsBaseline(t *testing.T) {
 // A video that is saved to the capture playlist and uploaded by a watched
 // channel lands as one item with a sighting of each, parses from its
 // captions, and its save is deleted from the playlist. Each day's refresh
-// then reads, in one details read, the metrics of each video that waits in
-// review, and writes them onto each of its sightings, where items show prints
-// them. A video dropped from review is not read, and a refresh queues no
-// delete. A refresh that ypl answers busy waits its Retry-After and spends no
-// attempt.
+// then reads the metrics of each video that waits in review, and writes them
+// onto each of its sightings with when it read them, where items show prints
+// them. A read of unchanged counts still stamps them read, and leaves when
+// the sighting was last seen. A like count that ypl answers as 0, as it
+// answers one that the owner hides, keeps the count measured before. A video
+// dropped from review is not read, and a refresh queues no delete. A refresh
+// that ypl answers busy waits its Retry-After and spends no attempt.
 func TestASavedAndUploadedVideoLandsOnceAndItsMetricsRefreshDailyWhileItWaitsInReview(t *testing.T) {
 	const both, saved = "youtube/bothvid0001", "youtube/savedvid001"
 	stand, api := newStandInYPL(t)
@@ -616,9 +625,17 @@ func TestASavedAndUploadedVideoLandsOnceAndItsMetricsRefreshDailyWhileItWaitsInR
 	}
 	deletes := p.count(t, `SELECT count(*) FROM tasks WHERE stage = ?`, store.StageDelete)
 	reads := len(stand.detailReads)
-	for day, views := range []int{5000, 7000} {
-		stand.add(standInVideo{id: "bothvid0001", title: "Test video saved and uploaded", views: views},
-			standInVideo{id: "savedvid001", title: "Test video saved", views: views})
+	arrived := map[string]string{}
+	for _, s := range p.item(t, both).Sightings {
+		arrived[s.Connector] = s.LastSeenTS
+	}
+	days := []struct {
+		views       int
+		likesHidden bool
+	}{{5000, false}, {7000, false}, {7000, true}}
+	for day, d := range days {
+		stand.add(standInVideo{id: "bothvid0001", title: "Test video saved and uploaded", views: d.views, likesHidden: d.likesHidden},
+			standInVideo{id: "savedvid001", title: "Test video saved", views: d.views})
 		stand.mu.Lock()
 		stand.busyDetails = 1
 		stand.mu.Unlock()
@@ -637,10 +654,19 @@ func TestASavedAndUploadedVideoLandsOnceAndItsMetricsRefreshDailyWhileItWaitsInR
 			t.Fatalf("day %d's refresh that ypl answered busy is not waiting with no attempt spent", day+1)
 		}
 		p.advance(2 * time.Minute)
+		before := store.Stamp(p.st.Now())
 		p.run(t, refresh)
 		for _, s := range p.item(t, both).Sightings {
-			if s.Metrics["views"] != int64(views) || s.Metrics["duration_s"] != 754 {
-				t.Errorf("day %d's refresh left %s's sighting with metrics %v, want %d views", day+1, s.Connector, s.Metrics, views)
+			if s.Metrics["views"] != int64(d.views) || s.Metrics["likes"] != 40 || s.Metrics["duration_s"] != 754 {
+				t.Errorf("day %d's refresh left %s's sighting with metrics %v, want %d views and its measured 40 likes", day+1, s.Connector, s.Metrics, d.views)
+			}
+			read := "never"
+			if s.MetricsReadTS != nil {
+				read = *s.MetricsReadTS
+			}
+			if read == "never" || read < before || s.LastSeenTS != arrived[s.Connector] {
+				t.Errorf("day %d's refresh left %s's sighting read at %s and last seen at %s, want read at or after %s and last seen at its arrival %s",
+					day+1, s.Connector, read, s.LastSeenTS, before, arrived[s.Connector])
 			}
 		}
 		if s := p.item(t, saved).Sightings[0]; s.Metrics["views"] != 1200 {
@@ -652,8 +678,8 @@ func TestASavedAndUploadedVideoLandsOnceAndItsMetricsRefreshDailyWhileItWaitsInR
 			t.Errorf("a refresh read the details of %v, want only the video in review", ids)
 		}
 	}
-	if n := len(stand.detailReads) - reads; n != 4 {
-		t.Errorf("two days' refreshes read video details %d times, want a busy answer and a read each day", n)
+	if n := len(stand.detailReads) - reads; n != 2*len(days) {
+		t.Errorf("%d days' refreshes read video details %d times, want a busy answer and a read each day", len(days), n)
 	}
 	if n := p.count(t, `SELECT count(*) FROM tasks WHERE stage = ?`, store.StageDelete); n != deletes {
 		t.Errorf("the refreshes queued %d deletes, want none", n-deletes)

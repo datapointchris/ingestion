@@ -366,7 +366,11 @@ func writeItem(w io.Writer, a server.ItemAnswer) {
 			for _, name := range slices.Sorted(maps.Keys(s.Metrics)) {
 				counts = append(counts, fmt.Sprintf("%s %d", name, s.Metrics[name]))
 			}
-			row("metrics", "%s  %s  as of %s", s.Connector, strings.Join(counts, "  "), localTime(s.LastSeenTS))
+			read := s.LastSeenTS
+			if s.MetricsReadTS != nil {
+				read = *s.MetricsReadTS
+			}
+			row("metrics", "%s  %s  read %s", s.Connector, strings.Join(counts, "  "), localTime(read))
 		}
 	}
 	landed := localTime(it.CreatedTS) + "  " + it.MediaType
