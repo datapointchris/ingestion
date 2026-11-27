@@ -388,11 +388,16 @@ func isWordByte(c byte) bool {
 // copyBeside writes a copy of the store beside it, named for the instant it
 // was taken, before converge changes the store's schema. An earlier release
 // refuses or misreads a store a later one converged, so returning to one
-// starts from this copy.
+// starts from this copy. SQLite leaves a copy it was stopped partway through,
+// so a failed copy is removed, or each canceled start would leave one more.
 func (s *Store) copyBeside(ctx context.Context) error {
 	target := s.path + ".before-" + time.Now().UTC().Format("20060102T150405.000Z")
 	if _, err := s.write.ExecContext(ctx, `VACUUM INTO ?`, target); err != nil {
-		return fmt.Errorf("copy the store to %s before changing its schema: %w", target, err)
+		err = fmt.Errorf("copy the store to %s before changing its schema: %w", target, err)
+		if rmErr := os.Remove(target); rmErr != nil && !errors.Is(rmErr, fs.ErrNotExist) {
+			err = errors.Join(err, fmt.Errorf("remove the partial copy: %w", rmErr))
+		}
+		return err
 	}
 	return nil
 }
