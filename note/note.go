@@ -44,9 +44,6 @@ const (
 	openingRunes = 2000
 )
 
-// The draft quotes the opening of the item's reading parse.
-func init() { store.QuotesParse(Capability, store.ParsePick{}) }
-
 // Answer is the model's answer, as prompts/note/answer.schema.json holds it.
 type Answer struct {
 	route.Draft

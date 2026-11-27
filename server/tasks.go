@@ -121,7 +121,7 @@ type LeasedTask struct {
 	// as the claim read it: the item's reading parse, or the one extractor's
 	// that the stage reads. The task's call reads it, and its output names it.
 	// It is absent where the stage quotes no parse or the item holds none.
-	Parse *QuotedParse `json:"parse,omitempty"`
+	Parse *store.ParseRef `json:"parse,omitempty"`
 	// Lens, Note and NoteDraft are a model read's task's: the lens of the
 	// item's newest read decision, the note that a person wrote on it, and
 	// the note stage's draft where the decision took one instead. A draft
@@ -164,12 +164,6 @@ func (t LeasedTask) Answers() *string {
 		return t.Note
 	}
 	return t.NoteDraft
-}
-
-// QuotedParse names one parse of a task's item by its extractor and version.
-type QuotedParse struct {
-	Extractor string `json:"extractor"`
-	Version   string `json:"version"`
 }
 
 // LeasedProposal is the prompt proposal that a prompt-proposal task drafts: the
@@ -535,9 +529,7 @@ func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
 		for _, o := range t.Outputs {
 			leased.StageOutputs = append(leased.StageOutputs, itemStageOutput(o))
 		}
-		if p := t.Parse; p != nil {
-			leased.Parse = &QuotedParse{Extractor: p.Producer, Version: p.ProducerVersion}
-		}
+		leased.Parse = t.Parse.Ref()
 		if s := t.Sighting; s != nil {
 			leased.Sighting = &LeasedSighting{Connector: s.Connector, ExternalKey: s.ExternalKey, Fields: s.Fields}
 		}

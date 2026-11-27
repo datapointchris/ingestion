@@ -206,7 +206,9 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	defer func() { _ = st.Close() }()
-	log.Info("named the parse that each stored model answer read, where it named none", "outputs", st.InputsNamedAtOpen())
+	if named := st.InputsNamedAtOpen(); named > 0 {
+		log.Info("named the parse that each stored model answer read, where it named none", "outputs", named)
+	}
 	blobs, err := landing.OpenBlobs(filepath.Join(stateDir(cfg), "blobs"))
 	if err != nil {
 		return err

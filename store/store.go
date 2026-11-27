@@ -91,16 +91,43 @@ func Open(ctx context.Context, path string, options ...Option) (*Store, error) {
 		return nil, fmt.Errorf("open %s to read: %w", path, err)
 	}
 	s.read.SetMaxOpenConns(readConnections)
-	if err := s.converge(ctx); err != nil {
+	held, err := s.generation(ctx)
+	if err == nil {
+		err = s.converge(ctx)
+	}
+	if err != nil {
 		_ = s.Close()
 		return nil, err
 	}
-	if s.inputsNamed, err = s.fillQuotedInputs(ctx); err != nil {
-		_ = s.Close()
-		return nil, err
+	if held < namedInputsGeneration {
+		if s.inputsNamed, err = s.fillQuotedInputs(ctx); err != nil {
+			_ = s.Close()
+			return nil, err
+		}
+	}
+	if held < SchemaGeneration {
+		if _, err := s.write.ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version = %d`, SchemaGeneration)); err != nil {
+			_ = s.Close()
+			return nil, fmt.Errorf("stamp the store's schema generation: %w", err)
+		}
 	}
 	return s, nil
 }
+
+// generation is the schema generation that the store holds, 0 where it holds
+// no tables yet.
+func (s *Store) generation(ctx context.Context) (int, error) {
+	var generation int
+	if err := s.write.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&generation); err != nil {
+		return 0, fmt.Errorf("read the store's schema generation: %w", err)
+	}
+	return generation, nil
+}
+
+// namedInputsGeneration is the generation from which each output of a stage
+// whose prompt quotes a parse names that parse. The open that raises a store
+// to it names the parse on each stored output that names none.
+const namedInputsGeneration = 4
 
 // InputsNamedAtOpen counts the stored outputs that Open named the parse they
 // read on, each of a stage whose prompt quotes a parse.
@@ -124,12 +151,13 @@ func dsn(path string, readOnly bool) string {
 
 // SchemaGeneration is the generation of the schema files. Raise it with any
 // change to them that rebuilds a table: a column made nullable, a CHECK
-// changed, or a table constraint changed. A store keeps the highest
-// generation that converged it in PRAGMA user_version. A build whose
+// changed, or a table constraint changed. Raise it too with a fill of stored
+// rows that Open runs once, as namedInputsGeneration names. A store keeps the
+// highest generation that converged it in PRAGMA user_version. A build whose
 // generation is older rebuilds none of its tables, so a release reverted
 // after a later one converged the store keeps that release's columns and
 // constraints.
-const SchemaGeneration = 3
+const SchemaGeneration = 4
 
 // converge brings the store to what the schema files declare, reading that
 // from a scratch database the files are applied to. Where the store already
@@ -139,8 +167,8 @@ const SchemaGeneration = 3
 // constraints they change, unless a later generation converged the store. It
 // adds each column a table lacks, applies each file in name order, checks
 // that Tables declares every table the files create, guards each logged
-// table, stamps the store's generation, and starts the stamp clock past the
-// newest stamp in any table.
+// table, and starts the stamp clock past the newest stamp in any table. Open
+// stamps the store's generation once its fills ran.
 func (s *Store) converge(ctx context.Context) error {
 	names, err := fs.Glob(schemaFiles, "*.sql")
 	if err != nil {
@@ -177,9 +205,9 @@ func (s *Store) converge(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	var generation int
-	if err := s.write.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&generation); err != nil {
-		return fmt.Errorf("read the store's schema generation: %w", err)
+	generation, err := s.generation(ctx)
+	if err != nil {
+		return err
 	}
 	if generation > SchemaGeneration {
 		changes.rebuild = nil
@@ -214,11 +242,6 @@ func (s *Store) converge(ctx context.Context) error {
 	for _, t := range Tables {
 		if err := guard(ctx, s.write, t); err != nil {
 			return err
-		}
-	}
-	if generation < SchemaGeneration {
-		if _, err := s.write.ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version = %d`, SchemaGeneration)); err != nil {
-			return fmt.Errorf("stamp the store's schema generation: %w", err)
 		}
 	}
 	for _, t := range Tables {

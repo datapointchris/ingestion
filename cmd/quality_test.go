@@ -602,16 +602,40 @@ func TestAGateAnswerOverAnOlderParseIsDueAgain(t *testing.T) {
 	if _, err := runCLI(t, "items", "replay", "--stage", store.StageQuality, "--yes", "--config", p.config); err != nil {
 		t.Fatal(err)
 	}
+	answer := func() (state, read string) {
+		t.Helper()
+		var extractor, version string
+		if err := p.st.Reader().QueryRowContext(t.Context(), `SELECT state, input_producer, input_version FROM outputs WHERE item_key = ? AND stage = ?`,
+			key, store.StageQuality).Scan(&state, &extractor, &version); err != nil {
+			t.Fatal(err)
+		}
+		return state, extractor + "@" + version
+	}
+	stand.fail = modelport.FailureClaudeFailed
 	if ran := p.run(t, gate); ran != 1 {
 		t.Fatalf("the replay ran %d gate tasks, want 1", ran)
 	}
-	if s := stand.starts(); len(s) != 3 || s[2].Key == s[0].Key || s[2].Key == s[1].Key {
-		t.Errorf("the stand-in started %s, want a third dispatch under a key of its own", jsonOf(s))
+	if state, read := answer(); state != store.OutputDone || read != extract.ThreadText.Name+"@1" {
+		t.Fatalf("after the gate's call over version 2 failed, the save's answer is %s over %s, want the done one over version 1", state, read)
 	}
-	var extractor, version string
-	if err := p.st.Reader().QueryRowContext(t.Context(), `SELECT input_producer, input_version FROM outputs WHERE item_key = ? AND stage = ?`,
-		key, store.StageQuality).Scan(&extractor, &version); err != nil || extractor != extract.ThreadText.Name || version != "2" {
-		t.Errorf("the save's answer names the parse %s@%s, %v, want %s@2", extractor, version, err, extract.ThreadText.Name)
+	if n := due(); n != 1 {
+		t.Fatalf("after the gate's call over version 2 failed a quality replay would run on %d saves, want that one", n)
+	}
+	failed := slices.IndexFunc(p.tasks(t), func(v server.TaskView) bool { return v.Stage == store.StageQuality && v.State == "failed" })
+	if failed < 0 {
+		t.Fatalf("the store holds tasks %s, want the failed gate task", jsonOf(p.tasks(t)))
+	}
+	if _, err := runCLI(t, "tasks", "retry", p.tasks(t)[failed].ID, "--config", p.config); err != nil {
+		t.Fatal(err)
+	}
+	if ran := p.run(t, gate); ran != 1 {
+		t.Fatalf("the retry ran %d gate tasks, want 1", ran)
+	}
+	if s := stand.starts(); len(s) != 4 || s[2].Key == s[0].Key || s[2].Key == s[1].Key || s[3].Key == s[2].Key {
+		t.Errorf("the stand-in started %s, want a dispatch over version 2 under a key of its own, and its retry under another", jsonOf(s))
+	}
+	if state, read := answer(); state != store.OutputDone || read != extract.ThreadText.Name+"@2" {
+		t.Errorf("after the retry the save's answer is %s over %s, want done over version 2", state, read)
 	}
 	if all, _, _ := p.decisions(t, key); len(slices.DeleteFunc(all, func(d server.DecisionView) bool { return d.Gate != store.GateQuality })) != 2 {
 		t.Errorf("the save holds decisions %s, want a gate decision on each answer", jsonOf(all))

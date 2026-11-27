@@ -50,12 +50,6 @@ const (
 	DropFloor = 0.8
 )
 
-// The gate and its arm each quote the opening of the item's reading parse.
-func init() {
-	store.QuotesParse(Capability, store.ParsePick{})
-	store.QuotesParse(ArmCapability, store.ParsePick{})
-}
-
 // VerdictPass is the gate's decision that an item earns a full read. Its drop
 // and review are the side gate's verdicts of the same names.
 const VerdictPass = store.VerdictPass

@@ -50,9 +50,6 @@ const (
 	textRunes = 100_000
 )
 
-// The read quotes the item's reading parse whole.
-func init() { store.QuotesParse(Capability, store.ParsePick{}) }
-
 // Answer is the model's answer, as prompts/model-read/answer.schema.json
 // holds it. Either may be nil, and never both.
 type Answer struct {

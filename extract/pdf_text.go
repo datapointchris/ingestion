@@ -1,5 +1,7 @@
 package extract
 
+import "github.com/datapointchris/ingestion/store"
+
 // PyMuPDFVersion is the PyMuPDF that release/python-requirements.txt pins,
 // and that the worker image installs for the PDF programs.
 const PyMuPDFVersion = "1.28.2"
@@ -13,7 +15,7 @@ const MediaTypePDF = "application/pdf"
 // Its version names PyMuPDF's, so a library upgrade writes its pages beside
 // the old ones.
 var PDFText = func() Extractor {
-	e := Program("pdf-text", "1+pymupdf-"+PyMuPDFVersion, MediaTypePDF, ProgramDir+"/pdf-text")
+	e := Program(store.ExtractorPDFText, "1+pymupdf-"+PyMuPDFVersion, MediaTypePDF, ProgramDir+"/"+store.ExtractorPDFText)
 	e.Positional = true
 	return e
 }()

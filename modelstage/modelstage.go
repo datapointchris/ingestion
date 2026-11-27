@@ -7,9 +7,10 @@
 // stage, the prompt's version and the parse that the prompt quotes. The
 // subject is the task's item, or the prompt proposal that a prompt-proposal
 // task drafts. The output names that parse, so a call over a newer parse is
-// started once more and replaces the answer. The dispatch is stored on the output in the
-// write that ends the worker's lease, and each later claim follows it until
-// the run answers. So a waiting task holds no worker slot, and a lease that
+// started once more, and only its answer replaces the older one. The dispatch
+// is stored on the output in the write that ends the worker's lease, beside a
+// done output as its replacement where one stands. Each later claim follows
+// it until the run answers. So a waiting task holds no worker slot, and a lease that
 // lapsed never pays for a second run. A run that failed is started again only
 // once `tasks retry` queues its task, under a key that also names the failed
 // dispatch, because a dispatch service may answer the old key with the
@@ -179,10 +180,9 @@ func (h handler) Run(ctx context.Context, task worker.Task) worker.Result {
 // parse that the claim named, and nil where it holds none. An output over an
 // older parse is no answer, so the task calls again over the parse named.
 func (h handler) own(task worker.Task, prompt prompts.Prompt) *server.StageOutput {
-	extractor, version := quoted(task)
 	i := slices.IndexFunc(task.StageOutputs, func(o server.StageOutput) bool {
 		return o.Producer == h.stage.Producer && o.ProducerVersion == prompt.Version && store.NoteAnswered(o.NoteDigest, task.Answers()) &&
-			deref(o.InputProducer) == deref(extractor) && deref(o.InputVersion) == deref(version)
+			store.SameParse(store.InputOf(o.InputProducer, o.InputVersion), task.Parse)
 	})
 	if i < 0 {
 		return nil
