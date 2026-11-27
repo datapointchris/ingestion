@@ -7,7 +7,7 @@
   "additionalProperties": false,
   "required": ["schema_version", "key", "decisions"],
   "properties": {
-    "schema_version": {"const": 1},
+    "schema_version": {"const": 2},
     "key": {"description": "The item's key, which a URL in the path resolves to.", "type": "string"},
     "decisions": {
       "description": "The side decision, decided by person:<login>, then the read decision where the destination takes a side.",

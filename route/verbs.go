@@ -13,7 +13,7 @@ import (
 )
 
 // The sort verbs, each a route that a person's sort in the review tab takes.
-// Drop is the eighth, which the drop route takes with its cause.
+// Drop is not one of them: the drop route takes it, with its cause.
 const (
 	VerbFleetRelate        = "fleet-relate"
 	VerbLearning           = "learning"
@@ -48,6 +48,12 @@ type VerbRoute struct {
 	Deliverer string
 	Read      string
 	Lens      string
+	// NeedsPass sends the item back to review as learning-refused, rather
+	// than reading it, where the quality gate's newest answer did not pass it.
+	NeedsPass bool
+	// OpensHere says opening a shelved item runs the verb on the machine that
+	// opens it, and nothing in the service.
+	OpensHere bool
 	// Help is the verb's line in the CLI's help and the review tab's keys.
 	Help string
 }
@@ -56,14 +62,14 @@ type VerbRoute struct {
 var Verbs = []VerbRoute{
 	{
 		Verb: VerbFleetRelate, Side: connectors.SideFleet, Read: connectors.ReadModel, Lens: LensFleet,
-		Help: "a model reads it under the fleet lens against your current work, after a note's draft, and its suggestions reach the fleet's inbox",
+		Help: "a model reads it under the fleet lens against your current work, after a note's draft, and keeps its suggestion",
 	},
 	{
-		Verb: VerbLearning, Side: connectors.SidePersonal, Deliverer: LearningDeliverer, Read: connectors.ReadAsIs,
+		Verb: VerbLearning, Side: connectors.SidePersonal, Deliverer: LearningDeliverer, Read: connectors.ReadAsIs, NeedsPass: true,
 		Help: "delivered to the learning plan where the quality gate's newest answer passes it, and back in review as " + CauseLearningRefused + " otherwise",
 	},
 	{
-		Verb: VerbPersonalRelate, Side: connectors.SidePersonal, Read: store.VerdictShelf,
+		Verb: VerbPersonalRelate, Side: connectors.SidePersonal, Read: store.VerdictShelf, OpensHere: true,
 		Help: "shelved: nothing runs until you open it, which hands its parse to psyche relate on your machine",
 	},
 	{
@@ -100,6 +106,23 @@ func VerbOf(name string) (VerbRoute, bool) {
 
 // Shelves says whether the verb puts an item on the shelf.
 func (v VerbRoute) Shelves() bool { return v.Read == store.VerdictShelf }
+
+// TakesPlaylist says whether the verb's deliverer adds the item to a playlist
+// that the sort picks.
+func (v VerbRoute) TakesPlaylist() bool {
+	return v.Deliverer != "" && connectors.TakesPlaylist(v.Deliverer)
+}
+
+// ShelfVerbs is each verb that puts an item on the shelf, in order.
+func ShelfVerbs() []string {
+	var out []string
+	for _, v := range Verbs {
+		if v.Shelves() {
+			out = append(out, v.Verb)
+		}
+	}
+	return out
+}
 
 // Destination is where the verb places an item under set: the first
 // destination whose deliverer is the verb's, or, for fleet relate, the fleet
@@ -140,7 +163,8 @@ type Sort struct {
 
 // VerbRefusedError is a sort that its verb cannot carry out on the item: no
 // destination of the set in force takes the verb, the destination's deliverer
-// cannot take the item, or a watch names no playlist.
+// cannot take the item, a watch names no playlist, or the item's delivery
+// already holds another playlist.
 type VerbRefusedError struct {
 	Verb string
 	Why  string
@@ -158,8 +182,10 @@ var ErrUnknownVerb = errors.New("the verb is none that a sort takes")
 // reads it as is where the quality gate's newest decision passes it, and
 // otherwise sends it to review at the read gate as learning-refused, decided
 // by the gate's run. Watch reads it as is, and keeps the playlist on its side
-// decision for the delivery. A shelf verb reads it by nothing until a person
-// opens it. A sort that repeats the newest side decision appends nothing. A
+// decision for the delivery. A watch whose item's delivery already holds
+// another playlist is refused, since a delivery adds the video to one. A shelf
+// verb reads it by nothing until a person opens it. A sort that repeats the
+// newest side decision, playlist included, appends nothing. A
 // sort of an item whose drop the gate showed or hid disagrees with the gate,
 // as a placement does. It answers what Place answers, a VerbRefusedError, and
 // ErrUnknownVerb.
@@ -204,13 +230,21 @@ func SortItem(ctx context.Context, tx *store.Tx, key string, s Sort) ([]store.De
 			return nil, &VerbRefusedError{Verb: v.Verb, Why: undelivered.Error()}
 		}
 	}
-	if v.Verb == VerbWatch {
+	if v.TakesPlaylist() {
 		playlist := strings.TrimSpace(s.Playlist)
 		if playlist == "" {
 			playlist = strings.TrimSpace(s.DefaultPlaylist)
 		}
 		if playlist == "" {
 			return nil, &VerbRefusedError{Verb: v.Verb, Why: "the sort names no playlist, and serve's [watch] default_playlist names none"}
+		}
+		held, found, err := tx.Delivery(ctx, key, destination.Name)
+		if err != nil {
+			return nil, err
+		}
+		if found && text(held.Playlist) != playlist {
+			return nil, &VerbRefusedError{Verb: v.Verb, Why: fmt.Sprintf(
+				"its delivery to %s holds the playlist %s, as %s, and a delivery adds the video to one playlist", destination.Name, text(held.Playlist), held.Outcome)}
 		}
 		side.Playlist = &playlist
 	}
@@ -244,14 +278,7 @@ func verbRead(ctx context.Context, tx *store.Tx, key string, v VerbRoute, side s
 		lens := v.Lens
 		read.Lens = &lens
 	}
-	switch v.Verb {
-	case VerbFleetRelate:
-		drafted, err := takeDraft(ctx, tx, key, read, side)
-		if err != nil || drafted == nil {
-			return read, err
-		}
-		return *drafted, nil
-	case VerbLearning:
+	if v.NeedsPass {
 		quality, judged, err := tx.NewestDecision(ctx, key, store.GateQuality)
 		if err != nil || (judged && quality.Verdict == store.VerdictPass) {
 			return read, err
@@ -262,16 +289,20 @@ func verbRead(ctx context.Context, tx *store.Tx, key string, v VerbRoute, side s
 		}
 		return refused, nil
 	}
-	return read, nil
+	drafted, err := takeDraft(ctx, tx, key, read, side)
+	if err != nil || drafted == nil {
+		return read, err
+	}
+	return *drafted, nil
 }
 
 // The states of a shelved item, as the shelf answers them.
 const (
 	// ShelfWaiting is an item on the shelf that nobody opened.
-	ShelfWaiting = "waiting"
+	ShelfWaiting = store.ShelfWaiting
 	// ShelfOpened is a relate that a person opened, which runs on their
 	// machine and keeps nothing in the service.
-	ShelfOpened = "opened"
+	ShelfOpened = store.ShelfOpened
 	// ShelfReading, ShelfDone and ShelfFailed are a summary's model read
 	// once a person opened it: queued or running, kept, and failed.
 	ShelfReading = "reading"
@@ -284,47 +315,46 @@ type Shelved struct {
 	Verb string
 	// Lens is the lens through which opening it reads the item, and empty
 	// for a relate.
-	Lens     string
-	State    string
-	Side     store.Decision
-	Read     store.Decision
-	Opened   *store.Decision
-	ReadDone *store.Output
+	Lens string
+	// OpensHere says opening it runs its verb on the machine that opens it.
+	OpensHere bool
+	State     string
+	Side      store.Decision
+	Read      store.Decision
+	Opened    *store.Decision
+	ReadDone  *store.Output
 	// Error is why the newest model read under the lens failed, where State
 	// is failed: its output's error, else its task's.
 	Error *string
 }
 
-// ShelfOf is where the item stands on the shelf, and false where it is not
-// on it: its newest side decision is a person's sort by a shelf verb, and its
-// newest read decision is that sort's shelf or a person's opening of it.
+// ShelfOf is where the item stands on the shelf, and false where it is off
+// it, as store.ItemRecords.ShelfStanding decides. Its verb is its side
+// decision's cause, and its lens its read decision's. An opened summary's
+// state follows its model read under that lens.
 func ShelfOf(r store.ItemRecords) (Shelved, bool) {
-	side, sided := r.NewestDecision(store.GateSide)
-	read, hasRead := r.NewestDecision(store.GateRead)
-	v, ok := VerbOf(side.Cause)
-	if !sided || !hasRead || !ok || !v.Shelves() || !side.ByPerson() {
+	standing := r.ShelfStanding()
+	if standing == "" {
 		return Shelved{}, false
 	}
-	if read.Verdict != store.VerdictShelf && read.Cause != CauseShelfOpen {
-		return Shelved{}, false
-	}
-	s := Shelved{Verb: v.Verb, Lens: v.Lens, Side: side, Read: read, State: ShelfWaiting}
-	if read.Cause != CauseShelfOpen {
+	side, _ := r.NewestDecision(store.GateSide)
+	read, _ := r.NewestDecision(store.GateRead)
+	v, _ := VerbOf(side.Cause)
+	s := Shelved{Verb: side.Cause, Lens: text(read.Lens), OpensHere: v.OpensHere, Side: side, Read: read, State: standing}
+	if standing == ShelfWaiting {
 		return s, true
 	}
-	s.Opened, s.State = &read, ShelfOpened
-	if v.Lens == "" {
+	s.Opened = &read
+	if s.Lens == "" {
 		return s, true
 	}
 	var failure *store.Output
 	for i, o := range r.Outputs {
-		if o.Stage != store.StageModelRead || (o.Lens != nil && *o.Lens != v.Lens) {
-			continue
-		}
 		switch {
-		case o.State == store.OutputDone && (s.ReadDone == nil || o.CreatedTS > s.ReadDone.CreatedTS):
+		case readDoneUnder(read, o) && (s.ReadDone == nil || o.CreatedTS > s.ReadDone.CreatedTS):
 			s.ReadDone = &r.Outputs[i]
-		case o.State == store.OutputFailed && (failure == nil || o.CreatedTS > failure.CreatedTS):
+		case o.Stage == store.StageModelRead && o.State == store.OutputFailed && underLens(read, o) &&
+			(failure == nil || o.CreatedTS > failure.CreatedTS):
 			failure = &r.Outputs[i]
 		}
 	}
@@ -347,21 +377,64 @@ func ShelfOf(r store.ItemRecords) (Shelved, bool) {
 	return s, true
 }
 
-// NotShelvedError is an opening of an item that is not on the shelf.
+// NotShelvedError is an opening or removal of an item that is not on the
+// shelf.
 type NotShelvedError struct{ Key string }
 
 func (e *NotShelvedError) Error() string {
-	return e.Key + " is not on the shelf: a sort by " + strings.Join(shelfVerbs(), ", ") + " puts an item there"
+	return e.Key + " is not on the shelf: a sort by " + strings.Join(ShelfVerbs(), ", ") + " puts an item there"
 }
 
-func shelfVerbs() []string {
-	var out []string
-	for _, v := range Verbs {
-		if v.Shelves() {
-			out = append(out, v.Verb)
+// shelved reads the item under key and where it stands on the shelf, and
+// answers store.ErrNoItem and a NotShelvedError.
+func shelved(ctx context.Context, tx *store.Tx, key string) (Shelved, error) {
+	r, err := tx.Records(ctx, key)
+	if err != nil {
+		return Shelved{}, err
+	}
+	if r.Item.Key == "" {
+		return Shelved{}, fmt.Errorf("%s: %w", key, store.ErrNoItem)
+	}
+	s, ok := ShelfOf(r)
+	if !ok {
+		return Shelved{}, &NotShelvedError{Key: key}
+	}
+	return s, nil
+}
+
+// RemoveShelved takes the shelved item under key off the shelf for the person
+// under login, by a read decision that keeps the newest read's verdict, lens
+// and note under cause shelf-remove. So a summary's model read already queued
+// runs on, and a kept summary stays in the item's outputs. A removal of an
+// item that a removal already took off answers false and appends nothing. It
+// answers store.ErrNoItem and a NotShelvedError.
+func RemoveShelved(ctx context.Context, tx *store.Tx, key, login, clientID string) (removed bool, err error) {
+	s, err := shelved(ctx, tx, key)
+	var notShelved *NotShelvedError
+	if errors.As(err, &notShelved) {
+		read, ok, readErr := tx.NewestDecision(ctx, key, store.GateRead)
+		if readErr != nil {
+			return false, readErr
+		}
+		if ok && read.Cause == CauseShelfRemove {
+			return false, nil
 		}
 	}
-	return out
+	if err != nil {
+		return false, err
+	}
+	remove := store.Decision{
+		ItemKey: key, Gate: store.GateRead, Verdict: s.Read.Verdict, Lens: s.Read.Lens, Note: s.Read.Note,
+		DecidedBy: ByPerson(login), Cause: CauseShelfRemove,
+	}
+	if clientID != "" {
+		remove.ClientID = &clientID
+	}
+	read, err := tx.AddDecision(ctx, remove)
+	if err != nil {
+		return false, err
+	}
+	return true, reconcileModelRead(ctx, tx, key, s.Side, read)
 }
 
 // OpenShelved opens the shelved item under key for the person under login,
@@ -374,16 +447,8 @@ func shelfVerbs() []string {
 // task, which dispatches it under a new key. opened says whether this call
 // opened it. It answers store.ErrNoItem and a NotShelvedError.
 func OpenShelved(ctx context.Context, tx *store.Tx, key, login, clientID string) (s Shelved, opened bool, err error) {
-	r, err := tx.Records(ctx, key)
-	if err != nil {
+	if s, err = shelved(ctx, tx, key); err != nil {
 		return Shelved{}, false, err
-	}
-	if r.Item.Key == "" {
-		return Shelved{}, false, fmt.Errorf("%s: %w", key, store.ErrNoItem)
-	}
-	s, ok := ShelfOf(r)
-	if !ok {
-		return Shelved{}, false, &NotShelvedError{Key: key}
 	}
 	if s.State != ShelfWaiting {
 		return s, false, nil
@@ -403,9 +468,6 @@ func OpenShelved(ctx context.Context, tx *store.Tx, key, login, clientID string)
 	if err := reconcileModelRead(ctx, tx, key, s.Side, read); err != nil {
 		return Shelved{}, false, err
 	}
-	if r, err = tx.Records(ctx, key); err != nil {
-		return Shelved{}, false, err
-	}
-	s, _ = ShelfOf(r)
-	return s, true, nil
+	s, err = shelved(ctx, tx, key)
+	return s, err == nil, err
 }

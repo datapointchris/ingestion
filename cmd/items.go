@@ -257,7 +257,7 @@ func runItemsList(cmd *cobra.Command, _ []string) error {
 	if keys && asJSON {
 		return fmt.Errorf("%w: --keys and --json each choose the output, so give one", goclikit.ErrUsage)
 	}
-	answer := server.ItemsAnswer{SchemaVersion: 1, Items: []server.ItemListed{}}
+	answer := server.ItemsAnswer{SchemaVersion: server.ItemsListVersion, Items: []server.ItemListed{}}
 	// The server answers at most its own page, with a cursor to the rest.
 	for len(answer.Items) < limit {
 		q := url.Values{}

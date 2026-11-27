@@ -17,12 +17,13 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["key", "verb", "side", "destination", "missing"],
+        "required": ["key", "verb", "side", "destination", "playlist", "missing"],
         "properties": {
-          "key": {"enum": ["f", "l", "p", "m", "t", "w"]},
+          "key": {"enum": ["F", "L", "P", "S", "T", "W"]},
           "verb": {"$ref": "review-list.schema.json#/properties/verbs/items/properties/verb"},
           "side": {"$ref": "review-list.schema.json#/properties/verbs/items/properties/side"},
           "destination": {"type": ["string", "null"]},
+          "playlist": {"$ref": "review-list.schema.json#/properties/verbs/items/properties/playlist"},
           "missing": {"type": ["string", "null"]}
         }
       }

@@ -372,7 +372,7 @@ func (h itemHandlers) list(w http.ResponseWriter, r *http.Request) {
 		h.internal(w, r, "list items", err)
 		return
 	}
-	answer := ItemsAnswer{SchemaVersion: 1, Items: make([]ItemListed, 0, len(records))}
+	answer := ItemsAnswer{SchemaVersion: ItemsListVersion, Items: make([]ItemListed, 0, len(records))}
 	if next != "" {
 		answer.Next = &next
 	}
@@ -584,7 +584,7 @@ func (h itemHandlers) internal(w http.ResponseWriter, r *http.Request, what stri
 func itemAnswer(rec store.ItemRecords) ItemAnswer {
 	it := rec.Item
 	a := ItemAnswer{
-		SchemaVersion: 1,
+		SchemaVersion: ItemVersion,
 		Item: ItemView{
 			Key: it.Key, Zone: it.Zone, MediaType: it.MediaType, Title: it.Title, URL: it.URL, SourceTS: it.SourceTS, BlobSHA256: it.BlobSHA256,
 			ParentKey: it.ParentKey, FlowID: it.FlowID, Phase: rec.Phase(), WaitingAt: optional(rec.WaitingAt()), CreatedTS: it.CreatedTS,

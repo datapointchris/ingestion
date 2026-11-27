@@ -360,10 +360,9 @@ type AddedItem struct {
 }
 
 // AddPlaylistItem appends video to the end of playlist on YouTube, which
-// costs ypl 50 units of the Data API's daily quota. playlist is a YouTube id,
-// or the whole title or slug of a playlist that ypl holds. YouTube keeps a
-// second copy of a video that a playlist holds already, so a caller sends it
-// once.
+// spends ypl's Data API quota. playlist is a YouTube id, or the whole title or
+// slug of a playlist that ypl holds. YouTube keeps a second copy of a video
+// that a playlist holds already, so a caller sends it once.
 func (c *Client) AddPlaylistItem(ctx context.Context, playlist, video string) (AddedItem, error) {
 	body, err := json.Marshal(struct {
 		VideoID string `json:"video_id"`

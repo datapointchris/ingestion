@@ -79,7 +79,7 @@ func Register(r Registration) {
 		comments.Register(r.Comments.MediaType)
 	}
 	for _, d := range r.Deliverers {
-		connectors.RegisterDeliverer(d.Name, connectors.Writes{Takes: d.Takes, FilePath: d.FilePath, Chapters: d.Chapters})
+		connectors.RegisterDeliverer(d.Name, d.Writes())
 	}
 	registered[r.Name] = r
 }

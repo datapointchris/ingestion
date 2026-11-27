@@ -7,7 +7,7 @@
   "additionalProperties": false,
   "required": ["schema_version", "items"],
   "properties": {
-    "schema_version": {"const": 1},
+    "schema_version": {"const": 2},
     "next": {"description": "The cursor that the next page's after takes, and null where no item is left.", "type": ["string", "null"]},
     "items": {
       "type": "array",

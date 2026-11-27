@@ -76,7 +76,8 @@ var reviewPlaceCmd = &cobra.Command{
 		"from the item's opening. An item whose draft fell below the note floor waits\n" +
 		"as note-unclear. Placing an item that holds a draft with no --note takes that\n" +
 		"draft. Placing an item again with the same destination, cause and note\n" +
-		"changes nothing.",
+		"changes nothing. A destination whose deliverer adds the item to a playlist is\n" +
+		"refused and exits 2, because only a sort by watch picks the playlist.",
 	Example: "  ingestion review place reddit/t3_1h9xk2 reading-list --cause subreddit\n" +
 		"  ingestion review place reddit/t3_1h9xk2 work-inbox --note \"what would this change for retries?\"",
 	Args: cobra.ExactArgs(2),
@@ -98,7 +99,9 @@ var reviewSortCmd = &cobra.Command{
 		"the video to, by its YouTube id or the title that ypl holds. Left out, a watch\n" +
 		"takes serve's [watch] default_playlist. A verb whose destination the set in\n" +
 		"force does not declare, or whose deliverer does not take the item, is refused\n" +
-		"and exits 2. Sorting an item again by the same verb changes nothing.",
+		"and exits 2. A watch is refused the same way where the item's delivery holds\n" +
+		"another playlist. A sort that repeats the newest side decision, playlist\n" +
+		"included, changes nothing.",
 	Example: "  ingestion review sort youtube/aqz-KE-bpKQ learning\n" +
 		"  ingestion review sort youtube/aqz-KE-bpKQ watch --playlist \"Later\"\n" +
 		"  ingestion review sort reddit/t3_1h9xk2 personal-summarize",
@@ -226,8 +229,8 @@ func sendReview(cmd *cobra.Command, route server.Route, key, verb string, body a
 	asJSON, _ := cmd.Flags().GetBool("json")
 	api, _ := cmd.Flags().GetString("api")
 	answer, raw, err := decideReview(cmd.Context(), configPath(cmd), api, route, key, verb, body)
-	if err := argumentRefusal(err, server.CodeDestinationNotDeclared, server.CodeDestinationPushOnly, server.CodeChapterOfBook, server.CodeInvalidBody,
-		server.CodeVerbRefused); err != nil {
+	if err := argumentRefusal(err, server.CodeDestinationNotDeclared, server.CodeDestinationPushOnly, server.CodeDestinationTakesPlaylist,
+		server.CodeChapterOfBook, server.CodeInvalidBody, server.CodeVerbRefused); err != nil {
 		return err
 	}
 	w := cmd.OutOrStdout()

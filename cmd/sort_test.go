@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/datapointchris/ingestion/route"
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
+	shelfview "github.com/datapointchris/ingestion/views/shelf"
 	"github.com/datapointchris/ingestion/ypl"
 )
 
@@ -56,7 +58,11 @@ func sortSet(t *testing.T) string {
 //     queues one model read under its lens, and a second opening shows the kept summary with no
 //     model call
 //   - watch queues one ypl-watch delivery to the playlist picked, which a spent quota holds with
-//     no attempt spent, and which adds the video once however the item is sorted again
+//     no attempt spent. Its insert lands and the gateway loses the answer, so the retry finds the
+//     video in the playlist and adds it no second time. A watch naming another playlist is
+//     refused, and so is a placement on the watch destination, which picks no playlist
+//   - a shelved item leaves the shelf when the person removes it, and a second removal changes
+//     nothing
 //   - a drop keeps its cause
 func TestEachSortVerbRunsWhatItsRouteNames(t *testing.T) {
 	stand, api := newStandInYPL(t)
@@ -73,6 +79,7 @@ func TestEachSortVerbRunsWhatItsRouteNames(t *testing.T) {
 		stand.playlists["PLsaves"] = append(stand.playlists["PLsaves"], standInItem{itemID: "save-" + id, videoID: id})
 	}
 	stand.refuseInsert["watchvid001"] = time.Hour
+	stand.loseInsert["watchvid001"] = true
 
 	p := newPipeline(t, extract.Builtin(), afterStage(quiet))
 	p.apply(t, sortSet(t))
@@ -138,9 +145,7 @@ func TestEachSortVerbRunsWhatItsRouteNames(t *testing.T) {
 	if sent := learning.sent("youtube/learnkeep01"); len(sent) != 1 || sent[0].ResourceType != "video" || sent[0].URL != "https://www.youtube.com/watch?v=learnkeep01" {
 		t.Errorf("learning sent %+v, want one video resource under the item's URL", sent)
 	}
-	if said := sort("learndrop01", route.VerbLearning); !strings.Contains(said, route.CauseLearningRefused) {
-		t.Errorf("a learning sort that the gate would drop said %q, want it back in review as %s", said, route.CauseLearningRefused)
-	}
+	sort("learndrop01", route.VerbLearning)
 	out, err := runCLI(t, "review", "list", "--json", "--config", p.config)
 	if err != nil {
 		t.Fatal(err)
@@ -161,9 +166,7 @@ func TestEachSortVerbRunsWhatItsRouteNames(t *testing.T) {
 
 	dispatches := len(dispatch.starts())
 	for key, verb := range map[string]string{"relatevid01": route.VerbPersonalRelate, "summvideo01": route.VerbPersonalSummarize, "techvideo01": route.VerbTechnicalSummarize} {
-		if said := sort(key, verb); !strings.Contains(said, "Shelved") {
-			t.Errorf("review sort %s %s said %q, want it shelved", key, verb, said)
-		}
+		sort(key, verb)
 	}
 	p.run(t, p.modelRead(t, models, nil, sentenceScanner{}), p.noteDrafter(t, models, nil))
 	if got := len(dispatch.starts()); got != dispatches+1 || p.count(t, `SELECT count(*) FROM items WHERE phase = 'shelved'`) != 3 {
@@ -215,6 +218,9 @@ func TestEachSortVerbRunsWhatItsRouteNames(t *testing.T) {
 	if _, err := runCLI(t, "review", "sort", "youtube/watchvid001", route.VerbWatch, "--config", p.config); err == nil {
 		t.Error("a watch that picks no playlist, where serve names no default, was not refused")
 	}
+	if out, err := runCLI(t, "review", "place", "youtube/watchvid001", "watch", "--config", p.config); err == nil {
+		t.Errorf("a placement on the watch destination printed %q, want it refused, because only a watch sort picks a playlist", out)
+	}
 	sort("watchvid001", route.VerbWatch, "--playlist", "Later")
 	if n := p.count(t, `SELECT count(*) FROM deliveries WHERE item_key = ? AND destination = 'watch' AND playlist = 'Later'`, "youtube/watchvid001"); n != 1 {
 		t.Fatalf("watch queued %d deliveries to the watch destination's picked playlist, want one", n)
@@ -226,9 +232,12 @@ func TestEachSortVerbRunsWhatItsRouteNames(t *testing.T) {
 	}
 	p.advance(2 * time.Hour)
 	p.run(t, watch)
-	sort("watchvid001", route.VerbWatch, "--playlist", "Other")
 	p.advance(2 * time.Hour)
 	p.run(t, watch)
+	if out, err := runCLI(t, "review", "sort", "youtube/watchvid001", route.VerbWatch, "--playlist", "Other", "--config", p.config); err == nil {
+		t.Errorf("a watch to Other after one to Later printed %q, want it refused", out)
+	}
+	sort("watchvid001", route.VerbWatch, "--playlist", "Later")
 	if shown := p.item(t, "youtube/watchvid001"); len(stand.inserts) != 1 || stand.inserts[0] != "PLlater/watchvid001" ||
 		len(shown.Deliveries) != 1 || shown.Deliveries[0].Outcome != store.DeliveryDelivered || text(shown.Deliveries[0].Playlist) != "Later" {
 		t.Errorf("ypl saw inserts %v and the item holds deliveries %s, want the video added once to Later", stand.inserts, jsonOf(shown.Deliveries))
@@ -243,13 +252,46 @@ func TestEachSortVerbRunsWhatItsRouteNames(t *testing.T) {
 
 	t.Setenv("COLUMNS", "160")
 	t.Setenv("LINES", "30")
-	frame, err := runCLI(t, "tui", "--view", "shelf", "--once", "--config", p.config)
-	if err != nil || !strings.Contains(frame, "personal-relate") || !strings.Contains(frame, "opened") || !strings.Contains(frame, "done") {
-		t.Errorf("the shelf tab's frame lacks its rows: %v\n%s", err, frame)
+	if frame, err := runCLI(t, "tui", "--view", "shelf", "--once", "--config", p.config); err != nil {
+		t.Errorf("the shelf tab drew no frame: %v\n%s", err, frame)
 	}
 	snap, err := runCLI(t, "tui", "--view", "shelf", "--json", "--config", p.config)
-	if err != nil || !strings.Contains(snap, "The summary of the video.") {
-		t.Fatalf("the shelf tab's snapshot lacks the kept summary: %v\n%s", err, snap)
+	if err != nil {
+		t.Fatalf("tui --view shelf --json failed: %v", err)
 	}
 	holdsTo(t, []byte(snap), "tui-shelf.schema.json")
+	var tab shelfview.Snapshot
+	if err := json.Unmarshal([]byte(snap), &tab); err != nil {
+		t.Fatal(err)
+	}
+	states := map[string]string{}
+	for _, it := range tab.Items {
+		states[it.Verb] = it.State
+		if it.OpensHere != (it.Verb == route.VerbPersonalRelate) {
+			t.Errorf("the shelf says %s opens here %v", it.Verb, it.OpensHere)
+		}
+	}
+	if want := map[string]string{route.VerbPersonalRelate: route.ShelfOpened, route.VerbPersonalSummarize: route.ShelfDone, route.VerbTechnicalSummarize: route.ShelfDone}; !maps.Equal(states, want) {
+		t.Errorf("the shelf tab holds the verbs and states %v, want %v", states, want)
+	}
+
+	remove := func() server.ShelfRemoveAnswer {
+		t.Helper()
+		out, err := runCLI(t, "shelf", "remove", "youtube/summvideo01", "--json", "--config", p.config)
+		var answer server.ShelfRemoveAnswer
+		if err != nil || json.Unmarshal([]byte(out), &answer) != nil {
+			t.Fatalf("shelf remove printed %q, %v", out, err)
+		}
+		holdsTo(t, []byte(out), "shelf-remove.schema.json")
+		return answer
+	}
+	if first, second := remove(), remove(); !first.Removed || second.Removed {
+		t.Errorf("two removals answered %+v then %+v, want the first to remove it and the second to change nothing", first, second)
+	}
+	if listed, err := runCLI(t, "shelf", "list", "--json", "--config", p.config); err != nil || strings.Contains(listed, "summvideo01") {
+		t.Errorf("after its removal the shelf lists %q, %v, want no summvideo01", listed, err)
+	}
+	if shown := p.item(t, "youtube/summvideo01"); shown.Item.Phase == store.PhaseShelved || len(shown.Outputs) == 0 {
+		t.Errorf("the removed item reads phase %s with %d outputs, want it off the shelf with its summary kept", shown.Item.Phase, len(shown.Outputs))
+	}
 }

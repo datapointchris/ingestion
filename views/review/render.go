@@ -97,7 +97,8 @@ func verbBar(h held, unread bool, width int) []gotermboard.Line {
 		return nil
 	}
 	if h.verbs == nil {
-		return []gotermboard.Line{{gotermboard.C(verbMissing(h, route.VerbFleetRelate), gotermboard.Yellow)}}
+		_, why := queuedVerb(h, route.VerbFleetRelate)
+		return []gotermboard.Line{{gotermboard.C(why, gotermboard.Yellow)}}
 	}
 	var lines []gotermboard.Line
 	var line gotermboard.Line
@@ -113,7 +114,7 @@ func verbBar(h held, unread bool, width int) []gotermboard.Line {
 		line, used = append(line, gotermboard.C(key, gotermboard.Bold), gotermboard.C(label, color)), used+wide
 	}
 	for _, v := range h.verbs {
-		key, ok := VerbKeys[v.Verb]
+		bound, ok := VerbBindings[v.Verb]
 		if !ok {
 			continue
 		}
@@ -121,21 +122,21 @@ func verbBar(h held, unread bool, width int) []gotermboard.Line {
 		if v.Missing != nil {
 			color = gotermboard.Yellow
 		}
-		add(key, label, color)
+		add(bound.Key, label, color)
 	}
 	add(KeyDrop, " drop", "")
 	return append(lines, line)
 }
 
 // verbLabel is a verb with where it sends an item, as `learning → learning-plan`, a shelf's as
-// `personal-relate → shelf`, and a watch's with the playlist that enter takes.
+// `personal-relate → shelf`, and one that picks a playlist with the playlist that enter takes.
 func verbLabel(v server.ReviewVerb, watchDefault *string) string {
 	switch {
 	case v.Missing != nil:
 		return v.Verb + " → no destination"
 	case v.Destination == nil:
 		return v.Verb + " → shelf"
-	case v.Verb == route.VerbWatch && watchDefault != nil:
+	case v.Playlist && watchDefault != nil:
 		return v.Verb + " → " + *v.Destination + ", " + outsider(*watchDefault) + " unless picked"
 	}
 	return v.Verb + " → " + *v.Destination
@@ -447,8 +448,8 @@ func (b *Board) Snapshot(now time.Time) Snapshot {
 		snap.Verbs = []VerbKey{}
 	}
 	for _, v := range h.verbs {
-		if key, ok := VerbKeys[v.Verb]; ok {
-			snap.Verbs = append(snap.Verbs, VerbKey{Key: key, ReviewVerb: v})
+		if bound, ok := VerbBindings[v.Verb]; ok {
+			snap.Verbs = append(snap.Verbs, VerbKey{Key: bound.Key, ReviewVerb: v})
 		}
 	}
 	if h.destinations != nil {

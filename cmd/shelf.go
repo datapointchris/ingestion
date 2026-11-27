@@ -22,14 +22,16 @@ import (
 
 var shelfCmd = &cobra.Command{
 	Use:   "shelf",
-	Short: "Read the items sorted to the shelf, and open one, which runs what its verb names",
-	Long: "A sort by personal-relate, personal-summarize or technical-summarize puts an\n" +
-		"item on the shelf, where nothing runs until you open it. Opening a relate hands\n" +
-		"the item's parse to " + push.Program + " relate on this machine. Opening a summary\n" +
-		"queues one model read under its lens, personal or learning, and keeps it, so a\n" +
-		"second opening shows the same summary with no model call.",
+	Short: "Read the items sorted to the shelf, open one, which runs what its verb names, or take one off",
+	Long: "A sort by " + strings.Join(route.ShelfVerbs(), ", ") + " puts an item on the\n" +
+		"shelf, where nothing runs until you open it. Opening a relate hands the item's\n" +
+		"parse to " + push.Program + " relate on this machine. Opening a summary queues one model\n" +
+		"read under its lens and keeps it, so a second opening shows the same summary with\n" +
+		"no model call. An opened item stays on the shelf until `ingestion shelf remove`\n" +
+		"takes it off.",
 	Example: "  ingestion shelf list\n" +
-		"  ingestion shelf open youtube/aqz-KE-bpKQ",
+		"  ingestion shelf open youtube/aqz-KE-bpKQ\n" +
+		"  ingestion shelf remove youtube/aqz-KE-bpKQ",
 }
 
 var shelfListCmd = &cobra.Command{
@@ -72,15 +74,29 @@ var shelfOpenCmd = &cobra.Command{
 	RunE: runShelfOpen,
 }
 
+var shelfRemoveCmd = &cobra.Command{
+	Use:   "remove <key or url>",
+	Short: "Take an item off the shelf, keeping everything it holds",
+	Long: "Takes the item off the shelf as your decision, recorded under person:<login>\n" +
+		"with cause " + route.CauseShelfRemove + ". The decision keeps the newest read's verdict and\n" +
+		"lens, so a summary's model read already queued runs on, and a kept summary stays\n" +
+		"in the item, which `ingestion items show` prints. Removing it again changes\n" +
+		"nothing. An item that is not on the shelf exits 2.",
+	Example: "  ingestion shelf remove youtube/aqz-KE-bpKQ",
+	Args:    cobra.ExactArgs(1),
+	RunE:    runShelfRemove,
+}
+
 func init() {
 	goclikit.AsNamespace(shelfCmd)
 	shelfListCmd.Flags().Bool("json", false, "Print the service's answer as JSON")
 	shelfOpenCmd.Flags().Bool("json", false, "Print the service's answer, or for a relate "+push.Program+"'s, as JSON")
-	for _, c := range []*cobra.Command{shelfListCmd, shelfOpenCmd} {
+	shelfRemoveCmd.Flags().Bool("json", false, "Print the service's answer as JSON")
+	for _, c := range []*cobra.Command{shelfListCmd, shelfOpenCmd, shelfRemoveCmd} {
 		c.Flags().String("api", "", "Call this server rather than the config file's api")
 		addConfigFlag(c)
 	}
-	shelfCmd.AddCommand(shelfListCmd, shelfOpenCmd)
+	shelfCmd.AddCommand(shelfListCmd, shelfOpenCmd, shelfRemoveCmd)
 	rootCmd.AddCommand(shelfCmd)
 }
 
@@ -127,7 +143,7 @@ func runShelfOpen(cmd *cobra.Command, args []string) error {
 	}
 	out, stderr := cmd.OutOrStdout(), cmd.ErrOrStderr()
 	it := answer.Item
-	if it.Lens == nil {
+	if it.OpensHere {
 		_, _ = fmt.Fprintf(stderr, "opened %s, sorted by %s: handing it to %s relate\n", it.Key, it.Verb, push.Program)
 		return relateShelved(ctx, config, api, it.Key, asJSON, out, stderr)
 	}
@@ -185,5 +201,37 @@ func writeShelfSummary(w io.Writer, a server.ShelfOpenAnswer) error {
 		opened = "Already opened"
 	}
 	_, err := fmt.Fprintf(w, "%s %s: a model reads it under the %s lens. Open it again once it is done to read its summary.\n", opened, it.Key, *it.Lens)
+	return err
+}
+
+// removeShelved posts the removal of the item under key from the shelf, on
+// the server the config file at path names, or api where it is set, and
+// answers the service's answer and its body as it came.
+func removeShelved(ctx context.Context, path, api, key string) (server.ShelfRemoveAnswer, []byte, error) {
+	var answer server.ShelfRemoveAnswer
+	raw, err := sendJSON(ctx, path, api, server.RouteShelfRemove, "/api/v1/shelf/"+url.PathEscape(strings.TrimSpace(key))+"/remove", []byte("{}"), &answer)
+	return answer, raw, err
+}
+
+// removedSentence says what a removal did.
+func removedSentence(a server.ShelfRemoveAnswer) string {
+	if !a.Removed {
+		return a.Key + " was already off the shelf, so nothing changed."
+	}
+	return "Took " + a.Key + " off the shelf."
+}
+
+func runShelfRemove(cmd *cobra.Command, args []string) error {
+	asJSON, _ := cmd.Flags().GetBool("json")
+	api, _ := cmd.Flags().GetString("api")
+	answer, raw, err := removeShelved(cmd.Context(), configPath(cmd), api, args[0])
+	if err := argumentRefusal(err, server.CodeNotShelved); err != nil {
+		return err
+	}
+	if asJSON {
+		_, err := cmd.OutOrStdout().Write(raw)
+		return err
+	}
+	_, err = fmt.Fprintln(cmd.OutOrStdout(), removedSentence(answer))
 	return err
 }

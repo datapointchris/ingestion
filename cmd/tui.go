@@ -78,7 +78,7 @@ func tuiTabList() []tuiTab {
 				"\n" +
 				tuiVerbLines() +
 				"\n" +
-				"w asks which playlist, listing the service's default first and then the playlists\n" +
+				review.VerbBindings[route.VerbWatch].Key + " asks which playlist, listing the service's default first and then the playlists\n" +
 				"that `" + playlistsProgram + " playlists list` reads on this machine. d drops the item after asking\n" +
 				"what decided it. n writes a note in $VISUAL or $EDITOR, then places the item with\n" +
 				"the note on the destination you pick. Each decision keeps the card as it was drawn\n" +
@@ -94,12 +94,13 @@ func tuiTabList() []tuiTab {
 		},
 		{
 			tabShelf,
-			"shelf lists each item sorted by personal-relate, personal-summarize or\n" +
-				"technical-summarize, where nothing runs until you open it, grouped by its verb. o\n" +
-				"opens the item under the cursor. A relate hands the terminal to `ingestion shelf\n" +
-				"open`, which hands the item to " + push.Program + " relate on this machine, and enter returns to\n" +
-				"the board. A summary queues its model read once, and the side panel shows the\n" +
-				"summary once kept. Opening it again runs nothing new. w opens its URL.",
+			"shelf lists each item sorted by " + strings.Join(route.ShelfVerbs(), ", ") + ",\n" +
+				"where nothing runs until you open it, grouped by its verb. " + shelf.KeyOpen + " opens the item\n" +
+				"under the cursor. A relate hands the terminal to `ingestion shelf open`, which\n" +
+				"hands the item to " + push.Program + " relate on this machine, and enter returns to the board. A\n" +
+				"summary queues its model read once, and the side panel shows the summary once\n" +
+				"kept. Opening it again runs nothing new. " + shelf.KeyRemove + " takes the item off the shelf, and " + shelf.KeyBrowser + "\n" +
+				"opens its URL.",
 			func(ctx context.Context, o tuiOptions) tuiBoard {
 				return shelfTab{shelf.NewBoard(ctx, shelfService(o), shelf.Outside{Open: openInBrowser})}
 			},
@@ -111,7 +112,7 @@ func tuiTabList() []tuiTab {
 func tuiVerbLines() string {
 	var b strings.Builder
 	for _, v := range route.Verbs {
-		fmt.Fprintf(&b, "  %s  %-20s %s\n", review.VerbKeys[v.Verb], v.Verb, v.Help)
+		fmt.Fprintf(&b, "  %s  %-20s %s\n", review.VerbBindings[v.Verb].Key, v.Verb, v.Help)
 	}
 	return b.String()
 }
@@ -259,6 +260,14 @@ func (s shelfService) Shelf(ctx context.Context) (server.ShelfAnswer, error) {
 	var answer server.ShelfAnswer
 	_, err := getJSON(ctx, s.config, s.api, server.RouteShelf, "/api/v1/shelf", &answer)
 	return answer, refusalWords(err)
+}
+
+func (s shelfService) Remove(ctx context.Context, key string) (string, error) {
+	answer, _, err := removeShelved(ctx, s.config, s.api, key)
+	if err != nil {
+		return "", refusalWords(err)
+	}
+	return removedSentence(answer), nil
 }
 
 func (s shelfService) Open(ctx context.Context, key string) (string, error) {

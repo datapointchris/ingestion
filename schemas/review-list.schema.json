@@ -7,7 +7,7 @@
   "additionalProperties": false,
   "required": ["schema_version", "items"],
   "properties": {
-    "schema_version": {"const": 2},
+    "schema_version": {"const": 3},
     "items": {
       "type": "array",
       "items": {
@@ -92,16 +92,17 @@
       }
     },
     "verbs": {
-      "description": "Each sort verb that POST /api/v1/review/{key}/sort takes, in the order the review tab binds them, with the destination it places an item on under the set in force. destination is null for a verb that places on none, as a shelf does, and missing where the set declares none that the verb takes, so the verb refuses. Null where the set in force could not be read.",
+      "description": "Each sort verb that POST /api/v1/review/{key}/sort takes, in the order the review tab binds them, with the destination it places an item on under the set in force. destination is null for a verb that places on none, as a shelf does, and missing where the set declares none that the verb takes, so the verb refuses. playlist is true for a verb whose sort picks a playlist. Null where the set in force could not be read.",
       "type": ["array", "null"],
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["verb", "side", "destination", "missing"],
+        "required": ["verb", "side", "destination", "playlist", "missing"],
         "properties": {
           "verb": {"enum": ["fleet-relate", "learning", "personal-relate", "personal-summarize", "technical-summarize", "watch"]},
           "side": {"enum": ["personal", "fleet", null]},
           "destination": {"type": ["string", "null"]},
+          "playlist": {"description": "Whether the verb's deliverer adds the item to the playlist that the sort picks, or to watch_default_playlist where it picks none.", "type": "boolean"},
           "missing": {"description": "Why the verb places nothing under the set in force, and null where it places.", "type": ["string", "null"]}
         }
       }

@@ -9,7 +9,8 @@ import (
 	"github.com/datapointchris/ingestion/store"
 )
 
-// CodeNotShelved refuses an opening of an item that is not on the shelf.
+// CodeNotShelved refuses an opening or removal of an item that is not on the
+// shelf.
 const CodeNotShelved = "not_shelved"
 
 // ShelfAnswer is what GET /api/v1/shelf answers:
@@ -29,9 +30,19 @@ type ShelfOpenAnswer struct {
 	Item          ShelfItem `json:"item"`
 }
 
-// ShelfItem is one item on the shelf and where it stands. Summary is the
-// model read's answer once done, a model's over outsider text, and Error why
-// it failed.
+// ShelfRemoveAnswer is what POST /api/v1/shelf/{key}/remove answers:
+// schemas/shelf-remove.schema.json. Removed says whether this request took
+// the item off the shelf, and false where an earlier removal had.
+type ShelfRemoveAnswer struct {
+	SchemaVersion int    `json:"schema_version"`
+	Key           string `json:"key"`
+	Removed       bool   `json:"removed"`
+}
+
+// ShelfItem is one item on the shelf and where it stands. OpensHere says
+// opening it runs its verb on the machine that opens it, as a relate does.
+// Summary is the model read's answer once done, a model's over outsider text,
+// and Error why it failed.
 type ShelfItem struct {
 	Key       string          `json:"key"`
 	Zone      store.Zone      `json:"zone"`
@@ -40,6 +51,7 @@ type ShelfItem struct {
 	MediaType string          `json:"media_type"`
 	Verb      string          `json:"verb"`
 	Lens      *string         `json:"lens"`
+	OpensHere bool            `json:"opens_here"`
 	State     string          `json:"state"`
 	SortedBy  string          `json:"sorted_by"`
 	SortedTS  string          `json:"sorted_ts"`
@@ -51,7 +63,7 @@ type ShelfItem struct {
 func shelfItem(r store.ItemRecords, s route.Shelved) ShelfItem {
 	item := ShelfItem{
 		Key: r.Item.Key, Zone: r.Item.Zone, Title: r.Item.Title, URL: r.Item.URL, MediaType: r.Item.MediaType,
-		Verb: s.Verb, Lens: optional(s.Lens), State: s.State, SortedBy: s.Side.DecidedBy, SortedTS: s.Side.DecidedTS, Error: s.Error,
+		Verb: s.Verb, Lens: optional(s.Lens), OpensHere: s.OpensHere, State: s.State, SortedBy: s.Side.DecidedBy, SortedTS: s.Side.DecidedTS, Error: s.Error,
 	}
 	if s.Opened != nil {
 		item.OpenedTS = &s.Opened.DecidedTS
@@ -116,4 +128,40 @@ func (h reviewHandlers) open(w http.ResponseWriter, r *http.Request) {
 		h.log.Info("a person opened a shelved item", "item", key, "verb", answer.Item.Verb, "decided_by", route.ByPerson(login), "client", clientID)
 	}
 	JSON(w, http.StatusOK, answer)
+}
+
+func (h reviewHandlers) remove(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Login string `json:"login,omitempty"`
+	}
+	if r.ContentLength != 0 && !decode(w, r, &body) {
+		return
+	}
+	key, login, clientID, ok := h.decidedItem(w, r, body.Login)
+	if !ok {
+		return
+	}
+	var removed bool
+	err := h.store.Update(r.Context(), func(tx *store.Tx) error {
+		var err error
+		removed, err = route.RemoveShelved(r.Context(), tx, key, login, clientID)
+		return err
+	})
+	var notShelved *route.NotShelvedError
+	switch {
+	case errors.As(err, &notShelved):
+		Refuse(w, http.StatusConflict, CodeNotShelved, "%v", notShelved)
+		return
+	case errors.Is(err, store.ErrNoItem):
+		Refuse(w, http.StatusNotFound, CodeItemNotFound, "no item %s", key)
+		return
+	case err != nil:
+		h.log.ErrorContext(r.Context(), "take an item off the shelf", "error", err, "item", key)
+		Refuse(w, http.StatusInternalServerError, CodeInternal, "the server could not take the item off the shelf")
+		return
+	}
+	if removed {
+		h.log.Info("a person took an item off the shelf", "item", key, "decided_by", route.ByPerson(login), "client", clientID)
+	}
+	JSON(w, http.StatusOK, ShelfRemoveAnswer{SchemaVersion: 1, Key: key, Removed: removed})
 }

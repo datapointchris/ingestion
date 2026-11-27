@@ -148,9 +148,13 @@ func (h connectorHandlers) push(w http.ResponseWriter, r *http.Request) {
 		return connectors.Delivered(r.Context(), tx, c)
 	})
 	var undeclared *route.NotDeclaredError
+	var playlist *route.PlaylistDestinationError
 	switch {
 	case errors.As(err, &undeclared):
 		Refuse(w, http.StatusUnprocessableEntity, CodeDestinationNotDeclared, "%v, so nothing was stored", undeclared)
+		return
+	case errors.As(err, &playlist):
+		Refuse(w, http.StatusUnprocessableEntity, CodeDestinationTakesPlaylist, "%v, so nothing was stored", playlist)
 		return
 	case err != nil:
 		h.internal(w, r, "land the push", err)

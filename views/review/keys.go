@@ -25,9 +25,12 @@ import (
 func (b *Board) Actions() []gotermboard.Action {
 	var actions []gotermboard.Action
 	for _, v := range route.Verbs {
-		key := VerbKeys[v.Verb]
+		bound, ok := VerbBindings[v.Verb]
+		if !ok {
+			continue
+		}
 		actions = append(actions, gotermboard.Action{
-			Keys: []string{key}, Label: v.Verb + ", at once, as your decision: " + v.Help, Footer: key + " " + verbFooters[v.Verb], Run: b.onItem(b.sortBy(v)),
+			Keys: []string{bound.Key}, Label: v.Verb + ", at once, as your decision: " + v.Help, Footer: bound.Key + " " + bound.Footer, Run: b.onItem(b.sortBy(v)),
 		})
 	}
 	return append(actions,
@@ -55,69 +58,60 @@ func sortLabel() string {
 	return "next sort, in turn: " + strings.Join(words, ", then ")
 }
 
-// The keys of the sort verbs, the drop and the marks.
+// The keys of the drop and the marks.
 const (
-	KeyFleetRelate        = "f"
-	KeyLearning           = "l"
-	KeyPersonalRelate     = "p"
-	KeyPersonalSummarize  = "m"
-	KeyTechnicalSummarize = "t"
-	KeyWatch              = "w"
-	KeyDrop               = "d"
-	KeyLowQuality         = "x"
-	KeyRead               = "r"
-	KeyComments           = "c"
+	KeyDrop       = "d"
+	KeyLowQuality = "x"
+	KeyRead       = "r"
+	KeyComments   = "c"
 )
 
-// VerbKeys is the key that sorts by each of route.Verbs.
-var VerbKeys = map[string]string{
-	route.VerbFleetRelate:        KeyFleetRelate,
-	route.VerbLearning:           KeyLearning,
-	route.VerbPersonalRelate:     KeyPersonalRelate,
-	route.VerbPersonalSummarize:  KeyPersonalSummarize,
-	route.VerbTechnicalSummarize: KeyTechnicalSummarize,
-	route.VerbWatch:              KeyWatch,
+// VerbBinding is the key that sorts by one verb, and the word the footer names the verb by.
+type VerbBinding struct{ Key, Footer string }
+
+// VerbBindings is the binding of each of route.Verbs, which a test holds to route.Verbs and to the
+// snapshot's schema. Each key is uppercase, since every fleet TUI keeps the lowercase letters it
+// would take: f the summaries, p the panel, t going to what the row names.
+var VerbBindings = map[string]VerbBinding{
+	route.VerbFleetRelate:        {Key: "F", Footer: "fleet"},
+	route.VerbLearning:           {Key: "L", Footer: "learn"},
+	route.VerbPersonalRelate:     {Key: "P", Footer: "relate"},
+	route.VerbPersonalSummarize:  {Key: "S", Footer: "summarize"},
+	route.VerbTechnicalSummarize: {Key: "T", Footer: "technical"},
+	route.VerbWatch:              {Key: "W", Footer: "watch"},
 }
 
-// verbFooters is each verb as the footer names it beside its key.
-var verbFooters = map[string]string{
-	route.VerbFleetRelate:        "fleet",
-	route.VerbLearning:           "learn",
-	route.VerbPersonalRelate:     "relate",
-	route.VerbPersonalSummarize:  "summarize",
-	route.VerbTechnicalSummarize: "technical",
-	route.VerbWatch:              "watch",
-}
-
-// sortBy sorts it by v, once the queue says the set in force takes v. A watch first asks for the
-// playlist.
+// sortBy sorts it by v, once the queue says the set in force takes v. A verb whose sort picks a
+// playlist first asks for it.
 func (b *Board) sortBy(v route.VerbRoute) func(*gotermboard.Model, item) tea.Cmd {
 	return func(m *gotermboard.Model, it item) tea.Cmd {
 		h := b.queue.Value()
-		if why := verbMissing(h, v.Verb); why != "" {
+		verb, why := queuedVerb(h, v.Verb)
+		if why != "" {
 			m.Say(why)
 			return nil
 		}
-		if v.Verb == route.VerbWatch {
-			return b.watch(m, it, h.watchDefault)
+		if verb.Playlist {
+			return b.watch(m, it, verb.Verb, h.watchDefault)
 		}
 		return b.sortWrite(m, it, v.Verb, "")
 	}
 }
 
-// verbMissing is why the verb sorts nothing under the queue's read, or empty where it sorts.
-func verbMissing(h held, verb string) string {
+// queuedVerb is the verb as the queue's read answers it, and why it sorts nothing, or empty where
+// it sorts.
+func queuedVerb(h held, verb string) (server.ReviewVerb, string) {
 	if h.verbs == nil {
-		return "the queue came without its verbs, so no verb's key sorts: the service could not read its set in force, or predates the verbs"
+		return server.ReviewVerb{}, "the queue came without its verbs, so no verb's key sorts: the service could not read its set in force, or predates the verbs"
 	}
 	i := slices.IndexFunc(h.verbs, func(v server.ReviewVerb) bool { return v.Verb == verb })
 	switch {
 	case i < 0:
-		return "the service names no verb " + verb + ", so " + VerbKeys[verb] + " sorts nothing"
+		return server.ReviewVerb{}, "the service names no verb " + verb + ", so " + VerbBindings[verb].Key + " sorts nothing"
 	case h.verbs[i].Missing != nil:
-		return *h.verbs[i].Missing
+		return h.verbs[i], *h.verbs[i].Missing
 	}
-	return ""
+	return h.verbs[i], ""
 }
 
 // sortWrite sorts it by verb, and a watch into playlist, where it names one.
@@ -132,11 +126,11 @@ func (b *Board) sortWrite(m *gotermboard.Model, it item, verb, playlist string) 
 	return b.writeRow(m, key, doing, func() (string, error) { return b.service.Sort(b.ctx, key, body) })
 }
 
-// watch asks which playlist the video goes to, listing the service's default first and then each
-// playlist this machine reads, numbered. Enter takes the default, a number its playlist, and any
-// other text names a playlist by its title or YouTube id. The first watch begins the read, so its
-// list shows on the next.
-func (b *Board) watch(m *gotermboard.Model, it item, fallback *string) tea.Cmd {
+// watch asks which playlist a sort by verb adds the video to, listing the service's default first
+// and then each playlist this machine reads, numbered. Enter takes the default, a number its
+// playlist, and any other text names a playlist by its title or YouTube id. The first watch begins
+// the read, so its list shows on the next.
+func (b *Board) watch(m *gotermboard.Model, it item, verb string, fallback *string) tea.Cmd {
 	if b.wantPlaylists.CompareAndSwap(false, true) {
 		b.playlists.Force()
 	}
@@ -153,9 +147,9 @@ func (b *Board) watch(m *gotermboard.Model, it item, fallback *string) tea.Cmd {
 	case failed != nil:
 		listing = append(listing, gotermboard.Line{gotermboard.C("the playlists were not read: "+(*failed).Error(), gotermboard.Yellow)})
 	case len(lists) == 0 || (fallback != nil && len(lists) == 1):
-		listing = append(listing, gotermboard.Line{gotermboard.C("reading the playlists; "+KeyWatch+" again lists them once read", "")})
+		listing = append(listing, gotermboard.Line{gotermboard.C("reading the playlists; "+VerbBindings[verb].Key+" again lists them once read", "")})
 	}
-	text := "watch " + outsider(it.Key) + " in which playlist? Type its number, title or id"
+	text := verb + " " + outsider(it.Key) + " in which playlist? Type its number, title or id"
 	if fallback != nil {
 		text += ", or enter for " + outsider(*fallback)
 	}
@@ -170,7 +164,7 @@ func (b *Board) watch(m *gotermboard.Model, it item, fallback *string) tea.Cmd {
 				m.Say("no playlist named, and the service names no default, so nothing was sorted")
 				return nil
 			}
-			return b.sortWrite(m, it, route.VerbWatch, playlist)
+			return b.sortWrite(m, it, verb, playlist)
 		},
 	})
 	return nil

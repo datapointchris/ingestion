@@ -198,3 +198,39 @@ func TestTheReviewReasonsAreTheReviewListSchemasReasons(t *testing.T) {
 		t.Errorf("route.ReviewReasons names %v, and the schema's reason enum %v", names, enum)
 	}
 }
+
+// A verb that the table gains and a schema's enum lacks fails a reader that
+// validates the answer. So each schema that names the verbs names
+// route.Verbs, and the shelf-list names the shelf verbs.
+func TestTheVerbSchemasNameTheVerbTable(t *testing.T) {
+	enumAt := func(file string, path ...string) []string {
+		raw, err := schemas.Files.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var node any
+		if err := json.Unmarshal(raw, &node); err != nil {
+			t.Fatal(err)
+		}
+		for _, step := range append(path, "enum") {
+			node = node.(map[string]any)[step]
+		}
+		var enum []string
+		for _, v := range node.([]any) {
+			enum = append(enum, v.(string))
+		}
+		return slices.Sorted(slices.Values(enum))
+	}
+	for _, c := range []struct {
+		file  string
+		path  []string
+		verbs []string
+	}{
+		{"review-list.schema.json", []string{"properties", "verbs", "items", "properties", "verb"}, route.VerbNames()},
+		{"shelf-list.schema.json", []string{"$defs", "shelved", "properties", "verb"}, route.ShelfVerbs()},
+	} {
+		if enum, want := enumAt(c.file, c.path...), slices.Sorted(slices.Values(c.verbs)); !slices.Equal(enum, want) {
+			t.Errorf("%s names the verbs %v, and the table %v", c.file, enum, want)
+		}
+	}
+}

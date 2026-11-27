@@ -12,13 +12,16 @@ import (
 // says it writes an item that holds bytes by its file: it takes such an item
 // only with a live home below the root that SetDelivererRoot names, and its
 // delivery keeps that home's path. An item that holds no bytes, such as a
-// video, reads no home, and Takes alone decides it. Chapters says it writes a book's chapter as part of its book's
-// record, so a chapter waits for its book's delivery and keeps that record's
-// id. Takes and FilePath read no chapter, which holds no bytes or home.
+// video, reads no home, and Takes alone decides it. Chapters says it writes a
+// book's chapter as part of its book's record, so a chapter waits for its
+// book's delivery and keeps that record's id. Takes and FilePath read no
+// chapter, which holds no bytes or home. Playlist says it adds an item to the
+// playlist that a person's sort picked, and refuses a delivery without one.
 type Writes struct {
 	Takes    func(store.Item) error
 	FilePath bool
 	Chapters bool
+	Playlist bool
 }
 
 // deliverers holds what each deliverer that this build registers writes, by
@@ -43,6 +46,12 @@ func RegisterDeliverer(name string, w Writes) {
 	}
 	deliverers[name] = w
 }
+
+// TakesPlaylist says whether the deliverer called name adds an item to the
+// playlist that a person's sort picked. No tag, rule, side default or
+// placement carries a playlist, so only a sort places an item on such a
+// deliverer's destination.
+func TakesPlaylist(name string) bool { return deliverers[name].Playlist }
 
 // SetDelivererRoot names root as the [serve.homes] root below which the
 // deliverer called name reads each item's file. serve calls it for each

@@ -418,6 +418,22 @@ const (
 	VerdictShelf = "shelf"
 )
 
+// The causes of a person's read decisions on a shelved item. CauseShelfOpen
+// opens it, and CauseShelfRemove takes it off the shelf, keeping the newest
+// read's verdict and lens.
+const (
+	CauseShelfOpen   = "shelf-open"
+	CauseShelfRemove = "shelf-remove"
+)
+
+// The standings of an item on the shelf, as ItemRecords.ShelfStanding answers
+// them: waiting for a person to open it, and opened. An item off the shelf
+// stands at "".
+const (
+	ShelfWaiting = "waiting"
+	ShelfOpened  = "opened"
+)
+
 // Who decided, as decided_by spells it, beside the forms that the DecidedBy
 // functions write.
 const (

@@ -49,15 +49,19 @@ type ItemCommentsAnswer struct {
 // token whose body names another person's login. CodeChapterOfBook refuses a
 // placement of a book's chapter, which takes its book's placement.
 // CodeDestinationPushOnly refuses a placement from review on a push-only
-// destination, which only a push places an item at. CodeVerbRefused refuses
-// a sort that its verb cannot carry out on the item, such as a watch that
-// names no playlist where serve names no default.
+// destination, which only a push places an item at.
+// CodeDestinationTakesPlaylist refuses a placement on a destination whose
+// deliverer adds the item to the playlist that a sort picks, which only a
+// sort places an item at. CodeVerbRefused refuses a sort that its verb cannot
+// carry out on the item, such as a watch that names no playlist where serve
+// names no default.
 const (
-	CodeDestinationNotDeclared = "destination_not_declared"
-	CodeActingForAnother       = "acting_for_another"
-	CodeChapterOfBook          = "chapter_of_book"
-	CodeDestinationPushOnly    = "destination_push_only"
-	CodeVerbRefused            = "verb_refused"
+	CodeDestinationNotDeclared   = "destination_not_declared"
+	CodeActingForAnother         = "acting_for_another"
+	CodeChapterOfBook            = "chapter_of_book"
+	CodeDestinationPushOnly      = "destination_push_only"
+	CodeDestinationTakesPlaylist = "destination_takes_playlist"
+	CodeVerbRefused              = "verb_refused"
 )
 
 var errActingForAnother = errors.New("a person's token acts only as that person")
@@ -85,12 +89,14 @@ type ReviewAnswer struct {
 }
 
 // ReviewVerb is one sort verb under the set in force: the side and the
-// destination it places an item on, each nil for a shelf, and why it places
-// nothing where the set declares no destination it takes.
+// destination it places an item on, the destination nil for a shelf, whether
+// its sort picks a playlist, and why it places nothing where the set declares
+// no destination it takes.
 type ReviewVerb struct {
 	Verb        string  `json:"verb"`
 	Side        *string `json:"side"`
 	Destination *string `json:"destination"`
+	Playlist    bool    `json:"playlist"`
 	Missing     *string `json:"missing"`
 }
 
@@ -290,6 +296,7 @@ func ReviewRoutes(st *store.Store, comments CommentsState, watchDefault string, 
 		r.Handle(RouteReviewSort, h.sort)
 		r.Handle(RouteShelf, h.shelf)
 		r.Handle(RouteShelfOpen, h.open)
+		r.Handle(RouteShelfRemove, h.remove)
 	}
 }
 
@@ -314,7 +321,7 @@ func (h reviewHandlers) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	destinations, verbs := h.destinations(r)
-	answer := ReviewAnswer{SchemaVersion: 2, Items: make([]ReviewItem, 0, len(waiting)), Destinations: destinations, Verbs: verbs}
+	answer := ReviewAnswer{SchemaVersion: ReviewListVersion, Items: make([]ReviewItem, 0, len(waiting)), Destinations: destinations, Verbs: verbs}
 	if h.watchDefault != "" {
 		answer.WatchDefaultPlaylist = &h.watchDefault
 	}
@@ -363,13 +370,13 @@ func (h reviewHandlers) destinations(r *http.Request) ([]ReviewDestination, []Re
 	}
 	out := make([]ReviewDestination, 0, len(set.Destinations))
 	for _, d := range set.Destinations {
-		if !d.PushOnly {
+		if !d.PushOnly && !connectors.TakesPlaylist(d.Deliverer) {
 			out = append(out, ReviewDestination{Name: d.Name, Side: optional(d.Side)})
 		}
 	}
 	verbs := make([]ReviewVerb, 0, len(route.Verbs))
 	for _, v := range route.Verbs {
-		verb := ReviewVerb{Verb: v.Verb, Side: optional(v.Side)}
+		verb := ReviewVerb{Verb: v.Verb, Side: optional(v.Side), Playlist: v.TakesPlaylist()}
 		destination, missing := v.Destination(set)
 		if destination != nil {
 			verb.Destination = &destination.Name
@@ -421,12 +428,13 @@ func (h reviewHandlers) sort(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &body) {
 		return
 	}
-	if _, ok := route.VerbOf(body.Verb); !ok {
+	v, ok := route.VerbOf(body.Verb)
+	if !ok {
 		Refuse(w, http.StatusBadRequest, CodeInvalidBody, "verb is one of %s, not %q", strings.Join(route.VerbNames(), ", "), body.Verb)
 		return
 	}
-	if body.Playlist != "" && body.Verb != route.VerbWatch {
-		Refuse(w, http.StatusBadRequest, CodeInvalidBody, "only %s adds to a playlist, so a sort by %s names none", route.VerbWatch, body.Verb)
+	if body.Playlist != "" && !v.TakesPlaylist() {
+		Refuse(w, http.StatusBadRequest, CodeInvalidBody, "a sort by %s adds to no playlist, so it names none", body.Verb)
 		return
 	}
 	if h.refusedPresented(w, r, body.Presented, body.DecidedAfterMS) {
@@ -453,7 +461,7 @@ func (h reviewHandlers) sort(w http.ResponseWriter, r *http.Request) {
 	if h.refusedDecision(w, r, key, err) {
 		return
 	}
-	answer := PlacementAnswer{SchemaVersion: 1, Key: key, Decisions: make([]DecisionView, 0, len(made))}
+	answer := PlacementAnswer{SchemaVersion: PlacementVersion, Key: key, Decisions: make([]DecisionView, 0, len(made))}
 	for _, d := range made {
 		answer.Decisions = append(answer.Decisions, decisionView(d))
 	}
@@ -485,6 +493,7 @@ func (h reviewHandlers) refusedDecision(w http.ResponseWriter, r *http.Request, 
 	var undeclared *route.NotDeclaredError
 	var chapter *route.ChapterError
 	var pushOnly *route.PushOnlyError
+	var playlist *route.PlaylistDestinationError
 	switch {
 	case err == nil:
 		return false
@@ -494,6 +503,8 @@ func (h reviewHandlers) refusedDecision(w http.ResponseWriter, r *http.Request, 
 		Refuse(w, http.StatusUnprocessableEntity, CodeDestinationNotDeclared, "%v, so nothing was placed", undeclared)
 	case errors.As(err, &pushOnly):
 		Refuse(w, http.StatusUnprocessableEntity, CodeDestinationPushOnly, "%v, and nothing was placed", pushOnly)
+	case errors.As(err, &playlist):
+		Refuse(w, http.StatusUnprocessableEntity, CodeDestinationTakesPlaylist, "%v, and nothing was placed", playlist)
 	case errors.As(err, &chapter):
 		Refuse(w, http.StatusUnprocessableEntity, CodeChapterOfBook, "%v", chapter)
 	default:
@@ -538,7 +549,7 @@ func (h reviewHandlers) decide(w http.ResponseWriter, r *http.Request, p route.P
 	if h.refusedDecision(w, r, key, err) {
 		return
 	}
-	answer := PlacementAnswer{SchemaVersion: 1, Key: key, Decisions: make([]DecisionView, 0, len(made))}
+	answer := PlacementAnswer{SchemaVersion: PlacementVersion, Key: key, Decisions: make([]DecisionView, 0, len(made))}
 	for _, d := range made {
 		answer.Decisions = append(answer.Decisions, decisionView(d))
 	}

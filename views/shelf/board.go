@@ -1,7 +1,8 @@
 // Package shelf is the shelf tab of `ingestion tui`: each item that a person sorted by a shelf
 // verb, where nothing runs until they open it. Opening a relate hands the terminal to `ingestion
 // shelf open`, which hands the item to psyche relate on this machine. Opening a summary queues its
-// model read once, and the side panel shows the summary once it is kept.
+// model read once, and the side panel shows the summary once it is kept. An item stays on the
+// shelf until the person takes it off.
 package shelf
 
 import (
@@ -29,6 +30,8 @@ type Service interface {
 	Shelf(ctx context.Context) (server.ShelfAnswer, error)
 	// Open opens a summary's item and answers the sentence that says where it stands.
 	Open(ctx context.Context, key string) (string, error)
+	// Remove takes the item off the shelf and answers the sentence that says so.
+	Remove(ctx context.Context, key string) (string, error)
 	// Relate is the command that opens a relate's item on this machine, to which the tab hands
 	// the terminal.
 	Relate(ctx context.Context, key string) *exec.Cmd
@@ -42,10 +45,12 @@ type Outside struct {
 
 const sourceShelf = "shelf"
 
-// The keys the tab binds.
+// The keys the tab binds. o opens the item's URL outside the program, as in every fleet TUI, so
+// opening the shelved item, which runs its verb, takes a key of its own.
 const (
-	KeyOpen    = "o"
-	KeyBrowser = "w"
+	KeyOpen    = "a"
+	KeyBrowser = "o"
+	KeyRemove  = "D"
 )
 
 // The groupings v cycles: by the verb that shelved each item, by where it stands, or none.
@@ -132,8 +137,20 @@ func (b *Board) Actions() []gotermboard.Action {
 			Label: "open the item, as your decision: a relate hands the terminal to " + push.Program + " relate on this machine, and a summary " +
 				"queues its model read once, which the side panel shows once kept. Opening it again runs nothing new",
 		},
-		{Keys: []string{KeyBrowser}, Footer: KeyBrowser + " web", Label: "open the item's URL in the browser", Run: b.onItem(b.openURL)},
+		{Keys: []string{KeyBrowser}, Footer: KeyBrowser + " open", Label: "open the item's URL in the browser", Run: b.onItem(b.openURL)},
+		{
+			Keys: []string{KeyRemove}, Footer: KeyRemove + " off the shelf", Run: b.onItem(b.remove),
+			Label: "take the item off the shelf, as your decision. A summary's read already queued runs on, and the item keeps everything it holds",
+		},
 	}
+}
+
+// remove takes it off the shelf through the remove route, off the screen's loop.
+func (b *Board) remove(m *gotermboard.Model, it server.ShelfItem) tea.Cmd {
+	key := it.Key
+	return b.writes.Start(m, keywrites.Write{Doing: "taking " + key + " off the shelf", Row: key, Run: func() (string, error) {
+		return b.service.Remove(b.ctx, key)
+	}}, b.reread)
 }
 
 func (b *Board) onItem(act func(*gotermboard.Model, server.ShelfItem) tea.Cmd) func(*gotermboard.Model) tea.Cmd {
@@ -155,7 +172,7 @@ func (b *Board) onItem(act func(*gotermboard.Model, server.ShelfItem) tea.Cmd) f
 // through the open route, off the screen's loop.
 func (b *Board) open(m *gotermboard.Model, it server.ShelfItem) tea.Cmd {
 	key := it.Key
-	if it.Lens == nil {
+	if it.OpensHere {
 		return b.outside.HandOver(m, b.service.Relate(b.ctx, key), func(m *gotermboard.Model, err error, stderr []byte) tea.Cmd {
 			if err != nil {
 				m.Say("the relate of " + outsider(key) + " failed: " + gotermboard.LastLine(stderr, err))

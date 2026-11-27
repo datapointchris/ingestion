@@ -316,18 +316,29 @@ var reached = map[string]string{
 }
 
 // PhaseReview is the phase of an item that waits on a person's placement, and
-// PhaseShelved of one that a person put on the shelf and has not opened.
+// PhaseShelved of one that waits on the shelf for a person to open it.
 const (
 	PhaseReview  = "review"
 	PhaseShelved = "shelved"
 )
 
-// Shelved says whether the item waits on the shelf: its newest side decision
-// places it on a side, and its newest read decision is the shelf.
-func (r ItemRecords) Shelved() bool {
+// ShelfStanding is where the item stands on the shelf, read from its newest
+// side and read decisions: ShelfWaiting where a sort put it on the shelf and
+// nobody opened it, ShelfOpened once a person opened it, and "" off the shelf.
+// Its side decision places it on a side. A person's removal, or any other
+// read decision, takes it off.
+func (r ItemRecords) ShelfStanding() string {
 	_, onASide := r.Side()
 	read, ok := r.NewestDecision(GateRead)
-	return onASide && ok && read.Verdict == VerdictShelf
+	switch {
+	case !onASide || !ok:
+		return ""
+	case read.Cause == CauseShelfOpen:
+		return ShelfOpened
+	case read.Verdict == VerdictShelf && read.Cause != CauseShelfRemove:
+		return ShelfWaiting
+	}
+	return ""
 }
 
 // Phase is the item's phase in the words of schemas/items-list.schema.json:
@@ -348,7 +359,7 @@ func (r ItemRecords) Phase() string {
 	if _, _, waits := r.WaitsOnPerson(); waits {
 		return PhaseReview
 	}
-	if r.Shelved() {
+	if r.ShelfStanding() == ShelfWaiting {
 		return PhaseShelved
 	}
 	newest := map[string]Task{}

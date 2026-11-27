@@ -67,7 +67,8 @@ func init() { store.ReadAwaitsNote = awaitsNote }
 // awaitsNote says whether read waits on the note stage's draft before a model
 // reads the item: it reads by a model under a lens whose note prompt this
 // build holds, it carries no person's note and takes no draft, and the item
-// holds no done model read, so an item a model already read is never drafted.
+// holds no done model read under its lens, so an item a model already read
+// under that lens is never drafted.
 func awaitsNote(read store.Decision, outputs []store.Output) bool {
 	if read.Verdict != connectors.ReadModel || read.ByParent() || store.NoteDigest(read.Note) != nil || read.Cause == CauseNoteDraft {
 		return false
@@ -75,7 +76,7 @@ func awaitsNote(read store.Decision, outputs []store.Output) bool {
 	if _, ok := prompts.Note[text(read.Lens)]; !ok {
 		return false
 	}
-	return !slices.ContainsFunc(outputs, func(o store.Output) bool { return o.Stage == store.StageModelRead && o.State == store.OutputDone })
+	return !slices.ContainsFunc(outputs, func(o store.Output) bool { return readDoneUnder(read, o) })
 }
 
 // noteDue says whether the read gate queues the note stage on an item whose

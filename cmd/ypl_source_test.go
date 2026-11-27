@@ -74,7 +74,9 @@ type standInItem struct {
 // read of them. An insert into a playlist adds the video to its end, as
 // YouTube does however often the playlist holds it, and inserts keeps each
 // insert's playlist and video. refuseInsert answers a video's first insert
-// with a 503 and a Retry-After, as a spent day's quota does.
+// with a 503 and a Retry-After, as a spent day's quota does. loseInsert adds
+// a video's first insert, then answers 502 with no body, as a gateway that
+// lost ypl's answer does.
 type standInYPL struct {
 	mu                  sync.Mutex
 	playlistIDs         map[string]string
@@ -99,6 +101,7 @@ type standInYPL struct {
 	commentReads        []string
 	inserts             []string
 	refuseInsert        map[string]time.Duration
+	loseInsert          map[string]bool
 }
 
 func newStandInYPL(t *testing.T) (*standInYPL, *httptest.Server) {
@@ -108,6 +111,7 @@ func newStandInYPL(t *testing.T) (*standInYPL, *httptest.Server) {
 		videos: map[string]standInVideo{}, refuseDelete: map[string]time.Duration{}, refuseDeleteForGood: map[string]bool{},
 		captions: map[string]map[string]any{}, audio: map[string][]byte{}, busy: map[string]int{}, gatewayDown: map[string]int{}, failing: map[string]int{},
 		unreadable: map[string]bool{}, cutAudio: map[string]int{}, comments: map[string][]ypl.Comment{}, refuseInsert: map[string]time.Duration{},
+		loseInsert: map[string]bool{},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/youtube/playlists/{id}/items", s.playlistItems)
@@ -207,6 +211,11 @@ func (s *standInYPL) insertItem(w http.ResponseWriter, r *http.Request) {
 	item := fmt.Sprintf("item-%d", len(s.inserts)+1)
 	s.inserts = append(s.inserts, id+"/"+body.VideoID)
 	s.playlists[id] = append(s.playlists[id], standInItem{itemID: item, videoID: body.VideoID})
+	if s.loseInsert[body.VideoID] {
+		delete(s.loseInsert, body.VideoID)
+		w.WriteHeader(http.StatusBadGateway)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(map[string]string{"item_id": item, "playlist_id": id, "video_id": body.VideoID})

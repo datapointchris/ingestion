@@ -1062,13 +1062,13 @@ Each sort verb is a route. It places the item on a side and says what runs on it
 
 | Key | Verb | What runs | When |
 | --- | --- | --- | --- |
-| `f` | `fleet-relate` | a model read under the `fleet` lens, after a note's draft, on the fleet side's default destination | in the background |
-| `l` | `learning` | delivery to the destination whose deliverer is `learning-resources`, where the quality gate's newest answer passes the item. Otherwise the item returns to review as `learning-refused`, and its card holds the gate's reason | at once |
-| `p` | `personal-relate` | nothing until opened, then `psyche relate` on the machine that opens it, as `ingestion push --to psyche --relate` runs it | when opened |
-| `m` | `personal-summarize` | nothing until opened, then one model read under the `personal` lens | when opened |
-| `t` | `technical-summarize` | nothing until opened, then one model read under the `learning` lens | when opened |
-| `w` | `watch` | the `ypl-watch` deliverer adds the video to the playlist picked, or to `[watch] default_playlist` | at once |
-| `d` | drop | the drop, with a cause: channel, theme, title, low quality or none | at once |
+| `F` | `fleet-relate` | a model read under the `fleet` lens, after a note's draft, on the fleet side's default destination | in the background |
+| `L` | `learning` | delivery to the destination whose deliverer is `learning-resources`, where the quality gate's newest answer passes the item. Otherwise the item returns to review as `learning-refused`, and its card holds the gate's reason | at once |
+| `P` | `personal-relate` | nothing until opened, then `psyche relate` on the machine that opens it, as `ingestion push --to psyche --relate` runs it | when opened |
+| `S` | `personal-summarize` | nothing until opened, then one model read under the `personal` lens | when opened |
+| `T` | `technical-summarize` | nothing until opened, then one model read under the `learning` lens | when opened |
+| `W` | `watch` | the `ypl-watch` deliverer adds the video to the playlist picked, or to `[watch] default_playlist` | at once |
+| `d` | drop | the drop, with the cause picked from the drop menu | at once |
 
 ```text
 $ ingestion review sort youtube/aqz-KE-bpKQ watch --playlist "Watch soon"
@@ -1081,8 +1081,8 @@ Opened youtube/Ks-_Mh1QhMc: a model reads it under the personal lens. Open it ag
 
 - **Each sort writes a person's side decision with the verb as its cause**, then its read
   decision. The gate's trust and its agreement count it as a person's placement, as they count
-  `review place`. A card sent with it is kept as a placement's is. Sorting by the same verb again
-  changes nothing.
+  `review place`. A card sent with it is kept as a placement's is. A sort that repeats the newest
+  side decision, playlist included, changes nothing.
 - **A verb places on the first destination whose deliverer is the verb's.** Fleet relate places
   on the fleet side's default. `review list --json` lists each verb under `verbs` with that
   destination, and says why the verb places nothing where the set declares none. The sort then
@@ -1092,16 +1092,24 @@ Opened youtube/Ks-_Mh1QhMc: a model reads it under the personal lens. Open it ag
   A quality task that has not run stays queued, and the item waits until the person sorts it
   again.
 - **`ypl-watch` inserts the video through ypl's `POST /api/v1/youtube/playlists/{id}/items`.**
-  Each insert costs ypl 50 units of the YouTube Data API's daily quota. YouTube keeps a second
-  copy of a video that a playlist holds already. The `deliveries` row keeps the playlist picked,
-  and is never queued again once settled, so a retry or a later sort adds the video once. A
-  quota that ypl reports spent holds the task for its `Retry-After`, and spends no attempt. The
+  Each insert spends ypl's Data API quota. YouTube keeps a second copy of a video that a playlist
+  holds already. The `deliveries` row keeps the playlist picked, and is never queued again once
+  settled. From its second attempt on, the deliverer reads the playlist before it inserts. The
+  attempt before may have landed with its answer lost. The deliverer then settles on the video
+  that it finds there. A quota
+  that ypl reports spent holds the task for its `Retry-After`, and spends no attempt. The
   deliverer writes through the client of the worker's `[source.ypl]` table. The Data API cannot
   write the Watch Later list, so a watch names a playlist of the channel's own.
-- **The review tab's `w` asks which playlist.** It lists the default first, then each playlist
+- **One delivery adds the video to one playlist.** Where the item's delivery holds another
+  playlist, a watch answers 422 `verb_refused` and names the playlist held.
+- **Only a watch places an item on the `watch` destination**, because only the sort picks the
+  playlist. Review leaves the destination out. `review place` answers 422
+  `destination_takes_playlist`. The set check refuses the destination as a side's default or a
+  tag's target. It also refuses an accepted rule that names it.
+- **The review tab's `W` asks which playlist.** It lists the default first, then each playlist
   that `ypl playlists list --json` prints on the person's machine. Enter takes the default, a
   number picks its playlist, and any other text names a playlist by its title or its id.
-- **A shelved item's phase is `shelved`**, and nothing runs on it until a person opens it.
+- **A shelved item's phase is `shelved` until a person opens it**, and nothing runs on it before.
   `ingestion shelf list` reads `GET /api/v1/shelf` under `ingestion.review.read`, in
   `schemas/shelf-list.schema.json`. `ingestion shelf open <key>` posts to
   `POST /api/v1/shelf/{key}/open` under `ingestion.review.place`, and answers
@@ -1115,6 +1123,14 @@ Opened youtube/Ks-_Mh1QhMc: a model reads it under the personal lens. Open it ag
   service keeps nothing of it, so each opening runs it again.
 - **A shelf item's state** is `waiting` until opened. A relate then reads `opened`. A summary
   reads `reading` while its model read is queued or running, `done` once kept, and `failed`.
+- **Once opened, an item stays on the shelf until a person removes it.**
+  `ingestion shelf remove <key>` posts to `POST /api/v1/shelf/{key}/remove` under
+  `ingestion.review.place`, and answers `schemas/shelf-remove.schema.json`. The removal appends
+  the person's read decision with cause `shelf-remove`. It keeps the newest read's verdict and
+  lens, so a summary already kept stays in the item. Removing it again answers `removed: false`.
+- **`ingestion tui --view shelf` lists the shelf**, grouped by verb or by state, with a kept
+  summary in the side panel. `a` opens the item under the cursor, `o` opens its URL, and `D`
+  removes it. The tab's `--json` snapshot holds to `schemas/tui-shelf.schema.json`.
 
 ### A person accepts a routing rule in the service, and its review share shows what it would hide
 
@@ -1198,7 +1214,7 @@ idea and themes, or a sighting's fields.
 
 | Key | Does |
 | --- | --- |
-| `f` `l` `p` `m` `t` `w` | sorts it by `fleet-relate`, `learning`, `personal-relate`, `personal-summarize`, `technical-summarize` or `watch`, as the section on sort verbs tells. The bar under the strip names where each verb sends an item |
+| `F` `L` `P` `S` `T` `W` | sorts it by `fleet-relate`, `learning`, `personal-relate`, `personal-summarize`, `technical-summarize` or `watch`, as the section on sort verbs tells. The bar under the strip names where each verb sends an item |
 | `d` | drops it, after asking what decided it: its channel or another field of its source such as its subreddit, its title, its theme, its low quality, or none |
 | `x` | marks it `low-quality`, which counts on its gate families and leaves it waiting |
 | `r` | marks it `read`, which counts on its gate families and leaves it waiting |

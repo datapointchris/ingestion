@@ -108,9 +108,11 @@ const (
 	CauseNoteUnclear = "note-unclear"
 	// CauseLearningRefused sends to review, at the read gate, an item that a
 	// person sorted to learning where the quality gate's newest answer did
-	// not pass it. CauseShelfOpen is a person's opening of a shelved item.
+	// not pass it. CauseShelfOpen is a person's opening of a shelved item,
+	// and CauseShelfRemove their taking it off the shelf.
 	CauseLearningRefused = "learning-refused"
-	CauseShelfOpen       = "shelf-open"
+	CauseShelfOpen       = store.CauseShelfOpen
+	CauseShelfRemove     = store.CauseShelfRemove
 )
 
 // ReviewReason is one reason an item waits in review: its name, the line
@@ -711,9 +713,21 @@ func modelReadDue(side, read store.Decision, outputs []store.Output, open, curre
 	p, ok := prompts.ModelRead[text(read.Lens)]
 	note, _ := NoteOf(read, store.NewestDone(outputs, store.StageNote))
 	return ok && !slices.ContainsFunc(outputs, func(o store.Output) bool {
-		return o.Stage == store.StageModelRead && o.State == store.OutputDone && (!currentPrompt || o.ProducerVersion == p.Version) &&
-			(o.Lens == nil || *o.Lens == text(read.Lens)) && store.NoteAnswered(o.NoteDigest, note)
+		return readDoneUnder(read, o) && (!currentPrompt || o.ProducerVersion == p.Version) && store.NoteAnswered(o.NoteDigest, note)
 	})
+}
+
+// readDoneUnder says whether o is a done model read under read's lens, as
+// underLens decides.
+func readDoneUnder(read store.Decision, o store.Output) bool {
+	return o.Stage == store.StageModelRead && o.State == store.OutputDone && underLens(read, o)
+}
+
+// underLens says whether o was read under read's lens. An output that names
+// no lens counts under every lens, since it was read before any lens but the
+// fleet's.
+func underLens(read store.Decision, o store.Output) bool {
+	return o.Lens == nil || *o.Lens == text(read.Lens)
 }
 
 // reconcileModelRead queues the note's draft of the item under key where the
@@ -1029,6 +1043,19 @@ func (e *ChapterError) Error() string {
 	return fmt.Sprintf("%s is a chapter of %s and takes its book's placement, so place %s", e.Chapter, e.Book, e.Book)
 }
 
+// PlaylistDestinationError is a placement on a destination whose deliverer
+// adds the item to the playlist that a sort picks, which no placement carries.
+type PlaylistDestinationError struct {
+	Destination string
+	// Verb is the verb whose sort places an item there.
+	Verb string
+}
+
+func (e *PlaylistDestinationError) Error() string {
+	return fmt.Sprintf("only a sort by %s places an item at %s, since its deliverer adds the item to the playlist that the sort picks, so sort the item by %s instead",
+		e.Verb, e.Destination, e.Verb)
+}
+
 // PushOnlyError is a placement other than a push on a push-only destination,
 // whose program only a push hands the item to.
 type PushOnlyError struct {
@@ -1050,8 +1077,9 @@ func (e *PushOnlyError) Error() string {
 // gate, which returns each family of its answer to rung 0. Place answers
 // store.ErrNoItem where the store holds no such item, a NotDeclaredError
 // for a destination that the set in force does not declare, a PushOnlyError
-// for a push-only destination that p does not push to, and a ChapterError
-// for a book's chapter.
+// for a push-only destination that p does not push to, a
+// PlaylistDestinationError for a destination that only a sort places on, and
+// a ChapterError for a book's chapter.
 func Place(ctx context.Context, tx *store.Tx, key string, p Placement) ([]store.Decision, error) {
 	if item, ok, err := tx.Item(ctx, key); err != nil {
 		return nil, err
@@ -1088,6 +1116,13 @@ func Place(ctx context.Context, tx *store.Tx, key string, p Placement) ([]store.
 		}
 		if destination.PushOnly && !p.Pushed {
 			return nil, &PushOnlyError{Destination: destination.Name}
+		}
+		if connectors.TakesPlaylist(destination.Deliverer) {
+			e := &PlaylistDestinationError{Destination: destination.Name}
+			if i := slices.IndexFunc(Verbs, func(v VerbRoute) bool { return v.Deliverer == destination.Deliverer }); i >= 0 {
+				e.Verb = Verbs[i].Verb
+			}
+			return nil, e
 		}
 		side.Verdict, side.Destination = verdictOf(destination), &destination.Name
 	}

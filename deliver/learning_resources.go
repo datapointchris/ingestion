@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/datapointchris/ingestion/route"
 	"github.com/datapointchris/ingestion/store"
 )
 
@@ -23,7 +24,7 @@ import (
 // It creates each book's chapter there too, as a chapter resource part of its
 // book's resource, with its pages, and each video as a video resource by its
 // link.
-const LearningResources = "learning-resources"
+const LearningResources = route.LearningDeliverer
 
 // LearningResourcesScopes is what the learning client asks its token for: the
 // one create that the deliverer writes through.
