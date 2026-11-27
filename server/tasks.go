@@ -114,14 +114,15 @@ type LeasedTask struct {
 	// so a task whose run is already dispatched follows that run rather than
 	// starting another. Every other task carries none.
 	StageOutputs []StageOutput `json:"stage_outputs,omitempty"`
-	// Lens and Note are a model read's task's: the lens of the item's newest
-	// read decision, and the note that the read answers, a person's or the
-	// note stage's draft where the decision took it. NoteDrafted says a model
-	// drafted Note, so the read quotes it as a model's and never as the
-	// owner's. A note task carries Lens alone, and every other task neither.
-	Lens        *string `json:"lens,omitempty"`
-	Note        *string `json:"note,omitempty"`
-	NoteDrafted bool    `json:"note_drafted,omitempty"`
+	// Lens, Note and NoteDraft are a model read's task's: the lens of the
+	// item's newest read decision, the note that a person wrote on it, and
+	// the note stage's draft where the decision took one instead. A draft
+	// never rides in Note, so a reader that knows only Note never reads a
+	// model's draft as the owner's. A note task carries Lens alone, and every
+	// other task none of them.
+	Lens      *string `json:"lens,omitempty"`
+	Note      *string `json:"note,omitempty"`
+	NoteDraft *string `json:"note_draft,omitempty"`
 	// Model is a measurement arm's task's. The task asks its run for this
 	// model in place of the worker's configured one. Every other task
 	// carries none.
@@ -146,6 +147,15 @@ type LeasedTask struct {
 	// a connector of its source sighted, as the claim read them, whose
 	// metrics the task reads again. Every other task carries none.
 	Keys []string `json:"keys,omitempty"`
+}
+
+// Answers is the note that a model read's task answers: the person's note
+// where the task carries one, the draft otherwise, and nil with neither.
+func (t LeasedTask) Answers() *string {
+	if store.NoteDigest(t.Note) != nil {
+		return t.Note
+	}
+	return t.NoteDraft
 }
 
 // LeasedProposal is the prompt proposal that a prompt-proposal task drafts: the
@@ -490,7 +500,11 @@ func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
 		if t.Read != nil {
 			leased.Lens = t.Read.Lens
 			if t.Stage == store.StageModelRead {
-				leased.Note, leased.NoteDrafted = route.NoteOf(*t.Read, t.Draft)
+				if note, drafted := route.NoteOf(*t.Read, t.Draft); drafted {
+					leased.NoteDraft = note
+				} else {
+					leased.Note = note
+				}
 			}
 		}
 		for _, o := range t.Outputs {

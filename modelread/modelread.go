@@ -138,8 +138,8 @@ func read(ctx context.Context, client *worker.Client, contexts lens.Readers, tas
 	text, _ := store.JoinUnits(parse.Units)
 	runes := []rune(text)
 	data := promptData{
-		MediaType: task.MediaType, Title: deref(task.Title), URL: deref(task.URL), Text: text, Note: strings.TrimSpace(deref(task.Note)),
-		Drafted: task.NoteDrafted, Context: context, Total: len(runes),
+		MediaType: task.MediaType, Title: deref(task.Title), URL: deref(task.URL), Text: text, Note: strings.TrimSpace(deref(task.Answers())),
+		Drafted: store.NoteDigest(task.Note) == nil && task.NoteDraft != nil, Context: context, Total: len(runes),
 	}
 	if len(runes) > textRunes {
 		data.Text, data.Truncated, data.Shown = string(runes[:textRunes]), true, textRunes
