@@ -64,8 +64,8 @@ func readAnswered(summary, suggestion string) map[string]any {
 // beside them, under the rules' version. The item's suggestion carries them
 // as its schema publishes it. A person who places the read save again with
 // another note gets that note answered, and placing it again with no note
-// reads nothing. A save that its rule reads as is reaches delivery with no
-// model read.
+// reads nothing and drafts no note. A save that its rule reads as is reaches
+// delivery with no model read.
 func TestAFleetSavesModelReadAnswersEachNoteAPersonPlacesItWith(t *testing.T) {
 	p := newGatedPipeline(t, lifeSet(t, withLife))
 	stand := newStandInDispatch(t, p.provider)
@@ -170,8 +170,9 @@ func TestAFleetSavesModelReadAnswersEachNoteAPersonPlacesItWith(t *testing.T) {
 	if _, err := runCLI(t, "review", "place", "reddit/t3_bb2", "work-inbox", "--config", p.config); err != nil {
 		t.Fatal(err)
 	}
-	if ran := p.run(t, reader); ran != 0 || len(stand.starts()) != 2 {
-		t.Errorf("placing the read save with no note ran %d tasks and started %d calls, want none", ran, len(stand.starts()))
+	if ran := p.run(t, reader); ran != 0 || len(stand.starts()) != 2 ||
+		slices.ContainsFunc(p.tasks(t), func(v server.TaskView) bool { return v.Stage == store.StageNote }) {
+		t.Errorf("placing the read save with no note ran %d tasks, started %d calls or queued a note's draft, want none", ran, len(stand.starts()))
 	}
 
 	ruled := p.shown(t, "reddit/t3_aa1")
