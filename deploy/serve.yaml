@@ -102,6 +102,17 @@ spec:
               path: /ready
               port: http
             periodSeconds: 10
+          # serve opens the store before it listens, and opening it may back
+          # the database up and rebuild tables to reach the current schema.
+          # That can run for minutes, so liveness waits until /health first
+          # answers, for up to 10 minutes, rather than killing the container
+          # and canceling the schema change partway.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            failureThreshold: 60
           livenessProbe:
             httpGet:
               path: /health
