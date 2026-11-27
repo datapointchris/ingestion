@@ -98,7 +98,7 @@ func NewHandler(port modelport.Port, client *worker.Client, contexts lens.Reader
 		Name: Capability, Producer: Producer,
 		Prompt: promptOf,
 		Data: func(ctx context.Context, task worker.Task) (any, error) {
-			return read(ctx, client, contexts, task)
+			return read(ctx, client, contexts, task, log)
 		},
 		Keep: func(ctx context.Context, _ worker.Task, p prompts.Prompt, raw json.RawMessage, out *server.ReportOutput) ([]any, error) {
 			return keep(ctx, scanner, p, raw, out)
@@ -127,16 +127,14 @@ type promptData struct {
 
 // read is the task's item as the prompt quotes it: its title, its newest
 // parse's text up to textRunes, its note, and its lens's context, which is
-// empty where no reader is opened for the lens.
-func read(ctx context.Context, client *worker.Client, contexts lens.Readers, task worker.Task) (promptData, error) {
+// empty where no reader is opened for the lens or none could be read, and
+// logged on log.
+func read(ctx context.Context, client *worker.Client, contexts lens.Readers, task worker.Task, log *slog.Logger) (promptData, error) {
 	parse, err := client.TaskParse(ctx, task.ID, task.LeaseToken, store.ParsePick{})
 	if err != nil {
 		return promptData{}, fmt.Errorf("read the parse: %w", err)
 	}
-	context, err := contexts.Text(ctx, deref(task.Lens))
-	if err != nil {
-		return promptData{}, err
-	}
+	context := contexts.Text(ctx, deref(task.Lens), log.With("task", task.ID))
 	text, _ := store.JoinUnits(parse.Units)
 	runes := []rune(text)
 	data := promptData{

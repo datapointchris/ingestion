@@ -9,6 +9,7 @@ package lens
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"maps"
 	"net/http"
 	"slices"
@@ -89,7 +90,8 @@ func clip(s string, runes int) string {
 	return string([]rune(s)[:runes]) + "…"
 }
 
-// Reader reads a lens's context.
+// Reader reads a lens's context. Beside an error it may answer an older
+// context it read, which Text then quotes.
 type Reader interface {
 	Read(ctx context.Context) (Context, error)
 }
@@ -97,18 +99,27 @@ type Reader interface {
 // Readers holds the reader opened for each lens, by the lens's name.
 type Readers map[string]Reader
 
-// Text is the context of lens as a prompt quotes it: "" where no reader is
-// opened for lens, and an error where its reader could not read.
-func (r Readers) Text(ctx context.Context, lens string) (string, error) {
+// readFor bounds one read of a lens's context, so a source that hangs holds
+// a stage's task no longer than this.
+const readFor = 10 * time.Second
+
+// Text is the context of lens as a prompt quotes it, and "" where no reader
+// is opened for lens. A read that fails costs the stage only the context: Text
+// logs why on log and answers what the reader answered beside the failure,
+// the last context it read or none, so the stage runs on.
+func (r Readers) Text(ctx context.Context, lens string, log *slog.Logger) string {
 	reader, ok := r[lens]
 	if !ok {
-		return "", nil
+		return ""
 	}
-	c, err := reader.Read(ctx)
+	bounded, cancel := context.WithTimeout(ctx, readFor)
+	defer cancel()
+	c, err := reader.Read(bounded)
 	if err != nil {
-		return "", fmt.Errorf("read the %s lens's context: %w", lens, err)
+		log.WarnContext(ctx, "the lens's context could not be read, so the stage runs beside the last context read, or none",
+			"lens", lens, "error", err, "last_read", c.Text() != "")
 	}
-	return c.Text(), nil
+	return c.Text()
 }
 
 // Registration is one context reader as this build carries it: the scopes
@@ -139,29 +150,43 @@ func Lookup(name string) (Registration, bool) {
 func Names() []string { return slices.Sorted(maps.Keys(registered)) }
 
 // cacheFor is how long a read context answers again, so a batch of items
-// drafted together reads the owner's work once.
-const cacheFor = 5 * time.Minute
+// drafted together reads the owner's work once. retryAfter is how long a
+// failed read answers its failure again before the next read is tried, so a
+// source that is down is not asked once per task.
+const (
+	cacheFor   = 5 * time.Minute
+	retryAfter = time.Minute
+)
 
-// Cached is reader answering each read context again for cacheFor.
+// Cached is reader answering each read context again for cacheFor. A failed
+// read answers the last context read beside its error, and answers both again
+// for retryAfter.
 func Cached(reader Reader) Reader { return &cached{reader: reader} }
 
 type cached struct {
-	reader Reader
-	mu     sync.Mutex
-	held   Context
-	readAt time.Time
+	reader   Reader
+	mu       sync.Mutex
+	held     Context
+	readAt   time.Time
+	failure  error
+	failedAt time.Time
 }
 
 func (c *cached) Read(ctx context.Context) (Context, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if !c.readAt.IsZero() && time.Since(c.readAt) < cacheFor {
+	now := time.Now()
+	if !c.readAt.IsZero() && now.Sub(c.readAt) < cacheFor {
 		return c.held, nil
+	}
+	if c.failure != nil && now.Sub(c.failedAt) < retryAfter {
+		return c.held, c.failure
 	}
 	read, err := c.reader.Read(ctx)
 	if err != nil {
-		return Context{}, err
+		c.failure, c.failedAt = err, now
+		return c.held, err
 	}
-	c.held, c.readAt = read, time.Now()
+	c.held, c.readAt, c.failure = read, now, nil
 	return read, nil
 }

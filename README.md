@@ -1206,9 +1206,11 @@ config opens a reader that this build registers. The note and the model read und
 the context beside each item. The `slate` reader reads a
 [slate](https://github.com/datapointchris/slate) tracker's focus and its active initiatives,
 through `GET /api/v1/focus` and `GET /api/v1/initiatives?status=active`. It keeps what it read for
-five minutes, so a batch of drafts reads the tracker once. Where no table names a reader, or its
+a short while, so a batch of drafts reads the tracker once. Where no table names a reader, or its
 table cannot open, each stage under the lens runs without a context, and the note's prompt says
-it has none.
+it has none. A read that fails or runs past its deadline costs only the context. The worker logs
+it, and the stage runs beside the last context read, or none. At start the worker logs each reader
+it opened and how much it read, and each lens with a note prompt that no reader serves.
 
 ### A model read answers a fleet item's note with a summary and a suggestion
 

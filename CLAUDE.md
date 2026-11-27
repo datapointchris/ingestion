@@ -140,8 +140,9 @@ Docling, and the newest done parse otherwise.
   that are not the owner's.
 - **A lens's context is the owner's current work, read through a registered reader.** A
   `[lens.<name>.context]` table names a reader that the build registers, and how a worker reaches
-  its API. The note and the model read under that lens read the context beside the item, once per
-  five minutes. With no reader opened, each stage runs without a context.
+  its API. The note and the model read under that lens read the context beside the item, cached so a
+  batch reads it once. With no reader opened, each stage runs without a context. A read that
+  fails costs only the context, so the stage runs beside the last context read, or none.
 - **`ingestion push` starts no model stage.** A push of an item that the service holds starts no
   stage. A push of a new link lands it as the person's, placed at psyche and read as is, so only
   its parse and scan run. psyche's relate is its only model call. Only a person runs it, on the
