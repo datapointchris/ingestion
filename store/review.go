@@ -80,11 +80,16 @@ func (s *Store) ReviewQueue(ctx context.Context) ([]Waiting, error) {
 	if len(keys) == 0 {
 		return []Waiting{}, nil
 	}
-	items, err := readInto[Item](ctx, s.read, table("items"), `key IN (?`+strings.Repeat(", ?", len(keys)-1)+`)`, keys...)
+	tx, err := s.snapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
-	records, err := recordsOf(ctx, s.read, items)
+	defer func() { _ = tx.Rollback() }()
+	items, err := readInto[Item](ctx, tx, table("items"), `key IN (?`+strings.Repeat(", ?", len(keys)-1)+`)`, keys...)
+	if err != nil {
+		return nil, err
+	}
+	records, err := recordsOf(ctx, tx, items)
 	if err != nil {
 		return nil, err
 	}
@@ -121,11 +126,16 @@ func (s *Store) ReviewPlacedItems(ctx context.Context) ([]ItemRecords, error) {
 	if err != nil || len(keys) == 0 {
 		return []ItemRecords{}, err
 	}
-	items, err := readInto[Item](ctx, s.read, table("items"), `key IN (?`+strings.Repeat(", ?", len(keys)-1)+`) ORDER BY created_ts, key`, keys...)
+	tx, err := s.snapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
-	records, err := recordsOf(ctx, s.read, items)
+	defer func() { _ = tx.Rollback() }()
+	items, err := readInto[Item](ctx, tx, table("items"), `key IN (?`+strings.Repeat(", ?", len(keys)-1)+`) ORDER BY created_ts, key`, keys...)
+	if err != nil {
+		return nil, err
+	}
+	records, err := recordsOf(ctx, tx, items)
 	if err != nil {
 		return nil, err
 	}
@@ -148,11 +158,16 @@ func (s *Store) DraftedItems(ctx context.Context) ([]ItemRecords, error) {
 	if err != nil || len(keys) == 0 {
 		return []ItemRecords{}, err
 	}
-	items, err := readInto[Item](ctx, s.read, table("items"), `key IN (?`+strings.Repeat(", ?", len(keys)-1)+`) ORDER BY created_ts, key`, keys...)
+	tx, err := s.snapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return recordsOf(ctx, s.read, items)
+	defer func() { _ = tx.Rollback() }()
+	items, err := readInto[Item](ctx, tx, table("items"), `key IN (?`+strings.Repeat(", ?", len(keys)-1)+`) ORDER BY created_ts, key`, keys...)
+	if err != nil {
+		return nil, err
+	}
+	return recordsOf(ctx, tx, items)
 }
 
 // reviewCandidateKeys reads the key of each item that may wait in review.

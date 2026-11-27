@@ -26,9 +26,15 @@ type ItemRecords struct {
 	unitCounts map[parseVersion]int
 }
 
-// Item reads the item under key with its records, or ErrNoItem.
+// Item reads the item under key with its records, or ErrNoItem, in one
+// snapshot.
 func (s *Store) Item(ctx context.Context, key string) (ItemRecords, error) {
-	return itemRecords(ctx, s.read, key)
+	tx, err := s.snapshot(ctx)
+	if err != nil {
+		return ItemRecords{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	return itemRecords(ctx, tx, key)
 }
 
 // Records reads the records of the item under key as this write sees them,
@@ -85,8 +91,14 @@ type ItemPage struct {
 var ErrBadCursor = errors.New("not a cursor this list wrote")
 
 // Items reads a page of items, newest first, each with its records, and the
-// cursor of the next page, which is "" where none is left.
+// cursor of the next page, which is "" where none is left. It reads the page
+// in one snapshot.
 func (s *Store) Items(ctx context.Context, page ItemPage) ([]ItemRecords, string, error) {
+	tx, err := s.snapshot(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	defer func() { _ = tx.Rollback() }()
 	where, args := `1`, []any{}
 	if page.After != "" {
 		raw, err := base64.RawURLEncoding.DecodeString(page.After)
@@ -96,7 +108,7 @@ func (s *Store) Items(ctx context.Context, page ItemPage) ([]ItemRecords, string
 		}
 		where, args = `(created_ts < ? OR (created_ts = ? AND key < ?))`, []any{created, created, key}
 	}
-	items, err := readInto[Item](ctx, s.read, table("items"), where+` ORDER BY created_ts DESC, key DESC LIMIT ?`,
+	items, err := readInto[Item](ctx, tx, table("items"), where+` ORDER BY created_ts DESC, key DESC LIMIT ?`,
 		append(args, page.Limit+1)...)
 	if err != nil {
 		return nil, "", err
@@ -107,7 +119,7 @@ func (s *Store) Items(ctx context.Context, page ItemPage) ([]ItemRecords, string
 		last := items[len(items)-1]
 		next = base64.RawURLEncoding.EncodeToString([]byte(last.CreatedTS + "\x00" + last.Key))
 	}
-	records, err := recordsOf(ctx, s.read, items)
+	records, err := recordsOf(ctx, tx, items)
 	return records, next, err
 }
 

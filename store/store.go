@@ -630,6 +630,18 @@ func (s *Store) Close() error { return errors.Join(s.read.Close(), s.write.Close
 // outbox that walks a table past a mark.
 func (s *Store) Reader() *sql.DB { return s.read }
 
+// snapshot begins a read-only transaction, so every query through it reads
+// one committed state. A write that ends a task writes its outputs beside
+// it, and a reader that queried each on its own could see one without the
+// other. The caller rolls it back.
+func (s *Store) snapshot(ctx context.Context) (*sql.Tx, error) {
+	tx, err := s.read.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, fmt.Errorf("begin a read: %w", err)
+	}
+	return tx, nil
+}
+
 // Ping says whether a read reaches the database.
 func (s *Store) Ping(ctx context.Context) error { return s.read.PingContext(ctx) }
 

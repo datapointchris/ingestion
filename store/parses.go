@@ -170,9 +170,9 @@ func ScanRules(producerVersion string) string {
 // ErrNoParse where no done parse matches. It reads in one transaction, so the
 // units are the ones written with the output.
 func (s *Store) Parse(ctx context.Context, key string, pick ParsePick) (Parse, error) {
-	tx, err := s.read.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := s.snapshot(ctx)
 	if err != nil {
-		return Parse{}, fmt.Errorf("begin a read: %w", err)
+		return Parse{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
 	return parseOf(ctx, tx, key, pick)
