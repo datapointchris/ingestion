@@ -254,11 +254,11 @@ var workerRunCmd = &cobra.Command{
 		deliver.LearningResources + " client " + strings.Join(deliver.LearningResourcesScopes, " ") + ". A table that\n" +
 		"cannot open is logged and left out, and the worker's other stages run on.\n" +
 		"\n" +
-		"It runs each stage that a source registers, such as its poll and its\n" +
-		"delete, where a [source.<name>] table names how to reach that source. The\n" +
-		"table takes api, client_id, token_command and issuer as a [deliver.<name>]\n" +
-		"table does. Each source this build registers, with the variable that holds\n" +
-		"its client's secret and the scopes its client needs:\n" +
+		"It runs each stage that a source registers, such as its poll, its delete\n" +
+		"and its refresh of metrics, where a [source.<name>] table names how to reach\n" +
+		"that source. The table takes api, client_id, token_command and issuer as a\n" +
+		"[deliver.<name>] table does. Each source this build registers, with the\n" +
+		"variable that holds its client's secret and the scopes its client needs:\n" +
 		"\n" +
 		sourcesHelp() +
 		"\n" +

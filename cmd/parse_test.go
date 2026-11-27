@@ -159,6 +159,7 @@ func (p *pipeline) run(t *testing.T, workers ...worker.Handler) int {
 			if err := p.worker.Report(ctx, task.ID, server.ReportRequest{
 				Token: task.LeaseToken, Outcome: result.Outcome, Error: result.Error, Wait: result.Wait, Outputs: result.Outputs,
 				RetryAfterSeconds: int(result.RetryAfter.Seconds()), Delivery: result.Delivery, Arrivals: result.Arrivals, Cursor: result.Cursor,
+				Metrics: result.Metrics,
 			}); err != nil {
 				t.Fatal(err)
 			}

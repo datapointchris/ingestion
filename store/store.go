@@ -117,7 +117,7 @@ func dsn(path string, readOnly bool) string {
 // generation is older rebuilds none of its tables, so a release reverted
 // after a later one converged the store keeps that release's columns and
 // constraints.
-const SchemaGeneration = 2
+const SchemaGeneration = 3
 
 // converge brings the store to what the schema files declare, reading that
 // from a scratch database the files are applied to. Where the store already

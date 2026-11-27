@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -123,7 +125,8 @@ func (t *Tx) PutItem(ctx context.Context, item Item) error {
 }
 
 // PutSighting writes one connector's arrival of an item, keeping when it was
-// first seen.
+// first seen. Where the arrival took the sighting's counts, the caller sets
+// MetricsReadTS to the write's time.
 func (t *Tx) PutSighting(ctx context.Context, s Sighting) error {
 	if s.Tags == nil {
 		s.Tags = []string{}
@@ -134,8 +137,90 @@ func (t *Tx) PutSighting(ctx context.Context, s Sighting) error {
 	if s.Metrics == nil {
 		s.Metrics = map[string]int64{}
 	}
-	s.FirstSeenTS, s.LastSeenTS = t.stamp(), t.stamp()
+	stamp := t.stamp()
+	s.FirstSeenTS, s.LastSeenTS, s.WrittenTS = stamp, stamp, &stamp
 	return t.put(ctx, table("sightings"), s)
+}
+
+// metricName is a metric's name: lowercase letters, digits and underscores,
+// from a letter, such as duration_s.
+var metricName = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+
+// ErrInvalidMetric is a metric whose name metricName refuses.
+var ErrInvalidMetric = errors.New("a metric is named in lowercase letters, digits and underscores, from a letter")
+
+// CheckMetrics refuses a metric in metrics whose name is not a metric's, with
+// ErrInvalidMetric.
+func CheckMetrics(metrics map[string]int64) error {
+	for _, name := range slices.Sorted(maps.Keys(metrics)) {
+		if !metricName.MatchString(name) {
+			return fmt.Errorf("%w, not %q", ErrInvalidMetric, name)
+		}
+	}
+	return nil
+}
+
+// PutSightingMetrics writes metrics, as a read of the source just took them,
+// onto connector's sighting of the item under key, each by its name. It keeps
+// the sighting's other metrics, its fields and tags, and when it was last
+// seen, and stamps when its metrics were read, whether or not one changed. It
+// writes nothing where the store holds no such sighting. It answers whether a
+// metric changed.
+func (t *Tx) PutSightingMetrics(ctx context.Context, key, connector string, metrics map[string]int64) (bool, error) {
+	if err := CheckMetrics(metrics); err != nil {
+		return false, err
+	}
+	s, ok, err := t.Sighting(ctx, key, connector)
+	if err != nil || !ok {
+		return false, err
+	}
+	next := maps.Clone(s.Metrics)
+	if next == nil {
+		next = map[string]int64{}
+	}
+	maps.Copy(next, metrics)
+	changed := !maps.Equal(next, s.Metrics)
+	stamp := t.stamp()
+	s.Metrics, s.WrittenTS, s.MetricsReadTS = next, &stamp, &stamp
+	return changed, t.put(ctx, table("sightings"), s)
+}
+
+// ReviewKeysSightedBy reads, in key order, the key of each item in phase
+// review that one of connectors sighted, leaving out each item whose
+// metrics such a sighting took at or after readSince, where it is not empty.
+func (t *Tx) ReviewKeysSightedBy(ctx context.Context, connectors []string, readSince string) ([]string, error) {
+	if len(connectors) == 0 {
+		return nil, nil
+	}
+	in := `(?` + strings.Repeat(", ?", len(connectors)-1) + `)`
+	args := []any{PhaseReview}
+	for _, c := range connectors {
+		args = append(args, c)
+	}
+	unread := ""
+	if readSince != "" {
+		unread = ` AND NOT EXISTS (SELECT 1 FROM sightings r WHERE r.item_key = s.item_key AND r.connector IN ` + in +
+			` AND r.metrics_read_ts >= ?)`
+		for _, c := range connectors {
+			args = append(args, c)
+		}
+		args = append(args, readSince)
+	}
+	rows, err := t.tx.QueryContext(ctx, `SELECT DISTINCT s.item_key FROM sightings s JOIN items i ON i.key = s.item_key
+		WHERE i.phase = ? AND s.connector IN `+in+unread+` ORDER BY s.item_key`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("select the items in review that %s sighted: %w", strings.Join(connectors, ", "), err)
+	}
+	defer func() { _ = rows.Close() }()
+	var keys []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		keys = append(keys, key)
+	}
+	return keys, rows.Err()
 }
 
 // PutBlob records landed bytes. A blob already recorded is left as it is.

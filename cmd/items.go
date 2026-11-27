@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"mime"
 	"net/http"
 	"net/url"
@@ -58,9 +59,11 @@ var itemsShowCmd = &cobra.Command{
 	Use:   "show <key or url>",
 	Short: "Show one item and every record it holds",
 	Long: "Shows one item: its zone and phase, each sighting, where its bytes are kept,\n" +
-		"each stage's output, each gate's decision and each delivery. A delivery\n" +
-		"prints its outcome, the destination's id for the record that holds the item,\n" +
-		"its attempts and the destination's last answer. It names its task's\n" +
+		"each stage's output, each gate's decision and each delivery. A sighting\n" +
+		"prints its source's metrics, such as a video's views, as of the last read of\n" +
+		"them, which serve's daily refresh makes again while the item waits in review.\n" +
+		"A delivery prints its outcome, the destination's id for the record that holds\n" +
+		"the item, its attempts and the destination's last answer. It names its task's\n" +
 		"capability where no worker heard from lately claims it. An item read as is\n" +
 		"that reaches no deliverer says why, such as a side with no default\n" +
 		"destination.\n" +
@@ -358,6 +361,17 @@ func writeItem(w io.Writer, a server.ItemAnswer) {
 			tags = strings.Join(s.Tags, ",")
 		}
 		row("sighted", "%s  %s  %s  tags %s  external %s", s.Connector, s.Zone, localTime(s.FirstSeenTS), tags, s.ExternalKey)
+		if len(s.Metrics) > 0 {
+			counts := make([]string, 0, len(s.Metrics))
+			for _, name := range slices.Sorted(maps.Keys(s.Metrics)) {
+				counts = append(counts, fmt.Sprintf("%s %d", name, s.Metrics[name]))
+			}
+			read := s.LastSeenTS
+			if s.MetricsReadTS != nil {
+				read = *s.MetricsReadTS
+			}
+			row("metrics", "%s  %s  read %s", s.Connector, strings.Join(counts, "  "), localTime(read))
+		}
 	}
 	landed := localTime(it.CreatedTS) + "  " + it.MediaType
 	if it.BlobSHA256 != nil {

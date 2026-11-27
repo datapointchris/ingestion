@@ -35,7 +35,7 @@
       "enum": ["outside", "owner"]
     },
     "sha256": {"description": "A SHA-256, in lowercase hex.", "type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "stage": {"description": "A stage that writes an output or holds a task. A poll's task fetches a connector's source before any item lands. quality-arm is the quality gate's prompt asked of the model that its task names, as a measurement, and sits on no item's line. structure profiles a PDF's outline, page labels, creation date, title and fonts. contents is a model's reading of the printed contents pages of a PDF whose outline gave it no sections. delete removes a landed item from the source of a connector that declares after_landing delete, and sits on no item's line. prompt-proposal drafts a prompt proposal from the quality gate's misses, and sits on no item's line.", "enum": ["poll", "land", "parse", "structure", "contents", "scan", "quality", "quality-arm", "model-read", "deliver", "delete", "prompt-proposal"]},
+    "stage": {"description": "A stage that writes an output or holds a task. A poll's task fetches a connector's source before any item lands. quality-arm is the quality gate's prompt asked of the model that its task names, as a measurement, and sits on no item's line. structure profiles a PDF's outline, page labels, creation date, title and fonts. contents is a model's reading of the printed contents pages of a PDF whose outline gave it no sections. delete removes a landed item from the source of a connector that declares after_landing delete, and sits on no item's line. prompt-proposal drafts a prompt proposal from the quality gate's misses, and sits on no item's line. refresh-metrics reads again, at a source, the metrics of each item in review that a connector of the source sighted, writes them onto those sightings, and sits on no item's line.", "enum": ["poll", "land", "parse", "structure", "contents", "scan", "quality", "quality-arm", "model-read", "deliver", "delete", "prompt-proposal", "refresh-metrics"]},
     "timestamp": {"type": "string", "format": "date-time"},
     "severity": {"description": "A scan finding's severity, from least to most severe.", "enum": ["info", "low", "medium", "high", "critical"]},
     "finding": {
@@ -94,9 +94,11 @@
         "tags": {"description": "The tags the connector or its source gave this arrival, which the side gate reads first.", "type": "array", "items": {"type": "string"}},
         "zone": {"$ref": "#/$defs/zone"},
         "cursor_position": {"description": "The connector's cursor where this arrival was read.", "type": ["string", "null"]},
-        "metrics": {"description": "The source's counts by name, such as a video's duration_s, views, likes and comments. Each name holds the value from the newest of the connector's arrivals that carried it. No outsider wrote them. Absent from a record shipped before the store kept them.", "type": "object", "propertyNames": {"pattern": "^[a-z][a-z0-9_]*$"}, "additionalProperties": {"type": "integer"}},
-        "first_seen_ts": {"$ref": "#/$defs/timestamp"},
-        "last_seen_ts": {"$ref": "#/$defs/timestamp"}
+        "metrics": {"description": "The source's counts by name, such as a video's duration_s, views, likes and comments. Each name holds the newest value that carried it, from the connector's arrivals or from the daily refresh of an item waiting in review. A refresh leaves out a views, likes or comments count that reads 0, which the source also answers where it hides one. No outsider wrote them. Absent from a record shipped before the store kept them.", "type": "object", "propertyNames": {"pattern": "^[a-z][a-z0-9_]*$"}, "additionalProperties": {"type": "integer"}},
+        "first_seen_ts": {"description": "When the connector first sighted the item.", "$ref": "#/$defs/timestamp"},
+        "last_seen_ts": {"description": "The last arrival that changed the sighting. A refresh of its metrics leaves it as it is.", "$ref": "#/$defs/timestamp"},
+        "written_ts": {"description": "When the store last wrote the row, on an arrival or on a refresh of its metrics. The row's stamp is written_ts, or last_seen_ts where written_ts is null. Null or absent on a row written before the store kept it.", "anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
+        "metrics_read_ts": {"description": "When the metrics were last taken from the source, by an arrival that changed them or by a refresh that read them, changed or not. Null where no read stamped them, and absent from a record shipped before the store kept it.", "anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]}
       }
     },
     "blobs": {
@@ -278,7 +280,7 @@
     },
     "tasks": {
       "title": "tasks, one row per task",
-      "description": "ingestion.record.id is the task's id. A stage's task names its item, a poll's task names its connector, and a prompt-proposal task names its prompt proposal. A failed task's error ships as ingestion.text, because an extractor's stderr can quote the item.",
+      "description": "ingestion.record.id is the task's id. A stage's task names its item, a poll's task names its connector, a prompt-proposal task names its prompt proposal, and a refresh-metrics task names its source. A failed task's error ships as ingestion.text, because an extractor's stderr can quote the item.",
       "type": "object",
       "additionalProperties": false,
       "required": ["id", "item_key", "connector", "destination", "stage", "capability", "state", "attempts", "created_ts", "updated_ts"],
@@ -290,8 +292,9 @@
         "model": {"description": "The model that a measurement arm's task asks its run for, and null for every other task.", "type": ["string", "null"]},
         "sighting_connector": {"description": "The connector whose sighting a delete task removes from that connector's source, and null for every other task. Absent from a record shipped before the store kept it.", "type": ["string", "null"]},
         "proposal_id": {"description": "The prompt proposal that a prompt-proposal task drafts, and null for every other task. Absent from a record shipped before the store kept it.", "type": ["string", "null"]},
+        "source": {"description": "The source whose metrics a refresh-metrics task reads again, and null for every other task. Absent from a record shipped before the store kept it.", "type": ["string", "null"]},
         "stage": {"$ref": "#/$defs/stage"},
-        "capability": {"description": "What a worker needs to claim the task: poll:<source> for a poll, parse:<extractor> for a parse, deliver:<deliverer> for a delivery and delete:<source> for a delete.", "type": "string"},
+        "capability": {"description": "What a worker needs to claim the task: poll:<source> for a poll, parse:<extractor> for a parse, deliver:<deliverer> for a delivery, delete:<source> for a delete and refresh-metrics:<source> for a refresh of metrics.", "type": "string"},
         "state": {"enum": ["queued", "leased", "done", "failed"]},
         "held_by": {"description": "The connector whose first fill holds this model stage's task. No claim takes it until a person releases the fill.", "type": ["string", "null"]},
         "lease_holder": {"description": "The worker holding the lease.", "type": ["string", "null"]},

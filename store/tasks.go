@@ -39,9 +39,10 @@ var (
 	ErrStaleLease = errors.New("the task's lease is not held under this token")
 )
 
-// Task is one stage's work on one item, one poll of a connector, or the draft
-// of one prompt proposal, which a worker holding its capability leases. A
-// task names exactly one of its item, its connector and its proposal.
+// Task is one stage's work on one item, one poll of a connector, the draft of
+// one prompt proposal, or one refresh of a source's metrics, which a worker
+// holding its capability leases. A task names exactly one of its item, its
+// connector, its proposal and its source.
 type Task struct {
 	ID        string  `json:"id"`
 	ItemKey   *string `json:"item_key"`
@@ -58,6 +59,9 @@ type Task struct {
 	// ProposalID names the prompt proposal that a prompt-proposal task drafts, and is
 	// nil for every other task.
 	ProposalID *string `json:"proposal_id"`
+	// Source names the source whose metrics a refresh-metrics task reads
+	// again, and is nil for every other task.
+	Source     *string `json:"source"`
 	Stage      string  `json:"stage"`
 	Capability string  `json:"capability"`
 	State      string  `json:"state"`
@@ -118,6 +122,32 @@ func DeleteTask(key, connector, source string) Task {
 	return Task{ItemKey: &key, SightingConnector: &connector, Stage: StageDelete, Capability: DeleteCapability(source)}
 }
 
+// RefreshMetricsCapability is the capability of a refresh of a source's
+// metrics, so a worker claims only the refreshes of the sources whose
+// refresher it opened.
+func RefreshMetricsCapability(source string) string { return StageRefreshMetrics + ":" + source }
+
+// RefreshMetricsTask is the task that reads again, at source, the metrics of
+// each item that its connectors sighted and that waits in review, which a
+// worker holding the capability refresh-metrics:<source> claims.
+func RefreshMetricsTask(source string) Task {
+	return Task{Source: &source, Stage: StageRefreshMetrics, Capability: RefreshMetricsCapability(source)}
+}
+
+// RefreshMetricsOutstanding is source's refresh-metrics task that is queued
+// or leased, and false where none is.
+func (t *Tx) RefreshMetricsOutstanding(ctx context.Context, source string) (Task, bool, error) {
+	return first[Task](ctx, t.tx, table("tasks"), `source = ? AND stage = ? AND state IN ('queued', 'leased') ORDER BY created_ts`,
+		source, StageRefreshMetrics)
+}
+
+// NewestRefreshMetrics is source's newest refresh-metrics task, whatever its
+// state, and false where the store holds none.
+func (s *Store) NewestRefreshMetrics(ctx context.Context, source string) (Task, bool, error) {
+	return first[Task](ctx, s.read, table("tasks"), `source = ? AND stage = ? ORDER BY created_ts DESC, rowid DESC`,
+		source, StageRefreshMetrics)
+}
+
 // DeleteOutstanding says whether a delete of the item under key from
 // connector's source is queued, leased, or failed. A failed delete is one
 // that the source refused for good, which waits for a person to retry it.
@@ -134,18 +164,18 @@ var modelStages = []string{StageContents, StageQuality, StageQualityArm, StageMo
 // ModelStages are the stages that read an item with a model.
 func ModelStages() []string { return slices.Clone(modelStages) }
 
-// Enqueue adds a queued task for task's item, connector or proposal, stage
-// and capability, and answers it as written. A model stage's task for an item
-// that a connector's first fill holds is held by that connector.
+// Enqueue adds a queued task for task's item, connector, proposal or source,
+// stage and capability, and answers it as written. A model stage's task for
+// an item that a connector's first fill holds is held by that connector.
 func (t *Tx) Enqueue(ctx context.Context, task Task) (Task, error) {
 	named := 0
-	for _, subject := range []*string{task.ItemKey, task.Connector, task.ProposalID} {
+	for _, subject := range []*string{task.ItemKey, task.Connector, task.ProposalID, task.Source} {
 		if subject != nil {
 			named++
 		}
 	}
 	if named != 1 {
-		return task, fmt.Errorf("a %s task names one of its item, its connector and its proposal", task.Stage)
+		return task, fmt.Errorf("a %s task names one of its item, its connector, its proposal and its source", task.Stage)
 	}
 	task.ID = randomHex(16)
 	task.State, task.Attempts = TaskQueued, 0
@@ -270,10 +300,11 @@ type Claim struct {
 	SlotGroups map[string]SlotGroup
 	Lease      time.Duration
 	// Admit, where it is not nil, runs before the claim leases each task. It
-	// answers why the set in force wants the task's work done by nobody, such
-	// as a poll of a connector that the set lacks, and "" otherwise. When it
-	// answers a reason, the claim ends the task done with that reason as its
-	// error, and leases it to nobody.
+	// answers why nobody should run the task now, and "" otherwise. Such a
+	// task may be a poll of a connector that the set in force lacks, or a
+	// refresh with no item left to read. When it answers a reason, the claim
+	// ends the task done with that reason as its error, and leases it to
+	// nobody.
 	Admit func(ctx context.Context, tx *Tx, task Task) (string, error)
 	// Lapsed, where it is not nil, runs in the claim's write whenever the
 	// claim fails a task because its leases lapsed. It gets the reason that

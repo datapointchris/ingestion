@@ -200,8 +200,8 @@ func writeTasks(w io.Writer, answer server.TasksAnswer) {
 	_ = table.Flush()
 }
 
-// taskSubject is what a task works on: its item, its connector, or the
-// prompt proposal that it drafts.
+// taskSubject is what a task works on: its item, its connector, the prompt
+// proposal that it drafts, or the source whose metrics it reads again.
 func taskSubject(t server.TaskView) string {
 	switch {
 	case t.ItemKey != nil:
@@ -210,6 +210,8 @@ func taskSubject(t server.TaskView) string {
 		return "connector " + *t.Connector
 	case t.ProposalID != nil:
 		return "proposal " + *t.ProposalID
+	case t.Source != nil:
+		return "source " + *t.Source
 	}
 	return "—"
 }

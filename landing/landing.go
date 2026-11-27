@@ -41,10 +41,7 @@ var ErrKeyMismatch = errors.New("the key is not the one its link or bytes derive
 // what the arrival itself holds.
 var ErrInvalidArrival = errors.New("the arrival is not one that lands")
 
-var (
-	namePattern   = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
-	metricPattern = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
-)
+var namePattern = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 
 // Config is what landing writes to.
 type Config struct {
@@ -322,10 +319,8 @@ func (l *Lander) check(a Arrival) error {
 			return err
 		}
 	}
-	for name := range a.Metrics {
-		if !metricPattern.MatchString(name) {
-			return fmt.Errorf("a metric is named in lowercase letters, digits and underscores, not %q", name)
-		}
+	if err := store.CheckMetrics(a.Metrics); err != nil {
+		return err
 	}
 	if a.Parent != "" {
 		if err := itemkey.Check(a.Parent); err != nil {
@@ -479,11 +474,15 @@ func record(ctx context.Context, tx *store.Tx, a Arrival, key string, w *Written
 		maps.Copy(next.Fields, a.Fields)
 	}
 	if len(a.Metrics) > 0 {
-		next.Metrics = maps.Clone(next.Metrics)
-		if next.Metrics == nil {
-			next.Metrics = map[string]int64{}
+		metrics := maps.Clone(next.Metrics)
+		if metrics == nil {
+			metrics = map[string]int64{}
 		}
-		maps.Copy(next.Metrics, a.Metrics)
+		maps.Copy(metrics, a.Metrics)
+		if !had || !maps.Equal(metrics, next.Metrics) {
+			read := store.Stamp(tx.Now())
+			next.Metrics, next.MetricsReadTS = metrics, &read
+		}
 	}
 	if a.ExternalKey != "" {
 		next.ExternalKey = a.ExternalKey

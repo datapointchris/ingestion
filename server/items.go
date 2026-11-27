@@ -238,6 +238,10 @@ type SightingView struct {
 	CursorPosition *string           `json:"cursor_position"`
 	FirstSeenTS    string            `json:"first_seen_ts"`
 	LastSeenTS     string            `json:"last_seen_ts"`
+	// MetricsReadTS is when the metrics were last taken from the source, by
+	// an arrival or by a refresh of an item in review, and null where no read
+	// stamped them.
+	MetricsReadTS *string `json:"metrics_read_ts"`
 }
 
 // OutputView is one stage's output, with a parse's units counted and each
@@ -590,7 +594,7 @@ func itemAnswer(rec store.ItemRecords) ItemAnswer {
 	for _, s := range rec.Sightings {
 		a.Sightings = append(a.Sightings, SightingView{
 			Connector: s.Connector, ExternalKey: s.ExternalKey, Tags: s.Tags, Fields: s.Fields, Metrics: s.Metrics, Zone: s.Zone,
-			CursorPosition: s.CursorPosition, FirstSeenTS: s.FirstSeenTS, LastSeenTS: s.LastSeenTS,
+			CursorPosition: s.CursorPosition, FirstSeenTS: s.FirstSeenTS, LastSeenTS: s.LastSeenTS, MetricsReadTS: s.MetricsReadTS,
 		})
 	}
 	for _, o := range rec.Outputs {

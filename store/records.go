@@ -57,6 +57,12 @@ const (
 // item's phase.
 const StageDelete = "delete"
 
+// StageRefreshMetrics reads again, at a source, the metrics of each item that
+// the source's connectors sighted and that waits in review, and writes them
+// onto those sightings. Its task names its source rather than an item, so it
+// sits on no item's line and moves no item's phase.
+const StageRefreshMetrics = "refresh-metrics"
+
 // StageQualityArm is the quality gate's prompt answered by a model that its
 // task names, as a measurement against each label beside the gate's own
 // answer. It sits on no item's line, so its tasks and outputs move no item's
@@ -118,7 +124,15 @@ type Sighting struct {
 	CursorPosition *string          `json:"cursor_position"`
 	ExternalKey    string           `json:"external_key"`
 	FirstSeenTS    string           `json:"first_seen_ts"`
-	LastSeenTS     string           `json:"last_seen_ts"`
+	// LastSeenTS is the last arrival that changed the sighting.
+	LastSeenTS string `json:"last_seen_ts"`
+	// WrittenTS stamps every write of the row, an arrival's or a refresh's,
+	// and is nil on a row written before the store kept it.
+	WrittenTS *string `json:"written_ts"`
+	// MetricsReadTS is when the counts were last taken from the source: by
+	// an arrival that changed them, or by a refresh that read them, changed or
+	// not. It is nil where no read has taken any.
+	MetricsReadTS *string `json:"metrics_read_ts"`
 }
 
 // Blob is landed bytes, written once.

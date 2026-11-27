@@ -88,6 +88,14 @@ type fileConfig struct {
 			Schedule string `toml:"schedule"`
 		} `toml:"proposals"`
 	} `toml:"gates"`
+	// Review holds what serve schedules for the items that wait in review,
+	// such as when it reads their metrics again at their sources.
+	Review struct {
+		RefreshMetrics struct {
+			// Schedule is a cron expression, as a connector's schedule reads it.
+			Schedule string `toml:"schedule"`
+		} `toml:"refresh-metrics"`
+	} `toml:"review"`
 }
 
 // modelConfig is the [model] table.

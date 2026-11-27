@@ -9,7 +9,9 @@
 // It deletes a landed save from its playlist for a connector that declares
 // after_landing delete, which a playlist polled on a schedule declares. It
 // parses each video from its captions, and where it has none, from Whisper's
-// transcript of its audio, each read through ypl.
+// transcript of its audio, each read through ypl. It reads again the views,
+// likes, comments and length of each video that waits in review, in one
+// details read of up to MaxVideos at a time, when serve's daily refresh asks.
 package ypl
 
 import (
@@ -22,6 +24,7 @@ import (
 	"github.com/datapointchris/ingestion/connectors"
 	"github.com/datapointchris/ingestion/deletion"
 	"github.com/datapointchris/ingestion/extract"
+	"github.com/datapointchris/ingestion/metricsrefresh"
 	"github.com/datapointchris/ingestion/polling"
 	"github.com/datapointchris/ingestion/sources"
 )
@@ -64,8 +67,11 @@ var Scopes = []string{
 func init() {
 	sources.Register(sources.Registration{
 		Name: Source, Scopes: Scopes, Rules: rules,
-		Poller:     func(api string, client *http.Client) polling.Poller { return NewPoller(NewClient(api, client)) },
-		Deleter:    func(api string, client *http.Client) deletion.Deleter { return NewDeleter(NewClient(api, client)) },
+		Poller:  func(api string, client *http.Client) polling.Poller { return NewPoller(NewClient(api, client)) },
+		Deleter: func(api string, client *http.Client) deletion.Deleter { return NewDeleter(NewClient(api, client)) },
+		Refresher: func(api string, client *http.Client) metricsrefresh.Refresher {
+			return NewRefresher(NewClient(api, client))
+		},
 		Extractors: []extract.Extractor{CaptionsExtractor, WhisperExtractor},
 	})
 }

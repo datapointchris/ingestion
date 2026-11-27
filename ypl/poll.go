@@ -3,7 +3,6 @@ package ypl
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math"
 	"slices"
@@ -272,10 +271,7 @@ func (p Poller) videos(ctx context.Context, items []PlaylistItem) (map[string]Vi
 func arrival(v Video, externalKey string, fields map[string]string) server.ReportArrival {
 	a := server.ReportArrival{
 		Key: itemkey.YouTube + "/" + v.ID, URL: WatchURL(v.ID), MediaType: MediaTypeVideo, Title: v.Title, ExternalKey: externalKey,
-		Fields: map[string]string{FieldChannelID: v.ChannelID},
-		Metrics: map[string]int64{
-			"views": count(v.ViewCount), "likes": count(v.LikeCount), "comments": count(v.CommentCount),
-		},
+		Fields: map[string]string{FieldChannelID: v.ChannelID}, Metrics: v.metrics(),
 	}
 	if v.ChannelTitle != "" {
 		a.Fields[FieldChannelTitle] = v.ChannelTitle
@@ -283,14 +279,21 @@ func arrival(v Video, externalKey string, fields map[string]string) server.Repor
 	for name, value := range fields {
 		a.Fields[name] = value
 	}
-	if v.DurationSeconds != nil {
-		a.Metrics["duration_s"] = *v.DurationSeconds
-	}
 	if _, err := time.Parse(time.RFC3339, v.PublishedAt); err == nil {
 		published := v.PublishedAt
 		a.SourceTS = &published
 	}
 	return a
+}
+
+// metrics are v's counts as a sighting keeps them, and its length where it
+// has one.
+func (v Video) metrics() map[string]int64 {
+	out := map[string]int64{"views": count(v.ViewCount), "likes": count(v.LikeCount), "comments": count(v.CommentCount)}
+	if v.DurationSeconds != nil {
+		out["duration_s"] = *v.DurationSeconds
+	}
+	return out
 }
 
 // publishedBefore says whether v was published before t. A video whose
@@ -322,9 +325,8 @@ func withCursor(out polling.Outcome, position any) polling.Outcome {
 func failed(err error) polling.Outcome {
 	reason := err.Error()
 	out := polling.Outcome{Error: &reason}
-	var refusal *Error
-	if errors.As(err, &refusal) {
-		out.RetryAfter = refusal.RetryAfter
+	if f := classify(err); f.Asked {
+		out.RetryAfter = f.Wait
 	}
 	return out
 }

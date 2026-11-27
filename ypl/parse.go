@@ -7,12 +7,9 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
-	"net/url"
 	"slices"
 	"strings"
 	"time"
-
-	"golang.org/x/oauth2"
 
 	"github.com/datapointchris/ingestion/extract"
 	"github.com/datapointchris/ingestion/itemkey"
@@ -71,13 +68,10 @@ func shortTranscript(decodedMs, seconds int64) bool {
 // blockSeconds is how long each block of a video with no chapters runs.
 const blockSeconds = 5 * 60
 
-// How long a parse waits before reading again: where ypl was busy and sent no
-// Retry-After, where the video has not begun, where ypl gave no answer, and
-// where the read failed in a way a later read may not.
+// How long a parse waits before reading again: where the video has not
+// begun, and where the read failed in a way a later read may not.
 const (
-	busyRetry       = time.Minute
 	notStartedRetry = time.Hour
-	unansweredRetry = 5 * time.Minute
 	failedRetry     = 5 * time.Minute
 )
 
@@ -195,48 +189,26 @@ func videoID(key string) (string, error) {
 	return id, nil
 }
 
-// readError is how a parse treats err from a read through ypl, by ypl's
-// refusal code. Where ypl was busy, paused, stopping or limiting the caller,
-// the parse waits for the Retry-After it sent. Where ypl gave no answer, as
-// while it restarts or a gateway before it fails, the parse waits too,
+// readError is how a parse treats err from a read through ypl, as classify
+// reads it. Where ypl asked for a wait, or gave no answer, the parse waits,
 // because nothing about the video failed. Where the video is a premiere or a
-// stream that has not begun, it waits an hour. Where ypl failed to read
-// YouTube, or failed in itself, or the identity provider refused the token, it
-// queues again boundedly. Any other refusal, such as a video that no
-// signed-out read reaches or a ypl that holds no yt-dlp, fails it with ypl's
-// refusal kept.
+// stream that has not begun, it waits an hour. A refusal that no wait clears,
+// such as a video that no signed-out read reaches or a ypl that holds no
+// yt-dlp, fails it with ypl's refusal kept. Any other failure, such as ypl
+// failing to read YouTube, queues it again boundedly.
 func readError(err error) error {
 	var refusal *Error
-	var token *oauth2.RetrieveError
-	var unanswered *url.Error
-	switch {
-	case errors.As(err, &token):
-		return &extract.RetryError{Err: err, After: failedRetry, Bounded: true}
-	case errors.As(err, &unanswered):
-		return &extract.RetryError{Err: err, After: unansweredRetry}
-	case !errors.As(err, &refusal):
-		return &extract.RetryError{Err: err, After: failedRetry, Bounded: true}
-	case waitCodes[refusal.Code] || refusal.Status == http.StatusTooManyRequests:
-		wait := refusal.RetryAfter
-		if wait <= 0 {
-			wait = busyRetry
-		}
-		return &extract.RetryError{Err: err, After: wait}
-	case refusal.Code == "video_not_started":
+	if errors.As(err, &refusal) && refusal.Code == "video_not_started" {
 		return &extract.RetryError{Err: err, After: notStartedRetry}
-	case refusal.Code == "youtube_read_failed" || refusal.Code == "internal":
-		return &extract.RetryError{Err: err, After: failedRetry, Bounded: true}
-	case refusal.Code == "" && (refusal.Status == http.StatusRequestTimeout || refusal.Status >= http.StatusInternalServerError):
-		return &extract.RetryError{Err: err, After: unansweredRetry}
 	}
-	return err
-}
-
-// waitCodes are ypl's refusals that say to ask again after its Retry-After,
-// because nothing about the video failed.
-var waitCodes = map[string]bool{
-	"youtube_reads_busy": true, "youtube_reads_paused": true, "shutting_down": true,
-	"youtube_rate_limited": true, "youtube_data_api_busy": true, "identity_provider_unavailable": true,
+	f := classify(err)
+	switch {
+	case f.Wait > 0:
+		return &extract.RetryError{Err: err, After: f.Wait}
+	case f.Final:
+		return err
+	}
+	return &extract.RetryError{Err: err, After: failedRetry, Bounded: true}
 }
 
 // spoken says whether s holds any text.

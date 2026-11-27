@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/datapointchris/ingestion/extract"
+	"github.com/datapointchris/ingestion/metricsrefresh"
+	"github.com/datapointchris/ingestion/route"
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
 	"github.com/datapointchris/ingestion/worker"
@@ -37,6 +39,11 @@ type standInVideo struct {
 	withheld bool
 	// published is when the video was published, in RFC 3339.
 	published string
+	// views is its view count, 1200 unless set otherwise.
+	views int
+	// likesHidden answers its like count as 0, as ypl answers a count that
+	// its owner hides.
+	likesHidden bool
 }
 
 // standInItem is one playlist item or upload.
@@ -50,6 +57,9 @@ type standInItem struct {
 // the details of videos, and a playlist item's delete. It answers a video's
 // captions and audio from captions and audio. It refuses a request
 // without yplToken, and a read of more video details than ypl reads at once.
+// detailReads keeps the ids of each read of video details, and busyDetails
+// answers that many of the next as ypl does while its Data API calls stay
+// busy.
 // refuseDelete answers an item's first delete with a 503 and a Retry-After,
 // as a spent day's quota does. refuseDeleteForGood answers every delete of
 // an item as ypl answers YouTube's refusal of the write. emptyReads answers
@@ -78,6 +88,8 @@ type standInYPL struct {
 	unreadable          map[string]bool
 	noYTDLP             bool
 	cutAudio            map[string]int
+	detailReads         [][]string
+	busyDetails         int
 }
 
 func newStandInYPL(t *testing.T) (*standInYPL, *httptest.Server) {
@@ -180,16 +192,26 @@ func (s *standInYPL) videoDetails(w http.ResponseWriter, r *http.Request) {
 		refuse(w, http.StatusUnprocessableEntity, "too_many_videos", "ids names too many videos", 0)
 		return
 	}
+	s.detailReads = append(s.detailReads, ids)
+	if s.busyDetails > 0 {
+		s.busyDetails--
+		refuse(w, http.StatusServiceUnavailable, "youtube_data_api_busy", "the server's Data API calls stayed busy; send the request again", 90*time.Second)
+		return
+	}
 	out := []map[string]any{}
 	for _, id := range ids {
 		v, ok := s.videos[id]
 		if !ok || v.withheld {
 			continue
 		}
+		likes := 40
+		if v.likesHidden {
+			likes = 0
+		}
 		out = append(out, map[string]any{
 			"id": v.id, "title": v.title, "description": "A description.", "channel_id": "UCtestchannel", "channel_title": "Test channel",
 			"published_at": v.published, "privacy": "public", "duration_seconds": 754,
-			"live_broadcast_content": v.broadcast, "view_count": 1200, "like_count": 40, "comment_count": 3,
+			"live_broadcast_content": v.broadcast, "view_count": v.views, "like_count": likes, "comment_count": 3,
 		})
 	}
 	answer(w, out)
@@ -258,8 +280,8 @@ func (s *standInYPL) videoAudio(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(audio)
 }
 
-// add holds each video, available, finished and published on a day in the
-// past unless set otherwise.
+// add holds each video, available, finished, published on a day in the past
+// and viewed 1200 times unless set otherwise.
 func (s *standInYPL) add(videos ...standInVideo) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -269,6 +291,9 @@ func (s *standInYPL) add(videos ...standInVideo) {
 		}
 		if v.published == "" {
 			v.published = "2026-11-20T10:00:00Z"
+		}
+		if v.views == 0 {
+			v.views = 1200
 		}
 		s.videos[v.id] = v
 	}
@@ -341,22 +366,31 @@ func (r *recording) landedKeys(t *testing.T) []string {
 	return keys
 }
 
-// newYPLPipeline is a pipeline under one ypl connector, whose declaration
-// body follows its name, mode, source and zone.
-func newYPLPipeline(t *testing.T, connector, body string) *pipeline {
+// newYPLPipeline is a pipeline under a ypl connector for each name in
+// declared, whose declaration body follows its name, mode, source and zone.
+func newYPLPipeline(t *testing.T, declared map[string]string) *pipeline {
 	t.Helper()
 	p := newPipeline(t, extract.Builtin(), afterStage(quiet))
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "connectors"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	declaration := "name: " + connector + "\nmode: poll\nsource: ypl\nzone: outside\nperson_sorts: true\n" + body
-	if err := os.WriteFile(filepath.Join(dir, "connectors", connector+".yml"), []byte(declaration), 0o600); err != nil {
-		t.Fatal(err)
+	for connector, body := range declared {
+		declaration := "name: " + connector + "\nmode: poll\nsource: ypl\nzone: outside\nperson_sorts: true\n" + body
+		if err := os.WriteFile(filepath.Join(dir, "connectors", connector+".yml"), []byte(declaration), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	p.apply(t, dir)
 	return p
 }
+
+// yplCapture and yplChannel are the bodies of a capture playlist's connector,
+// which deletes each save it lands, and of a watched channel's.
+const (
+	yplCapture = "schedule: \"@every 30m\"\nafter_landing: delete\nsource_parameters:\n  playlist: capture\n"
+	yplChannel = "schedule: \"@hourly\"\nsource_parameters:\n  channel: \"@testchannel\"\n"
+)
 
 // A capture playlist's poll lands each available video once as
 // youtube/<id>, with its details as fields and metrics, and passes over one
@@ -381,7 +415,7 @@ func TestAYPLCapturePollLandsEachAvailableVideoOnceAndDeletesItFromThePlaylist(t
 	}
 	stand.refuseDelete["item0003"] = time.Hour
 	stand.refuseDeleteForGood["item0005"] = true
-	p := newYPLPipeline(t, "ypl-capture", "schedule: \"@every 30m\"\nafter_landing: delete\nsource_parameters:\n  playlist: capture\n")
+	p := newYPLPipeline(t, map[string]string{"ypl-capture": yplCapture})
 	pollHandler, deleteHandler := yplWorker(t, p, api.URL)
 	poll := &recording{Handler: pollHandler}
 	pollNow := func() []string {
@@ -460,7 +494,7 @@ func TestAYPLChannelPollLandsEachNewUploadOnceAfterItsBaseline(t *testing.T) {
 		catalog = append(catalog, standInItem{itemID: "up" + id, videoID: id})
 	}
 	stand.uploads["@testchannel"] = catalog
-	p := newYPLPipeline(t, "ypl-channel", "schedule: \"@hourly\"\nsource_parameters:\n  channel: \"@testchannel\"\n")
+	p := newYPLPipeline(t, map[string]string{"ypl-channel": yplChannel})
 	pollHandler, _ := yplWorker(t, p, api.URL)
 	poll := &recording{Handler: pollHandler}
 	pollNow := func() []string {
@@ -509,5 +543,148 @@ func TestAYPLChannelPollLandsEachNewUploadOnceAfterItsBaseline(t *testing.T) {
 	}
 	if n := p.count(t, `SELECT count(*) FROM items WHERE media_type = ?`, ypl.MediaTypeVideo); n != 3 {
 		t.Errorf("the channel's polls left %d videos, want the 3 new uploads", n)
+	}
+}
+
+// A video that is saved to the capture playlist and uploaded by a watched
+// channel lands as one item with a sighting of each, parses from its
+// captions, and its save is deleted from the playlist. Each day's refresh
+// then reads the metrics of each video that waits in review, and writes them
+// onto each of its sightings with when it read them, where items show prints
+// them. A read of unchanged counts still stamps them read, and leaves when
+// the sighting was last seen. A like count that ypl answers as 0, as it
+// answers one that the owner hides, keeps the count measured before. A video
+// dropped from review is not read, and a refresh queues no delete. A refresh
+// that ypl answers busy waits its Retry-After and spends no attempt.
+func TestASavedAndUploadedVideoLandsOnceAndItsMetricsRefreshDailyWhileItWaitsInReview(t *testing.T) {
+	const both, saved = "youtube/bothvid0001", "youtube/savedvid001"
+	stand, api := newStandInYPL(t)
+	stand.add(standInVideo{id: "oldvid00001", title: "Old video"})
+	stand.playlistIDs["capture"] = "PLtestcapture"
+	stand.uploads["@testchannel"] = []standInItem{{itemID: "upold", videoID: "oldvid00001"}}
+	p := newYPLPipeline(t, map[string]string{"ypl-capture": yplCapture, "ypl-channel": yplChannel})
+	handlers := yplHandlers(t, p, api.URL)
+	poll, refresh := handlers[store.PollCapability(ypl.Source)], handlers[store.RefreshMetricsCapability(ypl.Source)]
+	if refresh == nil {
+		t.Fatal("a worker with a [source.ypl] table holds no handler of ypl's refresh of metrics")
+	}
+	p.runConnector(t, "ypl-channel")
+	p.run(t, poll)
+
+	stand.add(standInVideo{id: "bothvid0001", title: "Test video saved and uploaded", published: time.Now().UTC().Format(time.RFC3339)},
+		standInVideo{id: "savedvid001", title: "Test video saved"})
+	stand.mu.Lock()
+	stand.playlists["PLtestcapture"] = []standInItem{{itemID: "itemboth", videoID: "bothvid0001"}, {itemID: "itemsaved", videoID: "savedvid001"}}
+	stand.uploads["@testchannel"] = append([]standInItem{{itemID: "upboth", videoID: "bothvid0001"}}, stand.uploads["@testchannel"]...)
+	for _, id := range []string{"bothvid0001", "savedvid001"} {
+		stand.captions[id] = captionsOf(id, "A test description.", "manual", 754, nil, []extract.Segment{{StartMs: 0, DurationMs: 2000, Text: "Hello."}})
+	}
+	stand.mu.Unlock()
+	p.runConnector(t, "ypl-capture")
+	p.runConnector(t, "ypl-channel")
+	p.run(t, poll)
+	p.run(t, handlers[extract.Capability(ypl.CaptionsExtractor)])
+	p.run(t, handlers[store.DeleteCapability(ypl.Source)])
+
+	var sighted []string
+	for _, s := range p.item(t, both).Sightings {
+		sighted = append(sighted, s.Connector)
+	}
+	slices.Sort(sighted)
+	if n := p.count(t, `SELECT count(*) FROM items WHERE media_type = ?`, ypl.MediaTypeVideo); n != 2 ||
+		!slices.Equal(sighted, []string{"ypl-capture", "ypl-channel"}) {
+		t.Fatalf("the polls left %d videos, the saved and uploaded one sighted by %v, want 2 videos and a sighting by each connector", n, sighted)
+	}
+	if parse := p.readParse(t, both, ""); parse.Extractor != ypl.CaptionsExtractor.Name || len(parse.Units) == 0 {
+		t.Errorf("the saved and uploaded video parsed by %q to %d units, want its captions", parse.Extractor, len(parse.Units))
+	}
+	deleted := slices.Sorted(slices.Values(stand.deletes))
+	if !slices.Equal(deleted, []string{"PLtestcapture/itemboth", "PLtestcapture/itemsaved"}) || len(stand.playlists["PLtestcapture"]) != 0 {
+		t.Fatalf("ypl was asked to delete %v, want each save once and the playlist left empty", deleted)
+	}
+
+	for _, connector := range []string{"ypl-capture", "ypl-channel"} {
+		if out, err := runCLI(t, "connectors", "release", connector, "--config", p.config); err != nil {
+			t.Fatalf("connectors release %s printed %q, %v", connector, out, err)
+		}
+	}
+	dispatch := newStandInDispatch(t, p.provider)
+	dispatch.answer = answerBy(nil)
+	p.scanFindingNothing(t)
+	p.run(t, p.qualityGate(t, dispatch.models(t, "", "")))
+	if !inReview(t, p, both, route.CausePersonSorts) || !inReview(t, p, saved, route.CausePersonSorts) {
+		t.Fatal("the two videos do not both wait in review for a person to sort them")
+	}
+	if out, err := runCLI(t, "review", "drop", saved, "--config", p.config); err != nil {
+		t.Fatalf("review drop printed %q, %v", out, err)
+	}
+
+	refreshes, err := metricsrefresh.NewScheduler(p.st, metricsrefresh.DefaultSchedule, quiet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deletes := p.count(t, `SELECT count(*) FROM tasks WHERE stage = ?`, store.StageDelete)
+	reads := len(stand.detailReads)
+	arrived := map[string]string{}
+	for _, s := range p.item(t, both).Sightings {
+		arrived[s.Connector] = s.LastSeenTS
+	}
+	days := []struct {
+		views       int
+		likesHidden bool
+	}{{5000, false}, {7000, false}, {7000, true}}
+	for day, d := range days {
+		stand.add(standInVideo{id: "bothvid0001", title: "Test video saved and uploaded", views: d.views, likesHidden: d.likesHidden},
+			standInVideo{id: "savedvid001", title: "Test video saved", views: d.views})
+		stand.mu.Lock()
+		stand.busyDetails = 1
+		stand.mu.Unlock()
+		p.advance(24 * time.Hour)
+		for range 2 {
+			if _, err := refreshes.Pass(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if n := p.count(t, `SELECT count(*) FROM tasks WHERE stage = ?`, store.StageRefreshMetrics); n != day+1 {
+			t.Fatalf("after %d days the passes queued %d refreshes, want one a day", day+1, n)
+		}
+		p.run(t, refresh)
+		if n := p.count(t, `SELECT count(*) FROM tasks WHERE stage = ? AND state = ? AND attempts = 0 AND waiting_since_ts IS NOT NULL`,
+			store.StageRefreshMetrics, store.TaskQueued); n != 1 {
+			t.Fatalf("day %d's refresh that ypl answered busy is not waiting with no attempt spent", day+1)
+		}
+		p.advance(2 * time.Minute)
+		before := store.Stamp(p.st.Now())
+		p.run(t, refresh)
+		for _, s := range p.item(t, both).Sightings {
+			if s.Metrics["views"] != int64(d.views) || s.Metrics["likes"] != 40 || s.Metrics["duration_s"] != 754 {
+				t.Errorf("day %d's refresh left %s's sighting with metrics %v, want %d views and its measured 40 likes", day+1, s.Connector, s.Metrics, d.views)
+			}
+			read := "never"
+			if s.MetricsReadTS != nil {
+				read = *s.MetricsReadTS
+			}
+			if read == "never" || read < before || s.LastSeenTS != arrived[s.Connector] {
+				t.Errorf("day %d's refresh left %s's sighting read at %s and last seen at %s, want read at or after %s and last seen at its arrival %s",
+					day+1, s.Connector, read, s.LastSeenTS, before, arrived[s.Connector])
+			}
+		}
+		if s := p.item(t, saved).Sightings[0]; s.Metrics["views"] != 1200 {
+			t.Errorf("day %d's refresh wrote %d views onto the video dropped from review, want its landed 1200", day+1, s.Metrics["views"])
+		}
+	}
+	for _, ids := range stand.detailReads[reads:] {
+		if !slices.Equal(ids, []string{"bothvid0001"}) {
+			t.Errorf("a refresh read the details of %v, want only the video in review", ids)
+		}
+	}
+	if n := len(stand.detailReads) - reads; n != 2*len(days) {
+		t.Errorf("%d days' refreshes read video details %d times, want a busy answer and a read each day", len(days), n)
+	}
+	if n := p.count(t, `SELECT count(*) FROM tasks WHERE stage = ?`, store.StageDelete); n != deletes {
+		t.Errorf("the refreshes queued %d deletes, want none", n-deletes)
+	}
+	if out, err := runCLI(t, "items", "show", both, "--config", p.config); err != nil || strings.Count(out, "views 7000") != 2 {
+		t.Errorf("items show printed %q, %v, want each sighting's metrics at 7000 views", out, err)
 	}
 }

@@ -126,28 +126,6 @@ func LandPoll(ctx context.Context, tx *store.Tx, l *landing.Lander, connector st
 	return out, putCursor(ctx, tx, c, cur)
 }
 
-// Unwanted answers why the set s wants nobody to run task, and "" where it
-// still wants it. A poll is unwanted once s drops its connector, or declares
-// it other than as a poll of the source that the task reads. A delete is
-// unwanted where s does not declare that its connector deletes from that
-// source after landing. Any other task is always wanted.
-func Unwanted(s Set, task store.Task) string {
-	switch {
-	case task.Stage == store.StagePoll && task.Connector != nil:
-		c, ok := s.Connector(*task.Connector)
-		if !ok || c.Mode != ModePoll || store.PollCapability(c.Source) != task.Capability {
-			return fmt.Sprintf("the set in force does not poll connector %s from this source, so nobody runs this poll", *task.Connector)
-		}
-	case task.Stage == store.StageDelete && task.SightingConnector != nil:
-		c, ok := s.Connector(*task.SightingConnector)
-		if !ok || c.AfterLanding != AfterLandingDelete || store.DeleteCapability(c.Source) != task.Capability {
-			return fmt.Sprintf("the set in force does not delete what connector %s lands from this source, so nobody runs this delete",
-				*task.SightingConnector)
-		}
-	}
-	return ""
-}
-
 // PollFailed records on connector's cursor, in tx, that its poll ended
 // failed for reason, and makes it due again as any failed run is.
 func PollFailed(ctx context.Context, tx *store.Tx, connector, reason string) error {
