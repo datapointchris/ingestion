@@ -1,7 +1,7 @@
 // Package comments is the model stage that reads what a video's top comments
 // say about it, when a person asks on the video's review card. It runs once
-// per item and never as a batch: the route queues one task, a worker reads up
-// to the source's top comments through the source's own reader and asks one
+// per item and never as a batch: the route queues one task, a worker reads
+// the source's top comments through the source's own reader and asks one
 // model call through modelstage's dispatch-once protocol, and the answer is
 // kept as the output's answer. A model wrote that answer over strangers'
 // comments, so it ships as outsider text alone, and the comments themselves
@@ -129,14 +129,52 @@ func Routes(st *store.Store, log *slog.Logger) server.Routes {
 
 var errNotRead = errors.New("no source reads the comments")
 
-// request queues the item's one comments task where it holds none, and
-// answers how its read stands. An item with a done answer, an open task or a
-// failed one queues nothing, so the model is asked once per item, and again
-// only through `tasks retry`.
+// StateOf is how the read of the item's comments stands in r, where claimed
+// holds each capability that a worker heard from lately claims. It is nil
+// where no source of this build reads the item's comments and none were
+// read. A done answer stands whatever a later task does.
+func StateOf(r store.ItemRecords, claimed map[string]bool) *server.ReviewComments {
+	var newest *store.Task
+	for i := range r.Tasks {
+		if t := &r.Tasks[i]; t.Stage == store.StageComments && (newest == nil || t.CreatedTS >= newest.CreatedTS) {
+			newest = t
+		}
+	}
+	var c server.ReviewComments
+	if newest != nil {
+		c.TaskID = &newest.ID
+	}
+	switch done := store.NewestDone(r.Outputs, store.StageComments); {
+	case done != nil:
+		c.State, c.Answer = server.CommentsDone, done.Answer
+	case !Reads(r.Item.MediaType):
+		return nil
+	case newest == nil:
+		c.State = server.CommentsUnread
+	case newest.State == store.TaskFailed:
+		c.State, c.Error = server.CommentsFailed, newest.Error
+	case newest.State == store.TaskQueued && !claimed[Capability]:
+		c.State = server.CommentsUnclaimed
+	default:
+		c.State = server.CommentsReading
+	}
+	return &c
+}
+
+// request queues the item's one comments task where it holds none, queues a
+// failed one again, and answers how its read stands. An item with a done
+// answer or an open task queues nothing, so the model is asked once per item
+// unless its read failed.
 func request(w http.ResponseWriter, r *http.Request, st *store.Store, log *slog.Logger) {
 	key, err := itemkey.Resolve(r.PathValue("key"))
 	if err != nil {
 		server.Refuse(w, http.StatusBadRequest, server.CodeInvalidKey, "%v", err)
+		return
+	}
+	claimed, err := server.Claimed(r.Context(), st)
+	if err != nil {
+		log.ErrorContext(r.Context(), "read the workers heard from lately", "error", err)
+		server.Refuse(w, http.StatusInternalServerError, server.CodeInternal, "the server could not ask for the item's comments")
 		return
 	}
 	var mediaType string
@@ -146,18 +184,28 @@ func request(w http.ResponseWriter, r *http.Request, st *store.Store, log *slog.
 		if err != nil {
 			return err
 		}
-		if mediaType = records.Item.MediaType; !Reads(mediaType) {
+		mediaType = records.Item.MediaType
+		switch answer = StateOf(records, claimed); {
+		case answer == nil:
 			return errNotRead
-		}
-		if answer = server.CommentsOf(records); answer != nil {
+		case answer.State == server.CommentsUnread:
+			task, err := tx.Enqueue(r.Context(), store.Task{ItemKey: &key, Stage: store.StageComments, Capability: Capability})
+			if err != nil {
+				return err
+			}
+			log.Info("a read of an item's comments was asked for", "item", key, "task", task.ID)
+		case answer.State == server.CommentsFailed:
+			if _, err := tx.RetryTask(r.Context(), *answer.TaskID); err != nil {
+				return err
+			}
+			log.Info("a failed read of an item's comments was asked for again", "item", key, "task", *answer.TaskID)
+		default:
 			return nil
 		}
-		task, err := tx.Enqueue(r.Context(), store.Task{ItemKey: &key, Stage: store.StageComments, Capability: Capability})
-		if err != nil {
+		if records, err = tx.Records(r.Context(), key); err != nil {
 			return err
 		}
-		answer = &server.ReviewComments{State: server.CommentsReading, TaskID: &task.ID}
-		log.Info("a read of an item's comments was asked for", "item", key, "task", task.ID)
+		answer = StateOf(records, claimed)
 		return nil
 	})
 	switch {

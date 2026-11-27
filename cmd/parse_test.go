@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"log/slog"
 	"maps"
 	"net/http"
@@ -97,7 +96,7 @@ func newPipelineOver(t *testing.T, extractors *extract.Registry, after server.Af
 	provider.Register("ingestion-svc-worker", "worker-secret", server.ScopeTasksClaim)
 	gate := verifiedGate{provider.Verifier(t, "ingestion-cli-", "ingestion-svc-")}
 	api := httptest.NewServer(server.Handler(server.Config{Store: st, Gate: gate, Issuer: provider.URL, Version: "test", Log: log},
-		server.TaskRoutes(st, lander, log, after), server.BlobRoutes(lander, log), server.ItemRoutes(st, log), server.ReviewRoutes(st, log),
+		server.TaskRoutes(st, lander, log, after), server.BlobRoutes(lander, log), server.ItemRoutes(st, log), server.ReviewRoutes(st, comments.StateOf, log),
 		server.TrustRoutes(st, log),
 		server.ConnectorRoutes(server.ConnectorConfig{
 			Store: st, Lander: lander, Scheduler: connectors.NewScheduler(st, lander, log),
@@ -209,33 +208,14 @@ func (p *pipeline) readParse(t *testing.T, key, version string) server.ParseAnsw
 }
 
 // holdsTo fails the test where raw does not hold to the named file under
-// schemas/. Every file there is a resource under its $id, so one can refer to
-// another.
+// schemas/.
 func holdsTo(t *testing.T, raw []byte, file string) {
 	t.Helper()
 	instance, err := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := jsonschema.NewCompiler()
-	names, err := fs.Glob(schemas.Files, "*.schema.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range names {
-		raw, err := schemas.Files.ReadFile(name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := c.AddResource(schemas.Base+name, doc); err != nil {
-			t.Fatal(err)
-		}
-	}
-	schema, err := c.Compile(schemas.Base + file)
+	schema, err := schemas.Compiled(file)
 	if err != nil {
 		t.Fatal(err)
 	}

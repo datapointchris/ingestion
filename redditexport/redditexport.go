@@ -40,6 +40,7 @@ const Zone = store.Outside
 func init() {
 	connectors.RegisterDropHandler(Format, Zone, landDrop)
 	landing.RegisterSourceTime(MediaTypeSave, saveCreated)
+	landing.RegisterSightingRoles(landing.SightingRoles{Channel: FieldSubreddit, ChannelFormat: "r/%s"})
 }
 
 // landDrop lands a dropped file through Land, under the connector's name and

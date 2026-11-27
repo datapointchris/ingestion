@@ -24,6 +24,7 @@ import (
 	"github.com/datapointchris/ingestion/connectors"
 	"github.com/datapointchris/ingestion/deletion"
 	"github.com/datapointchris/ingestion/extract"
+	"github.com/datapointchris/ingestion/landing"
 	"github.com/datapointchris/ingestion/metricsrefresh"
 	"github.com/datapointchris/ingestion/polling"
 	"github.com/datapointchris/ingestion/sources"
@@ -84,6 +85,10 @@ func init() {
 		},
 		Extractors: []extract.Extractor{CaptionsExtractor, WhisperExtractor},
 		Comments:   &CommentsSource,
+	})
+	landing.RegisterSightingRoles(landing.SightingRoles{
+		Channel: FieldChannelTitle, ChannelFormat: "%s", ChannelFields: []string{FieldChannelTitle, FieldChannelID},
+		Length: MetricDuration, Views: MetricViews, Likes: MetricLikes, Comments: MetricComments,
 	})
 }
 

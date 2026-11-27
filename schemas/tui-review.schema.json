@@ -9,8 +9,8 @@
   "properties": {
     "schema_version": {"const": 2},
     "taken_at": {"description": "When the snapshot was taken, in UTC.", "type": "string", "format": "date-time"},
-    "grouping": {"description": "The board's default grouping, which orders the items. A display the person left grouped otherwise does not change it.", "enum": ["reason", "connector", "channel", "verdict", "none"]},
-    "sort": {"description": "The sort in force, which orders the items within each group: newest made at their source first, the gate's highest quality first, the most likes per view first, the shortest first, or the gate's highest fit first. An item with no value for the sort follows every item with one.", "enum": ["newest", "quality", "likes-per-view", "length", "fit"]},
+    "grouping": {"description": "The board's default grouping, which orders the items. A display the person left grouped otherwise does not change it.", "$ref": "ingestion-record.schema.json#/$defs/presented/properties/grouping"},
+    "sort": {"description": "The sort in force, which orders the items within each group. An item with no value for the sort follows every item with one.", "$ref": "ingestion-record.schema.json#/$defs/presented/properties/sort"},
     "destinations": {
       "description": "Each destination a digit places on, in the order the set in force declares them, up to nine. Null where the queue came without its destinations or was not read.",
       "type": ["array", "null"],

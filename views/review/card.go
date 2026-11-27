@@ -8,52 +8,43 @@ import (
 	"strings"
 	"time"
 
-	"github.com/datapointchris/ingestion/comments"
-	"github.com/datapointchris/ingestion/redditexport"
+	"github.com/datapointchris/gotermboard"
+
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
-	"github.com/datapointchris/ingestion/ypl"
 )
 
-// The sorts s cycles, the first the default, as server.PresentedSorts names
-// them. Each puts an item with no value for it after every item with one, and
-// breaks a tie newest first.
-const (
-	sortNewest       = "newest"
-	sortQuality      = "quality"
-	sortLikesPerView = "likes-per-view"
-	sortLength       = "length"
-	sortFit          = "fit"
-)
+// sorts are the sorts s cycles, the first the default. Each puts an item with
+// no value for it after every item with one, and breaks a tie newest first.
+var sorts = store.PresentedSorts
 
-var sorts = []string{sortNewest, sortQuality, sortLikesPerView, sortLength, sortFit}
-
-// sortWords says what each sort puts first, for the strip and the ? overlay.
+// sortWords says what each sort puts first, for the strip, the ? overlay and
+// the s key's label.
 var sortWords = map[string]string{
-	sortNewest:       "newest made at its source first",
-	sortQuality:      "the gate's highest quality first",
-	sortLikesPerView: "the most likes per view first",
-	sortLength:       "the shortest first",
-	sortFit:          "the best fit to the current work first",
+	store.SortNewest:       "newest made at its source first",
+	store.SortQuality:      "the gate's highest quality first",
+	store.SortLikesPerView: "the most likes per view first",
+	store.SortLength:       "the shortest first",
+	store.SortFit:          "the best fit to the current work first",
 }
 
 // sortValue is it's value under sort, where a larger one leads, and false
 // where it has none.
 func sortValue(it item, sort string) (float64, bool) {
 	switch sort {
-	case sortQuality:
+	case store.SortQuality:
 		if it.answer != nil {
 			return float64(it.answer.Quality), true
 		}
-	case sortFit:
+	case store.SortFit:
 		if it.answer != nil && it.answer.Fit != nil {
 			return float64(*it.answer.Fit), true
 		}
-	case sortLikesPerView:
+	case store.SortLikesPerView:
 		return likesPerView(it)
-	case sortLength:
-		if seconds, ok := metric(it, ypl.MetricDuration); ok {
-			return -float64(seconds), true
+	case store.SortLength:
+		if it.LengthS != nil {
+			return -float64(*it.LengthS), true
 		}
 	default:
 		return float64(made(it).UnixNano()), true
@@ -92,40 +83,22 @@ func made(it item) time.Time {
 	return since(it)
 }
 
-// metric is the count called name that the item's first sighting carrying
-// it holds, and false where none does.
-func metric(it item, name string) (int64, bool) {
-	for _, s := range it.Sightings {
-		if v, ok := s.Metrics[name]; ok {
-			return v, true
-		}
-	}
-	return 0, false
-}
-
 // likesPerView is the item's likes over its views, the worth-watching signal,
 // and false where it holds no views.
 func likesPerView(it item) (float64, bool) {
-	views, ok := metric(it, ypl.MetricViews)
-	likes, liked := metric(it, ypl.MetricLikes)
-	if !ok || !liked || views <= 0 {
+	if it.Views == nil || it.Likes == nil || *it.Views <= 0 {
 		return 0, false
 	}
-	return float64(likes) / float64(views), true
+	return float64(*it.Likes) / float64(*it.Views), true
 }
 
-// channelOf is the channel that published the item: a video's channel, or a
-// Reddit save's subreddit as r/<name>, and "" where no sighting names one.
+// channelOf is who published the item, as the service reads it off the item's
+// sightings, and "" where none names one.
 func channelOf(it item) string {
-	for _, s := range it.Sightings {
-		if title := s.Fields[ypl.FieldChannelTitle]; title != "" {
-			return title
-		}
-		if sub := s.Fields[redditexport.FieldSubreddit]; sub != "" {
-			return "r/" + sub
-		}
+	if it.Channel == nil {
+		return ""
 	}
-	return ""
+	return *it.Channel
 }
 
 // connectorsOf is the item's connectors joined, or a dash where it has none.
@@ -175,17 +148,19 @@ func count(n int64) string {
 // percent is a ratio as a percentage to one decimal.
 func percent(ratio float64) string { return strconv.FormatFloat(ratio*100, 'f', 1, 64) + "%" }
 
-// presented is the card under key as the last frame drew it, and how long
-// ago the cursor came to rest on it, for the decision a key makes now. Both
-// are nil where the last frame did not draw it under the cursor.
-func (b *Board) presented(key string, now time.Time) (*store.Presented, *int64) {
-	rank, position := slices.Index(b.ranked, key)+1, slices.Index(b.drawn, key)+1
+// presented is the card under key as the table shows it, and how long ago the
+// cursor came to rest on it, for the decision a key makes now. Its position
+// and count are among the rows the table shows once the filter and the folds
+// hid theirs. Both are nil where the cursor does not rest on key's row.
+func (b *Board) presented(m *gotermboard.Model, key string, now time.Time) (*store.Presented, *int64) {
+	shown := m.ShownRows()
+	rank, position := slices.Index(b.ranked, key)+1, slices.Index(shown, key)+1
 	it, listed := b.queue.Value().item(key)
 	if rank == 0 || position == 0 || !listed || b.cursorKey != key || b.cursorAt.IsZero() {
 		return nil, nil
 	}
 	p := &store.Presented{
-		Sort: sorts[b.sortAt], Grouping: b.grouping, Rank: rank, Position: position, Shown: len(b.drawn),
+		Sort: sorts[b.sortAt], Grouping: b.grouping, Rank: rank, Position: position, Shown: len(shown),
 		DrawnTS: b.cursorAt.UTC().Format(time.RFC3339Nano),
 	}
 	if a := it.answer; a != nil {
@@ -199,22 +174,22 @@ func (b *Board) presented(key string, now time.Time) (*store.Presented, *int64) 
 	return p, &after
 }
 
-// commentsReadable says whether a source of this build reads the comments of
-// it, as the route that reads them asks.
-func commentsReadable(it item) bool { return comments.Reads(it.MediaType) }
-
 // commentsWords is how the read of the item's comments stands, as the card
 // says it.
 func commentsWords(c *server.ReviewComments) string {
 	switch {
 	case c == nil:
+		return "not read by any source of the service"
+	case c.State == server.CommentsUnread:
 		return "not read; c reads them"
 	case c.State == server.CommentsDone:
 		return "read"
+	case c.State == server.CommentsUnclaimed:
+		return "waiting: no worker heard from lately reads comments, so the read starts once one runs with a model port and the item's source"
 	case c.State == server.CommentsFailed && c.Error != nil:
-		return "the read failed: " + *c.Error
+		return "the read failed: " + *c.Error + "; c asks again"
 	case c.State == server.CommentsFailed:
-		return "the read failed"
+		return "the read failed; c asks again"
 	}
 	return "reading; the card shows them once the read lands"
 }

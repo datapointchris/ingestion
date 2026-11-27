@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/datapointchris/ingestion/schemas/item-comments.schema.json",
   "title": "A read of what an item's top comments say",
-  "description": "What POST /api/v1/items/{key}/comments answers: how the read of the item's top comments stands. The first request queues one comments task, which a worker that reads the item's source and holds a model port runs as one model call. A later request queues none and answers the read as it stands, so a done answer is shown again with no second call. A failed read asks again only through `ingestion tasks retry`. The route refuses an item whose media type no source that the build carries reads comments of, with 422 comments_not_read. The answer is a model's over strangers' comments, so it ships as outsider text alone.",
+  "description": "What POST /api/v1/items/{key}/comments answers: how the read of the item's top comments stands. The first request queues one comments task, which a worker that reads the item's source and holds a model port runs as one model call. A later request queues none and answers the read as it stands, so a done answer is shown again with no second call. A request after a failed read queues its task again. The route refuses an item whose media type no source that the build carries reads comments of, with 422 comments_not_read. The answer is a model's over strangers' comments, so it ships as outsider text alone.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "key", "comments"],

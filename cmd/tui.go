@@ -60,11 +60,11 @@ func tuiTabList() []tuiTab {
 			"review lists the items that wait on a person's placement, grouped by why each waits,\n" +
 				"with the channel, the gate's verdict and confidence, its quality estimate, its fit to\n" +
 				"your current work, its side guess, the source's length, views and likes per view, and\n" +
-				"how long ago the item was made at its source. v groups by why it waits, connector,\n" +
-				"channel, the gate's verdict or none, and s sorts newest, by quality, by likes per view,\n" +
-				"shortest first or by fit. / filters on the title and the channel. The side panel reads\n" +
-				"the item under the cursor: its card, the quality gate's whole answer with its reason,\n" +
-				"the scan's findings, and its text. enter reads it full screen.\n" +
+				"how long ago the item was made at its source. v cycles how the rows are grouped and\n" +
+				"s how they are sorted, and the strip names both. / filters on the title and the\n" +
+				"channel. The side panel reads the item under the cursor: its card, the quality gate's\n" +
+				"whole answer with its reason, the scan's findings, and its text. enter reads it full\n" +
+				"screen.\n" +
 				"\n" +
 				"A digit places the item on the destination numbered with it under the strip, and F\n" +
 				"on the first destination on the fleet side. d drops it after asking what decided it.\n" +
@@ -72,9 +72,9 @@ func tuiTabList() []tuiTab {
 				"destination you pick. Each decision keeps the card as it was drawn and how long you\n" +
 				"took. x marks the item low quality and r marks it read, which teaches the gate and\n" +
 				"leaves the item waiting. c reads what a video's top comments say, with one model call\n" +
-				"that the card shows once it lands. o opens its URL. Each key calls the routes that\n" +
-				"`ingestion review place`, `review drop` and `items mark` call, under the same login,\n" +
-				"so the decision is yours.",
+				"that the card shows once it lands, and asks again where the read failed. o opens its\n" +
+				"URL. Each key calls the routes that `ingestion review place`, `review drop` and\n" +
+				"`items mark` call, under the same login, so the decision is yours.",
 			func(ctx context.Context, o tuiOptions) tuiBoard {
 				return reviewTab{review.NewBoard(ctx, reviewService(o), review.Outside{Open: openInBrowser})}
 			},
@@ -231,15 +231,28 @@ func (s reviewService) Parse(ctx context.Context, key string) (server.ParseAnswe
 }
 
 func (s reviewService) Place(ctx context.Context, key string, body server.PlaceRequest) (string, error) {
-	answer, _, err := decideReview(ctx, s.config, s.api, server.RouteReviewPlace, key, "place", body)
-	if err != nil {
-		return "", refusalWords(err)
-	}
-	return placedSentence(answer), nil
+	bare := body
+	bare.Presented, bare.DecidedAfterMS = nil, nil
+	return s.decide(ctx, server.RouteReviewPlace, key, "place", body, bare)
 }
 
 func (s reviewService) Drop(ctx context.Context, key string, body server.DropRequest) (string, error) {
-	answer, _, err := decideReview(ctx, s.config, s.api, server.RouteReviewDrop, key, "drop", body)
+	bare := body
+	bare.Presented, bare.DecidedAfterMS = nil, nil
+	return s.decide(ctx, server.RouteReviewDrop, key, "drop", body, bare)
+}
+
+// decide sends body, and sends bare, the same decision with no card, where a server built before
+// the tab sent a card refuses body for the card alone. The decision is the person's, so it lands
+// either way, and the sentence says the card was not kept.
+func (s reviewService) decide(ctx context.Context, route server.Route, key, verb string, body, bare any) (string, error) {
+	answer, _, err := decideReview(ctx, s.config, s.api, route, key, verb, body)
+	var refused *refusal
+	if errors.As(err, &refused) && refused.Code == server.CodeUnknownField && (refused.Field == "presented" || refused.Field == "decided_after_ms") {
+		if answer, _, err = decideReview(ctx, s.config, s.api, route, key, verb, bare); err == nil {
+			return placedSentence(answer) + " The service reads no card yet, so the card as shown was not kept.", nil
+		}
+	}
 	if err != nil {
 		return "", refusalWords(err)
 	}

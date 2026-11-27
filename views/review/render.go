@@ -13,10 +13,10 @@ import (
 	"github.com/datapointchris/gotermboard"
 	"github.com/datapointchris/gotermboard/terminalcontrol"
 
+	"github.com/datapointchris/ingestion/qualitygate"
 	"github.com/datapointchris/ingestion/route"
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
-	"github.com/datapointchris/ingestion/ypl"
 )
 
 const dim = "\033[2m"
@@ -162,9 +162,9 @@ func (b *Board) shown(h held) []item {
 // verdictGroups are the verdict grouping's groups in order, each a verdict the gate answers and
 // its heading, and then the items it gave no answer that reads.
 var verdictGroups = []struct{ verdict, heading string }{
-	{"pass", "the gate would pass it"},
-	{"unsure", "the gate is unsure"},
-	{"drop", "the gate would drop it"},
+	{qualitygate.AnswerPass, "the gate would pass it"},
+	{qualitygate.AnswerUnsure, "the gate is unsure"},
+	{qualitygate.AnswerDrop, "the gate would drop it"},
 	{"", "the gate gave no answer"},
 }
 
@@ -173,7 +173,7 @@ var verdictGroups = []struct{ verdict, heading string }{
 func (b *Board) grouped(items []item, grouping string, now time.Time) []gotermboard.Group {
 	unread := b.queue.Status().ReadAt.IsZero()
 	switch grouping {
-	case byReason:
+	case store.GroupByReason:
 		var groups []gotermboard.Group
 		known := map[string]bool{}
 		for _, r := range route.ReviewReasons {
@@ -181,11 +181,11 @@ func (b *Board) grouped(items []item, grouping string, now time.Time) []gotermbo
 			groups = b.appendGroup(groups, "reason/"+r.Name, r.Heading, items, func(it item) bool { return it.Reason == r.Name }, now, unread)
 		}
 		return b.appendGroup(groups, "reason/other", "waiting for another reason", items, func(it item) bool { return !known[it.Reason] }, now, unread)
-	case byConnector:
+	case store.GroupByConnector:
 		return b.groupedBy(items, "connector", connectorsOf, now, unread)
-	case byChannel:
+	case store.GroupByChannel:
 		return b.groupedBy(items, "channel", func(it item) string { return cmp.Or(channelOf(it), "no channel") }, now, unread)
-	case byVerdict:
+	case store.GroupByVerdict:
 		var groups []gotermboard.Group
 		for _, v := range verdictGroups {
 			key := "verdict/" + cmp.Or(v.verdict, "none")
@@ -236,11 +236,11 @@ func (b *Board) row(it item, now time.Time) gotermboard.Row {
 	if it.answer != nil && it.answer.Fit != nil {
 		fit = gotermboard.C(strconv.Itoa(*it.answer.Fit), "")
 	}
-	if seconds, ok := metric(it, ypl.MetricDuration); ok {
-		lengthCell = gotermboard.C(length(seconds), "")
+	if it.LengthS != nil {
+		lengthCell = gotermboard.C(length(*it.LengthS), "")
 	}
-	if n, ok := metric(it, ypl.MetricViews); ok {
-		views = gotermboard.C(count(n), "")
+	if it.Views != nil {
+		views = gotermboard.C(count(*it.Views), "")
 	}
 	if ratio, ok := likesPerView(it); ok {
 		likeRatio = gotermboard.C(percent(ratio), "")

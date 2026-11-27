@@ -357,11 +357,35 @@ type Decision struct {
 	DecidedTS      string     `json:"decided_ts"`
 }
 
+// The sorts and the groupings that a review card's Presented names, the
+// first of each the review tab's default. schemas/ingestion-record.schema.json
+// enumerates the same values, and a test holds the two equal.
+const (
+	SortNewest       = "newest"
+	SortQuality      = "quality"
+	SortLikesPerView = "likes-per-view"
+	SortLength       = "length"
+	SortFit          = "fit"
+
+	GroupByReason    = "reason"
+	GroupByConnector = "connector"
+	GroupByChannel   = "channel"
+	GroupByVerdict   = "verdict"
+	GroupByNone      = "none"
+)
+
+var (
+	PresentedSorts     = []string{SortNewest, SortQuality, SortLikesPerView, SortLength, SortFit}
+	PresentedGroupings = []string{GroupByReason, GroupByConnector, GroupByChannel, GroupByVerdict, GroupByNone}
+)
+
 // Presented is a review card as a person saw it when they decided: the sort
 // and grouping in force, the card's rank under that sort and its position
-// among the rows drawn, how many rows were drawn, the quality gate's quality,
+// among the rows shown, how many rows were shown, the quality gate's quality,
 // fit, verdict and side guess with their confidences, and when the card was
-// drawn. Each holds no outsider text, so it ships as a record.
+// drawn. A row shown is one on the table once the filter and the folds hid
+// theirs, on the screen or scrolled off it. Each holds no outsider text, so
+// it ships as a record.
 type Presented struct {
 	Sort              string   `json:"sort"`
 	Grouping          string   `json:"grouping"`

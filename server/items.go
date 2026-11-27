@@ -410,7 +410,7 @@ func (h itemHandlers) show(w http.ResponseWriter, r *http.Request) {
 		h.internal(w, r, "read the set in force", err)
 		return
 	}
-	claimed, err := h.claimed(r.Context())
+	claimed, err := Claimed(r.Context(), h.store)
 	if err != nil {
 		h.internal(w, r, "read the workers", err)
 		return
@@ -420,10 +420,10 @@ func (h itemHandlers) show(w http.ResponseWriter, r *http.Request) {
 	JSON(w, http.StatusOK, answer)
 }
 
-// claimed is each capability that a worker heard from within
-// WorkersHeardWithin holds.
-func (h itemHandlers) claimed(ctx context.Context) (map[string]bool, error) {
-	workers, _, err := h.store.Workers(ctx, store.Stamp(h.store.Now().Add(-WorkersHeardWithin)))
+// Claimed is each capability that a worker heard from within
+// WorkersHeardWithin holds, so a queued task of any other waits on no worker.
+func Claimed(ctx context.Context, st *store.Store) (map[string]bool, error) {
+	workers, _, err := st.Workers(ctx, store.Stamp(st.Now().Add(-WorkersHeardWithin)))
 	if err != nil {
 		return nil, err
 	}

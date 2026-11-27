@@ -92,7 +92,7 @@ type standInYPL struct {
 	cutAudio            map[string]int
 	detailReads         [][]string
 	busyDetails         int
-	comments            map[string][]map[string]any
+	comments            map[string][]ypl.Comment
 	commentReads        []string
 }
 
@@ -102,7 +102,7 @@ func newStandInYPL(t *testing.T) (*standInYPL, *httptest.Server) {
 		playlistIDs: map[string]string{}, playlists: map[string][]standInItem{}, uploads: map[string][]standInItem{},
 		videos: map[string]standInVideo{}, refuseDelete: map[string]time.Duration{}, refuseDeleteForGood: map[string]bool{},
 		captions: map[string]map[string]any{}, audio: map[string][]byte{}, busy: map[string]int{}, gatewayDown: map[string]int{}, failing: map[string]int{},
-		unreadable: map[string]bool{}, cutAudio: map[string]int{}, comments: map[string][]map[string]any{},
+		unreadable: map[string]bool{}, cutAudio: map[string]int{}, comments: map[string][]ypl.Comment{},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/youtube/playlists/{id}/items", s.playlistItems)
@@ -285,8 +285,9 @@ func (s *standInYPL) videoAudio(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(audio)
 }
 
-// videoComments answers a video's top comments as ypl's videoComments
-// writes them, with its comments off where it holds none.
+// videoComments answers a video's top comments through the client's own
+// VideoComments, which a test holds to ypl's comments document, with its
+// comments off where it holds none.
 func (s *standInYPL) videoComments(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if _, ok := s.videos[id]; !ok {
@@ -296,9 +297,9 @@ func (s *standInYPL) videoComments(w http.ResponseWriter, r *http.Request) {
 	s.commentReads = append(s.commentReads, id)
 	comments, on := s.comments[id]
 	if !on {
-		comments = []map[string]any{}
+		comments = []ypl.Comment{}
 	}
-	answer(w, map[string]any{"video_id": id, "comments_disabled": !on, "comments": comments})
+	answer(w, ypl.VideoComments{VideoID: id, CommentsDisabled: !on, Comments: comments})
 }
 
 // add holds each video, available, finished, published on a day in the past

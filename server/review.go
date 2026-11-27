@@ -7,17 +7,16 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
-	"slices"
-	"strconv"
 	"strings"
-	"time"
 	"unicode"
 
 	"github.com/datapointchris/goapiauth"
 
 	"github.com/datapointchris/ingestion/connectors"
 	"github.com/datapointchris/ingestion/itemkey"
+	"github.com/datapointchris/ingestion/landing"
 	"github.com/datapointchris/ingestion/route"
+	"github.com/datapointchris/ingestion/schemas"
 	"github.com/datapointchris/ingestion/store"
 )
 
@@ -98,24 +97,41 @@ type ReviewItem struct {
 	// source, such as a video's upload, and null where the source gave none.
 	MediaType string  `json:"media_type"`
 	SourceTS  *string `json:"source_ts"`
-	// Comments is the read of what the item's top comments say, and nil
-	// where nobody asked for one.
+	// Channel is who published the item, as its sightings name it, such as a
+	// video's channel or a save's subreddit as r/<name>, and null where none
+	// does. ChannelFields are the sighting fields that a drop decided by the
+	// channel stands for, empty where a drop names the channel's field as its
+	// own cause.
+	Channel       *string  `json:"channel"`
+	ChannelFields []string `json:"channel_fields"`
+	// LengthS is how long the item runs in seconds, and Views, Likes and
+	// CommentCount how it was received, each null where no sighting carries
+	// it.
+	LengthS      *int64 `json:"length_s"`
+	Views        *int64 `json:"views"`
+	Likes        *int64 `json:"likes"`
+	CommentCount *int64 `json:"comment_count"`
+	// Comments is how the read of what the item's top comments say stands,
+	// and nil where no source of this build reads the item's comments.
 	Comments       *ReviewComments  `json:"comments"`
 	Connectors     []string         `json:"connectors"`
 	Sightings      []ReviewSighting `json:"sightings"`
 	WaitingSinceTS string           `json:"waiting_since_ts"`
 }
 
-// The states of a read of an item's comments.
+// The states of a read of an item's comments. Unread is an item whose
+// comments a source reads and that nobody asked about. Unclaimed is a read
+// queued while no worker heard from lately claims its tasks.
 const (
-	CommentsReading = "reading"
-	CommentsDone    = "done"
-	CommentsFailed  = "failed"
+	CommentsUnread    = "unread"
+	CommentsReading   = "reading"
+	CommentsUnclaimed = "unclaimed"
+	CommentsDone      = "done"
+	CommentsFailed    = "failed"
 )
 
-// ReviewComments is how the read of an item's comments stands: reading while
-// its task or its model's run has not ended, done with the answer, or failed.
-// The answer is a model's over outsider text.
+// ReviewComments is how the read of an item's comments stands, and its
+// answer once done. The answer is a model's over outsider text.
 type ReviewComments struct {
 	State  string          `json:"state"`
 	Answer json.RawMessage `json:"answer"`
@@ -123,32 +139,11 @@ type ReviewComments struct {
 	Error  *string         `json:"error"`
 }
 
-// CommentsOf is how the read of the item's comments stands in r, and nil
-// where it holds no task of the stage. A done answer stands whatever a later
-// task does.
-func CommentsOf(r store.ItemRecords) *ReviewComments {
-	var newest *store.Task
-	for i := range r.Tasks {
-		if t := &r.Tasks[i]; t.Stage == store.StageComments && (newest == nil || t.CreatedTS >= newest.CreatedTS) {
-			newest = t
-		}
-	}
-	if done := store.NewestDone(r.Outputs, store.StageComments); done != nil {
-		c := &ReviewComments{State: CommentsDone, Answer: done.Answer}
-		if newest != nil {
-			c.TaskID = &newest.ID
-		}
-		return c
-	}
-	if newest == nil {
-		return nil
-	}
-	c := &ReviewComments{State: CommentsReading, TaskID: &newest.ID}
-	if newest.State == store.TaskFailed {
-		c.State, c.Error = CommentsFailed, newest.Error
-	}
-	return c
-}
+// CommentsState is how the read of an item's comments stands in its records,
+// given each capability that a live worker claims, and nil where no source
+// of this build reads the item's comments. The comments stage answers it,
+// so the review list reports the state that its route acts on.
+type CommentsState func(r store.ItemRecords, claimed map[string]bool) *ReviewComments
 
 // ReviewGuess is the quality gate's side guess on an item.
 type ReviewGuess struct {
@@ -199,44 +194,31 @@ type DropRequest struct {
 	DecidedAfterMS *int64           `json:"decided_after_ms,omitempty"`
 }
 
-// The sorts and groupings a review card's Presented names, as
-// schemas/ingestion-record.schema.json enumerates them.
-var (
-	PresentedSorts     = []string{"newest", "quality", "likes-per-view", "length", "fit"}
-	PresentedGroupings = []string{"reason", "connector", "channel", "verdict", "none"}
-)
+// presentedSchema is the record schema's presented, which a card sent with a
+// placement or a drop holds to.
+const presentedSchema = "ingestion-record.schema.json#/$defs/presented"
 
 // checkPresented answers why p and after are not a card as drawn and a wait
-// after it, and "" where they are, or where neither is sent.
-func checkPresented(p *store.Presented, after *int64) string {
+// after it, and "" where they are, or where neither is sent. The schema states
+// what a card holds. Only the pairing and the wait are checked here.
+func checkPresented(p *store.Presented, after *int64) (string, error) {
 	switch {
 	case p == nil && after == nil:
-		return ""
+		return "", nil
 	case p == nil || after == nil:
-		return "presented and decided_after_ms are sent together, or neither is"
+		return "presented and decided_after_ms are sent together, or neither is", nil
 	case *after < 0:
-		return "decided_after_ms counts from the card's drawing, so it is 0 or more"
-	case !slices.Contains(PresentedSorts, p.Sort):
-		return fmt.Sprintf("presented.sort is one of %s, not %q", strings.Join(PresentedSorts, ", "), p.Sort)
-	case !slices.Contains(PresentedGroupings, p.Grouping):
-		return fmt.Sprintf("presented.grouping is one of %s, not %q", strings.Join(PresentedGroupings, ", "), p.Grouping)
-	case p.Rank < 1 || p.Position < 1 || p.Shown < 1:
-		return "presented.rank, position and shown count from 1"
-	case p.Quality != nil && (*p.Quality < 1 || *p.Quality > 10), p.Fit != nil && (*p.Fit < 0 || *p.Fit > 10):
-		return "presented.quality is 1 to 10 and presented.fit 0 to 10"
-	case p.Verdict != nil && !slices.Contains([]string{"pass", "drop", "unsure"}, *p.Verdict),
-		p.Side != nil && !slices.Contains([]string{connectors.SidePersonal, connectors.SideFleet, "unsure"}, *p.Side):
-		return "presented.verdict is pass, drop or unsure, and presented.side personal, fleet or unsure"
-	case outsideUnit(p.VerdictConfidence) || outsideUnit(p.SideConfidence):
-		return "presented's confidences are 0 to 1"
+		return "decided_after_ms counts from the card's drawing, so it is 0 or more", nil
 	}
-	if _, err := time.Parse(time.RFC3339Nano, p.DrawnTS); err != nil {
-		return "presented.drawn_ts is an RFC 3339 time, not " + strconv.Quote(p.DrawnTS)
+	schema, err := schemas.Compiled(presentedSchema)
+	if err != nil {
+		return "", err
 	}
-	return ""
+	if problems := schemas.Problems(schema, p); len(problems) > 0 {
+		return "presented does not hold to schemas/" + presentedSchema + ": " + strings.Join(problems, "; "), nil
+	}
+	return "", nil
 }
-
-func outsideUnit(c *float64) bool { return c != nil && (*c < 0 || *c > 1) }
 
 // PlacementAnswer is what a placement or a drop answers:
 // schemas/review-placement.schema.json. Decisions are the side decision and,
@@ -250,11 +232,14 @@ type PlacementAnswer struct {
 // ReviewRoutes are the routes for a person, or a service acting for one, to
 // read the review queue and place or drop an item. A placement or a drop sent
 // again with the same body appends nothing.
-func ReviewRoutes(st *store.Store, log *slog.Logger) Routes {
+func ReviewRoutes(st *store.Store, comments CommentsState, log *slog.Logger) Routes {
 	if log == nil {
 		log = slog.Default()
 	}
-	h := reviewHandlers{store: st, log: log}
+	if comments == nil {
+		comments = func(store.ItemRecords, map[string]bool) *ReviewComments { return nil }
+	}
+	h := reviewHandlers{store: st, comments: comments, log: log}
 	return func(r *Router) {
 		r.Handle(RouteReview, h.list)
 		r.Handle(RouteReviewPlace, h.place)
@@ -263,8 +248,9 @@ func ReviewRoutes(st *store.Store, log *slog.Logger) Routes {
 }
 
 type reviewHandlers struct {
-	store *store.Store
-	log   *slog.Logger
+	store    *store.Store
+	comments CommentsState
+	log      *slog.Logger
 }
 
 func (h reviewHandlers) list(w http.ResponseWriter, r *http.Request) {
@@ -274,13 +260,22 @@ func (h reviewHandlers) list(w http.ResponseWriter, r *http.Request) {
 		Refuse(w, http.StatusInternalServerError, CodeInternal, "the server could not read the review queue")
 		return
 	}
-	answer := ReviewAnswer{SchemaVersion: 3, Items: make([]ReviewItem, 0, len(waiting)), Destinations: h.destinations(r)}
+	claimed, err := Claimed(r.Context(), h.store)
+	if err != nil {
+		h.log.ErrorContext(r.Context(), "read the workers heard from lately", "error", err)
+		Refuse(w, http.StatusInternalServerError, CodeInternal, "the server could not read the review queue")
+		return
+	}
+	answer := ReviewAnswer{SchemaVersion: 2, Items: make([]ReviewItem, 0, len(waiting)), Destinations: h.destinations(r)}
 	for _, it := range waiting {
 		item := ReviewItem{
 			Key: it.Item.Key, Zone: it.Item.Zone, Title: it.Item.Title, URL: it.Item.URL, Reason: it.Reason,
-			MediaType: it.Item.MediaType, SourceTS: it.Item.SourceTS, Comments: CommentsOf(it.ItemRecords),
+			MediaType: it.Item.MediaType, SourceTS: it.Item.SourceTS, Comments: h.comments(it.ItemRecords, claimed),
 			Connectors: []string{}, Sightings: []ReviewSighting{}, WaitingSinceTS: it.Since,
 		}
+		roles := landing.ReadRoles(it.Sightings)
+		item.Channel, item.ChannelFields = roles.Channel, append([]string{}, roles.ChannelFields...)
+		item.LengthS, item.Views, item.Likes, item.CommentCount = roles.LengthS, roles.Views, roles.Likes, roles.Comments
 		for _, s := range it.Sightings {
 			item.Connectors = append(item.Connectors, s.Connector)
 			item.Sightings = append(item.Sightings, ReviewSighting{Connector: s.Connector, Tags: s.Tags, Fields: s.Fields, Metrics: s.Metrics})
@@ -331,8 +326,7 @@ func (h reviewHandlers) place(w http.ResponseWriter, r *http.Request) {
 		Refuse(w, http.StatusBadRequest, CodeInvalidBody, "cause is a lowercase word or words joined by hyphens, such as subreddit, not %q", body.Cause)
 		return
 	}
-	if why := checkPresented(body.Presented, body.DecidedAfterMS); why != "" {
-		Refuse(w, http.StatusBadRequest, CodeInvalidBody, "%s", why)
+	if h.refusedPresented(w, r, body.Presented, body.DecidedAfterMS) {
 		return
 	}
 	h.decide(w, r, route.Placement{
@@ -349,11 +343,26 @@ func (h reviewHandlers) drop(w http.ResponseWriter, r *http.Request) {
 		Refuse(w, http.StatusBadRequest, CodeInvalidBody, "cause is a lowercase word or words joined by hyphens, such as subreddit, not %q", body.Cause)
 		return
 	}
-	if why := checkPresented(body.Presented, body.DecidedAfterMS); why != "" {
-		Refuse(w, http.StatusBadRequest, CodeInvalidBody, "%s", why)
+	if h.refusedPresented(w, r, body.Presented, body.DecidedAfterMS) {
 		return
 	}
 	h.decide(w, r, route.Placement{Cause: body.Cause, Note: body.Note, Presented: body.Presented, DecidedAfterMS: body.DecidedAfterMS}, body.Login)
+}
+
+// refusedPresented refuses the request where p and after are not a card as
+// drawn and a wait after it, and says whether it did.
+func (h reviewHandlers) refusedPresented(w http.ResponseWriter, r *http.Request, p *store.Presented, after *int64) bool {
+	why, err := checkPresented(p, after)
+	switch {
+	case err != nil:
+		h.log.ErrorContext(r.Context(), "check a placement's card", "error", err)
+		Refuse(w, http.StatusInternalServerError, CodeInternal, "the server could not check the card sent with the decision")
+		return true
+	case why != "":
+		Refuse(w, http.StatusBadRequest, CodeInvalidBody, "%s", why)
+		return true
+	}
+	return false
 }
 
 // decide appends p on the item the path names, as the caller decided it.

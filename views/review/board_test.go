@@ -13,11 +13,9 @@ import (
 	"github.com/datapointchris/gotermstyle"
 
 	"github.com/datapointchris/ingestion/connectors"
-	"github.com/datapointchris/ingestion/redditexport"
 	"github.com/datapointchris/ingestion/route"
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
-	"github.com/datapointchris/ingestion/ypl"
 )
 
 // fakeService answers the queue it holds, and keeps each placement it is sent.
@@ -50,6 +48,7 @@ func (f *fakeService) Comments(context.Context, string) (server.ReviewComments, 
 
 // video is a video waiting in review, as the queue answers it: made on day of November 2026,
 // viewed views times, liked likes times and seconds long, with the gate's answer.
+// Its sighting carries its channel's fields, which a drop decided by the channel stands for.
 func video(id, title, channel, connector, reason string, day, views, likes, seconds int64, quality int, fit *int, verdict string) server.ReviewItem {
 	answer, _ := json.Marshal(map[string]any{
 		"genre": "explainer", "domains": []string{"energy"}, "themes": []string{"a theme"}, "quality": quality, "fit": fit,
@@ -57,12 +56,15 @@ func video(id, title, channel, connector, reason string, day, views, likes, seco
 		"side": connectors.SideFleet, "side_confidence": 0.8,
 	})
 	made := time.Date(2026, 11, int(day), 10, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	comments := int64(42)
 	return server.ReviewItem{
 		Key: "youtube/" + id, Zone: store.Outside, Title: &title, Reason: reason, QualityAnswer: answer,
-		MediaType: ypl.MediaTypeVideo, SourceTS: &made, Connectors: []string{connector}, WaitingSinceTS: "2026-11-25T00:00:00.000Z",
+		MediaType: "video", SourceTS: &made, Connectors: []string{connector}, WaitingSinceTS: "2026-11-25T00:00:00.000Z",
+		Channel: &channel, ChannelFields: []string{"channel_title", "channel_id"},
+		LengthS: &seconds, Views: &views, Likes: &likes, CommentCount: &comments,
+		Comments: &server.ReviewComments{State: server.CommentsUnread},
 		Sightings: []server.ReviewSighting{{
-			Connector: connector, Fields: map[string]string{ypl.FieldChannelTitle: channel},
-			Metrics: map[string]int64{ypl.MetricViews: views, ypl.MetricLikes: likes, ypl.MetricComments: 42, ypl.MetricDuration: seconds},
+			Connector: connector, Fields: map[string]string{"channel_title": channel, "channel_id": "UC" + id},
 		}},
 	}
 }
@@ -72,10 +74,10 @@ func fit(n int) *int { return &n }
 // deck is four items: three videos the gate answered, two from one channel, and a Reddit save
 // with no answer, no metrics and no source time, which began to wait before the rest.
 func deck() server.ReviewAnswer {
-	save := "A post about sourdough"
+	save, subreddit := "A post about sourdough", "r/baking"
 	fleet, personal := connectors.SideFleet, connectors.SidePersonal
 	return server.ReviewAnswer{
-		SchemaVersion: 3,
+		SchemaVersion: 2,
 		Destinations:  []server.ReviewDestination{{Name: "reading-list", Side: &personal}, {Name: "work-inbox", Side: &fleet}},
 		Items: []server.ReviewItem{
 			video("vida", "Gardening with robots", "Allotment Lab", "ypl-capture", store.ReasonQualityReview, 20, 10_000, 900, 300, 5, fit(9), "pass"),
@@ -83,8 +85,8 @@ func deck() server.ReviewAnswer {
 			video("vidc", "Robots in the greenhouse", "Allotment Lab", "ypl-capture", route.CauseGateWouldDrop, 10, 2000, 300, 600, 8, nil, "drop"),
 			{
 				Key: "reddit/t3_dd4", Zone: store.Outside, Title: &save, Reason: route.CausePersonSorts, QualityAnswer: json.RawMessage("null"),
-				Connectors: []string{"reddit-exports"}, WaitingSinceTS: "2026-11-01T00:00:00.000Z",
-				Sightings: []server.ReviewSighting{{Connector: "reddit-exports", Fields: map[string]string{redditexport.FieldSubreddit: "baking"}}},
+				Connectors: []string{"reddit-exports"}, WaitingSinceTS: "2026-11-01T00:00:00.000Z", Channel: &subreddit, ChannelFields: []string{},
+				Sightings: []server.ReviewSighting{{Connector: "reddit-exports", Fields: map[string]string{"subreddit": "baking"}}},
 			},
 		},
 	}
@@ -131,7 +133,7 @@ func TestTheReviewTabSortsGroupsAndFiltersTheQueue(t *testing.T) {
 	} {
 		b.sortAt = i
 		var got []string
-		for _, row := range b.ordered(byNone) {
+		for _, row := range b.ordered(store.GroupByNone) {
 			got = append(got, strings.TrimPrefix(strings.TrimPrefix(row.Key, "youtube/"), "reddit/"))
 		}
 		if !slices.Equal(got, want) {
@@ -139,11 +141,11 @@ func TestTheReviewTabSortsGroupsAndFiltersTheQueue(t *testing.T) {
 		}
 	}
 
-	b.sortAt = slices.Index(sorts, sortQuality)
+	b.sortAt = slices.Index(sorts, store.SortQuality)
 	for grouping, want := range map[string][][]string{
-		byConnector: {{"connector/ypl-capture", "vidc", "vida"}, {"connector/reddit-exports", "t3_dd4"}, {"connector/ypl-channel", "vidb"}},
-		byChannel:   {{"channel/Allotment Lab", "vidc", "vida"}, {"channel/Sea Notes", "vidb"}, {"channel/r/baking", "t3_dd4"}},
-		byVerdict:   {{"verdict/pass", "vida"}, {"verdict/unsure", "vidb"}, {"verdict/drop", "vidc"}, {"verdict/none", "t3_dd4"}},
+		store.GroupByConnector: {{"connector/ypl-capture", "vidc", "vida"}, {"connector/reddit-exports", "t3_dd4"}, {"connector/ypl-channel", "vidb"}},
+		store.GroupByChannel:   {{"channel/Allotment Lab", "vidc", "vida"}, {"channel/Sea Notes", "vidb"}, {"channel/r/baking", "t3_dd4"}},
+		store.GroupByVerdict:   {{"verdict/pass", "vida"}, {"verdict/unsure", "vidb"}, {"verdict/drop", "vidc"}, {"verdict/none", "t3_dd4"}},
 	} {
 		if got := drawn(b, grouping); !slices.EqualFunc(got, want, slices.Equal) {
 			t.Errorf("grouped by %s under quality the frame draws %v, want %v", grouping, got, want)
@@ -166,35 +168,48 @@ func TestTheReviewTabSortsGroupsAndFiltersTheQueue(t *testing.T) {
 	}
 }
 
-// A video's card names its channel, length and upload day, its views, likes, comments and likes
-// per view, and the gate's quality, fit, verdict, reason and side hint, and says where the gate
-// would drop it.
-func TestAVideosCardShowsItsNumbersAndTheGatesAnswer(t *testing.T) {
-	b := readBoard(t, &fakeService{answer: deck()})
-	card := b.document("youtube/vidc")
-	for _, want := range []string{
-		`**channel** Allotment Lab`, `**length** 10:00`, `**made** 2026\-11\-10`, `**views** 2000`, `**likes** 300`, `**comments** 42`,
-		`**likes per view** 15\.0\%`, `**quality** 8 of 10`, `**fit** none`, `**verdict** drop at 0.70 confidence`,
-		`**reason** The opening of vidc decided it\.`, `**side hint** fleet at 0.80 confidence`, `**gate\-would\-drop** the gate would drop it`,
-		`**comments read** not read`,
-	} {
-		if !strings.Contains(card, want) {
-			t.Errorf("the card lacks %q:\n%s", want, card)
-		}
+// The card and the row show a video's length as m:ss or h:mm:ss and its likes per view as a
+// percentage, and date an item by when its source made it, or by when it began to wait where its
+// source gave no time.
+func TestTheCardsNumbersAreTheItemsOwn(t *testing.T) {
+	h := readBoard(t, &fakeService{answer: deck()}).queue.Value()
+	vidc, _ := h.item("youtube/vidc")
+	save, _ := h.item("reddit/t3_dd4")
+	if got := length(*vidc.LengthS); got != "10:00" {
+		t.Errorf("600 seconds read %q, want 10:00", got)
+	}
+	if got := length(3725); got != "1:02:05" {
+		t.Errorf("3725 seconds read %q, want 1:02:05", got)
+	}
+	if ratio, ok := likesPerView(vidc); !ok || percent(ratio) != "15.0%" {
+		t.Errorf("300 likes over 2000 views read %v, %v, want 15.0%%", ratio, ok)
+	}
+	if _, ok := likesPerView(save); ok {
+		t.Error("a save with no views has likes per view")
+	}
+	if got := made(vidc); !got.Equal(time.Date(2026, 11, 10, 10, 0, 0, 0, time.UTC)) {
+		t.Errorf("the video was made %v, want its upload", got)
+	}
+	if got := made(save); !got.Equal(time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)) {
+		t.Errorf("the save was made %v, want when it began to wait", got)
 	}
 }
 
-// A decision keeps the card as the tab drew it: the sort and grouping in force, the item's rank
-// under the sort and its place among the rows drawn, and the gate's numbers beside it.
-func TestAPlacementKeepsTheCardAsTheTabPresentedIt(t *testing.T) {
+// A person filters the tab to one row, then decides on it. The decision keeps the card as the tab
+// showed it: the sort and grouping in force, the item's rank under the sort, its place among the
+// rows that the filter left, and the gate's numbers beside it.
+func TestAPlacementFromAFilteredTabKeepsTheCardAsTheTabShowedIt(t *testing.T) {
 	service := &fakeService{answer: deck()}
 	b := readBoard(t, service)
 	m := gotermboard.NewModel(b, gotermstyle.PaletteFor(nil))
 	m.Update(tea.WindowSizeMsg{Width: 200, Height: 40})
 	runKey(m, letter('s'))
 	runKey(m, letter('v'))
-	if m.Cursor() != "youtube/vidb" {
-		t.Fatalf("sorted by quality and grouped by connector, the cursor rests on %q, want the row it rested on before", m.Cursor())
+	runKey(m, letter('/'))
+	m.Update(tea.PasteMsg{Content: "greenhouse"})
+	runKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m.Cursor() != "youtube/vidc" {
+		t.Fatalf("filtered to the greenhouse video, the cursor rests on %q", m.Cursor())
 	}
 	runKey(m, letter(KeyFleetRelate[0]))
 	if len(service.placed) != 1 {
@@ -202,10 +217,10 @@ func TestAPlacementKeepsTheCardAsTheTabPresentedIt(t *testing.T) {
 	}
 	body := service.placed[0]
 	p := body.Presented
-	if body.Destination != "work-inbox" || p == nil || p.Sort != sortQuality || p.Grouping != byConnector || p.Rank != 2 || p.Position != 4 || p.Shown != 4 ||
-		p.Quality == nil || *p.Quality != 6 || p.Fit == nil || *p.Fit != 3 || p.Verdict == nil || *p.Verdict != "unsure" ||
+	if body.Destination != "work-inbox" || p == nil || p.Sort != store.SortQuality || p.Grouping != store.GroupByConnector || p.Rank != 1 || p.Position != 1 || p.Shown != 1 ||
+		p.Quality == nil || *p.Quality != 8 || p.Fit != nil || p.Verdict == nil || *p.Verdict != "drop" ||
 		p.Side == nil || *p.Side != connectors.SideFleet || body.DecidedAfterMS == nil || *body.DecidedAfterMS < 0 {
-		t.Errorf("F placed on %s keeping %+v after %v ms, want work-inbox with the last row drawn, second under quality, grouped by connector",
+		t.Errorf("F placed on %s keeping %+v after %v ms, want work-inbox with the one row shown, first under quality, grouped by connector",
 			body.Destination, p, body.DecidedAfterMS)
 	}
 }

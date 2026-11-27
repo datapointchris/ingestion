@@ -16,7 +16,6 @@ import (
 	"github.com/datapointchris/ingestion/route"
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
-	"github.com/datapointchris/ingestion/ypl"
 )
 
 // document is the item's reading pane as markdown: its title, URL and where it came from, the
@@ -54,16 +53,19 @@ func (b *Board) document(key string) string {
 // quality, fit, verdict, reason and side guess, and whether the gate would drop it.
 func cardSection(it item) string {
 	rows := []string{"- **channel** " + literalLine(cmp.Or(channelOf(it), "none named"))}
-	if seconds, ok := metric(it, ypl.MetricDuration); ok {
-		rows = append(rows, "- **length** "+length(seconds))
+	if it.LengthS != nil {
+		rows = append(rows, "- **length** "+length(*it.LengthS))
 	}
 	if it.SourceTS != nil {
 		at := made(it)
 		rows = append(rows, "- **made** "+literalLine(at.Local().Format("2006-01-02"))+", "+gotermboard.Ago(time.Since(at))+" ago")
 	}
-	for _, m := range []struct{ name, word string }{{ypl.MetricViews, "views"}, {ypl.MetricLikes, "likes"}, {ypl.MetricComments, "comments"}} {
-		if n, ok := metric(it, m.name); ok {
-			rows = append(rows, fmt.Sprintf("- **%s** %d", m.word, n))
+	for _, m := range []struct {
+		n    *int64
+		word string
+	}{{it.Views, "views"}, {it.Likes, "likes"}, {it.CommentCount, "comments"}} {
+		if m.n != nil {
+			rows = append(rows, fmt.Sprintf("- **%s** %d", m.word, *m.n))
 		}
 	}
 	if ratio, ok := likesPerView(it); ok {
@@ -82,7 +84,7 @@ func cardSection(it item) string {
 	if it.Reason == route.CauseGateWouldDrop {
 		rows = append(rows, "- **"+literalLine(route.CauseGateWouldDrop)+"** the gate would drop it, and its family has not earned hiding the drop")
 	}
-	if commentsReadable(it) {
+	if it.Comments != nil {
 		rows = append(rows, "- **comments read** "+literalLine(commentsWords(it.Comments)))
 	}
 	return "\n## The card\n\n" + strings.Join(rows, "\n") + "\n"

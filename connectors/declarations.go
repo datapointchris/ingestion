@@ -23,6 +23,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
+	"github.com/datapointchris/ingestion/schemas"
 	"github.com/datapointchris/ingestion/store"
 )
 
@@ -370,7 +371,7 @@ func Validate(s Set, roots []string) []Invalid {
 	tagged := map[string]string{}
 	sideDefaults := map[string]string{}
 	for _, d := range s.Destinations {
-		problems := schemaProblems(compiled.destination, d.normalized())
+		problems := schemas.Problems(compiled.destination, d.normalized())
 		if destinations[d.Name] {
 			problems = append(problems, "another destination has this name")
 		}
@@ -400,7 +401,7 @@ func Validate(s Set, roots []string) []Invalid {
 	}
 	rules := map[string]bool{}
 	for _, r := range s.RoutingRules {
-		problems := schemaProblems(compiled.rule, r)
+		problems := schemas.Problems(compiled.rule, r)
 		if rules[r.Name] {
 			problems = append(problems, "another routing rule has this name")
 		}
@@ -422,7 +423,7 @@ func Validate(s Set, roots []string) []Invalid {
 // problems is every reason c does not hold.
 func (c Connector) problems(compiled declarationSchemas, roots []string) []string {
 	var out []string
-	for _, problem := range schemaProblems(compiled.connector, c.normalized()) {
+	for _, problem := range schemas.Problems(compiled.connector, c.normalized()) {
 		if field, ok := strings.CutSuffix(problem, ": false schema"); ok {
 			problem = fmt.Sprintf("%s: a %s connector does not take it", field, c.Mode)
 		}

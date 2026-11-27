@@ -1030,7 +1030,10 @@ Dropped file/5d41402abc4b2a76, cause title.
 
 `review list` reads `GET /api/v1/review`, the longest waiting first, in
 `schemas/review-list.schema.json`. Each item carries the quality gate's whole answer and each
-sighting's tags, fields and metrics. Whatever the reason an item waits, its `guess` is present
+sighting's tags, fields and metrics. It also carries what any source's sightings say of who
+published it, how long it runs and how it was received: `channel`, `length_s`, `views`, `likes`
+and `comment_count`. Each source registers which of its fields and metrics those are, through
+`landing.RegisterSightingRoles`, so a reader needs no source's names. Whatever the reason an item waits, its `guess` is present
 wherever the gate gave one, so a reader shows it by its presence. The answer also lists each declared destination with its side, so a
 reader needs no call per item. Where the set in force cannot be read, `destinations` is null and
 the queue still answers. `place` and `drop` post to `/api/v1/review/{key}/place` and
@@ -1079,16 +1082,19 @@ idea and themes, or a sighting's fields.
 
 Each key posts to the routes that `review place`, `review drop` and `items mark` post to, under
 the same login, so the decision is the person's. A placement or a drop also keeps `presented`,
-the card as the tab drew it:
+the card as the tab showed it:
 
 - the sort and grouping in force
-- the item's rank under the sort, its position among the rows drawn, and how many were drawn
+- the item's rank under the sort, its position among the rows shown, and how many were shown,
+  once the filter and the folds hid theirs
 - the gate's quality, fit, verdict and side guess, with their confidences
 - when the cursor came to rest on it
 
 `decided_after_ms` counts the milliseconds from then to the decision. Both sit on the side
 decision, and ship on the record channel, so a reader can measure how the card's order and
-numbers sway a decision. `review place` and `review drop` send neither. A decided item leaves the table at once, and the cursor moves on
+numbers sway a decision. `review place` and `review drop` send neither. A service built before
+the card refuses a decision that carries one, naming the field. The tab then sends the decision
+again without it, and says that the card was not kept. A decided item leaves the table at once, and the cursor moves on
 through its group. A decision that fails puts the item back with the server's answer on it, and a
 note that was not placed stays in its file, which the footer names. Quitting waits for every
 decision sent.
@@ -1104,10 +1110,17 @@ exits as `review list` would, 4 where the server gave no answer.
 `c` on a video's card posts to `POST /api/v1/items/{key}/comments`, under
 `ingestion.comments.read`, and the answer holds to `schemas/item-comments.schema.json`. The first
 request queues one task of capability `comments`. Each later request answers how that read
-stands, so nothing reads comments in a batch.
+stands, so nothing reads comments in a batch. The review list carries how each item's read
+stands, and null where no source of the build reads its comments:
+
+- `unread` where nobody asked
+- `reading` while its task or its run has not ended
+- `unclaimed` while its task waits and no worker heard from lately claims `comments` tasks
+- `done` with the answer
+- `failed` where its task failed, which the next request queues again
 
 - **A worker with a model port and a source that reads comments claims it.** ypl is that source.
-  The worker reads up to 100 of the video's top comments through ypl, clipping each one. It asks
+  The worker reads the top comments that ypl answers, clipping each one. It asks
   the model through `prompts/comments/prompt.tmpl` on `[model.comments]`, which defaults to haiku
   at medium.
 - **The answer holds to `prompts/comments/answer.schema.json`.** It gives a summary, up to four
@@ -1118,7 +1131,7 @@ stands, so nothing reads comments in a batch.
 - **The card shows the answer under "What the comments say" once it lands.**
 - **The stage sits on no item's line.** It moves no phase, places nothing and delivers nothing.
 - **A video whose comments are off, or that holds none, fails its task with no model call.**
-  `tasks retry` asks again, and so does a failed run.
+  `c` asks again, and so does `tasks retry`.
 - **The route refuses other items.** An item whose media type no source reads comments of gets
   422 `comments_not_read`.
 

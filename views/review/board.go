@@ -19,6 +19,7 @@ import (
 	"github.com/datapointchris/ingestion/note"
 	"github.com/datapointchris/ingestion/qualitygate"
 	"github.com/datapointchris/ingestion/server"
+	"github.com/datapointchris/ingestion/store"
 )
 
 // Service is the set of routes that the tab reads and writes through. cmd fills it with the calls `ingestion
@@ -45,16 +46,6 @@ type Service interface {
 const (
 	sourceQueue  = "review queue"
 	sourceParses = "parse"
-)
-
-// The groupings v cycles, as server.PresentedGroupings names them. The first is the default, which
-// a remembered display overrides on screen.
-const (
-	byReason    = "reason"
-	byConnector = "connector"
-	byChannel   = "channel"
-	byVerdict   = "verdict"
-	byNone      = "none"
 )
 
 // held is one read of the queue, each item decoded once off the screen's loop. readFrom is when the
@@ -219,11 +210,9 @@ func (b *Board) Sources() []gotermboard.Refresher {
 	return []gotermboard.Refresher{b.queue, b.parses}
 }
 
-// Groupings is gotermboard.Board's: why each item waits, the default, then its connector, its
-// channel, the gate's verdict, or none.
-func (b *Board) Groupings() []string {
-	return []string{byReason, byConnector, byChannel, byVerdict, byNone}
-}
+// Groupings is gotermboard.Board's: the groupings v cycles, the first the default, which a
+// remembered display overrides on screen.
+func (b *Board) Groupings() []string { return store.PresentedGroupings }
 
 // TwoLines is gotermboard.TwoLineBoard's: each row's key and the gate's idea sit dim under it.
 func (b *Board) TwoLines() bool { return true }
