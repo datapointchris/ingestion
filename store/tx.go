@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -136,6 +138,76 @@ func (t *Tx) PutSighting(ctx context.Context, s Sighting) error {
 	}
 	s.FirstSeenTS, s.LastSeenTS = t.stamp(), t.stamp()
 	return t.put(ctx, table("sightings"), s)
+}
+
+// metricName is a metric's name: lowercase letters, digits and underscores,
+// from a letter, such as duration_s.
+var metricName = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+
+// ErrInvalidMetric is a metric whose name metricName refuses.
+var ErrInvalidMetric = errors.New("a metric is named in lowercase letters, digits and underscores, from a letter")
+
+// CheckMetrics refuses a metric in metrics whose name is not a metric's, with
+// ErrInvalidMetric.
+func CheckMetrics(metrics map[string]int64) error {
+	for _, name := range slices.Sorted(maps.Keys(metrics)) {
+		if !metricName.MatchString(name) {
+			return fmt.Errorf("%w, not %q", ErrInvalidMetric, name)
+		}
+	}
+	return nil
+}
+
+// PutSightingMetrics writes metrics onto connector's sighting of the item
+// under key, each by its name, and keeps the sighting's other metrics, fields
+// and tags. It writes nothing where the sighting already holds those values,
+// and nothing where the store holds no such sighting. It answers whether it
+// wrote.
+func (t *Tx) PutSightingMetrics(ctx context.Context, key, connector string, metrics map[string]int64) (bool, error) {
+	if err := CheckMetrics(metrics); err != nil {
+		return false, err
+	}
+	s, ok, err := t.Sighting(ctx, key, connector)
+	if err != nil || !ok {
+		return false, err
+	}
+	next := maps.Clone(s.Metrics)
+	if next == nil {
+		next = map[string]int64{}
+	}
+	maps.Copy(next, metrics)
+	if maps.Equal(next, s.Metrics) {
+		return false, nil
+	}
+	s.Metrics = next
+	return true, t.PutSighting(ctx, s)
+}
+
+// ReviewKeysSightedBy reads, in key order, the key of each item in phase
+// review that one of connectors sighted.
+func (t *Tx) ReviewKeysSightedBy(ctx context.Context, connectors []string) ([]string, error) {
+	if len(connectors) == 0 {
+		return nil, nil
+	}
+	args := []any{PhaseReview}
+	for _, c := range connectors {
+		args = append(args, c)
+	}
+	rows, err := t.tx.QueryContext(ctx, `SELECT DISTINCT s.item_key FROM sightings s JOIN items i ON i.key = s.item_key
+		WHERE i.phase = ? AND s.connector IN (?`+strings.Repeat(", ?", len(connectors)-1)+`) ORDER BY s.item_key`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("select the items in review that %s sighted: %w", strings.Join(connectors, ", "), err)
+	}
+	defer func() { _ = rows.Close() }()
+	var keys []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		keys = append(keys, key)
+	}
+	return keys, rows.Err()
 }
 
 // PutBlob records landed bytes. A blob already recorded is left as it is.

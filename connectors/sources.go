@@ -12,6 +12,10 @@ type Source struct {
 	// its connectors land, so a connector of it may declare after_landing
 	// delete.
 	Deletes bool
+	// RefreshesMetrics says that a worker of this build reads again, at the
+	// source, the metrics of each item that its connectors sighted and that
+	// waits in review, so serve queues that refresh on its schedule.
+	RefreshesMetrics bool
 	// Rules answers why a connector of the source breaks the source's own
 	// rules beside its schema, such as the source_parameters it takes, one
 	// problem each. A source with no rules takes no source_parameters,

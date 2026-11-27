@@ -34,6 +34,7 @@ var (
 	errDeliveryOutsideDeliver  = errors.New("only a deliver task reports a delivery")
 	errBadDelivery             = errors.New("the delivery is not one the store records")
 	errArrivalsOutsideDonePoll = errors.New("only a poll that ends done reports arrivals or a cursor")
+	errMetricsOutsideRefresh   = errors.New("only a refresh of a source's metrics that ends done reports metrics")
 )
 
 // MaxListed is the most tasks one list answers.
@@ -67,11 +68,13 @@ type SlotGroup struct {
 // LeasedTask is one leased task, with the token for every heartbeat and
 // report on it. A stage's task names its item. A poll names its connector,
 // and its capability is poll:<source>, so each source's handler claims its
-// own.
+// own. A refresh of a source's metrics names its source, and its capability
+// is refresh-metrics:<source>.
 type LeasedTask struct {
 	ID             string  `json:"id"`
 	ItemKey        *string `json:"item_key"`
 	Connector      *string `json:"connector"`
+	Source         *string `json:"source,omitempty"`
 	Stage          string  `json:"stage"`
 	Capability     string  `json:"capability"`
 	Attempts       int     `json:"attempts"`
@@ -135,6 +138,10 @@ type LeasedTask struct {
 	// neither.
 	ProposalID *string         `json:"proposal_id,omitempty"`
 	Proposal   *LeasedProposal `json:"proposal,omitempty"`
+	// Keys are a refresh-metrics task's: the key of each item in review that
+	// a connector of its source sighted, as the claim read them, whose
+	// metrics the task reads again. Every other task carries none.
+	Keys []string `json:"keys,omitempty"`
 }
 
 // LeasedProposal is the prompt proposal that a prompt-proposal task drafts: the
@@ -196,10 +203,11 @@ const (
 // ReportRequest ends a lease. Outputs are the stage's records for the task's
 // item, and Delivery is how a deliver task's write ended. Arrivals are what a
 // poll that ends done found at its source, in source order, and Cursor the
-// connector's next position, where the poll moves it. Each is written in the
-// same transaction that ends the lease. A poll that ends done has reported
-// every item its source holds past its cursor, so a connector scheduled once
-// never polls after it.
+// connector's next position, where the poll moves it. Metrics are what a
+// refresh of a source's metrics that ends done read again. Each is written in
+// the same transaction that ends the lease. A poll that ends done has
+// reported every item its source holds past its cursor, so a connector
+// scheduled once never polls after it.
 type ReportRequest struct {
 	Token             int64   `json:"token"`
 	Outcome           string  `json:"outcome"`
@@ -212,6 +220,16 @@ type ReportRequest struct {
 	Delivery *ReportDelivery `json:"delivery,omitempty"`
 	Arrivals []ReportArrival `json:"arrivals,omitempty"`
 	Cursor   *string         `json:"cursor,omitempty"`
+	Metrics  []ReportMetrics `json:"metrics,omitempty"`
+}
+
+// ReportMetrics is one item's metrics as a refresh read them again at its
+// source, by name, such as a video's views. serve writes them onto each
+// sighting of the item by a connector of the task's source, and changes
+// nothing else of the sighting.
+type ReportMetrics struct {
+	Key     string           `json:"key"`
+	Metrics map[string]int64 `json:"metrics"`
 }
 
 // ReportArrival is one item that a poll found at its source. serve lands it
@@ -338,7 +356,10 @@ type TaskView struct {
 	Destination *string `json:"destination"`
 	Model       *string `json:"model"`
 	// ProposalID names the prompt proposal that a prompt-proposal task drafts.
-	ProposalID     *string `json:"proposal_id"`
+	ProposalID *string `json:"proposal_id"`
+	// Source names the source whose metrics a refresh-metrics task reads
+	// again.
+	Source         *string `json:"source"`
 	Stage          string  `json:"stage"`
 	Capability     string  `json:"capability"`
 	State          string  `json:"state"`
@@ -428,11 +449,12 @@ func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var applied *connectors.Set
+	refreshKeys := map[string][]string{}
 	tasks, err := h.store.Claim(r.Context(), store.Claim{
 		Worker: store.Worker{ID: body.WorkerID, Capabilities: body.Capabilities, Version: body.Version, StartedTS: body.StartedTS},
 		Max:    body.Max, MaxByCapability: body.MaxByCapability, SlotGroups: groups, Lease: lease,
 		Admit: func(ctx context.Context, tx *store.Tx, task store.Task) (string, error) {
-			if task.Stage != store.StagePoll && task.Stage != store.StageDelete {
+			if task.Stage != store.StagePoll && task.Stage != store.StageDelete && task.Stage != store.StageRefreshMetrics {
 				return "", nil
 			}
 			if applied == nil {
@@ -442,7 +464,15 @@ func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
 				}
 				applied = &set
 			}
-			return connectors.Unwanted(*applied, task), nil
+			if why := connectors.Unwanted(*applied, task); why != "" || task.Stage != store.StageRefreshMetrics || task.Source == nil {
+				return why, nil
+			}
+			keys, err := connectors.InReview(ctx, tx, *applied, *task.Source)
+			if err != nil || len(keys) == 0 {
+				return "no item that a connector of source " + *task.Source + " sighted waits in review, so nothing is read", err
+			}
+			refreshKeys[task.ID] = keys
+			return "", nil
 		},
 		Lapsed: func(ctx context.Context, tx *store.Tx, task store.Task, reason string) error {
 			if task.Stage != store.StagePoll || task.Connector == nil {
@@ -458,10 +488,10 @@ func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
 	answer := ClaimAnswer{Tasks: []LeasedTask{}}
 	for _, t := range tasks {
 		leased := LeasedTask{
-			ID: t.ID, ItemKey: t.ItemKey, Connector: t.Connector, Stage: t.Stage, Capability: t.Capability, Attempts: t.Attempts,
+			ID: t.ID, ItemKey: t.ItemKey, Connector: t.Connector, Source: t.Source, Stage: t.Stage, Capability: t.Capability, Attempts: t.Attempts,
 			LeaseToken: *t.LeaseToken, LeaseExpiresTS: *t.LeaseExpiresTS, MediaType: t.Item.MediaType, BlobSHA256: t.Item.BlobSHA256,
 			Zone: t.Item.Zone, Title: t.Item.Title, URL: t.Item.URL, LandedTS: t.Item.CreatedTS, Destination: t.Destination,
-			Model: t.Model, ProposalID: t.ProposalID, WaitedSeconds: waited(t.Task),
+			Model: t.Model, ProposalID: t.ProposalID, WaitedSeconds: waited(t.Task), Keys: refreshKeys[t.ID],
 		}
 		if d := t.Delivery; d != nil {
 			leased.Title, leased.URL, leased.SourceTS, leased.Path, leased.Chapter = d.Title, d.URL, d.SourceTS, d.Path, d.Chapter()
@@ -496,8 +526,8 @@ func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
 		answer.Tasks = append(answer.Tasks, leased)
 	}
 	for _, t := range answer.Tasks {
-		h.log.Info("leased a task", "task", t.ID, "item", text(t.ItemKey), "connector", text(t.Connector), "stage", t.Stage,
-			"worker", body.WorkerID, "token", t.LeaseToken)
+		h.log.Info("leased a task", "task", t.ID, "item", text(t.ItemKey), "connector", text(t.Connector), "source", text(t.Source),
+			"stage", t.Stage, "keys", len(t.Keys), "worker", body.WorkerID, "token", t.LeaseToken)
 	}
 	JSON(w, http.StatusOK, answer)
 }
@@ -587,9 +617,23 @@ func (h taskHandlers) report(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var polled connectors.PollLanded
+	var refreshed connectors.MetricsRefreshed
 	task, err := h.store.Report(r.Context(), r.PathValue("id"), body.Token, outcome, func(tx *store.Tx, task store.Task, ended *store.Outcome) error {
 		if (len(body.Arrivals) > 0 || body.Cursor != nil) && (task.Stage != store.StagePoll || outcome.State != store.TaskDone) {
 			return errArrivalsOutsideDonePoll
+		}
+		if len(body.Metrics) > 0 {
+			if task.Stage != store.StageRefreshMetrics || task.Source == nil || outcome.State != store.TaskDone {
+				return errMetricsOutsideRefresh
+			}
+			read := make(map[string]map[string]int64, len(body.Metrics))
+			for _, m := range body.Metrics {
+				read[m.Key] = m.Metrics
+			}
+			var err error
+			if refreshed, err = connectors.RefreshMetrics(r.Context(), tx, *task.Source, read); err != nil {
+				return err
+			}
 		}
 		if task.Stage == store.StagePoll && task.Connector != nil {
 			var err error
@@ -623,9 +667,10 @@ func (h taskHandlers) report(w http.ResponseWriter, r *http.Request) {
 	if h.leaseRefused(w, r, err) {
 		return
 	}
-	h.log.Info("a task ended", "task", task.ID, "item", text(task.ItemKey), "connector", text(task.Connector), "stage", task.Stage,
-		"state", task.State, "outputs", len(body.Outputs), "arrivals", polled.Arrivals, "items_added", polled.Items,
-		"sightings_added", polled.Sightings, "deletes_queued", polled.Deletes, "arrivals_refused", polled.Refused)
+	h.log.Info("a task ended", "task", task.ID, "item", text(task.ItemKey), "connector", text(task.Connector), "source", text(task.Source),
+		"stage", task.Stage, "state", task.State, "outputs", len(body.Outputs), "arrivals", polled.Arrivals, "items_added", polled.Items,
+		"sightings_added", polled.Sightings, "deletes_queued", polled.Deletes, "arrivals_refused", polled.Refused,
+		"metrics_read", refreshed.Items, "sightings_refreshed", refreshed.Sightings, "metrics_unsighted", refreshed.Unsighted)
 	JSON(w, http.StatusOK, viewOf(task, h.store.Now()))
 }
 
@@ -790,7 +835,7 @@ func (h taskHandlers) list(w http.ResponseWriter, r *http.Request) {
 
 func viewOf(t store.Task, now time.Time) TaskView {
 	return TaskView{
-		ID: t.ID, ItemKey: t.ItemKey, Connector: cmp.Or(t.Connector, t.SightingConnector), ProposalID: t.ProposalID,
+		ID: t.ID, ItemKey: t.ItemKey, Connector: cmp.Or(t.Connector, t.SightingConnector), ProposalID: t.ProposalID, Source: t.Source,
 		Destination: t.Destination, Model: t.Model, Stage: t.Stage, Capability: t.Capability,
 		State: t.State, HeldBy: t.HeldBy, Lapsed: t.Lapsed(now),
 		LeaseHolder: t.LeaseHolder, LeaseExpiresTS: t.LeaseExpiresTS, Attempts: t.Attempts, HasError: t.Error != nil,
@@ -817,8 +862,10 @@ func (h taskHandlers) leaseRefused(w http.ResponseWriter, r *http.Request, err e
 		Refuse(w, http.StatusUnprocessableEntity, CodeInvalidBody, "task %s delivers nothing, so it reports no delivery", r.PathValue("id"))
 	case errors.Is(err, errBadDelivery):
 		Refuse(w, http.StatusUnprocessableEntity, CodeInvalidBody, "%v", err)
-	case errors.Is(err, errArrivalsOutsideDonePoll):
+	case errors.Is(err, errArrivalsOutsideDonePoll), errors.Is(err, errMetricsOutsideRefresh):
 		Refuse(w, http.StatusUnprocessableEntity, CodeInvalidBody, "task %s: %v", r.PathValue("id"), err)
+	case errors.Is(err, store.ErrInvalidMetric):
+		Refuse(w, http.StatusUnprocessableEntity, CodeInvalidBody, "%v", err)
 	case errors.Is(err, store.ErrUnitsOutsideParse), errors.Is(err, store.ErrUnitsOutOfOrder):
 		Refuse(w, http.StatusUnprocessableEntity, CodeInvalidBody, "%v", err)
 	default:

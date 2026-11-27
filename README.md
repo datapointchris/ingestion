@@ -445,7 +445,7 @@ source_parameters:
 
 A worker reads ypl through its `[source.ypl]` table, as a client that holds the scopes that
 `ingestion worker run --help` names for ypl. The worker holding that table claims `poll:ypl`,
-`delete:ypl` and `parse:youtube-captions`. It claims `parse:youtube-whisper` too where its image
+`delete:ypl`, `refresh-metrics:ypl` and `parse:youtube-captions`. It claims `parse:youtube-whisper` too where its image
 holds `audio-whisper`. Each read gives up after the bound that `ypl/client.go` sets for its route.
 An audio read's bound covers the wait for its answer to begin, and each read of its body then waits
 up to `audioIdle` for a byte. A redirect is a refusal.
@@ -489,6 +489,27 @@ worker then reads nothing through ypl, so its polls, deletes and parses all fail
 - **A refusal that ypl asks a wait for sends the poll back for that wait**, such as while the
   day's quota is spent or another caller holds ypl's turn. Any other refusal fails the poll, and
   the connector's backoff makes it due again.
+
+A video's views, likes and comments go on changing while it waits in review, and no poll reports
+it again. So at each time of its `[review.refresh-metrics]` schedule, `serve` queues one
+`refresh-metrics:ypl` task where a ypl connector sighted a video in review.
+
+```toml
+[review.refresh-metrics]
+schedule = "0 5 * * *"  # cron, in UTC unless a CRON_TZ=<zone> prefix names another; the default
+```
+
+- **The claim hands the task each video that waits in review then.** A video placed or dropped
+  since the task was queued is not read. The worker reads every video's details in as few
+  requests as ypl's limit allows, and ypl prices each page of 50 ids at one unit of quota.
+- **`serve` writes the counts onto each ypl sighting of each video, and changes nothing else.**
+  The refresh lands nothing, queues no delete and runs no gate. A video that ypl leaves out of its
+  answer, such as a deleted one, keeps its counts. `items show` prints each sighting's metrics
+  with when they were last read.
+- **A refusal that ypl asks a wait for waits its Retry-After**, such as while the day's quota is
+  spent or its Data API calls are busy, and spends no attempt. A 4xx other than 408 or 429 fails
+  the refresh, and any other failed read tries again a bounded number of times. The next day's
+  refresh reads again either way.
 
 ### A video parses from its captions, or Whisper transcribes its audio
 

@@ -33,7 +33,7 @@ func landCapturedVideos(t *testing.T, stand *standInYPL, api string, ids ...stri
 		stand.add(standInVideo{id: id, title: "Test video " + id})
 		stand.playlists["PLtestcapture"] = append(stand.playlists["PLtestcapture"], standInItem{itemID: "item" + id, videoID: id})
 	}
-	p := newYPLPipeline(t, "ypl-capture", "schedule: \"@every 30m\"\nafter_landing: delete\nsource_parameters:\n  playlist: capture\n")
+	p := newYPLPipeline(t, map[string]string{"ypl-capture": yplCapture})
 	handlers := yplHandlers(t, p, api)
 	p.runConnector(t, "ypl-capture")
 	if ran := p.run(t, handlers[store.PollCapability(ypl.Source)]); ran != 1 {

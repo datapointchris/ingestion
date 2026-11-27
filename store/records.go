@@ -57,6 +57,12 @@ const (
 // item's phase.
 const StageDelete = "delete"
 
+// StageRefreshMetrics reads again, at a source, the metrics of each item that
+// the source's connectors sighted and that waits in review, and writes them
+// onto those sightings. Its task names its source rather than an item, so it
+// sits on no item's line and moves no item's phase.
+const StageRefreshMetrics = "refresh-metrics"
+
 // StageQualityArm is the quality gate's prompt answered by a model that its
 // task names, as a measurement against each label beside the gate's own
 // answer. It sits on no item's line, so its tasks and outputs move no item's

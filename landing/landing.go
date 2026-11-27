@@ -41,10 +41,7 @@ var ErrKeyMismatch = errors.New("the key is not the one its link or bytes derive
 // what the arrival itself holds.
 var ErrInvalidArrival = errors.New("the arrival is not one that lands")
 
-var (
-	namePattern   = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
-	metricPattern = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
-)
+var namePattern = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 
 // Config is what landing writes to.
 type Config struct {
@@ -322,10 +319,8 @@ func (l *Lander) check(a Arrival) error {
 			return err
 		}
 	}
-	for name := range a.Metrics {
-		if !metricPattern.MatchString(name) {
-			return fmt.Errorf("a metric is named in lowercase letters, digits and underscores, not %q", name)
-		}
+	if err := store.CheckMetrics(a.Metrics); err != nil {
+		return err
 	}
 	if a.Parent != "" {
 		if err := itemkey.Check(a.Parent); err != nil {

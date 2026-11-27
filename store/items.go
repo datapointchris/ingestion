@@ -302,6 +302,9 @@ var reached = map[string]string{
 	StageDeliver:   "delivered",
 }
 
+// PhaseReview is the phase of an item that waits on a person's placement.
+const PhaseReview = "review"
+
 // Phase is the item's phase in the words of schemas/items-list.schema.json:
 // dropped where the newest side decision drops it, review where WaitsOnPerson
 // says it waits, failed where another stage on the line holds a newest task
@@ -316,7 +319,7 @@ func (r ItemRecords) Phase() string {
 		return "dropped"
 	}
 	if _, _, waits := r.WaitsOnPerson(); waits {
-		return "review"
+		return PhaseReview
 	}
 	newest := map[string]Task{}
 	for _, t := range r.Tasks {

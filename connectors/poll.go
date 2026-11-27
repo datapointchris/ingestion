@@ -130,7 +130,9 @@ func LandPoll(ctx context.Context, tx *store.Tx, l *landing.Lander, connector st
 // still wants it. A poll is unwanted once s drops its connector, or declares
 // it other than as a poll of the source that the task reads. A delete is
 // unwanted where s does not declare that its connector deletes from that
-// source after landing. Any other task is always wanted.
+// source after landing. A refresh of a source's metrics is unwanted where s
+// declares no connector of the source, or this build reads none of its
+// metrics. Any other task is always wanted.
 func Unwanted(s Set, task store.Task) string {
 	switch {
 	case task.Stage == store.StagePoll && task.Connector != nil:
@@ -143,6 +145,11 @@ func Unwanted(s Set, task store.Task) string {
 		if !ok || c.AfterLanding != AfterLandingDelete || store.DeleteCapability(c.Source) != task.Capability {
 			return fmt.Sprintf("the set in force does not delete what connector %s lands from this source, so nobody runs this delete",
 				*task.SightingConnector)
+		}
+	case task.Stage == store.StageRefreshMetrics && task.Source != nil:
+		if len(s.SourceConnectors(*task.Source)) == 0 || !RefreshesMetrics(*task.Source) {
+			return fmt.Sprintf("the set in force declares no connector of source %s whose metrics this build reads, so nobody runs this refresh",
+				*task.Source)
 		}
 	}
 	return ""

@@ -1,7 +1,8 @@
 // Package sources holds each source that this build carries, as the source
 // registers it once from its own init. A registration names the rules for
 // the source's connectors, the scopes for its service client, and an opener
-// for each stage that a worker runs for it. A set checks its connectors
+// for each stage that a worker runs for it: its poll, its delete, its
+// refresh of metrics and its extractors. A set checks its connectors
 // against the same registration, through connectors.RegisterSource, and the
 // builtin extractors take its extractors, through extract.Register. A worker
 // opens one client per [source.<name>] table and asks the registration for
@@ -18,6 +19,7 @@ import (
 	"github.com/datapointchris/ingestion/connectors"
 	"github.com/datapointchris/ingestion/deletion"
 	"github.com/datapointchris/ingestion/extract"
+	"github.com/datapointchris/ingestion/metricsrefresh"
 	"github.com/datapointchris/ingestion/polling"
 	"github.com/datapointchris/ingestion/store"
 	"github.com/datapointchris/ingestion/worker"
@@ -41,6 +43,11 @@ type Registration struct {
 	// Deleter opens the source's deleter as Poller opens its poller. A source
 	// that nothing deletes from leaves it nil.
 	Deleter func(api string, client *http.Client) deletion.Deleter
+	// Refresher opens the source's refresher as Poller opens its poller,
+	// which reads again the metrics of each item that the source's
+	// connectors sighted and that waits in review. A source whose items carry
+	// no metrics to read again leaves it nil.
+	Refresher func(api string, client *http.Client) metricsrefresh.Refresher
 	// Extractors are the source's extractors, each of which ReadsURL: it reads
 	// an item that holds no bytes at the source, through the reader that its
 	// Open opens on the source's client.
@@ -53,7 +60,9 @@ var registered = map[string]Registration{}
 // adds its extractors to the builtin ones, so landing queues their parses.
 // Registering a source twice panics, as a duplicate is a build error.
 func Register(r Registration) {
-	connectors.RegisterSource(connectors.Source{Name: r.Name, Polls: r.Poller != nil, Deletes: r.Deleter != nil, Rules: r.Rules})
+	connectors.RegisterSource(connectors.Source{
+		Name: r.Name, Polls: r.Poller != nil, Deletes: r.Deleter != nil, RefreshesMetrics: r.Refresher != nil, Rules: r.Rules,
+	})
 	extract.Register(r.Extractors...)
 	registered[r.Name] = r
 }
@@ -76,6 +85,9 @@ func (r Registration) Capabilities() []string {
 	if r.Deleter != nil {
 		out = append(out, store.DeleteCapability(r.Name))
 	}
+	if r.Refresher != nil {
+		out = append(out, store.RefreshMetricsCapability(r.Name))
+	}
 	for _, e := range r.Extractors {
 		out = append(out, extract.Capability(e))
 	}
@@ -91,6 +103,9 @@ func (r Registration) Handlers(api string, client *http.Client, log *slog.Logger
 	}
 	if r.Deleter != nil {
 		out = append(out, deletion.Handler(r.Name, r.Deleter(api, client)))
+	}
+	if r.Refresher != nil {
+		out = append(out, metricsrefresh.Handler(r.Name, r.Refresher(api, client), log))
 	}
 	for _, e := range r.Extractors {
 		if h, ok := extract.SourceHandler(e, api, client, log); ok {

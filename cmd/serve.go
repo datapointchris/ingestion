@@ -26,6 +26,7 @@ import (
 	"github.com/datapointchris/ingestion/extract"
 	"github.com/datapointchris/ingestion/gatetrust"
 	"github.com/datapointchris/ingestion/landing"
+	"github.com/datapointchris/ingestion/metricsrefresh"
 	"github.com/datapointchris/ingestion/modelread"
 	"github.com/datapointchris/ingestion/outbox"
 	"github.com/datapointchris/ingestion/promptproposal"
@@ -81,7 +82,18 @@ var serveCmd = &cobra.Command{
 		"\n" +
 		"  [gates.proposals]\n" +
 		"  schedule          a cron expression in UTC, or in the zone a CRON_TZ=<zone>\n" +
-		"                    prefix names (default \"" + promptproposal.DefaultSchedule + "\")",
+		"                    prefix names (default \"" + promptproposal.DefaultSchedule + "\")\n" +
+		"\n" +
+		"At each time of its [review.refresh-metrics] schedule, it queues one\n" +
+		"refresh-metrics task for each source that reads its items' metrics again, such\n" +
+		"as a video's views, where a connector of that source sighted an item that waits\n" +
+		"in review. A worker with the source's [source.<name>] table reads them in one\n" +
+		"batch, and serve writes them onto those sightings alone. The refresh lands,\n" +
+		"deletes and gates nothing:\n" +
+		"\n" +
+		"  [review.refresh-metrics]\n" +
+		"  schedule          a cron expression in UTC, or in the zone a CRON_TZ=<zone>\n" +
+		"                    prefix names (default \"" + metricsrefresh.DefaultSchedule + "\")",
 	Example: "  # the service, reading $XDG_CONFIG_HOME/ingestion/config.toml\n" +
 		"  ingestion serve\n" +
 		"\n" +
@@ -189,6 +201,10 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("%s: [gates.proposals] %w", path, err)
 	}
+	refreshes, err := metricsrefresh.NewScheduler(st, cmp.Or(cfg.Review.RefreshMetrics.Schedule, metricsrefresh.DefaultSchedule), log)
+	if err != nil {
+		return fmt.Errorf("%s: [review.refresh-metrics] %w", path, err)
+	}
 	roots := make([]string, 0, len(cfg.Serve.Homes))
 	for root := range cfg.Serve.Homes {
 		roots = append(roots, root)
@@ -211,6 +227,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	wg.Go(func() { relay.Run(background) })
 	wg.Go(func() { scheduler.Run(background) })
 	wg.Go(func() { drafts.Run(background) })
+	wg.Go(func() { refreshes.Run(background) })
 
 	served := make(chan error, 1)
 	go func() { served <- srv.ListenAndServe() }()

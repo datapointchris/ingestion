@@ -35,7 +35,7 @@
       "enum": ["outside", "owner"]
     },
     "sha256": {"description": "A SHA-256, in lowercase hex.", "type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "stage": {"description": "A stage that writes an output or holds a task. A poll's task fetches a connector's source before any item lands. quality-arm is the quality gate's prompt asked of the model that its task names, as a measurement, and sits on no item's line. structure profiles a PDF's outline, page labels, creation date, title and fonts. contents is a model's reading of the printed contents pages of a PDF whose outline gave it no sections. delete removes a landed item from the source of a connector that declares after_landing delete, and sits on no item's line. prompt-proposal drafts a prompt proposal from the quality gate's misses, and sits on no item's line.", "enum": ["poll", "land", "parse", "structure", "contents", "scan", "quality", "quality-arm", "model-read", "deliver", "delete", "prompt-proposal"]},
+    "stage": {"description": "A stage that writes an output or holds a task. A poll's task fetches a connector's source before any item lands. quality-arm is the quality gate's prompt asked of the model that its task names, as a measurement, and sits on no item's line. structure profiles a PDF's outline, page labels, creation date, title and fonts. contents is a model's reading of the printed contents pages of a PDF whose outline gave it no sections. delete removes a landed item from the source of a connector that declares after_landing delete, and sits on no item's line. prompt-proposal drafts a prompt proposal from the quality gate's misses, and sits on no item's line. refresh-metrics reads again, at a source, the metrics of each item in review that a connector of the source sighted, writes them onto those sightings, and sits on no item's line.", "enum": ["poll", "land", "parse", "structure", "contents", "scan", "quality", "quality-arm", "model-read", "deliver", "delete", "prompt-proposal", "refresh-metrics"]},
     "timestamp": {"type": "string", "format": "date-time"},
     "severity": {"description": "A scan finding's severity, from least to most severe.", "enum": ["info", "low", "medium", "high", "critical"]},
     "finding": {
@@ -278,7 +278,7 @@
     },
     "tasks": {
       "title": "tasks, one row per task",
-      "description": "ingestion.record.id is the task's id. A stage's task names its item, a poll's task names its connector, and a prompt-proposal task names its prompt proposal. A failed task's error ships as ingestion.text, because an extractor's stderr can quote the item.",
+      "description": "ingestion.record.id is the task's id. A stage's task names its item, a poll's task names its connector, a prompt-proposal task names its prompt proposal, and a refresh-metrics task names its source. A failed task's error ships as ingestion.text, because an extractor's stderr can quote the item.",
       "type": "object",
       "additionalProperties": false,
       "required": ["id", "item_key", "connector", "destination", "stage", "capability", "state", "attempts", "created_ts", "updated_ts"],
@@ -290,8 +290,9 @@
         "model": {"description": "The model that a measurement arm's task asks its run for, and null for every other task.", "type": ["string", "null"]},
         "sighting_connector": {"description": "The connector whose sighting a delete task removes from that connector's source, and null for every other task. Absent from a record shipped before the store kept it.", "type": ["string", "null"]},
         "proposal_id": {"description": "The prompt proposal that a prompt-proposal task drafts, and null for every other task. Absent from a record shipped before the store kept it.", "type": ["string", "null"]},
+        "source": {"description": "The source whose metrics a refresh-metrics task reads again, and null for every other task. Absent from a record shipped before the store kept it.", "type": ["string", "null"]},
         "stage": {"$ref": "#/$defs/stage"},
-        "capability": {"description": "What a worker needs to claim the task: poll:<source> for a poll, parse:<extractor> for a parse, deliver:<deliverer> for a delivery and delete:<source> for a delete.", "type": "string"},
+        "capability": {"description": "What a worker needs to claim the task: poll:<source> for a poll, parse:<extractor> for a parse, deliver:<deliverer> for a delivery, delete:<source> for a delete and refresh-metrics:<source> for a refresh of metrics.", "type": "string"},
         "state": {"enum": ["queued", "leased", "done", "failed"]},
         "held_by": {"description": "The connector whose first fill holds this model stage's task. No claim takes it until a person releases the fill.", "type": ["string", "null"]},
         "lease_holder": {"description": "The worker holding the lease.", "type": ["string", "null"]},
