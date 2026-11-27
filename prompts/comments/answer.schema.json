@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/datapointchris/ingestion/prompts/comments/answer.schema.json",
+  "title": "What a video's top comments say about it",
+  "description": "What the comments stage answers from a video's title and its top comments, when a person asks on the video's review card. The store keeps it whole as the output's answer, which ships as outsider text alone, because a model wrote it over strangers' comments. tone is an enum that ingestion writes, never a value taken from the text.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["summary", "praise", "criticism", "tone"],
+  "properties": {
+    "summary": {"description": "What the commenters say about the video itself, in one to three sentences.", "type": "string", "minLength": 1, "maxLength": 800},
+    "praise": {"description": "What the commenters credit the video with.", "type": "array", "maxItems": 4, "items": {"type": "string", "minLength": 1, "maxLength": 160}},
+    "criticism": {"description": "What the commenters fault.", "type": "array", "maxItems": 4, "items": {"type": "string", "minLength": 1, "maxLength": 160}},
+    "tone": {"description": "The commenters' view of the video as a whole.", "enum": ["positive", "mixed", "negative", "none"]}
+  }
+}

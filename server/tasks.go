@@ -321,6 +321,7 @@ type ReportOutput struct {
 	Findings       []store.Finding `json:"findings"`
 	RulesVersion   *string         `json:"rules_version,omitempty"`
 	Quality        *int            `json:"quality,omitempty"`
+	Fit            *int            `json:"fit,omitempty"`
 	SideGuess      *string         `json:"side_guess,omitempty"`
 	SideConfidence *float64        `json:"side_confidence,omitempty"`
 	// Units are a parse's, numbered from 1 in order, which the service writes
@@ -346,7 +347,7 @@ func (o ReportOutput) output() store.Output {
 		StageRun: o.run(), Lens: o.Lens, LensVersion: o.LensVersion, NoteDigest: o.NoteDigest,
 		InputProducer: o.InputProducer, InputVersion: o.InputVersion,
 		BlobSHA256: o.BlobSHA256, Findings: o.Findings, RulesVersion: o.RulesVersion, Quality: o.Quality,
-		SideGuess: o.SideGuess, SideConfidence: o.SideConfidence, Spans: o.Spans,
+		Fit: o.Fit, SideGuess: o.SideGuess, SideConfidence: o.SideConfidence, Spans: o.Spans,
 	}
 }
 

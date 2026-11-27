@@ -30,6 +30,7 @@ import (
 //go:embed model-read/prompt.tmpl model-read/answer.schema.json model-read/lenses/*.tmpl
 //go:embed prompt-proposal/prompt.tmpl prompt-proposal/answer.schema.json
 //go:embed note/prompt.tmpl note/answer.schema.json note/lenses/*.tmpl
+//go:embed comments/prompt.tmpl comments/answer.schema.json
 var files embed.FS
 
 // Prompt is one stage's prompt and answer schema at one version.
@@ -59,6 +60,9 @@ var Quality = load("quality", "1", nil)
 
 // Contents is the contents stage's prompt.
 var Contents = load("contents", "1", nil)
+
+// Comments is the prompt that reads what a video's top comments say about it.
+var Comments = load("comments", "1", nil)
 
 // PromptProposal is the prompt that drafts a change to another stage's
 // prompt from the quality gate's misses.

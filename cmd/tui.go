@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -57,14 +58,23 @@ func tuiTabList() []tuiTab {
 		{
 			tabReview,
 			"review lists the items that wait on a person's placement, grouped by why each waits,\n" +
-				"with the gate's verdict and confidence, its quality estimate, its side guess and how\n" +
-				"long the item has waited. The side panel reads the item under the cursor: its URL,\n" +
-				"the quality gate's whole answer, the scan's findings, and its text, the post first\n" +
-				"and then each comment. enter reads it full screen. A digit places the item on the\n" +
-				"destination numbered with it under the strip. x drops it after asking what decided\n" +
-				"it. n writes a note in $VISUAL or $EDITOR, then places the item with the note on the\n" +
-				"destination you pick. o opens its URL. Each key calls the routes that `ingestion\n" +
-				"review place` and `drop` call, under the same login, so the decision is yours.",
+				"with the channel, the gate's verdict and confidence, its quality estimate, its fit to\n" +
+				"your current work, its side guess, the source's length, views and likes per view, and\n" +
+				"how long ago the item was made at its source. v cycles how the rows are grouped and\n" +
+				"s how they are sorted, and the strip names both. / filters on the title and the\n" +
+				"channel. The side panel reads the item under the cursor: its card, the quality gate's\n" +
+				"whole answer with its reason, the scan's findings, and its text. enter reads it full\n" +
+				"screen.\n" +
+				"\n" +
+				"A digit places the item on the destination numbered with it under the strip, and F\n" +
+				"on the first destination on the fleet side. d drops it after asking what decided it.\n" +
+				"n writes a note in $VISUAL or $EDITOR, then places the item with the note on the\n" +
+				"destination you pick. Each decision keeps the card as it was drawn and how long you\n" +
+				"took. x marks the item low quality and r marks it read, which teaches the gate and\n" +
+				"leaves the item waiting. c reads what a video's top comments say, with one model call\n" +
+				"that the card shows once it lands, and asks again where the read failed. o opens its\n" +
+				"URL. Each key calls the routes that `ingestion review place`, `review drop` and\n" +
+				"`items mark` call, under the same login, so the decision is yours.",
 			func(ctx context.Context, o tuiOptions) tuiBoard {
 				return reviewTab{review.NewBoard(ctx, reviewService(o), review.Outside{Open: openInBrowser})}
 			},
@@ -221,19 +231,52 @@ func (s reviewService) Parse(ctx context.Context, key string) (server.ParseAnswe
 }
 
 func (s reviewService) Place(ctx context.Context, key string, body server.PlaceRequest) (string, error) {
-	answer, _, err := decideReview(ctx, s.config, s.api, server.RouteReviewPlace, key, "place", body)
+	bare := body
+	bare.Presented, bare.DecidedAfterMS = nil, nil
+	return s.decide(ctx, server.RouteReviewPlace, key, "place", body, bare)
+}
+
+func (s reviewService) Drop(ctx context.Context, key string, body server.DropRequest) (string, error) {
+	bare := body
+	bare.Presented, bare.DecidedAfterMS = nil, nil
+	return s.decide(ctx, server.RouteReviewDrop, key, "drop", body, bare)
+}
+
+// decide sends body, and sends bare, the same decision with no card, where a server built before
+// the tab sent a card refuses body for the card alone. The decision is the person's, so it lands
+// either way, and the sentence says the card was not kept.
+func (s reviewService) decide(ctx context.Context, route server.Route, key, verb string, body, bare any) (string, error) {
+	answer, _, err := decideReview(ctx, s.config, s.api, route, key, verb, body)
+	var refused *refusal
+	if errors.As(err, &refused) && refused.Code == server.CodeUnknownField && (refused.Field == "presented" || refused.Field == "decided_after_ms") {
+		if answer, _, err = decideReview(ctx, s.config, s.api, route, key, verb, bare); err == nil {
+			return placedSentence(answer) + " The service reads no card yet, so the card as shown was not kept.", nil
+		}
+	}
 	if err != nil {
 		return "", refusalWords(err)
 	}
 	return placedSentence(answer), nil
 }
 
-func (s reviewService) Drop(ctx context.Context, key string, body server.DropRequest) (string, error) {
-	answer, _, err := decideReview(ctx, s.config, s.api, server.RouteReviewDrop, key, "drop", body)
+func (s reviewService) Mark(ctx context.Context, key, mark string) (string, error) {
+	encoded, err := json.Marshal(server.MarkRequest{Mark: mark})
 	if err != nil {
+		return "", err
+	}
+	var answer server.MarkAnswer
+	if _, err := sendJSON(ctx, s.config, s.api, server.RouteItemMarks, "/api/v1/items/"+url.PathEscape(key)+"/marks", encoded, &answer); err != nil {
 		return "", refusalWords(err)
 	}
-	return placedSentence(answer), nil
+	return markedSentence(answer), nil
+}
+
+func (s reviewService) Comments(ctx context.Context, key string) (server.ReviewComments, error) {
+	var answer server.ItemCommentsAnswer
+	if _, err := sendJSON(ctx, s.config, s.api, server.RouteItemComments, "/api/v1/items/"+url.PathEscape(key)+"/comments", []byte("{}"), &answer); err != nil {
+		return server.ReviewComments{}, refusalWords(err)
+	}
+	return answer.Comments, nil
 }
 
 // refusalWords is err with a refusal cut to the message the server gave, which the strip and the

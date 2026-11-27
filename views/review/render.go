@@ -13,6 +13,7 @@ import (
 	"github.com/datapointchris/gotermboard"
 	"github.com/datapointchris/gotermboard/terminalcontrol"
 
+	"github.com/datapointchris/ingestion/qualitygate"
 	"github.com/datapointchris/ingestion/route"
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
@@ -20,10 +21,22 @@ import (
 
 const dim = "\033[2m"
 
-// columns are a row's first line. The title goes last, so the screen's edge cuts it rather than
-// the gate's numbers. The item's key and the gate's idea sit dim on the line under it.
+// columns are a row's first line: the channel, why it waits, the gate's verdict, quality, fit and
+// side guess, the source's length, views and likes per view, and how long ago the item was made
+// at its source. The title goes last, so the screen's edge cuts it rather than the numbers. The
+// item's key and the gate's idea sit dim on the line under it.
 var columns = []gotermboard.Column{
-	{Title: "SOURCE"}, {Title: "WHY"}, {Title: "GATE"}, {Title: "Q", Right: true}, {Title: "SIDE"}, {Title: "WAITED", Right: true}, {Title: "TITLE"},
+	{Title: "CHANNEL"},
+	{Title: "WHY"},
+	{Title: "GATE"},
+	{Title: "Q", Right: true},
+	{Title: "FIT", Right: true},
+	{Title: "SIDE"},
+	{Title: "LEN", Right: true},
+	{Title: "VIEWS", Right: true},
+	{Title: "L/V", Right: true},
+	{Title: "AGE", Right: true},
+	{Title: "TITLE"},
 }
 
 // Frame is gotermboard.Board's, one frame for a live table and --once alike.
@@ -31,7 +44,12 @@ func (b *Board) Frame(now time.Time, grouping string) gotermboard.Frame {
 	b.writes.SayEnded()
 	h := b.queue.Value()
 	unread := b.queue.Status().ReadAt.IsZero()
-	groups := b.grouped(b.shown(h), grouping, now)
+	items := sorted(b.shown(h), sorts[b.sortAt])
+	b.grouping, b.ranked = grouping, b.ranked[:0]
+	for _, it := range items {
+		b.ranked = append(b.ranked, it.Key)
+	}
+	groups := b.grouped(items, grouping, now)
 	b.drawn = b.drawn[:0]
 	clear(b.drawnIn)
 	for _, g := range groups {
@@ -59,11 +77,15 @@ func (b *Board) Frame(now time.Time, grouping string) gotermboard.Frame {
 
 // header counts what waits and names the grouping.
 func (b *Board) header(h held, grouping string, unread bool) gotermboard.Line {
-	count := "unread"
+	waiting := "unread"
 	if !unread {
-		count = strconv.Itoa(len(b.shown(h))) + " waiting"
+		waiting = strconv.Itoa(len(b.shown(h))) + " waiting"
 	}
-	return gotermboard.Line{gotermboard.C("review ", ""), gotermboard.C(count, gotermboard.Bold), gotermboard.C("  group ", ""), gotermboard.C(grouping, gotermboard.Bold)}
+	sort := sorts[b.sortAt]
+	return gotermboard.Line{
+		gotermboard.C("review ", ""), gotermboard.C(waiting, gotermboard.Bold), gotermboard.C("  group ", ""), gotermboard.C(grouping, gotermboard.Bold),
+		gotermboard.C("  sort ", ""), gotermboard.C(sort, gotermboard.Bold), gotermboard.C(", "+sortWords[sort], ""),
+	}
 }
 
 // legend is the digit that places on each destination, wrapped at the screen's width. A strip
@@ -137,12 +159,21 @@ func (b *Board) shown(h held) []item {
 	return kept
 }
 
-// grouped is the items as the grouping draws them. Within a group the longest waiting leads, as
-// the queue answers them.
+// verdictGroups are the verdict grouping's groups in order, each a verdict the gate answers and
+// its heading, and then the items it gave no answer that reads.
+var verdictGroups = []struct{ verdict, heading string }{
+	{qualitygate.AnswerPass, "the gate would pass it"},
+	{qualitygate.AnswerUnsure, "the gate is unsure"},
+	{qualitygate.AnswerDrop, "the gate would drop it"},
+	{"", "the gate gave no answer"},
+}
+
+// grouped is the items as the grouping draws them, each group in the order of items, which the
+// sort in force orders. A connector or channel group with more items leads.
 func (b *Board) grouped(items []item, grouping string, now time.Time) []gotermboard.Group {
 	unread := b.queue.Status().ReadAt.IsZero()
 	switch grouping {
-	case byReason:
+	case store.GroupByReason:
 		var groups []gotermboard.Group
 		known := map[string]bool{}
 		for _, r := range route.ReviewReasons {
@@ -150,19 +181,33 @@ func (b *Board) grouped(items []item, grouping string, now time.Time) []gotermbo
 			groups = b.appendGroup(groups, "reason/"+r.Name, r.Heading, items, func(it item) bool { return it.Reason == r.Name }, now, unread)
 		}
 		return b.appendGroup(groups, "reason/other", "waiting for another reason", items, func(it item) bool { return !known[it.Reason] }, now, unread)
-	case bySource:
-		counts := map[string]int{}
-		for _, it := range items {
-			counts[sourceOf(it)]++
-		}
-		sources := slices.SortedFunc(maps.Keys(counts), func(a, z string) int { return cmp.Or(counts[z]-counts[a], strings.Compare(a, z)) })
+	case store.GroupByConnector:
+		return b.groupedBy(items, "connector", connectorsOf, now, unread)
+	case store.GroupByChannel:
+		return b.groupedBy(items, "channel", func(it item) string { return cmp.Or(channelOf(it), "no channel") }, now, unread)
+	case store.GroupByVerdict:
 		var groups []gotermboard.Group
-		for _, s := range sources {
-			groups = b.appendGroup(groups, "source/"+s, s, items, func(it item) bool { return sourceOf(it) == s }, now, unread)
+		for _, v := range verdictGroups {
+			key := "verdict/" + cmp.Or(v.verdict, "none")
+			groups = b.appendGroup(groups, key, v.heading, items, func(it item) bool { return verdictOf(it) == v.verdict }, now, unread)
 		}
 		return groups
 	}
 	return b.appendGroup(nil, "all", "waiting", items, func(item) bool { return true }, now, unread)
+}
+
+// groupedBy is a group for each name that nameOf gives an item, the name with the most items first.
+func (b *Board) groupedBy(items []item, kind string, nameOf func(item) string, now time.Time, unread bool) []gotermboard.Group {
+	counts := map[string]int{}
+	for _, it := range items {
+		counts[nameOf(it)]++
+	}
+	names := slices.SortedFunc(maps.Keys(counts), func(a, z string) int { return cmp.Or(counts[z]-counts[a], strings.Compare(a, z)) })
+	var groups []gotermboard.Group
+	for _, name := range names {
+		groups = b.appendGroup(groups, kind+"/"+name, name, items, func(it item) bool { return nameOf(it) == name }, now, unread)
+	}
+	return groups
 }
 
 // appendGroup appends a group of the items keep holds, and nothing where it holds none.
@@ -180,12 +225,30 @@ func (b *Board) appendGroup(groups []gotermboard.Group, key, title string, items
 	return append(groups, g)
 }
 
-// row is one waiting item: where it came from, why it waits, the gate's verdict, quality and side
-// guess with their confidences, how long it has waited, and its title. Dim under it are its key,
-// its connectors and the gate's idea. A failed write puts its error there in red instead.
+// row is one waiting item: its channel, why it waits, the gate's verdict, quality, fit and side
+// guess with their confidences, the source's length, views and likes per view, how long ago it was
+// made at its source, and its title. Dim under it are its key, its connectors and the gate's idea.
+// A failed write puts its error there in red instead.
 func (b *Board) row(it item, now time.Time) gotermboard.Row {
 	key := it.Key
 	verdict, quality, side := gateCells(it)
+	fit, lengthCell, views, likeRatio := dash(), dash(), dash(), dash()
+	if it.answer != nil && it.answer.Fit != nil {
+		fit = gotermboard.C(strconv.Itoa(*it.answer.Fit), "")
+	}
+	if it.LengthS != nil {
+		lengthCell = gotermboard.C(length(*it.LengthS), "")
+	}
+	if it.Views != nil {
+		views = gotermboard.C(count(*it.Views), "")
+	}
+	if ratio, ok := likesPerView(it); ok {
+		likeRatio = gotermboard.C(percent(ratio), "")
+	}
+	age := dash()
+	if it.SourceTS != nil {
+		age = gotermboard.Ticking(gotermboard.Ago(now.Sub(made(it))), "")
+	}
 	under := gotermboard.C(underLine(it), dim)
 	title := gotermboard.Line{gotermboard.C(outsider(orDash(it.Title)), "")}
 	if p, held := b.writes.Pending(key); held && p.Fault != "" {
@@ -195,8 +258,8 @@ func (b *Board) row(it item, now time.Time) gotermboard.Row {
 	return gotermboard.Row{
 		Key: key,
 		Cells: []gotermboard.Cell{
-			gotermboard.C(outsider(sourceOf(it)), ""), gotermboard.C(it.Reason, ""), verdict, quality, side,
-			gotermboard.Ticking(gotermboard.Ago(now.Sub(since(it))), ""),
+			gotermboard.C(outsider(sourceOf(it)), ""), gotermboard.C(it.Reason, ""), verdict, quality, fit, side,
+			lengthCell, views, likeRatio, age,
 		},
 		CutLast:     title,
 		Under:       under,
@@ -235,6 +298,8 @@ func gateCells(it item) (verdict, quality, side gotermboard.Cell) {
 	}
 	return verdict, quality, side
 }
+
+func dash() gotermboard.Cell { return gotermboard.C("—", dim) }
 
 // confidence is a confidence as two decimals, as `review list` prints a guess's.
 func confidence(c float64) string { return fmt.Sprintf("%.2f", c) }
@@ -296,15 +361,17 @@ func sortedKeys(m map[string]string) []string { return slices.Sorted(maps.Keys(m
 
 // SchemaVersion is the shape `ingestion tui --view review --json` prints, which
 // schemas/tui-review.schema.json holds.
-const SchemaVersion = 1
+const SchemaVersion = 2
 
-// Snapshot is what --json prints: each waiting item ordered by the board's default grouping,
-// beside the group it draws under and the source the row names, then the key that places on each
-// destination, and how each read stands. A display left grouped otherwise does not change it.
+// Snapshot is what --json prints: each waiting item ordered by the board's default grouping and,
+// within each group, by the sort in force, beside the group it draws under, the source the row
+// names and its rank under the sort, then the key that places on each destination, and how each
+// read stands. A display left grouped otherwise does not change it.
 type Snapshot struct {
 	SchemaVersion int                  `json:"schema_version"`
 	TakenAt       time.Time            `json:"taken_at"`
 	Grouping      string               `json:"grouping"`
+	Sort          string               `json:"sort"`
 	Destinations  []DestinationKey     `json:"destinations"`
 	Items         []ItemShown          `json:"items"`
 	Sources       []gotermboard.Status `json:"sources"`
@@ -322,6 +389,7 @@ type DestinationKey struct {
 type ItemShown struct {
 	Group  string            `json:"group"`
 	Source string            `json:"source"`
+	Rank   int               `json:"rank"`
 	Item   server.ReviewItem `json:"item"`
 }
 
@@ -329,7 +397,8 @@ type ItemShown struct {
 func (b *Board) Snapshot(now time.Time) Snapshot {
 	h := b.queue.Value()
 	grouping := b.Groupings()[0]
-	snap := Snapshot{SchemaVersion: SchemaVersion, TakenAt: now.UTC(), Grouping: grouping, Items: []ItemShown{}, Sources: b.statuses()}
+	sort := sorts[b.sortAt]
+	snap := Snapshot{SchemaVersion: SchemaVersion, TakenAt: now.UTC(), Grouping: grouping, Sort: sort, Items: []ItemShown{}, Sources: b.statuses()}
 	if h.destinations != nil {
 		snap.Destinations = []DestinationKey{}
 	}
@@ -344,19 +413,24 @@ func (b *Board) Snapshot(now time.Time) Snapshot {
 			snap.Unread = append(snap.Unread, s.Name)
 		}
 	}
-	for _, g := range b.grouped(b.shown(h), grouping, now) {
+	items := sorted(b.shown(h), sort)
+	rank := map[string]int{}
+	for i, it := range items {
+		rank[it.Key] = i + 1
+	}
+	for _, g := range b.grouped(items, grouping, now) {
 		for _, r := range g.Rows {
 			it, _ := h.item(r.Key)
-			snap.Items = append(snap.Items, ItemShown{Group: g.Key, Source: sourceOf(it), Item: it.ReviewItem})
+			snap.Items = append(snap.Items, ItemShown{Group: g.Key, Source: sourceOf(it), Rank: rank[r.Key], Item: it.ReviewItem})
 		}
 	}
 	return snap
 }
 
-// ordered is every row the grouping draws, in order.
+// ordered is every row the grouping draws under the sort in force, in order.
 func (b *Board) ordered(grouping string) []gotermboard.Row {
 	var rows []gotermboard.Row
-	for _, g := range b.grouped(b.shown(b.queue.Value()), grouping, time.Now()) {
+	for _, g := range b.grouped(sorted(b.shown(b.queue.Value()), sorts[b.sortAt]), grouping, time.Now()) {
 		rows = append(rows, g.Rows...)
 	}
 	return rows

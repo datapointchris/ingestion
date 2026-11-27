@@ -362,12 +362,13 @@ func neverReached(err error) bool {
 	return errors.As(err, &op) && op.Op == "dial"
 }
 
-// refusal is the server refusing a call. Code and Message are what its body
-// names, where the body is the server's refusal.
+// refusal is the server refusing a call. Code, Message and Field are what its
+// body names, where the body is the server's refusal. Field is the body field
+// that a server built before this CLI reads no such field as.
 type refusal struct {
 	Server, Method, Route string
 	Status                int
-	Code, Message         string
+	Code, Message, Field  string
 	Body                  string
 }
 
@@ -380,9 +381,10 @@ func refusalOf(server, method, route string, status int, raw []byte) *refusal {
 	var body struct {
 		Code    string `json:"code"`
 		Message string `json:"message"`
+		Field   string `json:"field"`
 	}
 	if json.Unmarshal(raw, &body) == nil {
-		r.Code, r.Message = body.Code, body.Message
+		r.Code, r.Message, r.Field = body.Code, body.Message, body.Field
 	}
 	return r
 }

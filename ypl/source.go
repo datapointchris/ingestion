@@ -24,6 +24,7 @@ import (
 	"github.com/datapointchris/ingestion/connectors"
 	"github.com/datapointchris/ingestion/deletion"
 	"github.com/datapointchris/ingestion/extract"
+	"github.com/datapointchris/ingestion/landing"
 	"github.com/datapointchris/ingestion/metricsrefresh"
 	"github.com/datapointchris/ingestion/polling"
 	"github.com/datapointchris/ingestion/sources"
@@ -56,12 +57,22 @@ const (
 	FieldPlaylistID = "playlist_id"
 )
 
+// A sighting of a video carries these metrics: its views, likes and comments,
+// and its length in seconds where it has one.
+const (
+	MetricViews    = "views"
+	MetricLikes    = "likes"
+	MetricComments = "comments"
+	MetricDuration = "duration_s"
+)
+
 // Scopes are what the source's service client asks for: what the poller
-// reads, what the deleter writes, and what the extractors read. ypl's route
-// table grants each, and a test holds them to the routes this package calls.
+// reads, what the deleter writes, what the extractors read, and the comments
+// that a person asks about. ypl's route table grants each, and a test holds
+// them to the routes this package calls.
 var Scopes = []string{
 	"ypl.playlists.read", "ypl.channels.read", "ypl.videos.read", "ypl.playlist-items.write",
-	"ypl.transcripts.read", "ypl.audio.read",
+	"ypl.transcripts.read", "ypl.audio.read", "ypl.comments.read",
 }
 
 func init() {
@@ -73,6 +84,11 @@ func init() {
 			return NewRefresher(NewClient(api, client))
 		},
 		Extractors: []extract.Extractor{CaptionsExtractor, WhisperExtractor},
+		Comments:   &CommentsSource,
+	})
+	landing.RegisterSightingRoles(landing.SightingRoles{
+		Channel: FieldChannelTitle, ChannelFormat: "%s", ChannelFields: []string{FieldChannelTitle, FieldChannelID},
+		Length: MetricDuration, Views: MetricViews, Likes: MetricLikes, Comments: MetricComments,
 	})
 }
 

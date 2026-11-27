@@ -134,6 +134,7 @@ type modelConfig struct {
 	Note           stageModel `toml:"note"`
 	ModelRead      stageModel `toml:"model-read"`
 	PromptProposal stageModel `toml:"prompt-proposal"`
+	Comments       stageModel `toml:"comments"`
 }
 
 // stageModel is what one model stage asks its run for.

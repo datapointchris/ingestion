@@ -72,7 +72,7 @@
         "additionalProperties": false,
         "required": ["stage", "producer", "producer_version", "state"],
         "properties": {
-          "stage": {"enum": ["parse", "structure", "contents", "scan", "quality", "quality-arm", "note", "model-read"]},
+          "stage": {"enum": ["parse", "structure", "contents", "scan", "quality", "quality-arm", "note", "model-read", "comments"]},
           "producer": {"type": "string"},
           "producer_version": {"type": "string"},
           "lens": {"type": ["string", "null"]},
@@ -126,6 +126,8 @@
           "note": {"type": ["string", "null"]},
           "lens": {"description": "How a model read takes the item, on a read decision whose verdict is model.", "type": ["string", "null"]},
           "client_id": {"description": "The client that sent a person's decision.", "type": ["string", "null"]},
+          "presented": {"anyOf": [{"$ref": "ingestion-record.schema.json#/$defs/presented"}, {"type": "null"}]},
+          "decided_after_ms": {"description": "How long after its review card was drawn the person decided, in milliseconds.", "type": ["integer", "null"], "minimum": 0},
           "decided_ts": {"type": "string", "format": "date-time"}
         }
       }

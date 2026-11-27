@@ -70,6 +70,8 @@ type standInItem struct {
 // ypl refuses each read of an unreadable video, as it refuses a members-only
 // one, and every video read where it holds no yt-dlp. cutAudio sends that
 // many of a video's audio answers with half the bytes that it promised.
+// comments holds each video's top comments, and commentReads the id of each
+// read of them.
 type standInYPL struct {
 	mu                  sync.Mutex
 	playlistIDs         map[string]string
@@ -90,6 +92,8 @@ type standInYPL struct {
 	cutAudio            map[string]int
 	detailReads         [][]string
 	busyDetails         int
+	comments            map[string][]ypl.Comment
+	commentReads        []string
 }
 
 func newStandInYPL(t *testing.T) (*standInYPL, *httptest.Server) {
@@ -98,7 +102,7 @@ func newStandInYPL(t *testing.T) (*standInYPL, *httptest.Server) {
 		playlistIDs: map[string]string{}, playlists: map[string][]standInItem{}, uploads: map[string][]standInItem{},
 		videos: map[string]standInVideo{}, refuseDelete: map[string]time.Duration{}, refuseDeleteForGood: map[string]bool{},
 		captions: map[string]map[string]any{}, audio: map[string][]byte{}, busy: map[string]int{}, gatewayDown: map[string]int{}, failing: map[string]int{},
-		unreadable: map[string]bool{}, cutAudio: map[string]int{},
+		unreadable: map[string]bool{}, cutAudio: map[string]int{}, comments: map[string][]ypl.Comment{},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/youtube/playlists/{id}/items", s.playlistItems)
@@ -107,6 +111,7 @@ func newStandInYPL(t *testing.T) (*standInYPL, *httptest.Server) {
 	mux.HandleFunc("GET /api/v1/youtube/videos", s.videoDetails)
 	mux.HandleFunc("GET /api/v1/youtube/videos/{id}/captions", s.videoCaptions)
 	mux.HandleFunc("GET /api/v1/youtube/videos/{id}/audio", s.videoAudio)
+	mux.HandleFunc("GET /api/v1/youtube/videos/{id}/comments", s.videoComments)
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer "+yplToken {
 			refuse(w, http.StatusUnauthorized, "unauthorized", "the request carries no token this server takes", 0)
@@ -280,6 +285,23 @@ func (s *standInYPL) videoAudio(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(audio)
 }
 
+// videoComments answers a video's top comments through the client's own
+// VideoComments, which a test holds to ypl's comments document, with its
+// comments off where it holds none.
+func (s *standInYPL) videoComments(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if _, ok := s.videos[id]; !ok {
+		refuse(w, http.StatusNotFound, "not_found", "video not found", 0)
+		return
+	}
+	s.commentReads = append(s.commentReads, id)
+	comments, on := s.comments[id]
+	if !on {
+		comments = []ypl.Comment{}
+	}
+	answer(w, ypl.VideoComments{VideoID: id, CommentsDisabled: !on, Comments: comments})
+}
+
 // add holds each video, available, finished, published on a day in the past
 // and viewed 1200 times unless set otherwise.
 func (s *standInYPL) add(videos ...standInVideo) {
@@ -316,6 +338,13 @@ func yplWorker(t *testing.T, p *pipeline, api string) (poll, del worker.Handler)
 // worker then holds, by capability.
 func yplHandlers(t *testing.T, p *pipeline, api string) map[string]worker.Handler {
 	t.Helper()
+	return yplModelHandlers(t, p, api, modelConfig{})
+}
+
+// yplModelHandlers is yplHandlers beside each model stage's handler that
+// models opens.
+func yplModelHandlers(t *testing.T, p *pipeline, api string, models modelConfig) map[string]worker.Handler {
+	t.Helper()
 	dir := t.TempDir()
 	token, config := filepath.Join(dir, "ypl-token.json"), filepath.Join(dir, "worker.toml")
 	for path, body := range map[string]string{
@@ -331,7 +360,8 @@ func yplHandlers(t *testing.T, p *pipeline, api string) map[string]worker.Handle
 		t.Fatal(err)
 	}
 	handlers := map[string]worker.Handler{}
-	for _, h := range workerHandlers(p.worker, nil, openSources(t.Context(), cfg, p.provider.URL, quiet), nil, nil, nil, modelConfig{}, quiet) {
+	port := openModelPort(t.Context(), models, p.provider.URL, quiet)
+	for _, h := range workerHandlers(p.worker, nil, openSources(t.Context(), cfg, p.provider.URL, quiet), port, nil, nil, models, quiet) {
 		handlers[h.Capability()] = h
 	}
 	return handlers

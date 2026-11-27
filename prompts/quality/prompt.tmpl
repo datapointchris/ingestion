@@ -12,6 +12,14 @@ URL: {{.URL}}
 {{- if .Truncated}}
 The opening stops after {{.Shown}} of the item's {{.Total}} characters.
 {{- end}}
+{{- if .Context}}
+
+The owner keeps the record between the two CURRENT WORK lines below. It is the owner's current work, which the fit weighs the item against:
+
+----- CURRENT WORK -----
+{{.Context}}
+----- CURRENT WORK ENDS -----
+{{- end}}
 
 Answer each field:
 
@@ -44,3 +52,12 @@ Answer each field:
   - fleet: the owner's software and how it is built and run, such as programming, infrastructure, data, AI models and agents, and developer tools and practices
   - unsure: it could be either, or neither
 - side_confidence: from 0 to 1, how sure you are of the side.
+{{- if .Context}}
+- fit: from 0 to 10, how well the item bears on the owner's current work:
+  - 0: it touches none of that work
+  - 1 to 3: it shares a broad subject with some of it
+  - 4 to 6: it bears on one piece of that work, such as a tool or a problem it names
+  - 7 to 10: it answers a question that a piece of that work is asking now
+{{- else}}
+- fit: null, because no record of the owner's current work came with the item.
+{{- end}}

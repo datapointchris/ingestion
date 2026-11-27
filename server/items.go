@@ -278,16 +278,18 @@ type FindingView struct {
 
 // DecisionView is one gate's decision.
 type DecisionView struct {
-	Gate        string   `json:"gate"`
-	Verdict     string   `json:"verdict"`
-	DecidedBy   string   `json:"decided_by"`
-	Confidence  *float64 `json:"confidence"`
-	Cause       string   `json:"cause"`
-	Destination *string  `json:"destination"`
-	Note        *string  `json:"note"`
-	Lens        *string  `json:"lens"`
-	ClientID    *string  `json:"client_id"`
-	DecidedTS   string   `json:"decided_ts"`
+	Gate           string           `json:"gate"`
+	Verdict        string           `json:"verdict"`
+	DecidedBy      string           `json:"decided_by"`
+	Confidence     *float64         `json:"confidence"`
+	Cause          string           `json:"cause"`
+	Destination    *string          `json:"destination"`
+	Note           *string          `json:"note"`
+	Lens           *string          `json:"lens"`
+	ClientID       *string          `json:"client_id"`
+	Presented      *store.Presented `json:"presented"`
+	DecidedAfterMS *int64           `json:"decided_after_ms"`
+	DecidedTS      string           `json:"decided_ts"`
 }
 
 // DeliveryView is one delivery to one destination.
@@ -408,7 +410,7 @@ func (h itemHandlers) show(w http.ResponseWriter, r *http.Request) {
 		h.internal(w, r, "read the set in force", err)
 		return
 	}
-	claimed, err := h.claimed(r.Context())
+	claimed, err := Claimed(r.Context(), h.store)
 	if err != nil {
 		h.internal(w, r, "read the workers", err)
 		return
@@ -418,10 +420,10 @@ func (h itemHandlers) show(w http.ResponseWriter, r *http.Request) {
 	JSON(w, http.StatusOK, answer)
 }
 
-// claimed is each capability that a worker heard from within
-// WorkersHeardWithin holds.
-func (h itemHandlers) claimed(ctx context.Context) (map[string]bool, error) {
-	workers, _, err := h.store.Workers(ctx, store.Stamp(h.store.Now().Add(-WorkersHeardWithin)))
+// Claimed is each capability that a worker heard from within
+// WorkersHeardWithin holds, so a queued task of any other waits on no worker.
+func Claimed(ctx context.Context, st *store.Store) (map[string]bool, error) {
+	workers, _, err := st.Workers(ctx, store.Stamp(st.Now().Add(-WorkersHeardWithin)))
 	if err != nil {
 		return nil, err
 	}
@@ -674,7 +676,8 @@ type SectionView struct {
 func decisionView(d store.Decision) DecisionView {
 	return DecisionView{
 		Gate: d.Gate, Verdict: d.Verdict, DecidedBy: d.DecidedBy, Confidence: d.Confidence, Cause: d.Cause,
-		Destination: d.Destination, Note: d.Note, Lens: d.Lens, ClientID: d.ClientID, DecidedTS: d.DecidedTS,
+		Destination: d.Destination, Note: d.Note, Lens: d.Lens, ClientID: d.ClientID,
+		Presented: d.Presented, DecidedAfterMS: d.DecidedAfterMS, DecidedTS: d.DecidedTS,
 	}
 }
 

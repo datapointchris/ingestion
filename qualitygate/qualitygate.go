@@ -83,6 +83,9 @@ type Answer struct {
 	Reason         string  `json:"reason"`
 	Side           string  `json:"side"`
 	SideConfidence float64 `json:"side_confidence"`
+	// Fit is 0 to 10 of how well the item bears on the owner's current work,
+	// and nil where the prompt quoted no record of that work.
+	Fit *int `json:"fit"`
 }
 
 // ReadAnswer checks raw against the schema of the prompt in force and
@@ -98,17 +101,22 @@ func ReadAnswer(raw json.RawMessage) (Answer, error) {
 // build's schema. An answer kept under an earlier prompt holds that prompt's
 // fields, and a CLI reads a service of another release. Its run's schema
 // checked it when it arrived, and a field that its prompt did not ask for
-// decodes empty. The schema counts 7.0 as an integer, so quality decodes as a
-// number and is kept whole.
+// decodes empty. The schema counts 7.0 as an integer, so quality and fit
+// decode as numbers and are kept whole.
 func DecodeAnswer(raw json.RawMessage) (Answer, error) {
 	var a struct {
 		Answer
-		Quality float64 `json:"quality"`
+		Quality float64  `json:"quality"`
+		Fit     *float64 `json:"fit"`
 	}
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return Answer{}, fmt.Errorf("decode the quality answer: %w", err)
 	}
 	a.Answer.Quality = int(a.Quality)
+	if a.Fit != nil {
+		fit := int(*a.Fit)
+		a.Answer.Fit = &fit
+	}
 	return a.Answer, nil
 }
 

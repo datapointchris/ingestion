@@ -1,6 +1,7 @@
 package review
 
 import (
+	"cmp"
 	"fmt"
 	"maps"
 	"slices"
@@ -11,6 +12,8 @@ import (
 	"github.com/datapointchris/gotermboard"
 	"github.com/datapointchris/gotermboard/terminalcontrol"
 
+	"github.com/datapointchris/ingestion/comments"
+	"github.com/datapointchris/ingestion/route"
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
 )
@@ -36,11 +39,84 @@ func (b *Board) document(key string) string {
 	for _, s := range it.Sightings {
 		fmt.Fprintf(&d, "- **from** %s\n", literalLine(sightingWords(s)))
 	}
+	d.WriteString(cardSection(it))
+	d.WriteString(commentsSection(it))
 	d.WriteString(draftSection(it))
 	d.WriteString("\n## The quality gate's answer\n\n")
 	d.WriteString(answerSection(it))
 	d.WriteString(b.parseSections(key))
 	return d.String()
+}
+
+// cardSection is what a person decides from at a glance: the channel, the length, when it was
+// made at its source, the views, likes and comments and the likes per view, then the gate's
+// quality, fit, verdict, reason and side guess, and whether the gate would drop it.
+func cardSection(it item) string {
+	rows := []string{"- **channel** " + literalLine(cmp.Or(channelOf(it), "none named"))}
+	if it.LengthS != nil {
+		rows = append(rows, "- **length** "+length(*it.LengthS))
+	}
+	if it.SourceTS != nil {
+		at := made(it)
+		rows = append(rows, "- **made** "+literalLine(at.Local().Format("2006-01-02"))+", "+gotermboard.Ago(time.Since(at))+" ago")
+	}
+	for _, m := range []struct {
+		n    *int64
+		word string
+	}{{it.Views, "views"}, {it.Likes, "likes"}, {it.CommentCount, "comments"}} {
+		if m.n != nil {
+			rows = append(rows, fmt.Sprintf("- **%s** %d", m.word, *m.n))
+		}
+	}
+	if ratio, ok := likesPerView(it); ok {
+		rows = append(rows, "- **likes per view** "+literalLine(percent(ratio)))
+	}
+	if a := it.answer; a != nil {
+		rows = append(rows,
+			fmt.Sprintf("- **quality** %d of 10", a.Quality),
+			"- **fit** "+fitWords(a.Fit),
+			fmt.Sprintf("- **verdict** %s at %s confidence", literalLine(a.Verdict), confidence(a.VerdictConfidence)),
+			"- **reason** "+literalLine(cmp.Or(a.Reason, "none given")),
+			fmt.Sprintf("- **side hint** %s at %s confidence", literalLine(a.Side), confidence(a.SideConfidence)))
+	} else if g := it.Guess; g != nil {
+		rows = append(rows, fmt.Sprintf("- **side hint** %s at %s confidence", literalLine(g.Side), confidence(g.Confidence)))
+	}
+	if it.Reason == route.CauseGateWouldDrop {
+		rows = append(rows, "- **"+literalLine(route.CauseGateWouldDrop)+"** the gate would drop it, and its family has not earned hiding the drop")
+	}
+	if it.Comments != nil {
+		rows = append(rows, "- **comments read** "+literalLine(commentsWords(it.Comments)))
+	}
+	return "\n## The card\n\n" + strings.Join(rows, "\n") + "\n"
+}
+
+// fitWords is the gate's fit to the owner's current work, or why there is none.
+func fitWords(fit *int) string {
+	if fit == nil {
+		return "none, since the gate read no record of the current work"
+	}
+	return strconv.Itoa(*fit) + " of 10"
+}
+
+// commentsSection is what a model read in the item's top comments, once the read is done. A model
+// wrote it over strangers' comments, so every field is drawn literally.
+func commentsSection(it item) string {
+	c := it.Comments
+	if c == nil || c.State != server.CommentsDone {
+		return ""
+	}
+	a, err := comments.DecodeAnswer(c.Answer)
+	if err != nil {
+		return "\n## What the comments say\n\nThe answer the store keeps could not be read: " + literalLine(err.Error()) + "\n"
+	}
+	rows := []string{"- **tone** " + literalLine(a.Tone), "- **summary** " + literalLine(a.Summary)}
+	for _, p := range a.Praise {
+		rows = append(rows, "- **praise** "+literalLine(p))
+	}
+	for _, p := range a.Criticism {
+		rows = append(rows, "- **criticism** "+literalLine(p))
+	}
+	return "\n## What the comments say\n\nA model read this from the video's top comments, which strangers wrote.\n\n" + strings.Join(rows, "\n") + "\n"
 }
 
 // zoneWords says who wrote the item's content.
@@ -118,6 +194,8 @@ func answerSection(it item) string {
 		fmt.Sprintf("- **verdict** %s at %s confidence", literalLine(a.Verdict), confidence(a.VerdictConfidence)),
 		fmt.Sprintf("- **quality** %d of 10", a.Quality),
 		fmt.Sprintf("- **side** %s at %s confidence", literalLine(a.Side), confidence(a.SideConfidence)),
+		"- **reason** " + literalLine(a.Reason),
+		"- **fit** " + fitWords(a.Fit),
 		"- **genre** " + literalLine(a.Genre),
 		"- **domains** " + literalLine(strings.Join(a.Domains, ", ")),
 		"- **themes** " + literalLine(strings.Join(a.Themes, "; ")),

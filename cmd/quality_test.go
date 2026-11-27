@@ -20,6 +20,7 @@ import (
 
 	"github.com/datapointchris/ingestion/connectors"
 	"github.com/datapointchris/ingestion/extract"
+	"github.com/datapointchris/ingestion/lens"
 	"github.com/datapointchris/ingestion/modelport"
 	"github.com/datapointchris/ingestion/qualitygate"
 	"github.com/datapointchris/ingestion/route"
@@ -43,7 +44,8 @@ const (
 // with hold as its note. Once hold clears, a read finishes it. A dispatch
 // whose schema is the model read's is answered by read, one whose schema is
 // a prompt proposal's draft by draft, one whose schema is the note's by note,
-// and any other by answer.
+// one whose schema is the comments stage's by comments, and any other by
+// answer.
 type standInDispatch struct {
 	*httptest.Server
 	mu sync.Mutex
@@ -52,12 +54,13 @@ type standInDispatch struct {
 	// fail is the failure code that the next run to finish ends with.
 	fail string
 	// answer is the structured output of a run on prompt, read that of a
-	// model read's run, draft that of a prompt proposal's draft, and note
-	// that of a note's draft.
+	// model read's run, draft that of a prompt proposal's draft, note that
+	// of a note's draft, and comments that of a read of a video's comments.
 	answer     func(prompt string) map[string]any
 	read       func(prompt string) map[string]any
 	draft      func(prompt string) map[string]any
 	note       func(prompt string) map[string]any
+	comments   func(prompt string) map[string]any
 	dispatches map[string]*standInRun
 	byKey      map[string]string
 	started    []dispatchStart
@@ -182,6 +185,8 @@ func (d *standInDispatch) settle(run *standInRun) {
 		answer = d.draft
 	case strings.HasSuffix(run.schema, "/prompts/note/answer.schema.json"):
 		answer = d.note
+	case strings.HasSuffix(run.schema, "/prompts/comments/answer.schema.json"):
+		answer = d.comments
 	}
 	run.answer["state"], run.answer["structured_output"] = modelport.Succeeded, answer(run.prompt)
 }
@@ -254,7 +259,14 @@ func (p *pipeline) qualityGate(t *testing.T, models modelConfig) worker.Handler 
 // and nil where it opens none.
 func (p *pipeline) modelHandler(t *testing.T, models modelConfig, capability string) worker.Handler {
 	t.Helper()
-	handlers := workerHandlers(p.worker, nil, nil, openModelPort(t.Context(), models, p.provider.URL, quiet), nil, nil, models, quiet)
+	return p.modelHandlerOver(t, models, nil, capability)
+}
+
+// modelHandlerOver is modelHandler with contexts as its lenses' context
+// readers.
+func (p *pipeline) modelHandlerOver(t *testing.T, models modelConfig, contexts lens.Readers, capability string) worker.Handler {
+	t.Helper()
+	handlers := workerHandlers(p.worker, nil, openedSources{}, openModelPort(t.Context(), models, p.provider.URL, quiet), nil, contexts, models, quiet)
 	i := slices.IndexFunc(handlers, func(h worker.Handler) bool { return h.Capability() == capability })
 	if i < 0 {
 		return nil
@@ -280,7 +292,7 @@ func judged(verdict string, sure float64, side string, sideSure float64) map[str
 	return map[string]any{
 		"genre": "exploratory", "domains": []string{"software"}, "themes": []string{"a theme"}, "quality": 7,
 		"idea": "The " + verdict + " idea in one line.", "verdict": verdict, "verdict_confidence": sure,
-		"reason": "The opening decided " + verdict + ".", "side": side, "side_confidence": sideSure,
+		"reason": "The opening decided " + verdict + ".", "side": side, "side_confidence": sideSure, "fit": nil,
 	}
 }
 
@@ -510,5 +522,32 @@ func TestAModelCallIsSentOnceAndAgainOnlyAfterItsRunFails(t *testing.T) {
 	}
 	if _, err := runCLI(t, "tasks", "retry", id, "--config", p.config); !errors.Is(err, goclikit.ErrUsage) {
 		t.Errorf("tasks retry on a done task answered %v, want it refused as a usage error", err)
+	}
+}
+
+// Where the fleet lens reads the owner's current work, the gate quotes it and keeps the fit to it
+// that the model answers.
+func TestTheQualityGateKeepsTheFitToTheCurrentWork(t *testing.T) {
+	p := newGatedPipeline(t, mustAbs(t, "../examples/declarations"))
+	slate := newStandInSlate(t, p.provider)
+	stand := newStandInDispatch(t, p.provider)
+	fitted := judged(qualitygate.AnswerUnsure, 0.5, connectors.SidePersonal, 0.6)
+	fitted["fit"] = 8
+	stand.answer = answerBy(map[string]map[string]any{"ff1": fitted})
+	p.landExports(t, map[string][]byte{"first": redditExport(redditSave("t3_ff1", "golang"))})
+	p.parse(t, extract.Builtin())
+	p.scanFindingNothing(t)
+	gate := p.modelHandlerOver(t, stand.models(t, "", ""), p.lensReaders(t, slate.URL, quiet), qualitygate.Capability)
+	p.run(t, gate)
+	if _, err := runCLI(t, "connectors", "release", "reddit-exports", "--config", p.config); err != nil {
+		t.Fatal(err)
+	}
+	p.run(t, gate)
+	starts := stand.starts()
+	if len(starts) != 1 || !strings.Contains(stand.prompt(starts[0].Key), currentWork) {
+		t.Fatalf("the gate started %d runs, the first quoting %q, want one quoting the current work", len(starts), stand.prompt(starts[0].Key))
+	}
+	if n := p.count(t, `SELECT count(*) FROM outputs WHERE item_key = ? AND stage = ? AND fit = 8`, "reddit/t3_ff1", store.StageQuality); n != 1 {
+		t.Errorf("the store keeps %d quality outputs with the fit of 8, want one", n)
 	}
 }

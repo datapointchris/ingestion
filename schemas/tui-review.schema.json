@@ -2,14 +2,15 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/datapointchris/ingestion/schemas/tui-review.schema.json",
   "title": "The review tab's snapshot",
-  "description": "What `ingestion tui --view review --json` prints: each item that waits on a person, ordered by the board's default grouping, the digit that places on each destination, and how each read stands. A change to its shape bumps schema_version.",
+  "description": "What `ingestion tui --view review --json` prints: each item that waits on a person, ordered by the board's default grouping and, within each group, by the sort in force, the digit that places on each destination, and how each read stands. A change to its shape bumps schema_version.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "taken_at", "grouping", "destinations", "items", "sources"],
+  "required": ["schema_version", "taken_at", "grouping", "sort", "destinations", "items", "sources"],
   "properties": {
-    "schema_version": {"const": 1},
+    "schema_version": {"const": 2},
     "taken_at": {"description": "When the snapshot was taken, in UTC.", "type": "string", "format": "date-time"},
-    "grouping": {"description": "The board's default grouping, which orders the items. A display the person left grouped otherwise does not change it.", "enum": ["reason", "source", "none"]},
+    "grouping": {"description": "The board's default grouping, which orders the items. A display the person left grouped otherwise does not change it.", "$ref": "ingestion-record.schema.json#/$defs/presented/properties/grouping"},
+    "sort": {"description": "The sort in force, which orders the items within each group. An item with no value for the sort follows every item with one.", "$ref": "ingestion-record.schema.json#/$defs/presented/properties/sort"},
     "destinations": {
       "description": "Each destination a digit places on, in the order the set in force declares them, up to nine. Null where the queue came without its destinations or was not read.",
       "type": ["array", "null"],
@@ -29,10 +30,11 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["group", "source", "item"],
+        "required": ["group", "source", "rank", "item"],
         "properties": {
           "group": {"description": "The key of the group the item draws under, such as reason/quality-review.", "type": "string"},
-          "source": {"description": "What the row's first column names: a field of the item's source, such as r/<subreddit>, or else its connectors.", "type": "string"},
+          "source": {"description": "What the row's first column names: the channel that published the item, such as a video's channel or r/<subreddit>, or else its connectors.", "type": "string"},
+          "rank": {"description": "The item's place under the sort in force among every item shown, from 1.", "type": "integer", "minimum": 1},
           "item": {"$ref": "review-list.schema.json#/properties/items/items"}
         }
       }

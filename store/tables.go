@@ -72,7 +72,7 @@ var Tables = []Table{
 		Text: []string{"title"}, Writes: Appends,
 	},
 	{Name: "replays", Key: []string{"id"}, Stamp: []string{"requested_ts"}, Writes: Appends},
-	{Name: "decisions", Key: []string{"item_key", "gate", "sequence"}, Stamp: []string{"decided_ts"}, Writes: Appends},
+	{Name: "decisions", Key: []string{"item_key", "gate", "sequence"}, Stamp: []string{"decided_ts"}, JSON: []string{"presented"}, Writes: Appends},
 	{
 		Name: "deliveries", Key: []string{"item_key", "destination"}, Stamp: []string{"updated_ts"}, Text: []string{"last_error", "title", "url", "path"},
 		Writes: Upserts,

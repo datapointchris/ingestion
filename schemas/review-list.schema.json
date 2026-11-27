@@ -41,6 +41,26 @@
             "description": "The note stage's newest done draft, in the shape prompts/note/answer.schema.json holds: the questions for a model read to answer, why the item was likely saved, how it bears on the owner's current work, a summary, a one-line idea and a confidence. Null where none was drafted. A model wrote it from the item, so it takes the item's zone. Placing the item with no note takes the draft.",
             "type": ["object", "null"]
           },
+          "media_type": {"type": "string"},
+          "source_ts": {"description": "When the item's artifact was made at its source, such as a video's upload, and null where the source gave none.", "type": ["string", "null"], "format": "date-time"},
+          "channel": {"description": "Who published the item, as its sightings name it, such as a video's channel or a save's subreddit as r/<name>, and null where none does. Its source wrote it.", "type": ["string", "null"]},
+          "channel_fields": {"description": "The sighting fields that a drop decided by the channel stands for, which a drop's menu offers as the one cause channel. Empty where a drop names the channel's field as its own cause, as a save's subreddit.", "type": "array", "items": {"type": "string"}},
+          "length_s": {"description": "How long the item runs, in seconds, and null where no sighting carries a length.", "type": ["integer", "null"], "minimum": 0},
+          "views": {"description": "How many views the item drew at its source, and null where no sighting counts them.", "type": ["integer", "null"], "minimum": 0},
+          "likes": {"description": "How many likes the item drew at its source, and null where no sighting counts them.", "type": ["integer", "null"], "minimum": 0},
+          "comment_count": {"description": "How many comments the item drew at its source, and null where no sighting counts them.", "type": ["integer", "null"], "minimum": 0},
+          "comments": {
+            "description": "How the read of what the item's top comments say stands, which a person asks for on its review card with POST /api/v1/items/{key}/comments. unread where nobody asked, reading while its task or its run has not ended, unclaimed while its task waits and no worker heard from lately claims comments tasks, done with the answer in the shape prompts/comments/answer.schema.json holds, and failed where its task failed, which a second request asks again. Null where no source that the build carries reads the item's comments. A model wrote the answer over strangers' comments, so it is outsider text.",
+            "type": ["object", "null"],
+            "additionalProperties": false,
+            "required": ["state", "answer", "task_id", "error"],
+            "properties": {
+              "state": {"enum": ["unread", "reading", "unclaimed", "done", "failed"]},
+              "answer": {"type": ["object", "null"]},
+              "task_id": {"type": ["string", "null"]},
+              "error": {"description": "Why the read failed, and null unless it did.", "type": ["string", "null"]}
+            }
+          },
           "connectors": {"type": "array", "items": {"type": "string"}},
           "sightings": {
             "description": "Each connector's arrival of the item: the tags the side gate read, and the source's fields, such as a Reddit save's subreddit, which a routing rule matches.",

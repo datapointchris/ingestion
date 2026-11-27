@@ -23,6 +23,7 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/oauth2"
 
+	"github.com/datapointchris/ingestion/comments"
 	"github.com/datapointchris/ingestion/contents"
 	"github.com/datapointchris/ingestion/deliver"
 	"github.com/datapointchris/ingestion/extract"
@@ -51,11 +52,12 @@ const (
 // extractor's, the structure's where pdf-structure is installed, the scan's
 // where scanner is installed, the contents stage's, the quality gate's, its
 // arm's, the note's and the prompt proposal's draft where port is open, the
-// model read's where both are, each of deliverers by its name, and each of
-// sourceHandlers, which openSources answers. The note and the model read
-// quote each lens's context that contexts reads. A stage whose work runs in a
-// worker adds its handler here.
-func workerHandlers(client *worker.Client, deliverers map[string]deliver.Deliverer, sourceHandlers []worker.Handler,
+// model read's where both are, each of deliverers by its name, each handler
+// of opened, which openSources answers, and the comments stage's where port is
+// open and opened reads a source's comments. The quality gate, the note and
+// the model read quote each lens's context that contexts reads. A stage whose
+// work runs in a worker adds its handler here.
+func workerHandlers(client *worker.Client, deliverers map[string]deliver.Deliverer, opened openedSources,
 	port modelport.Port, scanner *scan.Scanner, contexts lens.Readers, models modelConfig, log *slog.Logger,
 ) []worker.Handler {
 	handlers := extract.Builtin().Handlers(client, log)
@@ -69,7 +71,7 @@ func workerHandlers(client *worker.Client, deliverers map[string]deliver.Deliver
 		quality := modelstage.Settings{Model: models.Quality.Model, Effort: models.Quality.Effort}
 		handlers = append(handlers,
 			contents.NewHandler(port, client, modelstage.Settings{Model: models.Contents.Model, Effort: models.Contents.Effort}, log),
-			qualitygate.NewHandler(port, client, quality, log), qualitygate.NewArmHandler(port, client, quality, log),
+			qualitygate.NewHandler(port, client, contexts, quality, log), qualitygate.NewArmHandler(port, client, contexts, quality, log),
 			note.NewHandler(port, client, contexts, modelstage.Settings{Model: models.Note.Model, Effort: models.Note.Effort}, log),
 			promptproposal.NewHandler(port, modelstage.Settings{Model: models.PromptProposal.Model, Effort: models.PromptProposal.Effort}, log))
 	}
@@ -77,21 +79,33 @@ func workerHandlers(client *worker.Client, deliverers map[string]deliver.Deliver
 		handlers = append(handlers, modelread.NewHandler(port, client, contexts, scanner,
 			modelstage.Settings{Model: models.ModelRead.Model, Effort: models.ModelRead.Effort}, log))
 	}
+	if port != nil && len(opened.comments) > 0 {
+		handlers = append(handlers, comments.NewHandler(port, opened.comments,
+			modelstage.Settings{Model: models.Comments.Model, Effort: models.Comments.Effort}, log))
+	}
 	for _, name := range slices.Sorted(maps.Keys(deliverers)) {
 		handlers = append(handlers, deliver.Handler(name, deliverers[name]))
 	}
-	return append(handlers, sourceHandlers...)
+	return append(handlers, opened.handlers...)
+}
+
+// openedSources is what openSources opens: the handler of each stage that
+// each opened source serves, and the reader of comments of each that reads
+// them, by its media type.
+type openedSources struct {
+	handlers []worker.Handler
+	comments comments.Readers
 }
 
 // openSources opens one client for each registered source whose
 // [source.<name>] table cfg holds, with every scope the source asks, and
-// answers the handler of each stage the source serves through it. issuer is
-// the file's, which a table takes where it names none. A registered source
-// with no table, or whose table cannot open, is logged and left out, so the
-// worker's other stages run on and its tasks wait queued for a worker that
-// opens it.
-func openSources(ctx context.Context, cfg fileConfig, issuer string, log *slog.Logger) []worker.Handler {
-	var out []worker.Handler
+// answers the handler of each stage the source serves through it, and its
+// reader of comments. issuer is the file's, which a table takes where it
+// names none. A registered source with no table, or whose table cannot open,
+// is logged and left out, so the worker's other stages run on and its tasks
+// wait queued for a worker that opens it.
+func openSources(ctx context.Context, cfg fileConfig, issuer string, log *slog.Logger) openedSources {
+	out := openedSources{comments: comments.Readers{}}
 	for _, name := range sources.Names() {
 		r, _ := sources.Lookup(name)
 		claimsNone := "so the worker claims no " + strings.Join(r.Capabilities(), " or ") + " task"
@@ -105,7 +119,10 @@ func openSources(ctx context.Context, cfg fileConfig, issuer string, log *slog.L
 			log.Error("[source."+name+"] cannot open, "+claimsNone, "error", err)
 			continue
 		}
-		out = append(out, r.Handlers(table.API, client, log)...)
+		out.handlers = append(out.handlers, r.Handlers(table.API, client, log)...)
+		if r.Comments != nil {
+			out.comments[r.Comments.MediaType] = r.Comments.Open(table.API, client)
+		}
 	}
 	return out
 }
@@ -170,7 +187,8 @@ func logModels(models modelConfig, log *slog.Logger) {
 		"quality", asked(models.Quality, qualitygate.DefaultModel, qualitygate.DefaultEffort),
 		"note", asked(models.Note, note.DefaultModel, note.DefaultEffort),
 		"model-read", asked(models.ModelRead, modelread.DefaultModel, modelread.DefaultEffort),
-		"prompt-proposal", asked(models.PromptProposal, promptproposal.DefaultModel, promptproposal.DefaultEffort))
+		"prompt-proposal", asked(models.PromptProposal, promptproposal.DefaultModel, promptproposal.DefaultEffort),
+		"comments", asked(models.Comments, comments.DefaultModel, comments.DefaultEffort))
 }
 
 // openModelPort opens the adapter that cfg's [model] table names. With none
@@ -422,7 +440,7 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 	}
 	contexts := openLensReaders(ctx, cfg, d.Issuer.Value, run.Log)
 	client := worker.NewClient(d.API.Value, oauth2.NewClient(ctx, source))
-	sourceHandlers := openSources(ctx, cfg, d.Issuer.Value, run.Log)
-	handlers := workerHandlers(client, deliverers, sourceHandlers, port, scan.Installed(run.Log), contexts, cfg.Model, run.Log)
+	opened := openSources(ctx, cfg, d.Issuer.Value, run.Log)
+	handlers := workerHandlers(client, deliverers, opened, port, scan.Installed(run.Log), contexts, cfg.Model, run.Log)
 	return worker.Run(ctx, client, run, handlers...)
 }

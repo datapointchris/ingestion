@@ -697,32 +697,38 @@ func (s *Store) RetryTask(ctx context.Context, id string) (Task, error) {
 	var task Task
 	err := s.Update(ctx, func(tx *Tx) error {
 		var err error
-		if task, err = tx.task(ctx, id); err != nil {
-			return err
-		}
-		switch task.State {
-		case TaskDone:
-			return fmt.Errorf("task %s: %w", id, ErrTaskDone)
-		case TaskQueued, TaskLeased:
-			return nil
-		}
-		if task.ProposalID != nil {
-			newest, ok, err := tx.NewestPromptProposal(ctx)
-			if err != nil {
-				return err
-			}
-			if ok && newest.ID != *task.ProposalID {
-				return fmt.Errorf("task %s drafts proposal %s, and proposal %s reads its misses: %w", id, *task.ProposalID, newest.ID, ErrTaskSuperseded)
-			}
-		}
-		if _, err := tx.tx.ExecContext(ctx, `UPDATE tasks SET state = 'queued', attempts = 0, lapses = 0, waiting_since_ts = NULL, error = NULL,
-			not_before_ts = NULL, updated_ts = ? WHERE id = ?`, tx.stamp(), id); err != nil {
-			return fmt.Errorf("queue task %s again: %w", id, err)
-		}
-		task, err = tx.task(ctx, id)
+		task, err = tx.RetryTask(ctx, id)
 		return err
 	})
 	return task, err
+}
+
+// RetryTask is Store.RetryTask in tx.
+func (tx *Tx) RetryTask(ctx context.Context, id string) (Task, error) {
+	task, err := tx.task(ctx, id)
+	if err != nil {
+		return Task{}, err
+	}
+	switch task.State {
+	case TaskDone:
+		return Task{}, fmt.Errorf("task %s: %w", id, ErrTaskDone)
+	case TaskQueued, TaskLeased:
+		return task, nil
+	}
+	if task.ProposalID != nil {
+		newest, ok, err := tx.NewestPromptProposal(ctx)
+		if err != nil {
+			return Task{}, err
+		}
+		if ok && newest.ID != *task.ProposalID {
+			return Task{}, fmt.Errorf("task %s drafts proposal %s, and proposal %s reads its misses: %w", id, *task.ProposalID, newest.ID, ErrTaskSuperseded)
+		}
+	}
+	if _, err := tx.tx.ExecContext(ctx, `UPDATE tasks SET state = 'queued', attempts = 0, lapses = 0, waiting_since_ts = NULL, error = NULL,
+		not_before_ts = NULL, updated_ts = ? WHERE id = ?`, tx.stamp(), id); err != nil {
+		return Task{}, fmt.Errorf("queue task %s again: %w", id, err)
+	}
+	return tx.task(ctx, id)
 }
 
 // OpenTask reads the item under key's task at stage that is queued or leased,
