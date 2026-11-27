@@ -2,34 +2,82 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/datapointchris/ingestion/schemas/routing-rules.schema.json",
   "title": "The routing rules",
-  "description": "What routing-rules.yml holds in a directory that `ingestion connectors apply` sends. Each rule names one destination for the items that match it. The side gate reads the rules in order, after the tags, and the first rule that holds places the item.",
+  "description": "What routing-rules.yml holds in a directory that `ingestion connectors apply` sends. Each rule names one destination for the items that match it. The side gate reads the rules in order, after the tags, and the first rule that holds places the item. Its $defs also hold a rule that a person accepted through PUT /api/v1/routing-rules/{name}, which the store keeps as a row of routing_rules: accepted is the body that the route takes, and version is each version that the routing-rules routes answer. The side gate reads each accepted rule in force after every declared rule.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
     "rules": {"type": "array", "items": {"$ref": "#/$defs/rule"}}
   },
   "$defs": {
+    "name": {"description": "A rule's name, which its decisions' decided_by names as rule:<name>.", "type": "string", "pattern": "^[a-z][a-z0-9-]*$", "maxLength": 100},
+    "match": {
+      "description": "What the rule holds for. Each condition it names must hold on one of the item's sightings, and it names at least one.",
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "connector": {"description": "Holds for an item this connector sighted. The set declares the connector.", "type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
+        "tag": {"description": "Holds for an item a sighting tagged with this.", "$ref": "connector.schema.json#/$defs/tag"},
+        "field": {"description": "A field of the source's payload, as the connector's format records it on each sighting, such as a Reddit save's subreddit.", "type": "string", "minLength": 1},
+        "values": {"description": "The values of field the rule holds for, each matched exactly.", "type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}
+      },
+      "dependentRequired": {"field": ["values"], "values": ["field"]},
+      "anyOf": [{"required": ["connector"]}, {"required": ["tag"]}, {"required": ["field"]}]
+    },
     "rule": {
       "type": "object",
       "additionalProperties": false,
       "required": ["name", "match", "destination"],
       "properties": {
-        "name": {"type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
-        "match": {
-          "description": "What the rule holds for. Each condition it names must hold on one of the item's sightings, and it names at least one.",
-          "type": "object",
-          "additionalProperties": false,
-          "minProperties": 1,
-          "properties": {
-            "connector": {"description": "Holds for an item this connector sighted. The set declares the connector.", "type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
-            "tag": {"description": "Holds for an item a sighting tagged with this.", "$ref": "connector.schema.json#/$defs/tag"},
-            "field": {"description": "A field of the source's payload, as the connector's format records it on each sighting, such as a Reddit save's subreddit.", "type": "string", "minLength": 1},
-            "values": {"description": "The values of field the rule holds for, each matched exactly.", "type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}
-          },
-          "dependentRequired": {"field": ["values"], "values": ["field"]},
-          "anyOf": [{"required": ["connector"]}, {"required": ["tag"]}, {"required": ["field"]}]
-        },
+        "name": {"$ref": "#/$defs/name"},
+        "match": {"$ref": "#/$defs/match"},
         "destination": {"description": "The destination for the items the rule's match holds for, which destinations.yml declares.", "type": "string", "pattern": "^[a-z][a-z0-9-]*$"}
+      }
+    },
+    "action": {
+      "description": "block drops each item that the rule matches, as rule:<name>, and keeps its row. keep places it on the rule's destination.",
+      "enum": ["block", "keep"]
+    },
+    "review_share": {
+      "description": "The share of the items that the rule matches that wait in review instead, marked rule-would-hide, so a person sees what a wrong rule would hide. A seeded draw over the rule's name and the item's key picks them, so a replay picks the same items, and a higher share keeps every item that a lower one picked.",
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "accepted": {
+      "description": "What PUT /api/v1/routing-rules/{name} takes: a rule that a person accepted, such as from a proposal drawn from their verdicts. A keep names its destination, one on a side that the set in force declares, and a block names none. The match names only a connector that the set declares. A person's token writes it as the person. A service holding ingestion.routing-rules.write names the person's login, or writes it as service:<client id> where it names none.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "match", "review_share"],
+      "properties": {
+        "action": {"$ref": "#/$defs/action"},
+        "match": {"$ref": "#/$defs/match"},
+        "destination": {"description": "A keep's destination.", "type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
+        "review_share": {"$ref": "#/$defs/review_share"},
+        "login": {"description": "The person a service writes the rule for.", "type": "string", "minLength": 1, "maxLength": 200},
+        "proposal": {"description": "The id of the proposal that the person accepted, where one did, which the version keeps.", "type": "string", "minLength": 1, "maxLength": 200}
+      },
+      "if": {"required": ["action"], "properties": {"action": {"const": "keep"}}},
+      "then": {"required": ["destination"]},
+      "else": {"not": {"required": ["destination"]}}
+    },
+    "version": {
+      "description": "One version of an accepted rule, as the store keeps it. The newest version of a name is in force unless it is retired. A retired version copies the one before it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "sequence", "action", "match", "destination", "review_share", "retired", "proposal", "decided_by", "client_id", "decided_ts"],
+      "properties": {
+        "name": {"$ref": "#/$defs/name"},
+        "sequence": {"description": "The version's place among its name's versions, from 1.", "type": "integer", "minimum": 1},
+        "action": {"$ref": "#/$defs/action"},
+        "match": {"$ref": "#/$defs/match"},
+        "destination": {"description": "A keep's destination, and null on a block.", "type": ["string", "null"]},
+        "review_share": {"$ref": "#/$defs/review_share"},
+        "retired": {"description": "True on a version that takes the rule out of force. An item that the rule placed stays where it is.", "type": "boolean"},
+        "proposal": {"description": "The proposal that the person accepted, and null where none did.", "type": ["string", "null"]},
+        "decided_by": {"description": "person:<login>, or service:<client id> where a service named nobody.", "type": "string", "pattern": "^(person|service):.+$"},
+        "client_id": {"description": "The client that sent the version.", "type": ["string", "null"]},
+        "decided_ts": {"type": "string", "format": "date-time"}
       }
     }
   }

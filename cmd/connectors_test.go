@@ -26,7 +26,8 @@ import (
 // declarations exits 2. A set naming an unknown mode, zone or destination, a
 // root the service does not hold, or a zone its connector's format does not
 // land, is refused whole, naming each invalid declaration, exits 3, and leaves
-// the set in force. A Reddit export dropped into reddit-exports lands as one
+// the set in force. So is a set that declares a rule under an accepted rule's
+// name, or that drops the connector an accepted rule matches. A Reddit export dropped into reddit-exports lands as one
 // item and a child per save. Dropped twice, it lands once, and a copy under
 // another name adds no item. An export the bookmarklet did not finish is
 // refused with the bookmarklet's error, and lands nothing.
@@ -125,18 +126,34 @@ func TestConnectorsApplyTheExampleSetAndAnInvalidSetChangesNothing(t *testing.T)
 		t.Errorf("a directory holding no declarations exited %d, want 2: %v", code, err)
 	}
 
+	if err := st.Update(ctx, func(tx *store.Tx) error {
+		quiet := "feed-reader"
+		_, err := tx.AddRoutingRule(ctx, store.RoutingRule{
+			Name: "quiet-feed", Action: store.RuleBlock, MatchConnector: &quiet, ReviewShare: 0.1, DecidedBy: store.DecidedByPerson("person"),
+		})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
 	invalid := map[string]string{
 		"connectors/stream.yml": "name: stream\nmode: stream\nsource: a-feed\nschedule: '@daily'\nzone: public\n",
 		"routing-rules.yml":     "rules:\n  - name: to-nowhere\n    match: {tag: book}\n    destination: nowhere\n",
 	}
 	for _, refused := range []struct {
-		files map[string]string
-		names []string
+		files   map[string]string
+		removed []string
+		names   []string
 	}{
-		{invalid, []string{"connector stream", "routing rule to-nowhere"}},
-		{map[string]string{"connectors/music.yml": "name: music\nmode: folder\nsource: local-music\nschedule: '@daily'\nzone: outside\nroot: music\n"}, []string{"connector music"}},
+		{invalid, nil, []string{"connector stream", "routing rule to-nowhere"}},
+		{map[string]string{"connectors/music.yml": "name: music\nmode: folder\nsource: local-music\nschedule: '@daily'\nzone: outside\nroot: music\n"}, nil, []string{"connector music"}},
 		{map[string]string{"connectors/reddit-exports.yml": "name: reddit-exports\nmode: drop\nsource: reddit-bookmarklet-exports\n" +
-			"due_interval: 30d\nzone: owner\nformat: reddit-export\n"}, []string{"connector reddit-exports"}},
+			"due_interval: 30d\nzone: owner\nformat: reddit-export\n"}, nil, []string{"connector reddit-exports"}},
+		{
+			map[string]string{"routing-rules.yml": "rules:\n  - name: quiet-feed\n    match: {connector: feed-reader}\n    destination: reading-list\n"},
+			nil,
+			[]string{"routing rule quiet-feed"},
+		},
+		{nil, []string{"connectors/feed-reader.yml"}, []string{"accepted routing rule quiet-feed"}},
 	} {
 		edited := filepath.Join(t.TempDir(), "library")
 		if err := os.CopyFS(edited, os.DirFS(filepath.Join("..", "examples", "declarations"))); err != nil {
@@ -144,6 +161,11 @@ func TestConnectorsApplyTheExampleSetAndAnInvalidSetChangesNothing(t *testing.T)
 		}
 		for name, body := range refused.files {
 			if err := os.WriteFile(filepath.Join(edited, filepath.FromSlash(name)), []byte(body), fs.FileMode(0o600)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, name := range refused.removed {
+			if err := os.Remove(filepath.Join(edited, filepath.FromSlash(name))); err != nil {
 				t.Fatal(err)
 			}
 		}

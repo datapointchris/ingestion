@@ -1,8 +1,11 @@
 // Package route holds the side gate and the read gate. The side gate places
 // an item by the first rung that decides it: every sighting's tags, then a
-// routing rule, then the quality gate, else review. A rule placed before the
-// model always wins over it: the gate answers a ruled item too, and its
-// answer moves nothing. The quality gate's rung sends to review an item that
+// routing rule, then the quality gate, else review. A routing rule is one
+// that the set in force declares, or one that a person accepted. A seeded
+// share of an accepted rule's items waits in review instead, marked
+// rule-would-hide. A rule placed before the model always wins over it: the
+// gate answers a ruled item too, and its answer moves nothing. The quality
+// gate's rung sends to review an item that
 // the gate dropped, marked gate-would-drop, unless every family of the item
 // has earned hiding it, where it drops the item. It sends to review an item
 // that the gate was unsure of, and otherwise places it by the gate's side
@@ -78,6 +81,9 @@ const (
 	CauseGateWouldDrop = "gate-would-drop"
 	CauseQualityDrop   = "quality-drop"
 	CauseQualityReview = store.ReasonQualityReview
+	// CauseRuleWouldHide sends to review an item that a routing rule would
+	// have dropped or placed, where the rule's review share drew it.
+	CauseRuleWouldHide = "rule-would-hide"
 	// CauseConnector and CauseSideDefault are the read gate's.
 	CauseConnector   = "connector"
 	CauseSideDefault = "side-default"
@@ -118,6 +124,10 @@ var ReviewReasons = []ReviewReason{
 	{
 		CauseGateWouldDrop, "the quality gate would drop it, and its family has not earned hiding it, or the family's draw showed it",
 		"the gate would drop it",
+	},
+	{
+		CauseRuleWouldHide, "a routing rule would drop it or place it without you, and the rule's review share drew it",
+		"a rule would decide it",
 	},
 	{
 		CauseNoteUnclear, "a model read waits on its note, whose draft fell below the note floor: write a note, or place it with none to take the draft",
@@ -181,10 +191,11 @@ type Guess struct {
 	Run string
 }
 
-// Side is the side gate's decision on an item that sightings sighted, under
-// set and the quality gate's guess, which is nil where it has given none.
-func Side(set connectors.Set, sightings []store.Sighting, guess *Guess) store.Decision {
-	if d, ok := BeforeModel(set, sightings); ok {
+// Side is the side gate's decision on the item under key that sightings
+// sighted, under set, each accepted rule in force, and the quality gate's
+// guess, which is nil where it has given none.
+func Side(set connectors.Set, accepted []store.RoutingRule, key string, sightings []store.Sighting, guess *Guess) store.Decision {
+	if d, ok := BeforeModel(set, accepted, key, sightings); ok {
 		return d
 	}
 	return byGuess(guess, personSorts(set, sightings))
@@ -199,14 +210,14 @@ func personSorts(set connectors.Set, sightings []store.Sighting) bool {
 	})
 }
 
-// BeforeModel is the side decision that a sighting's tags or a routing rule
-// make under set, and false where neither places the item, so the quality
-// gate judges it.
-func BeforeModel(set connectors.Set, sightings []store.Sighting) (store.Decision, bool) {
+// BeforeModel is the side decision on the item under key that a sighting's
+// tags or a routing rule make, under set and each accepted rule in force, and
+// false where neither places the item, so the quality gate judges it.
+func BeforeModel(set connectors.Set, accepted []store.RoutingRule, key string, sightings []store.Sighting) (store.Decision, bool) {
 	if d, ok := byTags(set, sightings); ok {
 		return d, true
 	}
-	return byRules(set, sightings)
+	return byRules(set, accepted, key, sightings)
 }
 
 // byGuess is the side decision on the quality gate's guess, and review for
@@ -258,21 +269,25 @@ func byTags(set connectors.Set, sightings []store.Sighting) (store.Decision, boo
 	return decision, true
 }
 
-// byRules places the item by the first routing rule, in the set's order, that
-// one of its sightings holds for, and is false where none does.
-func byRules(set connectors.Set, sightings []store.Sighting) (store.Decision, bool) {
-	for _, rule := range set.RoutingRules {
-		if !slices.ContainsFunc(sightings, func(s store.Sighting) bool { return holds(rule.Match, s) }) {
+// byRules places the item under key by the first routing rule, in the order
+// that rulesInOrder reads them, that one of its sightings holds for, and is
+// false where none does. A block drops the item and a keep places it on its
+// destination, each keeping the item's row. Where the rule's review share
+// draws the item, it waits in review instead, marked rule-would-hide.
+func byRules(set connectors.Set, accepted []store.RoutingRule, key string, sightings []store.Sighting) (store.Decision, bool) {
+	for _, r := range rulesInOrder(set, accepted) {
+		if !slices.ContainsFunc(sightings, func(s store.Sighting) bool { return holds(r.match, s) }) {
 			continue
 		}
-		destination, ok := set.Destination(rule.Destination)
-		if !ok {
-			continue
+		d := store.Decision{Gate: store.GateSide, Verdict: VerdictDrop, DecidedBy: byRule(r.name), Cause: CauseRule}
+		if r.destination != "" {
+			destination, _ := set.Destination(r.destination)
+			d.Verdict, d.Destination = verdictOf(destination), &destination.Name
 		}
-		return store.Decision{
-			Gate: store.GateSide, Verdict: verdictOf(destination), DecidedBy: byRule(rule.Name), Cause: CauseRule,
-			Destination: &destination.Name,
-		}, true
+		if r.drawsReview(key) {
+			d.Verdict, d.Cause = VerdictReview, CauseRuleWouldHide
+		}
+		return d, true
 	}
 	return store.Decision{}, false
 }
@@ -352,26 +367,33 @@ func AfterSighting(log *slog.Logger) func(context.Context, *store.Tx, string) er
 // side's default or a deliverer that the set adds reaches the items that
 // waited for one.
 func AfterApply(log *slog.Logger) connectors.AfterApply {
-	return func(ctx context.Context, tx *store.Tx) error {
-		keys, err := tx.UnplacedScannedKeys(ctx)
-		if err != nil {
-			return err
-		}
-		for _, key := range keys {
-			if _, err := Gate(ctx, tx, key, log); err != nil {
-				return fmt.Errorf("the side gate on %s: %w", key, err)
-			}
-		}
-		if keys, err = tx.UnsettledKeysReadAs(ctx, connectors.ReadAsIs); err != nil {
-			return err
-		}
-		for _, key := range keys {
-			if _, err := QueueDelivery(ctx, tx, key); err != nil {
-				return fmt.Errorf("queue the delivery of %s: %w", key, err)
-			}
-		}
-		return nil
+	return func(ctx context.Context, tx *store.Tx) error { return regate(ctx, tx, log, "") }
+}
+
+// regate is AfterApply's work, which also decides again each item whose
+// newest side decision reopened made and did not place: a rule's drop, or a
+// review drawn by its share. A write of a rule's version passes byRule(name), so
+// its items follow that version, or the rungs below it once it is retired. An
+// empty reopened reopens nothing.
+func regate(ctx context.Context, tx *store.Tx, log *slog.Logger, reopened string) error {
+	keys, err := tx.UnplacedScannedKeys(ctx)
+	if err != nil {
+		return err
 	}
+	for _, key := range keys {
+		if _, err := gate(ctx, tx, key, log, reopened); err != nil {
+			return fmt.Errorf("the side gate on %s: %w", key, err)
+		}
+	}
+	if keys, err = tx.UnsettledKeysReadAs(ctx, connectors.ReadAsIs); err != nil {
+		return err
+	}
+	for _, key := range keys {
+		if _, err := QueueDelivery(ctx, tx, key); err != nil {
+			return fmt.Errorf("queue the delivery of %s: %w", key, err)
+		}
+	}
+	return nil
 }
 
 // Gate runs the side gate over the item under key and, where it places the
@@ -388,16 +410,29 @@ func AfterApply(log *slog.Logger) connectors.AfterApply {
 // item to review as CauseGateError and logs why, so the scan stands and the
 // next stage or apply runs the gate again.
 func Gate(ctx context.Context, tx *store.Tx, key string, log *slog.Logger) ([]store.Decision, error) {
+	return gate(ctx, tx, key, log, "")
+}
+
+// gate is Gate, which also decides again over an item whose newest side
+// decision reopened made, where that decision drops the item or waits in
+// review. Where the quality gate has yet to answer such an item, the rungs
+// below the rules send it to review rather than leave the reopened decision
+// standing.
+func gate(ctx context.Context, tx *store.Tx, key string, log *slog.Logger, reopened string) ([]store.Decision, error) {
 	newest, sided, err := tx.NewestDecision(ctx, key, store.GateSide)
-	if err != nil || (sided && !newest.Provisional()) {
+	if err != nil {
 		return nil, err
+	}
+	reopens := sided && reopened != "" && newest.DecidedBy == reopened && (newest.Verdict == VerdictDrop || newest.Verdict == VerdictReview)
+	if sided && !newest.Provisional() && !reopens {
+		return nil, nil
 	}
 	outputs, err := tx.Outputs(ctx, key)
 	if err != nil || !store.ReadingParseScanned(outputs) {
 		return nil, err
 	}
-	set, sightings, err := inputs(ctx, tx, key)
-	side, ruled := BeforeModel(set, sightings)
+	set, accepted, sightings, err := inputs(ctx, tx, key)
+	side, ruled := BeforeModel(set, accepted, key, sightings)
 	switch {
 	case err != nil:
 		log.ErrorContext(ctx, "the side gate could not read what it decides from, so the item waits in review", "item", key, "error", err)
@@ -409,7 +444,7 @@ func Gate(ctx context.Context, tx *store.Tx, key string, log *slog.Logger) ([]st
 		}
 		var waits bool
 		guessed := byGuess(GuessOf(outputs), personSorts(set, sightings))
-		if side, waits, err = byQuality(ctx, tx, key, guessed, outputs, sightings, held); err != nil || waits {
+		if side, waits, err = byQuality(ctx, tx, key, guessed, outputs, sightings, held); err != nil || (waits && !reopens) {
 			return nil, err
 		}
 	}
@@ -485,15 +520,20 @@ func byTrust(ctx context.Context, tx *store.Tx, key string, quality store.Decisi
 	return d, nil
 }
 
-// inputs reads the set in force and the item's sightings, which the side gate
-// decides from beside the quality gate's guess.
-func inputs(ctx context.Context, tx *store.Tx, key string) (connectors.Set, []store.Sighting, error) {
+// inputs reads the set in force, each accepted rule in force and the item's
+// sightings, which the side gate decides from beside the quality gate's
+// guess.
+func inputs(ctx context.Context, tx *store.Tx, key string) (connectors.Set, []store.RoutingRule, []store.Sighting, error) {
 	set, err := connectors.AppliedSet(ctx, tx)
 	if err != nil {
-		return connectors.Set{}, nil, err
+		return connectors.Set{}, nil, nil, err
+	}
+	accepted, err := tx.RoutingRulesInForce(ctx)
+	if err != nil {
+		return set, nil, nil, err
 	}
 	sightings, err := tx.Sightings(ctx, key)
-	return set, sightings, err
+	return set, accepted, sightings, err
 }
 
 // sameDecision says whether b decides what a decides, by the same hand.

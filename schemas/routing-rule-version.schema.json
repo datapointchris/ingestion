@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/datapointchris/ingestion/schemas/routing-rule-version.schema.json",
+  "title": "An accepted routing rule's newest version",
+  "description": "What PUT /api/v1/routing-rules/{name} and POST /api/v1/routing-rules/{name}/retire answer, and what `ingestion gates routing-rules put` and `retire` print with --json: the rule's newest version once the write ends, and whether the write appended it. A write that repeats the newest version appends nothing.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "rule", "appended"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "rule": {"$ref": "routing-rules.schema.json#/$defs/version"},
+    "appended": {"description": "True where the write appended the version, and false where the newest version already said the same.", "type": "boolean"}
+  }
+}

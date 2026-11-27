@@ -85,8 +85,11 @@ type ReviewItem struct {
 	URL   *string    `json:"url"`
 	// Reason is why the item waits, as schemas/review-list.schema.json
 	// enumerates it.
-	Reason string       `json:"reason"`
-	Guess  *ReviewGuess `json:"guess"`
+	Reason string `json:"reason"`
+	// Rule is the routing rule that would have decided an item that waits as
+	// rule-would-hide, and nil under any other reason.
+	Rule  *ReviewRule  `json:"rule"`
+	Guess *ReviewGuess `json:"guess"`
 	// QualityAnswer is the quality gate's newest done answer as the store
 	// keeps it, and null where the gate gave none.
 	QualityAnswer json.RawMessage `json:"quality_answer"`
@@ -144,6 +147,14 @@ type ReviewComments struct {
 // of this build reads the item's comments. The comments stage answers it,
 // so the review list reports the state that its route acts on.
 type CommentsState func(r store.ItemRecords, claimed map[string]bool) *ReviewComments
+
+// ReviewRule is the routing rule whose review share drew an item: its name,
+// and the destination that a keep would place it on, which is nil where a
+// block would drop it.
+type ReviewRule struct {
+	Name        string  `json:"name"`
+	Destination *string `json:"destination"`
+}
 
 // ReviewGuess is the quality gate's side guess on an item.
 type ReviewGuess struct {
@@ -279,6 +290,11 @@ func (h reviewHandlers) list(w http.ResponseWriter, r *http.Request) {
 		for _, s := range it.Sightings {
 			item.Connectors = append(item.Connectors, s.Connector)
 			item.Sightings = append(item.Sightings, ReviewSighting{Connector: s.Connector, Tags: s.Tags, Fields: s.Fields, Metrics: s.Metrics})
+		}
+		if side, ok := it.NewestDecision(store.GateSide); ok && it.Reason == route.CauseRuleWouldHide {
+			if name, ok := side.RuleName(); ok {
+				item.Rule = &ReviewRule{Name: name, Destination: side.Destination}
+			}
 		}
 		if guess := route.GuessOf(it.Outputs); guess != nil {
 			item.Guess = &ReviewGuess{Side: guess.Side, Confidence: guess.Confidence}

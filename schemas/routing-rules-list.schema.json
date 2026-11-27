@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/datapointchris/ingestion/schemas/routing-rules-list.schema.json",
+  "title": "Every accepted routing rule",
+  "description": "What GET /api/v1/routing-rules answers and `ingestion gates routing-rules list --json` prints: the newest version of each rule that a person accepted, by name, each retired one included. A rule written by hand stays in the routing-rules.yml of the set in force, and is not listed here. A match's values copy a source's field, so each may be a stranger's text.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "rules"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "rules": {"type": "array", "items": {"$ref": "routing-rules.schema.json#/$defs/version"}}
+  }
+}

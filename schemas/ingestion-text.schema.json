@@ -12,7 +12,8 @@
     {"$ref": "#/$defs/sections"},
     {"$ref": "#/$defs/deliveries"},
     {"$ref": "#/$defs/tasks"},
-    {"$ref": "#/$defs/cursors"}
+    {"$ref": "#/$defs/cursors"},
+    {"$ref": "#/$defs/routing_rules"}
   ],
   "$defs": {
     "items": {
@@ -117,6 +118,15 @@
       "properties": {
         "position": {"description": "Where the connector's next poll reads from, as its source wrote it, such as a page token or a feed entry's id. It moves only once a poll lands everything it found. Absent from a record shipped before it left on this channel.", "type": ["string", "null"]},
         "last_error": {"description": "Why the connector's newest run failed, such as a folder scan's error naming the files it could not land, or a poll's refusal of an arrival.", "type": ["string", "null"]}
+      }
+    },
+    "routing_rules": {
+      "title": "routing_rules",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["match_values"],
+      "properties": {
+        "match_values": {"description": "The values of match_field that the rule holds for, each matched exactly, and empty where it names no field. Each copies a source's field, such as a channel's name.", "type": "array", "items": {"type": "string"}}
       }
     }
   }

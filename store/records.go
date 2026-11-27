@@ -455,6 +455,10 @@ func (d Decision) ByParent() bool { return strings.HasPrefix(d.DecidedBy, parent
 // decided_by model:<run> records.
 func (d Decision) ModelRun() (string, bool) { return strings.CutPrefix(d.DecidedBy, modelPrefix) }
 
+// RuleName is the rule that made d, where a rule did, as its decided_by
+// rule:<name> records.
+func (d Decision) RuleName() (string, bool) { return strings.CutPrefix(d.DecidedBy, rulePrefix) }
+
 // Provisional says whether a side decision waits on a later input: a review
 // that the side gate wrote for want of a rule or a guess, or for an error,
 // and a model's review or drop. A rule that a later set adds, or a later

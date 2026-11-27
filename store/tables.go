@@ -110,6 +110,10 @@ var Tables = []Table{
 		Name: "prompt_proposals", Key: []string{"id"}, Stamp: []string{"updated_ts"}, JSON: []string{"misses", "tokens", "answer"},
 		Kept: []string{"created_ts"}, Writes: Upserts,
 	},
+	{
+		Name: "routing_rules", Key: []string{"name", "sequence"}, Stamp: []string{"decided_ts"}, JSON: []string{"match_values"},
+		Bool: []string{"retired"}, Text: []string{"match_values"}, Writes: Appends,
+	},
 }
 
 // TableNamed is the table called name, and false where none is.
