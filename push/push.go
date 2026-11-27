@@ -13,6 +13,7 @@ import (
 	"io"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/datapointchris/ingestion/modelread"
 	"github.com/datapointchris/ingestion/qualitygate"
@@ -21,8 +22,45 @@ import (
 	"github.com/datapointchris/ingestion/store"
 )
 
-// Program is the program that a push to psyche runs, found on PATH.
+// Program is the program that a push to psyche runs, found on PATH. A link
+// that a push lands is placed at the destination of the same name.
 const Program = "psyche"
+
+// Connector is the push connector that a new link lands through, where the
+// push names no other.
+const Connector = "cli-push"
+
+// Wait is how long a push waits for an item's parse and the scan of it, where
+// it names no other wait. A captions parse waits its turn at ypl's door before
+// its read, so Wait leaves room for the longest door wait and captions read
+// that ypl publishes, with the claims and the scan after them.
+const Wait = 10 * time.Minute
+
+// WaitingOn names the stage that item waits at on its way to a scanned parse,
+// store.StageParse until a parse is done and store.StageScan after, as the
+// service's progress of each reads. Where no run of that stage is left to
+// end it, ended says how it ended, so a push stops waiting: it failed, or
+// nothing queued it.
+func WaitingOn(item server.ItemAnswer) (stage, ended string) {
+	progress := map[string]store.StageProgress{}
+	for _, p := range item.Progress {
+		progress[p.Stage] = p
+	}
+	stage = store.StageParse
+	if progress[stage].State == store.ProgressDone {
+		stage = store.StageScan
+	}
+	p, queued := progress[stage]
+	switch {
+	case !queued:
+		return stage, "was never queued"
+	case p.State != store.ProgressFailed:
+		return stage, ""
+	case p.Error == nil:
+		return stage, "failed and gave no reason"
+	}
+	return stage, "failed: " + *p.Error
+}
 
 // SchemaVersion is the version of psyche's parse-input schema that Write
 // writes, the one that testdata/parse-input.schema.json holds.

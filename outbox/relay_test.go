@@ -196,11 +196,15 @@ func TestAnItemGainsEachStageRecordAndEachChangeReachesTheCollectorOnce(t *testi
 		if err := tx.PutPromptProposal(ctx, proposal); err != nil {
 			return err
 		}
-		if err := tx.AddKeyedRequest(ctx, store.KeyedRequest{
-			Caller: "ingestion-cli-desk person", IdempotencyKey: "drop-1", Route: "drops", Connector: &connector,
-			Fingerprint: strings.Repeat("d", 64), Status: 201, Answer: json.RawMessage(`{"schema_version":1,"items":[]}`),
-		}); err != nil {
-			return err
+		// One keyed request per keyed route, so each route's name meets the
+		// schema's enum.
+		for _, keyedRoute := range store.KeyedRoutes {
+			if err := tx.AddKeyedRequest(ctx, store.KeyedRequest{
+				Caller: "ingestion-cli-desk person", IdempotencyKey: keyedRoute + "-1", Route: keyedRoute, Connector: &connector,
+				Fingerprint: strings.Repeat("d", 64), Status: 201, Answer: json.RawMessage(`{"schema_version":1,"items":[]}`),
+			}); err != nil {
+				return err
+			}
 		}
 		return tx.PutDeclarations(ctx, store.Declarations{Commit: "a41c9e2", AppliedBy: "person", Connectors: []json.RawMessage{
 			json.RawMessage(`{"name":"reddit-exports","mode":"drop","source":"reddit-bookmarklet-exports","due_interval":"30d","zone":"outside","tags":[]}`),

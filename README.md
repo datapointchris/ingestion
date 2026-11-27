@@ -385,6 +385,31 @@ newest task past its parse failed.
   other lands the file as one item. A file that the handler refuses answers 422 and lands nothing.
   A drop that stops partway, such as on a full volume, answers 500, and dropping the file again
   lands the rest.
+- **A push connector takes a link that a person pushes.** `POST /api/v1/items` reads
+  `{"connector": "<name>", "url": "<link>", "destination": "<name>"}` under an `Idempotency-Key`,
+  and answers as a drop does. The link lands as an `outside` item under its key, and the
+  connector's tags go on its sighting. A retry under that key answers the first landing, and
+  another link under it is refused with 409.
+  - **A link lands only where an extractor of this build declares its kind**, such as
+    `youtube-captions` for a YouTube video's link. The service stores nothing that it did not
+    fetch through an extractor. A link of any other kind answers 422 `link_not_read`, naming the
+    kinds that the build lands, and stores nothing. So does a link on such a source's site that
+    names no single item, such as a channel's page.
+  - **The item lands under the URL that its source names it by**, as the source's poll lands it,
+    whatever form of the link was pushed. So a video's item holds its watch URL, whichever
+    connector landed it first.
+  - **A push that names its `destination` is the person's placement**, written in the write that
+    lands the item. It decides the read as is too, so neither gate and no model stage reads the
+    item. Where the push names no destination, the gates place the item.
+  - **A destination declared `push_only` takes a push's placement alone.** Review leaves it out
+    of its destinations, and a placement from review answers 422 `destination_push_only`. No tag,
+    routing rule or side default may name it. `psyche` in `examples/declarations/` is one,
+    because the push hands the item to psyche itself and no deliverer would reach it.
+  - **The route refuses before it stores anything.** It answers 400 `invalid_link` for a url
+    that is not http or https naming a host, and for a Reddit share link. It answers 404
+    `connector_not_found` and 409 `connector_mode` for a connector that is not a push connector
+    of the set in force. It answers 422 `destination_not_declared` for a destination that the set
+    does not declare.
 - **A connector's first fill runs the first of its items to reach a model stage, and holds the
   rest there.** `show` prints that item and its tokens by stage. `ingestion connectors release
   <name>` sends `PATCH /api/v1/connectors/<name>/first-fill` with `{"state": "released"}`, which
@@ -1200,6 +1225,17 @@ pushing reddit/t3_aq7ggd to psyche relate: 4 units, 1 finding, 2 suggestions
 …psyche's answer…
 ```
 
+A link that the service has not landed lands first, and the push waits for its parse:
+
+```text
+$ ingestion push https://www.youtube.com/watch?v=<video id> --to psyche --relate
+landed youtube/<video id> through cli-push, placed at psyche
+waiting up to 10m0s for youtube/<video id>'s parse
+waiting up to 9m58s for youtube/<video id>'s scan
+pushing youtube/<video id> to psyche relate: 7 units, 0 findings, 0 suggestions
+…psyche's answer…
+```
+
 - **The document is the item's parse and the findings of the scan that read it**, as
   `GET /api/v1/items/{key}/parse` answers them. It keeps that route's field names, under the
   parse-input `schema_version` that `push.SchemaVersion` names.
@@ -1213,11 +1249,28 @@ pushing reddit/t3_aq7ggd to psyche relate: 4 units, 1 finding, 2 suggestions
 - **A suggestion sentence that the scan flagged stays out.** psyche's document holds no place for
   a finding in the sentence. The summary and the quality gate's words go unscanned. Each restates
   the text, which psyche reads whole beside its findings.
-- **A push starts no stage in the service**, so no model reads the item there. psyche's relate is
-  its only model call.
-- **It hands on only an item that a connector landed and a scan read.** It exits 2 for an item
-  that the service has not landed yet, and lands nothing. It exits 1 for an item with no done parse, or
-  whose parse no scan has read yet. `ingestion items show <key>` says where that item waits.
+- **A link that the service has not landed lands through `POST /api/v1/items`.** The push names
+  the push connector that `--connector` names, whose default `ingestion push --help` prints, and
+  the destination `psyche`. So the set in force declares both, and `examples/declarations/` holds
+  each. The item is the person's, placed at `psyche` and read as is, so no gate and no model
+  stage reads it. Only a link that an extractor reads at its source lands, such as a YouTube
+  video's. Any other link exits 2, and the service stores nothing for it. So does a set that
+  declares no `psyche` destination.
+- **A push of an item already landed starts no stage in the service**, so no model reads the item
+  there. psyche's relate is its only model call. A key that the service has not landed exits 2,
+  because a key names no link to land.
+- **The push waits up to `--wait` for the item's parse and the scan of it.** A captions parse
+  waits its turn at ypl's door, and the default wait outlasts the longest door wait and captions
+  read that ypl publishes. `ingestion push --help` prints the default. Each stage's state comes
+  from the item's `progress`, which `GET /api/v1/items/{key}` reads from the stage's tasks as
+  well as its outputs. So a stage that a retry queued again still waits, and a task that failed
+  with no output ends the wait.
+  - A wait that ends with no scanned parse exits 1, naming the stage it waited at.
+  - A parse or scan that failed, or one that nothing queued, exits 1 at once with how it ended.
+  - A read that the server gives no answer to is read again until the wait ends. Each read ends
+    by then, and one that still gets no answer exits 4, naming the stage last seen.
+  - `--wait 0` hands on only a parse already scanned. `ingestion items show <key>` says where an
+    item waits.
 - **psyche runs from `PATH` on the machine that runs the push**, with the push's environment.
   `--json` asks psyche for its JSON answer. The command exits 4 when the service gives no answer,
   and psyche never runs then. It exits 1 where psyche fails, after psyche's own message.

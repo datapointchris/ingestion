@@ -19,7 +19,8 @@
         "side": {"description": "The side an item placed here takes. Left out, it takes neither, as a destination that drops what it takes does.", "enum": ["personal", "fleet"]},
         "tags": {"description": "Each tag that places an item here. A tag places an item on one destination only.", "type": "array", "items": {"$ref": "connector.schema.json#/$defs/tag"}, "uniqueItems": true},
         "deliverer": {"description": "The deliverer that writes each item placed here through the destination's own API, under the item's key, such as life-articles. Left out, nothing is delivered, as for a destination whose reader pulls its items itself.", "type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
-        "default_for_side": {"description": "Whether an item placed on this destination's side with no destination named, as by the quality gate's guess, comes here. One destination at most is a side's default. With none, such an item waits.", "type": "boolean"}
+        "default_for_side": {"description": "Whether an item placed on this destination's side with no destination named, as by the quality gate's guess, comes here. One destination at most is a side's default. With none, such an item waits.", "type": "boolean"},
+        "push_only": {"description": "Whether only a push places an item here, as a destination does whose program the person's push hands the item to. Review offers it nowhere, and a placement from review refuses it. It takes no tag, is no side's default, and no routing rule names it.", "type": "boolean"}
       }
     }
   }

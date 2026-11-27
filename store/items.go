@@ -485,6 +485,80 @@ func (r ItemRecords) deferralFailed(stage string) bool {
 	return failed
 }
 
+// The states of a StageProgress.
+const (
+	ProgressRunning = "running"
+	ProgressDone    = "done"
+	ProgressFailed  = "failed"
+)
+
+// progressed are the stages whose progress Progress reads: those that a push
+// waits on before it hands an item on.
+var progressed = []string{StageParse, StageScan}
+
+// StageProgress is how far one stage has gone with an item, read from the
+// stage's tasks as well as its outputs.
+type StageProgress struct {
+	Stage string `json:"stage"`
+	// State is running where a task of the stage is queued or leased, done
+	// where one of its outputs is done, and failed otherwise, since no task
+	// of it is left to run.
+	State string `json:"state"`
+	// Error is why the stage failed, from its newest task where that failed
+	// and from a failed output otherwise, and nil where neither says.
+	Error *string `json:"error"`
+}
+
+// Progress is the parse's and the scan's progress. A stage that a retry
+// queued again reads running whatever its last output was, and one whose
+// task failed with no output reads failed. A stage with no task and no output
+// is left out, since nothing queued it.
+func (r ItemRecords) Progress() []StageProgress {
+	out := []StageProgress{}
+	for _, stage := range progressed {
+		if p, ok := r.stageProgress(stage); ok {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func (r ItemRecords) stageProgress(stage string) (StageProgress, bool) {
+	p := StageProgress{Stage: stage}
+	var newest *Task
+	for i, t := range r.Tasks {
+		if t.Stage != stage {
+			continue
+		}
+		if t.State == TaskQueued || t.State == TaskLeased {
+			p.State = ProgressRunning
+			return p, true
+		}
+		newest = &r.Tasks[i]
+	}
+	var failed *Output
+	for i, o := range r.Outputs {
+		switch {
+		case o.Stage != stage:
+		case o.State == OutputDone:
+			p.State = ProgressDone
+			return p, true
+		case o.State == OutputFailed:
+			failed = &r.Outputs[i]
+		}
+	}
+	if newest == nil && failed == nil {
+		return p, false
+	}
+	p.State = ProgressFailed
+	if newest != nil && newest.State == TaskFailed && newest.Error != nil {
+		p.Error = newest.Error
+	} else if failed != nil {
+		p.Error = failed.Error
+	}
+	return p, true
+}
+
 // deliveryCondition is True where any destination holds the item, Unknown
 // where one is pending, and False where every one refused it.
 func (r ItemRecords) deliveryCondition() (Condition, bool) {

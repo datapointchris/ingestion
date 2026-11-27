@@ -189,11 +189,13 @@ type ConnectorConfig struct {
 	Roots []string
 	// AfterApply runs in the write that applies a changed set.
 	AfterApply connectors.AfterApply
-	Log        *slog.Logger
+	// Links answers whether an extractor reads a pushed link. Nil lands none.
+	Links LinkExtractors
+	Log   *slog.Logger
 }
 
 // ConnectorRoutes are the routes for a person to apply the declarations, read
-// and run each connector, release a first fill, and drop a file.
+// and run each connector, release a first fill, drop a file and push a link.
 func ConnectorRoutes(cfg ConnectorConfig) Routes {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
@@ -209,6 +211,7 @@ func ConnectorRoutes(cfg ConnectorConfig) Routes {
 		r.Handle(RouteConnectorRuns, h.run)
 		r.Handle(RouteFirstFill, h.firstFill)
 		r.Handle(RouteConnectorDrops, h.drop)
+		r.Handle(RouteItemsPush, h.push)
 	}
 }
 
@@ -419,7 +422,7 @@ func (h connectorHandlers) run(w http.ResponseWriter, r *http.Request) {
 			"%s is a %s connector, which runs as its items arrive, so nothing runs it", c.Name, c.Mode)
 		return
 	}
-	caller, fingerprint := callerOf(r), fingerprintOf("runs", c.Name)
+	caller, fingerprint := callerOf(r), fingerprintOf(store.KeyedRouteRuns, c.Name)
 	var replay *store.KeyedRequest
 	var answer RunAnswer
 	status := http.StatusCreated
@@ -451,7 +454,7 @@ func (h connectorHandlers) run(w http.ResponseWriter, r *http.Request) {
 			}
 			answer.DueAt, status = store.Stamp(due), http.StatusAccepted
 		}
-		return h.keep(r, tx, caller, key, "runs", c.Name, fingerprint, status, answer)
+		return h.keep(r, tx, caller, key, store.KeyedRouteRuns, c.Name, fingerprint, status, answer)
 	})
 	if err != nil {
 		h.internal(w, r, "run the connector", err)
@@ -538,7 +541,7 @@ func (h connectorHandlers) drop(w http.ResponseWriter, r *http.Request) {
 	}
 	sum := sha256.Sum256(body)
 	caller := callerOf(r)
-	fingerprint := fingerprintOf("drops", c.Name, name, mediaType, hex.EncodeToString(sum[:]))
+	fingerprint := fingerprintOf(store.KeyedRouteDrops, c.Name, name, mediaType, hex.EncodeToString(sum[:]))
 	prior, found, err := h.cfg.Store.KeyedRequest(r.Context(), caller, key)
 	if err != nil {
 		h.internal(w, r, "read the drop's key", err)
@@ -581,7 +584,7 @@ func (h connectorHandlers) drop(w http.ResponseWriter, r *http.Request) {
 			replay = &prior
 			return err
 		}
-		if err := h.keep(r, tx, caller, key, "drops", c.Name, fingerprint, http.StatusCreated, answer); err != nil {
+		if err := h.keep(r, tx, caller, key, store.KeyedRouteDrops, c.Name, fingerprint, http.StatusCreated, answer); err != nil {
 			return err
 		}
 		return connectors.Delivered(r.Context(), tx, c)

@@ -6,10 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
@@ -19,6 +22,7 @@ import (
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
 	"github.com/datapointchris/ingestion/worker"
+	"github.com/datapointchris/ingestion/ypl"
 )
 
 // parseInputSchema is a copy of psyche's schemas/parse-input.schema.json at
@@ -145,16 +149,17 @@ func TestAPushHandsPsycheTheScannedParseAndStartsNoStage(t *testing.T) {
 	p.parse(t, extract.Builtin())
 	const key = "reddit/t3_dd4"
 
-	_, err := runCLI(t, "push", key, "--to", "psyche", "--relate", "--config", p.config)
+	_, err := runCLI(t, "push", key, "--to", "psyche", "--relate", "--wait", "0", "--config", p.config)
 	if code := exitCode(io.Discard, err); code != 1 {
 		t.Errorf("a push before the scan exited %d (%v), want 1", code, err)
 	}
+	items := p.count(t, `SELECT count(*) FROM items`)
 	_, err = runCLI(t, "push", "https://www.reddit.com/r/golang/comments/zz9/unseen/", "--to", "psyche", "--relate", "--config", p.config)
-	if code := exitCode(io.Discard, err); code != 2 {
-		t.Errorf("a push of a URL the service never landed exited %d (%v), want 2", code, err)
+	if code := exitCode(io.Discard, err); code != 2 || p.count(t, `SELECT count(*) FROM items`) != items {
+		t.Errorf("a push of a link that no extractor reads exited %d (%v), or stored an item, want 2 and nothing stored", code, err)
 	}
 	if _, err := os.Stat(filepath.Join(kept, "stdin.json")); err == nil {
-		t.Fatal("psyche ran on a parse that no scan has read, or on an item the service never landed")
+		t.Fatal("psyche ran on a parse that no scan has read, or on a link the service did not land")
 	}
 	p.run(t, suggestingScan{p.worker})
 	p.run(t, p.qualityGate(t, stand.models(t, "", "")))
@@ -213,4 +218,168 @@ func TestAPushHandsPsycheTheScannedParseAndStartsNoStage(t *testing.T) {
 		t.Errorf("--enriched after a model read whose suggestion the scan flagged handed psyche %s, want the summary and the quality answer without the suggestion",
 			jsonOf(afterRead["enriched"]))
 	}
+}
+
+// standInCaptions stands in for the youtube-captions extractor, which reads a
+// video through ypl. It writes each video's parse as its description and one
+// five-minute block.
+type standInCaptions struct{}
+
+func (standInCaptions) Capability() string { return extract.Capability(ypl.CaptionsExtractor) }
+
+func (standInCaptions) Run(context.Context, worker.Task) worker.Result {
+	block := "0:00"
+	return worker.Result{Outcome: server.OutcomeDone, Outputs: []server.ReportOutput{{
+		Producer: ypl.CaptionsExtractor.Name, ProducerVersion: ypl.CaptionsExtractor.Version, State: store.OutputDone,
+		Units: []store.Unit{{N: 1, Text: "A test video's description."}, {N: 2, Label: &block, Text: "What the test video says."}},
+	}}}
+}
+
+// A push of a link that the service has not landed lands it through the push
+// route, as an outside item under its key that the person placed at psyche.
+// No gate and no model stage runs on it. The push waits for its parse and its
+// scan, then hands psyche a document in psyche's schema. The route answers a
+// retry under one Idempotency-Key with what it first landed, and a push that
+// waits past its deadline exits naming the stage it waited at.
+func TestAPushOfANewLinkLandsItPlacedAtPsycheAndWaitsForItsScan(t *testing.T) {
+	kept := installFakePsyche(t)
+	p := newGatedPipeline(t, mustAbs(t, "../examples/declarations"))
+	const link, key = "https://youtu.be/pushedvid01?si=shared", "youtube/pushedvid01"
+
+	type ended struct{ err error }
+	done := make(chan ended, 1)
+	go func() {
+		_, err := runCLI(t, "push", link, "--to", "psyche", "--relate", "--config", p.config)
+		done <- ended{err}
+	}()
+	for landedBy := time.Now().Add(10 * time.Second); p.count(t, `SELECT count(*) FROM items WHERE key = ?`, key) == 0; {
+		select {
+		case e := <-done:
+			t.Fatalf("the push ended before its link landed: %v", e.err)
+		case <-time.After(10 * time.Millisecond):
+		}
+		if time.Now().After(landedBy) {
+			t.Fatal("the push landed no item")
+		}
+	}
+	if ran := p.run(t, standInCaptions{}); ran != 1 {
+		t.Fatalf("%d captions parses ran, want the pushed video's", ran)
+	}
+	if ran := p.scanFindingNothing(t); ran != 1 {
+		t.Fatalf("%d scans ran, want the pushed video's", ran)
+	}
+	select {
+	case e := <-done:
+		if e.err != nil {
+			t.Fatalf("the push failed: %v", e.err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the push went on waiting after its parse was scanned")
+	}
+	raw, err := os.ReadFile(filepath.Join(kept, "stdin.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc push.Document
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Key != key || doc.Zone != store.Outside || doc.URL == nil || *doc.URL != ypl.WatchURL("pushedvid01") ||
+		doc.Extractor != ypl.CaptionsExtractor.Name || len(doc.Units) != 2 || doc.RulesVersion == nil {
+		t.Errorf("psyche read %s, want the outside video's scanned captions parse under the watch URL that ypl's poll lands", jsonOf(doc))
+	}
+	if n := p.count(t, `SELECT count(*) FROM items i JOIN sightings s ON s.item_key = i.key
+		WHERE i.key = ? AND i.zone = 'outside' AND i.media_type = ? AND s.connector = 'cli-push'`, key, ypl.MediaTypeVideo); n != 1 {
+		t.Errorf("%d outside videos sighted by cli-push hold the key, want 1", n)
+	}
+	rows, err := p.st.Reader().QueryContext(t.Context(),
+		`SELECT gate || ' ' || verdict || ' ' || cause || ' ' || coalesce(destination, '-') || ' ' || substr(decided_by, 1, 7)
+		FROM decisions WHERE item_key = ? ORDER BY gate DESC, sequence`, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	var decisions []string
+	for rows.Next() {
+		var d string
+		if err := rows.Scan(&d); err != nil {
+			t.Fatal(err)
+		}
+		decisions = append(decisions, d)
+	}
+	if want := []string{"side personal push psyche person:", "read as-is push - person:"}; !slices.Equal(decisions, want) || rows.Err() != nil {
+		t.Errorf("the pushed video holds decisions %q, want the person's %q alone", decisions, want)
+	}
+	if n := p.count(t, `SELECT count(*) FROM tasks WHERE item_key = ? AND stage NOT IN ('parse', 'scan')`, key) +
+		p.count(t, `SELECT count(*) FROM deliveries WHERE item_key = ?`, key); n != 0 {
+		t.Errorf("the pushed video holds %d tasks past its scan or deliveries, want none", n)
+	}
+
+	post := func(t *testing.T, idempotencyKey, body string) (int, []byte) {
+		t.Helper()
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, p.api.URL+"/api/v1/items", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set(server.IdempotencyKey, idempotencyKey)
+		resp, err := p.person.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		raw, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, raw
+	}
+	const second = `{"connector": "cli-push", "url": "https://www.youtube.com/watch?v=pushedvid02", "destination": "psyche"}`
+	status, first := post(t, "retry-1", second)
+	holdsTo(t, first, "push.schema.json")
+	landed := p.count(t, `SELECT (SELECT count(*) FROM items) + (SELECT count(*) FROM sightings) + (SELECT count(*) FROM tasks) +
+		(SELECT count(*) FROM decisions)`)
+	again, retried := post(t, "retry-1", second)
+	if status != http.StatusCreated || again != http.StatusOK || string(retried) != string(first) || !strings.Contains(string(first), `"created":true`) {
+		t.Errorf("a push and its retry answered %d %s and %d %s, want 201 creating the item, then 200 with the same answer", status, first, again, retried)
+	}
+	if now := p.count(t, `SELECT (SELECT count(*) FROM items) + (SELECT count(*) FROM sightings) + (SELECT count(*) FROM tasks) +
+		(SELECT count(*) FROM decisions)`); now != landed {
+		t.Errorf("the retry wrote %d rows, want none", now-landed)
+	}
+	if status, _ := post(t, "retry-1", `{"connector": "cli-push", "url": "https://www.youtube.com/watch?v=pushedvid03"}`); status != http.StatusConflict {
+		t.Errorf("another link under the same Idempotency-Key answered %d, want 409", status)
+	}
+
+	_, err = runCLI(t, "push", "youtube/pushedvid02", "--to", "psyche", "--relate", "--wait", "300ms", "--config", p.config)
+	if code := exitCode(io.Discard, err); code != 1 || !strings.Contains(fmt.Sprint(err), "still waits at its parse") {
+		t.Errorf("a push past its deadline exited %d (%v), want 1 naming the parse it waited at", code, err)
+	}
+
+	// A parse whose task failed with no output, as one whose leases lapsed
+	// does, ends the wait at once rather than at its deadline.
+	if ran := p.run(t, failingCaptions{}); ran != 1 {
+		t.Fatalf("%d captions parses ran, want the second video's", ran)
+	}
+	started := time.Now()
+	_, err = runCLI(t, "push", "youtube/pushedvid02", "--to", "psyche", "--relate", "--wait", "30s", "--config", p.config)
+	if code := exitCode(io.Discard, err); code != 1 || !strings.Contains(fmt.Sprint(err), "parse failed: "+failingCaptionsError) ||
+		time.Since(started) > 10*time.Second {
+		t.Errorf("a push on a parse that failed with no output exited %d after %s (%v), want 1 at once with the task's error", code, time.Since(started), err)
+	}
+
+	// psyche takes only a push's placement, so review neither offers nor takes it.
+	_, err = runCLI(t, "review", "place", "youtube/pushedvid02", "psyche", "--config", p.config)
+	if code := exitCode(io.Discard, err); code != 2 || !strings.Contains(fmt.Sprint(err), "only a push places an item at psyche") {
+		t.Errorf("a placement from review at psyche exited %d (%v), want 2 naming the push", code, err)
+	}
+}
+
+const failingCaptionsError = "the stand-in read failed"
+
+// failingCaptions fails a video's captions parse and writes no output, as a
+// task does whose leases lapsed.
+type failingCaptions struct{}
+
+func (failingCaptions) Capability() string { return extract.Capability(ypl.CaptionsExtractor) }
+
+func (failingCaptions) Run(context.Context, worker.Task) worker.Result {
+	reason := failingCaptionsError
+	return worker.Result{Outcome: server.OutcomeFailed, Error: &reason}
 }

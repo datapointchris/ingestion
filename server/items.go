@@ -68,6 +68,9 @@ type ItemAnswer struct {
 	// Waiting says why the item waits at a model stage, and is null where it
 	// waits at none.
 	Waiting *WaitingView `json:"waiting"`
+	// Progress is the parse's and the scan's progress, as
+	// store.ItemRecords.Progress reads it from their tasks and outputs.
+	Progress []store.StageProgress `json:"progress"`
 	// Suggestion is the item's latest suggestion, and null where no model
 	// read holds a sentence.
 	Suggestion *SuggestionView `json:"suggestion"`
@@ -583,7 +586,7 @@ func itemAnswer(rec store.ItemRecords) ItemAnswer {
 			ParentKey: it.ParentKey, FlowID: it.FlowID, Phase: rec.Phase(), WaitingAt: optional(rec.WaitingAt()), CreatedTS: it.CreatedTS,
 		},
 		Homes: []HomeView{}, Sightings: []SightingView{}, Outputs: []OutputView{}, Decisions: []DecisionView{}, Deliveries: []DeliveryView{},
-		Sections: []SectionView{},
+		Sections: []SectionView{}, Progress: rec.Progress(),
 	}
 	if rec.Blob != nil {
 		a.Item.SizeBytes, a.Item.MD5 = &rec.Blob.SizeBytes, &rec.Blob.MD5

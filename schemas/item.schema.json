@@ -5,7 +5,7 @@
   "description": "What GET /api/v1/items/{key} answers and `ingestion items show --json` prints: the item, each home its file lives at, each sighting, each stage's output, each gate decision, each delivery, its latest suggestion, and the quality gate's and the model read's current answers.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "item", "homes", "sightings", "outputs", "decisions", "deliveries"],
+  "required": ["schema_version", "item", "homes", "sightings", "outputs", "decisions", "deliveries", "progress"],
   "properties": {
     "schema_version": {"const": 1},
     "item": {
@@ -186,6 +186,20 @@
         },
         {"type": "null"}
       ]
+    },
+    "progress": {
+      "description": "The parse's and the scan's progress, read from each stage's tasks as well as its outputs. A stage that nothing queued is left out.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["stage", "state", "error"],
+        "properties": {
+          "stage": {"enum": ["parse", "scan"]},
+          "state": {"description": "running: a task of the stage is queued or leased, whatever its last output was. done: an output of the stage is done. failed: no task of it is left to run and none of its outputs is done.", "enum": ["running", "done", "failed"]},
+          "error": {"description": "Why the stage failed, from its newest task where that failed and from a failed output otherwise, and null where neither says.", "type": ["string", "null"]}
+        }
+      }
     },
     "waiting": {
       "description": "Why the item waits at a model stage, and null where it waits at none.",

@@ -114,7 +114,7 @@ func TestTheReviewTabShowsTheGatesAnswerAndDecidesByKey(t *testing.T) {
 		t.Fatalf("the snapshot lists %s, want both saves under the gate's review, the drop first from r/golang with its answer", jsonOf(snap.Items))
 	}
 	if len(snap.Destinations) != 3 || snap.Destinations[1].Key != "2" || snap.Destinations[1].Name != "work-inbox" || snap.Destinations[2].Side != nil {
-		t.Errorf("the snapshot's destinations are %s, want the three the set declares, keyed 1 to 3", jsonOf(snap.Destinations))
+		t.Errorf("the snapshot's destinations are %s, want the three the set declares but the push-only psyche, keyed 1 to 3", jsonOf(snap.Destinations))
 	}
 
 	t.Setenv("COLUMNS", "200")

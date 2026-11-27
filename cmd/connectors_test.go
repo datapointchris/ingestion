@@ -94,7 +94,7 @@ func TestConnectorsApplyTheExampleSetAndAnInvalidSetChangesNothing(t *testing.T)
 		t.Fatal(err)
 	}
 	out, err := runCLI(t, "connectors", "apply", library, "--config", config)
-	if want := fmt.Sprintf("Applied %s: %d connectors, 2 routing rules, 3 destinations.\n", commit, len(declared)); err != nil || out != want {
+	if want := fmt.Sprintf("Applied %s: %d connectors, 2 routing rules, 4 destinations.\n", commit, len(declared)); err != nil || out != want {
 		t.Fatalf("connectors apply printed %q, %v; want %q", out, err, want)
 	}
 	listed := func() {

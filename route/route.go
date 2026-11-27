@@ -88,6 +88,9 @@ const (
 	// subreddit.
 	CauseTitle = "title"
 	CauseTheme = "theme"
+	// CausePush is a person's push that named its destination, at the side
+	// gate and at the read gate.
+	CausePush = "push"
 )
 
 // ReviewReason is one reason an item waits in review: its name, the line
@@ -395,7 +398,7 @@ func Gate(ctx context.Context, tx *store.Tx, key string, log *slog.Logger) ([]st
 	if sided && sameDecision(newest, side) {
 		return nil, nil
 	}
-	return decide(ctx, tx, key, side, set, sightings, nil)
+	return decide(ctx, tx, key, side, set, sightings, nil, nil)
 }
 
 // byQuality is the side gate's decision on the item under key, which no tag
@@ -497,13 +500,13 @@ func GuessOf(outputs []store.Output) *Guess {
 }
 
 // decide appends side, and the read gate's decision where side places the
-// item on a side. Where a person decides the side, it withdraws the item's
-// queued quality task, so no model judges an item that a person placed before
-// the gate answered. A tag's or a rule's placement leaves the task queued,
-// because the gate's answer on every item it reads is what its trust is
-// earned from.
+// item on a side: asIs where it is set, and otherwise what Read answers.
+// Where a person decides the side, it withdraws the item's queued quality
+// task, so no model judges an item that a person placed before the gate
+// answered. A tag's or a rule's placement leaves the task queued, because the
+// gate's answer on every item it reads is what its trust is earned from.
 func decide(ctx context.Context, tx *store.Tx, key string, side store.Decision, set connectors.Set, sightings []store.Sighting,
-	note *string,
+	note *string, asIs *store.Decision,
 ) ([]store.Decision, error) {
 	side.ItemKey = key
 	written, err := tx.AddDecision(ctx, side)
@@ -520,6 +523,9 @@ func decide(ctx context.Context, tx *store.Tx, key string, side store.Decision, 
 	var read store.Decision
 	if onASide(side.Verdict) {
 		read = Read(set, sightings, side.Verdict, note)
+		if asIs != nil {
+			read = *asIs
+		}
 		read.ItemKey = key
 		if read, err = tx.AddDecision(ctx, read); err != nil {
 			return nil, err
@@ -887,7 +893,11 @@ type Placement struct {
 	Cause string
 	// Note is the questions and why the item was saved, which a model read
 	// answers.
-	Note     *string
+	Note *string
+	// Pushed is a push that named its destination, whose cause is CausePush.
+	// The person decides the read too, as is, so no model stage reads the
+	// item whatever its connector's read rule or its side's default.
+	Pushed   bool
 	Login    string
 	ClientID string
 }
@@ -923,6 +933,16 @@ func (e *ChapterError) Error() string {
 	return fmt.Sprintf("%s is a chapter of %s and takes its book's placement, so place %s", e.Chapter, e.Book, e.Book)
 }
 
+// PushOnlyError is a placement other than a push on a push-only destination,
+// whose program only a push hands the item to.
+type PushOnlyError struct {
+	Destination string
+}
+
+func (e *PushOnlyError) Error() string {
+	return fmt.Sprintf("only a push places an item at %s, since a push hands the item to its program, so push the item there instead", e.Destination)
+}
+
 // Place appends a person's decision on the item under key: on p's destination,
 // or a drop where p names none. Where the destination takes a side, the read
 // gate's decision follows it. A person can place any item, including one that
@@ -931,8 +951,9 @@ func (e *ChapterError) Error() string {
 // destination of an item whose drop the gate showed or hid disagrees with the
 // gate, which returns each family of its answer to rung 0. Place answers
 // store.ErrNoItem where the store holds no such item, a NotDeclaredError
-// for a destination that the set in force does not declare, and a
-// ChapterError for a book's chapter.
+// for a destination that the set in force does not declare, a PushOnlyError
+// for a push-only destination that p does not push to, and a ChapterError
+// for a book's chapter.
 func Place(ctx context.Context, tx *store.Tx, key string, p Placement) ([]store.Decision, error) {
 	if item, ok, err := tx.Item(ctx, key); err != nil {
 		return nil, err
@@ -945,12 +966,19 @@ func Place(ctx context.Context, tx *store.Tx, key string, p Placement) ([]store.
 	if err != nil {
 		return nil, err
 	}
-	if p.Cause == "" {
+	switch {
+	case p.Pushed:
+		p.Cause = CausePush
+	case p.Cause == "":
 		p.Cause = CauseUnstated
 	}
 	side := store.Decision{Gate: store.GateSide, Verdict: VerdictDrop, DecidedBy: ByPerson(p.Login), Cause: p.Cause, Note: p.Note}
 	if p.ClientID != "" {
 		side.ClientID = &p.ClientID
+	}
+	var asIs *store.Decision
+	if p.Pushed {
+		asIs = &store.Decision{Gate: store.GateRead, Verdict: connectors.ReadAsIs, DecidedBy: side.DecidedBy, Cause: CausePush, ClientID: side.ClientID}
 	}
 	if p.Destination != "" {
 		destination, ok := set.Destination(p.Destination)
@@ -960,6 +988,9 @@ func Place(ctx context.Context, tx *store.Tx, key string, p Placement) ([]store.
 				e.Declared = append(e.Declared, d.Name)
 			}
 			return nil, e
+		}
+		if destination.PushOnly && !p.Pushed {
+			return nil, &PushOnlyError{Destination: destination.Name}
 		}
 		side.Verdict, side.Destination = verdictOf(destination), &destination.Name
 	}
@@ -974,7 +1005,7 @@ func Place(ctx context.Context, tx *store.Tx, key string, p Placement) ([]store.
 	if err != nil {
 		return nil, err
 	}
-	made, err := decide(ctx, tx, key, side, set, sightings, p.Note)
+	made, err := decide(ctx, tx, key, side, set, sightings, p.Note, asIs)
 	if err != nil || !sided || p.Destination == "" || !gateDropped(held) {
 		return made, err
 	}

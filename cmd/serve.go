@@ -213,7 +213,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		Store: st, Gate: gate, Issuer: cfg.Issuer, PublicURL: cfg.Serve.PublicURL, Version: version, Log: log,
 	}, server.TaskRoutes(st, lander, log, afterStage(log)), server.BlobRoutes(lander, log), server.ItemRoutes(st, log),
 		server.ConnectorRoutes(server.ConnectorConfig{
-			Store: st, Lander: lander, Scheduler: scheduler, Roots: roots, AfterApply: route.AfterApply(log), Log: log,
+			Store: st, Lander: lander, Scheduler: scheduler, Roots: roots, AfterApply: route.AfterApply(log), Links: extractors, Log: log,
 		}),
 		server.ReplayRoutes(st, replayableStages(st, extractors), log),
 		server.ReviewRoutes(st, log), server.TrustRoutes(st, log), accuracy.Routes(st, log), promptproposal.Routes(st, log))
