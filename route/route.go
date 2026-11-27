@@ -91,6 +91,12 @@ const (
 	// CausePush is a person's push that named its destination, at the side
 	// gate and at the read gate.
 	CausePush = "push"
+	// CauseNoteDraft is a read by a model whose note is the note stage's
+	// draft: the model's own where the draft reached the note floor, and a
+	// person's where they took a draft that fell below it. CauseNoteUnclear
+	// sends to review an item whose draft fell below the floor.
+	CauseNoteDraft   = "note-draft"
+	CauseNoteUnclear = "note-unclear"
 )
 
 // ReviewReason is one reason an item waits in review: its name, the line
@@ -110,6 +116,10 @@ var ReviewReasons = []ReviewReason{
 		CauseGateWouldDrop, "the quality gate would drop it, and its family has not earned hiding it, or the family's draw showed it",
 		"the gate would drop it",
 	},
+	{
+		CauseNoteUnclear, "a model read waits on its note, whose draft fell below the note floor: write a note, or place it with none to take the draft",
+		"the note's draft is unclear",
+	},
 	{CauseBelowFloor, "the quality gate guessed fleet, or its guess fell below its floor", "fleet guess, or below its floor"},
 	{
 		CausePersonSorts, "a connector that sighted it declares person_sorts, so its guess only shows",
@@ -120,6 +130,11 @@ var ReviewReasons = []ReviewReason{
 	{CauseGateError, "the side gate could not read the set in force or its sightings", "the gate could not read the set or the sightings"},
 	{store.ReasonNoParse, "no parse of it is usable", "no usable parse"},
 }
+
+// DefaultNoteFloor is the confidence at or above which a note's draft becomes
+// the read's note, where serve's [note] floor names none. Below it, the item
+// waits in review as note-unclear.
+const DefaultNoteFloor = 0.7
 
 // GuessFloor is the confidence at or above which the quality gate's personal
 // guess places an item. A fleet guess places nothing at any confidence: a tag,
@@ -500,13 +515,13 @@ func GuessOf(outputs []store.Output) *Guess {
 }
 
 // decide appends side, and the read gate's decision where side places the
-// item on a side: asIs where it is set, and otherwise what Read answers.
+// item on a side: readAs where it is set, and otherwise what Read answers.
 // Where a person decides the side, it withdraws the item's queued quality
 // task, so no model judges an item that a person placed before the gate
 // answered. A tag's or a rule's placement leaves the task queued, because the
 // gate's answer on every item it reads is what its trust is earned from.
 func decide(ctx context.Context, tx *store.Tx, key string, side store.Decision, set connectors.Set, sightings []store.Sighting,
-	note *string, asIs *store.Decision,
+	note *string, readAs *store.Decision,
 ) ([]store.Decision, error) {
 	side.ItemKey = key
 	written, err := tx.AddDecision(ctx, side)
@@ -523,8 +538,8 @@ func decide(ctx context.Context, tx *store.Tx, key string, side store.Decision, 
 	var read store.Decision
 	if onASide(side.Verdict) {
 		read = Read(set, sightings, side.Verdict, note)
-		if asIs != nil {
-			read = *asIs
+		if readAs != nil {
+			read = *readAs
 		}
 		read.ItemKey = key
 		if read, err = tx.AddDecision(ctx, read); err != nil {
@@ -622,10 +637,11 @@ func ReadByModel(side, read store.Decision) bool {
 
 // ModelReadDue says whether a replay runs the model read on an item: its
 // newest decisions read it by a model, under a lens whose prompt this build
-// holds, no model read's task of it is open, and no done read of that lens's
-// prompt in force answers the read decision's note. A read decision that the
-// item took from its parent is never due, because a model read reads the
-// item's own parse, and a book's chapter holds none.
+// holds, the read waits on no note's draft, no model read's task of it is
+// open, and no done read of that lens's prompt in force answers the read's
+// note. A read decision that the item took from its parent is never due,
+// because a model read reads the item's own parse, and a book's chapter holds
+// none.
 func ModelReadDue(side, read store.Decision, outputs []store.Output, open bool) bool {
 	return modelReadDue(side, read, outputs, open, true)
 }
@@ -634,32 +650,52 @@ func ModelReadDue(side, read store.Decision, outputs []store.Output, open bool) 
 // of any prompt version, as the read gate does. A new prompt then reads an
 // item again only through a replay, which estimates its tokens first.
 func modelReadDue(side, read store.Decision, outputs []store.Output, open, currentPrompt bool) bool {
-	if open || !ReadByModel(side, read) || read.ByParent() {
+	if open || !ReadByModel(side, read) || read.ByParent() || awaitsNote(read, outputs) {
 		return false
 	}
 	p, ok := prompts.ModelRead[text(read.Lens)]
+	note, _ := NoteOf(read, store.NewestDone(outputs, store.StageNote))
 	return ok && !slices.ContainsFunc(outputs, func(o store.Output) bool {
 		return o.Stage == store.StageModelRead && o.State == store.OutputDone && (!currentPrompt || o.ProducerVersion == p.Version) &&
-			store.NoteAnswered(o.NoteDigest, read.Note)
+			store.NoteAnswered(o.NoteDigest, note)
 	})
 }
 
-// reconcileModelRead queues the model read of the item under key where the
-// read gate finds it due, so a new note reads an item again. It withdraws a
-// queued one where the item's newest decisions read it otherwise.
+// reconcileModelRead queues the note's draft of the item under key where the
+// read waits on one, and otherwise its model read where the read gate finds it
+// due, so a new note reads an item again. It withdraws a queued draft where
+// the read carries its note, and a queued draft or read where the item's
+// newest decisions read it otherwise.
 func reconcileModelRead(ctx context.Context, tx *store.Tx, key string, side, read store.Decision) error {
 	if !ReadByModel(side, read) {
 		by := side.DecidedBy
 		if onASide(side.Verdict) {
 			by = read.DecidedBy
 		}
-		return tx.WithdrawQueued(ctx, key, store.StageModelRead, "withdrawn: "+by+" decided the item is not read by a model")
+		why := "withdrawn: " + by + " decided the item is not read by a model"
+		if err := tx.WithdrawQueued(ctx, key, store.StageNote, why); err != nil {
+			return err
+		}
+		return tx.WithdrawQueued(ctx, key, store.StageModelRead, why)
 	}
-	_, open, err := tx.OpenTask(ctx, key, store.StageModelRead)
+	outputs, err := tx.Outputs(ctx, key)
 	if err != nil {
 		return err
 	}
-	outputs, err := tx.Outputs(ctx, key)
+	if !awaitsNote(read, outputs) {
+		if err := tx.WithdrawQueued(ctx, key, store.StageNote, "withdrawn: the item's read carries its note"); err != nil {
+			return err
+		}
+	}
+	_, noteOpen, err := tx.OpenTask(ctx, key, store.StageNote)
+	if err != nil {
+		return err
+	}
+	if noteDue(read, outputs, noteOpen) {
+		_, err = tx.Enqueue(ctx, store.Task{ItemKey: &key, Stage: store.StageNote, Capability: store.StageNote})
+		return err
+	}
+	_, open, err := tx.OpenTask(ctx, key, store.StageModelRead)
 	if err != nil || !modelReadDue(side, read, outputs, open, false) {
 		return err
 	}
@@ -945,7 +981,9 @@ func (e *PushOnlyError) Error() string {
 
 // Place appends a person's decision on the item under key: on p's destination,
 // or a drop where p names none. Where the destination takes a side, the read
-// gate's decision follows it. A person can place any item, including one that
+// gate's decision follows it. A placement with no note of an item that holds a
+// note's draft takes the draft, so its read by a model answers the draft, as
+// the person's decision. A person can place any item, including one that
 // a rule already placed. A placement that repeats the newest side decision
 // appends nothing, and answers the decisions it made. A placement on a
 // destination of an item whose drop the gate showed or hid disagrees with the
@@ -976,10 +1014,6 @@ func Place(ctx context.Context, tx *store.Tx, key string, p Placement) ([]store.
 	if p.ClientID != "" {
 		side.ClientID = &p.ClientID
 	}
-	var asIs *store.Decision
-	if p.Pushed {
-		asIs = &store.Decision{Gate: store.GateRead, Verdict: connectors.ReadAsIs, DecidedBy: side.DecidedBy, Cause: CausePush, ClientID: side.ClientID}
-	}
 	if p.Destination != "" {
 		destination, ok := set.Destination(p.Destination)
 		if !ok {
@@ -1005,7 +1039,16 @@ func Place(ctx context.Context, tx *store.Tx, key string, p Placement) ([]store.
 	if err != nil {
 		return nil, err
 	}
-	made, err := decide(ctx, tx, key, side, set, sightings, p.Note, asIs)
+	var readAs *store.Decision
+	switch {
+	case p.Pushed:
+		readAs = &store.Decision{Gate: store.GateRead, Verdict: connectors.ReadAsIs, DecidedBy: side.DecidedBy, Cause: CausePush, ClientID: side.ClientID}
+	case store.NoteDigest(p.Note) == nil && onASide(side.Verdict):
+		if readAs, err = takeDraft(ctx, tx, key, Read(set, sightings, side.Verdict, nil), side); err != nil {
+			return nil, err
+		}
+	}
+	made, err := decide(ctx, tx, key, side, set, sightings, p.Note, readAs)
 	if err != nil || !sided || p.Destination == "" || !gateDropped(held) {
 		return made, err
 	}
@@ -1021,7 +1064,8 @@ func gateDropped(side store.Decision) bool {
 }
 
 // repeated answers the decisions that an earlier copy of side made, and is
-// false where the item's newest side decision is not one.
+// false where the item's newest side decision is not one, or where its newest
+// read decision waits in review, which only a new placement answers.
 func repeated(ctx context.Context, tx *store.Tx, key string, side store.Decision) ([]store.Decision, bool, error) {
 	newest, ok, err := tx.NewestDecision(ctx, key, store.GateSide)
 	if err != nil || !ok {
@@ -1035,6 +1079,8 @@ func repeated(ctx context.Context, tx *store.Tx, key string, side store.Decision
 	made := []store.Decision{newest}
 	if read, ok, err := tx.NewestDecision(ctx, key, store.GateRead); err != nil {
 		return nil, false, err
+	} else if ok && read.Verdict == VerdictReview {
+		return nil, false, nil
 	} else if ok && onASide(newest.Verdict) {
 		made = append(made, read)
 	}

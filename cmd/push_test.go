@@ -210,7 +210,7 @@ func TestAPushHandsPsycheTheScannedParseAndStartsNoStage(t *testing.T) {
 	if _, err := runCLI(t, "review", "place", key, "work-inbox", "--note", "what would this change?", "--config", p.config); err != nil {
 		t.Fatal(err)
 	}
-	if ran := p.run(t, p.modelRead(t, stand.models(t, "", ""), sentenceScanner{})); ran != 1 {
+	if ran := p.run(t, p.modelRead(t, stand.models(t, "", ""), nil, sentenceScanner{})); ran != 1 {
 		t.Fatalf("placing the post with a note ran %d tasks, want its model read", ran)
 	}
 	_, afterRead := read(t, "--enriched")

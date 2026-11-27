@@ -51,7 +51,13 @@ var gatesAgreementCmd = &cobra.Command{
 		"\n" +
 		"Each arm, the gate's prompt asked of another model by `ingestion items replay\n" +
 		"--stage quality-arm --model <model>`, prints after the gate. Its answers sit\n" +
-		"beside the gate's answers to the same prompt on the same items.",
+		"beside the gate's answers to the same prompt on the same items.\n" +
+		"\n" +
+		"The note band prints last: each note's draft by its confidence. A draft is\n" +
+		"kept where the read answers it, rewritten where a person's note took its\n" +
+		"place, waiting where its item waits in review as note-unclear, and other\n" +
+		"where the item left a read by a model. KEPT SHARE is kept over kept and\n" +
+		"rewritten, so it shows where serve's [note] floor would sit.",
 	Example: "  ingestion gates agreement\n" +
 		"  ingestion gates agreement --json",
 	Args: cobra.NoArgs,
@@ -312,7 +318,24 @@ func runGatesAgreement(cmd *cobra.Command, _ []string) error {
 		writeGate(w, arm.Model+" side guess, floor", arm.Arm.Side)
 		writeGate(w, "the gate's side guess on the same items, floor", arm.Gate.Side)
 	}
+	writeNotes(w, report.Note)
 	return nil
+}
+
+// writeNotes prints how each note's draft fared, a row overall and one for
+// each confidence band.
+func writeNotes(w io.Writer, n accuracy.NoteDrafts) {
+	_, _ = fmt.Fprintf(w, "\nnote drafts, floor %.2f\n", n.Floor)
+	table := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintln(table, "BY\tDRAFTS\tKEPT\tREWRITTEN\tWAITING\tOTHER\tKEPT SHARE")
+	row := func(by string, c accuracy.NoteCounts) {
+		_, _ = fmt.Fprintf(table, "%s\t%d\t%d\t%d\t%d\t%d\t%s\n", by, c.Drafts, c.Kept, c.Rewritten, c.Waiting, c.Other, percent(c.KeptShare))
+	}
+	row("all", n.Overall)
+	for _, b := range n.ByConfidence {
+		row(fmt.Sprintf("confidence %.1f-%.1f", b.From, b.To), b.NoteCounts)
+	}
+	_ = table.Flush()
 }
 
 // writeGate prints one gate's agreement as a table, a row overall and one for

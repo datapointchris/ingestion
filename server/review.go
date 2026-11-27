@@ -71,7 +71,10 @@ type ReviewItem struct {
 	Guess  *ReviewGuess `json:"guess"`
 	// QualityAnswer is the quality gate's newest done answer as the store
 	// keeps it, and null where the gate gave none.
-	QualityAnswer  json.RawMessage  `json:"quality_answer"`
+	QualityAnswer json.RawMessage `json:"quality_answer"`
+	// NoteDraft is the note stage's newest done draft as the store keeps it,
+	// and null where none was drafted.
+	NoteDraft      json.RawMessage  `json:"note_draft"`
 	Connectors     []string         `json:"connectors"`
 	Sightings      []ReviewSighting `json:"sightings"`
 	WaitingSinceTS string           `json:"waiting_since_ts"`
@@ -169,6 +172,9 @@ func (h reviewHandlers) list(w http.ResponseWriter, r *http.Request) {
 		}
 		if quality := store.NewestDone(it.Outputs, store.StageQuality); quality != nil && len(quality.Answer) > 0 {
 			item.QualityAnswer = quality.Answer
+		}
+		if draft := store.NewestDone(it.Outputs, store.StageNote); draft != nil && len(draft.Answer) > 0 {
+			item.NoteDraft = draft.Answer
 		}
 		answer.Items = append(answer.Items, item)
 	}

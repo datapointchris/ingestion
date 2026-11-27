@@ -190,7 +190,7 @@ func (p *pipeline) lifeDeliverer(t *testing.T, life *standInLife) worker.Handler
 	t.Helper()
 	t.Setenv(deliverSecretEnv(deliver.LifeArticles), lifeSecret)
 	cfg := fileConfig{Deliver: map[string]deliverTable{deliver.LifeArticles: {serviceClient: serviceClient{API: life.URL, ClientID: lifeClient}}}}
-	handlers := workerHandlers(p.worker, openDeliverers(t.Context(), cfg, p.provider.URL, quiet), nil, nil, nil, modelConfig{}, quiet)
+	handlers := workerHandlers(p.worker, openDeliverers(t.Context(), cfg, p.provider.URL, quiet), nil, nil, nil, nil, modelConfig{}, quiet)
 	i := slices.IndexFunc(handlers, func(h worker.Handler) bool { return h.Capability() == store.DeliverCapability(deliver.LifeArticles) })
 	if i < 0 {
 		t.Fatalf("the worker holds no %s handler", deliver.LifeArticles)

@@ -16,6 +16,7 @@ import (
 
 	"github.com/datapointchris/ingestion/connectors"
 	"github.com/datapointchris/ingestion/landing"
+	"github.com/datapointchris/ingestion/route"
 	"github.com/datapointchris/ingestion/store"
 )
 
@@ -114,10 +115,13 @@ type LeasedTask struct {
 	// starting another. Every other task carries none.
 	StageOutputs []StageOutput `json:"stage_outputs,omitempty"`
 	// Lens and Note are a model read's task's: the lens of the item's newest
-	// read decision, and the note that a person wrote, which the read
-	// answers. Every other task carries neither.
-	Lens *string `json:"lens,omitempty"`
-	Note *string `json:"note,omitempty"`
+	// read decision, and the note that the read answers, a person's or the
+	// note stage's draft where the decision took it. NoteDrafted says a model
+	// drafted Note, so the read quotes it as a model's and never as the
+	// owner's. A note task carries Lens alone, and every other task neither.
+	Lens        *string `json:"lens,omitempty"`
+	Note        *string `json:"note,omitempty"`
+	NoteDrafted bool    `json:"note_drafted,omitempty"`
 	// Model is a measurement arm's task's. The task asks its run for this
 	// model in place of the worker's configured one. Every other task
 	// carries none.
@@ -484,7 +488,10 @@ func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
 			leased.Title, leased.URL, leased.SourceTS, leased.Path, leased.Chapter = d.Title, d.URL, d.SourceTS, d.Path, d.Chapter()
 		}
 		if t.Read != nil {
-			leased.Lens, leased.Note = t.Read.Lens, t.Read.Note
+			leased.Lens = t.Read.Lens
+			if t.Stage == store.StageModelRead {
+				leased.Note, leased.NoteDrafted = route.NoteOf(*t.Read, t.Draft)
+			}
 		}
 		for _, o := range t.Outputs {
 			leased.StageOutputs = append(leased.StageOutputs, stageOutput(o.StageRun, o.NoteDigest))

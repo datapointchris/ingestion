@@ -42,7 +42,8 @@ const (
 // answers its run once it finished. While hold is set, every dispatch waits
 // with hold as its note. Once hold clears, a read finishes it. A dispatch
 // whose schema is the model read's is answered by read, one whose schema is
-// a prompt proposal's draft by draft, and any other by answer.
+// a prompt proposal's draft by draft, one whose schema is the note's by note,
+// and any other by answer.
 type standInDispatch struct {
 	*httptest.Server
 	mu sync.Mutex
@@ -51,10 +52,12 @@ type standInDispatch struct {
 	// fail is the failure code that the next run to finish ends with.
 	fail string
 	// answer is the structured output of a run on prompt, read that of a
-	// model read's run, and draft that of a prompt proposal's draft.
+	// model read's run, draft that of a prompt proposal's draft, and note
+	// that of a note's draft.
 	answer     func(prompt string) map[string]any
 	read       func(prompt string) map[string]any
 	draft      func(prompt string) map[string]any
+	note       func(prompt string) map[string]any
 	dispatches map[string]*standInRun
 	byKey      map[string]string
 	started    []dispatchStart
@@ -177,6 +180,8 @@ func (d *standInDispatch) settle(run *standInRun) {
 		answer = d.read
 	case strings.HasSuffix(run.schema, "/prompts/prompt-proposal/answer.schema.json"):
 		answer = d.draft
+	case strings.HasSuffix(run.schema, "/prompts/note/answer.schema.json"):
+		answer = d.note
 	}
 	run.answer["state"], run.answer["structured_output"] = modelport.Succeeded, answer(run.prompt)
 }
@@ -249,7 +254,7 @@ func (p *pipeline) qualityGate(t *testing.T, models modelConfig) worker.Handler 
 // and nil where it opens none.
 func (p *pipeline) modelHandler(t *testing.T, models modelConfig, capability string) worker.Handler {
 	t.Helper()
-	handlers := workerHandlers(p.worker, nil, nil, openModelPort(t.Context(), models, p.provider.URL, quiet), nil, models, quiet)
+	handlers := workerHandlers(p.worker, nil, nil, openModelPort(t.Context(), models, p.provider.URL, quiet), nil, nil, models, quiet)
 	i := slices.IndexFunc(handlers, func(h worker.Handler) bool { return h.Capability() == capability })
 	if i < 0 {
 		return nil

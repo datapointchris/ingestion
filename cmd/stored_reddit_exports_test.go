@@ -21,8 +21,10 @@ import (
 // save parses and scans, and the set's rules place what they match. Each save
 // that no rule places gets one dispatch from the stand-in dispatch service,
 // whose answers cycle through a pass onto each side, a drop and an unsure
-// answer. Each save read by a model gets one model read, whose answers
-// alternate a suggestion and none, and the scanner reads each suggestion. The
+// answer. Each save read by a model with no person's note gets one note's
+// draft, which the stand-in drafts above the note floor. Each save read by a
+// model then gets one model read, whose answers alternate a suggestion and
+// none, and the scanner reads each suggestion. The
 // first fill holds every dispatch after the first until the connector is
 // released. Each save read as is on the personal side is saved once in a
 // stand-in life. Dropping the same files again lands nothing,
@@ -63,9 +65,12 @@ func TestTheStoredRedditExportsDropThroughTheirConnectorAndPassEveryStage(t *tes
 		}
 		return readAnswered("A summary.", "This item suggests a change.")
 	}
+	stand.note = func(string) map[string]any { return drafted(0.9, "stored") }
 	life := newStandInLife(t, p.provider)
 	models := stand.models(t, "", "")
-	workers := []worker.Handler{p.qualityGate(t, models), p.modelRead(t, models, sentenceScanner{}), p.lifeDeliverer(t, life)}
+	workers := []worker.Handler{
+		p.qualityGate(t, models), p.noteDrafter(t, models, nil), p.modelRead(t, models, nil, sentenceScanner{}), p.lifeDeliverer(t, life),
+	}
 
 	created := p.dropEach(t, files)
 	items := p.count(t, `SELECT count(*) FROM items`)
@@ -99,15 +104,16 @@ func TestTheStoredRedditExportsDropThroughTheirConnectorAndPassEveryStage(t *tes
 		outcomes[outcome] = p.count(t, `SELECT count(*) FROM deliveries WHERE outcome = ?`, outcome)
 	}
 	reads := p.count(t, `SELECT count(*) FROM outputs WHERE stage = 'model-read' AND state = 'done'`)
+	drafts := p.count(t, `SELECT count(*) FROM outputs WHERE stage = 'note' AND state = 'done'`)
 	suggestions := p.count(t, `SELECT count(*) FROM outputs WHERE stage = 'model-read' AND state = 'done' AND findings IS NOT NULL`)
 	dispatches := len(stand.starts())
 	articles, creates := life.counts()
-	if unscanned != 0 || c.byRule == 0 || c.waiting != 0 || dispatches != c.saves-c.byRule+modelRead || reads != modelRead ||
-		suggestions != (modelRead+1)/2 {
-		t.Errorf("%d saves: %d unscanned, %d placed by rule, %d waiting, %d dispatches, %d of %d model reads done with %d suggestions scanned; "+
-			"want every save scanned, a rule placing some, none waiting, one quality dispatch for each save no rule placed "+
-			"and one model read for each save read by a model, with every suggestion scanned",
-			c.saves, unscanned, c.byRule, c.waiting, dispatches, reads, modelRead, suggestions)
+	if unscanned != 0 || c.byRule == 0 || c.waiting != 0 || dispatches != c.saves-c.byRule+drafts+modelRead || reads != modelRead ||
+		drafts > modelRead || suggestions != (modelRead+1)/2 {
+		t.Errorf("%d saves: %d unscanned, %d placed by rule, %d waiting, %d dispatches, %d drafts, %d of %d model reads done with %d suggestions scanned; "+
+			"want every save scanned, a rule placing some, none waiting, one quality dispatch for each save no rule placed, "+
+			"at most one draft and one model read for each save read by a model, with every suggestion scanned",
+			c.saves, unscanned, c.byRule, c.waiting, dispatches, drafts, reads, modelRead, suggestions)
 	}
 	if outcomes[store.DeliveryDelivered] != articles || outcomes[store.DeliveryPending] != 0 {
 		t.Errorf("%d deliveries are delivered and %d pending, and the stand-in life holds %d articles; want one article each and none pending",

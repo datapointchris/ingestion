@@ -1,0 +1,25 @@
+{
+  "focus": {
+    "id": 4,
+    "statement": "Mostly the rocket garden's irrigation controller for six weeks.",
+    "started_ts": "2030-03-01T12:00:00Z",
+    "until_date": "2030-04-12",
+    "ended_ts": null,
+    "ended_reason": null,
+    "set_by": "person:gardener",
+    "active": true,
+    "held_until": "2030-04-13T04:00:00Z",
+    "shares": [
+      {"pursuit": {"number": 11, "name": "Garden automation"}, "share": 0.7},
+      {"pursuit": {"number": 12, "name": "Kitchen ledger"}, "share": 0.2}
+    ]
+  },
+  "window": {"since": "2030-03-01T12:00:00Z", "until": "2030-03-20T12:00:00Z"},
+  "pursuits": [
+    {
+      "number": 11, "name": "Garden automation", "status": "active", "touched_ts": "2030-03-19T08:00:00Z", "share": 0.7, "share_named": true,
+      "split_output_tokens": 1200.5, "worklog_count": 9, "usage": 0.6, "factor": 0.55
+    }
+  ],
+  "unattributed": {"output_tokens": 40, "worklog_count": 1, "outside_worklogs_output_tokens": 12}
+}

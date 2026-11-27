@@ -18,6 +18,9 @@
 # - A Secret named ingestion-source-ypl, where [source.ypl] names a
 #   client_id, holding that client's secret the same way. Without it the
 #   worker runs on and claims no poll:ypl or delete:ypl task.
+# - A Secret named ingestion-lens-fleet-context, where [lens.fleet.context]
+#   names a client_id, holding that client's secret the same way. Without it
+#   the note and the model read under the fleet lens run without its context.
 # - A Secret named ingestion-model-queue-client, where [model] adapter is
 #   queue. Its secret key holds the secret of [model.queue]'s client_id.
 #   Without it the worker runs on and claims no model stage's task.
@@ -100,6 +103,12 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: ingestion-source-ypl
+                  key: secret
+                  optional: true
+            - name: INGESTION_LENS_FLEET_CONTEXT_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: ingestion-lens-fleet-context
                   key: secret
                   optional: true
             - name: INGESTION_MODEL_QUEUE_CLIENT_SECRET

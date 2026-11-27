@@ -48,6 +48,14 @@ func sourceSecretEnv(name string) string {
 	return "INGESTION_SOURCE_" + strings.ToUpper(strings.ReplaceAll(name, "-", "_")) + "_CLIENT_SECRET"
 }
 
+// lensSecretEnv is the variable that holds the secret of the service client
+// that the [lens.<name>.context] table names, such as
+// INGESTION_LENS_FLEET_CONTEXT_CLIENT_SECRET for the fleet lens. It is read
+// from the environment alone, as clientSecretEnv is.
+func lensSecretEnv(name string) string {
+	return "INGESTION_LENS_" + strings.ToUpper(strings.ReplaceAll(name, "-", "_")) + "_CONTEXT_CLIENT_SECRET"
+}
+
 // fileConfig is the config file. Its top-level api, issuer and client_id are
 // goclilogin's, read by every command that calls the service. serve reads
 // issuer and its own table, and worker run reads its own table.
@@ -77,9 +85,18 @@ type fileConfig struct {
 	// Sources holds a table for each source that a worker reaches, under the
 	// source's name, for the poller and the deleter that the source registers.
 	Sources map[string]serviceClient `toml:"source"`
+	// Lens holds a table for each lens, under the lens's name, whose context
+	// table names the reader of the owner's current work that the note and
+	// the model read quote under that lens. worker run reads it.
+	Lens map[string]lensTable `toml:"lens"`
 	// Model names the adapter that carries every model call, its settings,
 	// and what each model stage asks its run for, read by worker run.
 	Model modelConfig `toml:"model"`
+	// Note holds what serve reads for each note's draft: the floor at or
+	// above which a draft becomes the read's note.
+	Note struct {
+		Floor *float64 `toml:"floor"`
+	} `toml:"note"`
 	// Gates holds what serve schedules for the gates, such as when it drafts
 	// a change to the quality gate's prompt from its misses.
 	Gates struct {
@@ -114,6 +131,7 @@ type modelConfig struct {
 	} `toml:"claude-cli"`
 	Contents       stageModel `toml:"contents"`
 	Quality        stageModel `toml:"quality"`
+	Note           stageModel `toml:"note"`
 	ModelRead      stageModel `toml:"model-read"`
 	PromptProposal stageModel `toml:"prompt-proposal"`
 }
@@ -144,6 +162,18 @@ type serviceClient struct {
 type deliverTable struct {
 	serviceClient
 	Root string `toml:"root"`
+}
+
+// lensTable is one [lens.<name>] table.
+type lensTable struct {
+	Context lensContextTable `toml:"context"`
+}
+
+// lensContextTable is one [lens.<name>.context] table: the context reader
+// that this build registers under reader, and how a worker reaches its API.
+type lensContextTable struct {
+	serviceClient
+	Reader string `toml:"reader"`
 }
 
 // duration is a TOML string such as "5m".

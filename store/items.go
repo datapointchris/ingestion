@@ -257,8 +257,8 @@ type Condition struct {
 
 // line is every stage and gate, in the order that an item passes them.
 var line = []string{
-	StageLand, StageParse, StageStructure, StageContents, StageSections, StageScan, StageQuality, GateSide, GateRead, StageModelRead,
-	StageDeliver,
+	StageLand, StageParse, StageStructure, StageContents, StageSections, StageScan, StageQuality, GateSide, GateRead, StageNote,
+	StageModelRead, StageDeliver,
 }
 
 // besideScan are the stages that run beside a PDF's scan, so one that failed
@@ -298,6 +298,7 @@ var reached = map[string]string{
 	StageQuality:   "gated",
 	GateSide:       "placed",
 	GateRead:       "read",
+	StageNote:      "read",
 	StageModelRead: "read",
 	StageDeliver:   "delivered",
 }
@@ -312,7 +313,8 @@ const PhaseReview = "review"
 // decision, waiting where a model stage holds it, and otherwise the furthest
 // stage whose condition is True. A person can place an
 // item whose parse or quality gate failed, which moves it on from that stage.
-// A failed stage of besideScan fails no phase.
+// A failed stage of besideScan fails no phase, and neither does a failed note
+// where the newest read decision carries a person's note in the draft's place.
 func (r ItemRecords) Phase() string {
 	side, sided := r.NewestDecision(GateSide)
 	if sided && side.Verdict == VerdictDrop {
@@ -327,7 +329,7 @@ func (r ItemRecords) Phase() string {
 	}
 	for stage, t := range newest {
 		if t.State == TaskFailed && slices.Contains(line, stage) && stage != StageParse && !slices.Contains(besideScan, stage) &&
-			(stage != StageQuality || !r.SideSettled()) {
+			(stage != StageQuality || !r.SideSettled()) && (stage != StageNote || !r.personNoted()) {
 			return "failed"
 		}
 	}
@@ -351,6 +353,13 @@ func (r ItemRecords) Phase() string {
 		}
 	}
 	return phase
+}
+
+// personNoted says whether the item's newest read decision carries a person's
+// note, which a model read answers in place of any draft.
+func (r ItemRecords) personNoted() bool {
+	read, ok := r.NewestDecision(GateRead)
+	return ok && NoteDigest(read.Note) != nil
 }
 
 // SideSettled says whether the item's newest side decision is one that no

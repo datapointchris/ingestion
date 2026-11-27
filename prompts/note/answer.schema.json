@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/datapointchris/ingestion/prompts/note/answer.schema.json",
+  "title": "The note stage's draft",
+  "description": "What the note stage drafts from an item's title and opening under a lens, beside the owner's current work where a lens context reader is configured: the questions a model read answers, why the item was likely saved, how it bears on the owner's current work, a summary, a one-line idea, and how sure the draft is. The read gate turns the draft into the read's note at or above the note floor, and sends the item to review as note-unclear below it. A model wrote the draft from outsider text, so it takes the item's zone. The store keeps it on the note's output and never in a decision's note.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["questions", "why_saved", "relation", "summary", "idea", "confidence"],
+  "properties": {
+    "questions": {
+      "description": "The questions that a full read of the item answers for the owner.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 5,
+      "items": {"type": "string", "minLength": 1, "maxLength": 300}
+    },
+    "why_saved": {"description": "Why the owner likely saved the item.", "type": "string", "minLength": 1, "maxLength": 400},
+    "relation": {"description": "How the item bears on the owner's current work, or that it bears on none.", "type": "string", "minLength": 1, "maxLength": 400},
+    "summary": {"description": "What the item's opening says.", "type": "string", "minLength": 1, "maxLength": 800},
+    "idea": {"description": "One sentence stating the item's idea.", "type": "string", "minLength": 1, "maxLength": 400},
+    "confidence": {"description": "How sure the draft is that its questions are the ones the owner wants answered.", "type": "number", "minimum": 0, "maximum": 1}
+  }
+}

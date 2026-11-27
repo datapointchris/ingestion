@@ -28,12 +28,19 @@ type Waiting struct {
 // when. It is the one answer that Phase, the review queue and each connector's
 // count read. A chapter whose book waits in review waits too, on the book's
 // placement. An item waits where its newest side decision sent it to review,
-// under that decision's cause. Where no side decision holds it, the item waits
-// as no-parse where no parse is usable, and as quality-review where the quality
-// gate's newest decision sent it there. It is false where the item waits on
-// nobody.
+// under that decision's cause. It waits too where that decision placed it on a
+// side and its newest read decision sent it to review, as a note's draft below
+// its floor does, under the read decision's cause. Where no side decision
+// holds it, the item waits as no-parse where no parse is usable, and as
+// quality-review where the quality gate's newest decision sent it there. It is
+// false where the item waits on nobody.
 func (r ItemRecords) WaitsOnPerson() (reason, since string, ok bool) {
 	if side, sided := r.NewestDecision(GateSide); sided {
+		if _, onASide := r.Side(); onASide {
+			if read, ok := r.NewestDecision(GateRead); ok && read.Verdict == VerdictReview {
+				return read.Cause, read.DecidedTS, true
+			}
+		}
 		return side.Cause, side.DecidedTS, side.Verdict == VerdictReview
 	}
 	if r.NoUsableParse() {
@@ -52,12 +59,12 @@ func (r ItemRecords) WaitsOnPerson() (reason, since string, ok bool) {
 }
 
 // reviewCandidates selects every item that may wait on a person, as a superset
-// that WaitsOnPerson narrows: each one that a side decision sent to review, and
-// each one that holds no side decision. It leaves out a book's chapter, as
-// ReviewQueue's PlacedThroughParent check does, so the queue never loads a
-// book's chapters.
+// that WaitsOnPerson narrows: each one that a side or read decision sent to
+// review, and each one that holds no side decision. It leaves out a book's
+// chapter, as ReviewQueue's PlacedThroughParent check does, so the queue never
+// loads a book's chapters.
 const reviewCandidates = `
-SELECT DISTINCT d.item_key FROM decisions d WHERE d.gate = 'side' AND d.verdict = 'review'
+SELECT DISTINCT d.item_key FROM decisions d WHERE d.gate IN ('side', 'read') AND d.verdict = 'review'
 	AND d.item_key NOT IN (SELECT c.key FROM items c WHERE c.media_type = '` + MediaTypeChapter + `')
 UNION
 SELECT i.key FROM items i WHERE i.media_type != '` + MediaTypeChapter + `'
@@ -129,6 +136,23 @@ func (s *Store) ReviewPlacedItems(ctx context.Context) ([]ItemRecords, error) {
 		}
 	}
 	return labeled, nil
+}
+
+// drafted selects every item that holds a done note draft.
+const drafted = `SELECT DISTINCT item_key FROM outputs WHERE stage = '` + StageNote + `' AND state = '` + OutputDone + `'`
+
+// DraftedItems reads every item that holds a done note draft, with its
+// records, oldest first.
+func (s *Store) DraftedItems(ctx context.Context) ([]ItemRecords, error) {
+	keys, err := s.selectKeys(ctx, drafted, "select the items holding a note draft")
+	if err != nil || len(keys) == 0 {
+		return []ItemRecords{}, err
+	}
+	items, err := readInto[Item](ctx, s.read, table("items"), `key IN (?`+strings.Repeat(", ?", len(keys)-1)+`) ORDER BY created_ts, key`, keys...)
+	if err != nil {
+		return nil, err
+	}
+	return recordsOf(ctx, s.read, items)
 }
 
 // reviewCandidateKeys reads the key of each item that may wait in review.

@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -74,6 +75,13 @@ var serveCmd = &cobra.Command{
 		"  [deliver." + deliver.LearningResources + "]\n" +
 		"  root              the [serve.homes] root its file paths are below, such as books\n" +
 		"\n" +
+		"Where a read by a model carries no person's note, a note stage drafts one. A\n" +
+		"draft whose confidence reaches the floor becomes the read's note, and one\n" +
+		"below it sends the item to review as note-unclear:\n" +
+		"\n" +
+		"  [note]\n" +
+		"  floor             a confidence from 0 to 1 (default " + strconv.FormatFloat(route.DefaultNoteFloor, 'f', -1, 64) + ")\n" +
+		"\n" +
 		"At each time of its [gates.proposals] schedule, it projects the quality gate's\n" +
 		"misses that a person labeled since the last done proposal. Where it finds any, it\n" +
 		"writes a prompt proposal holding them and queues one prompt-proposal task, which a\n" +
@@ -108,10 +116,16 @@ func init() {
 	rootCmd.AddCommand(serveCmd)
 }
 
-// afterStage runs in the write that ends an item's task done. It runs what
-// follows the stage that ended, keyed by that stage, such as the stages it
-// queues, then runs the gates.
+// afterStage is afterStageUnder at the default note floor.
 func afterStage(log *slog.Logger) server.AfterStage {
+	return afterStageUnder(log, route.DefaultNoteFloor)
+}
+
+// afterStageUnder runs in the write that ends an item's task done. It runs
+// what follows the stage that ended, keyed by that stage, such as the stages
+// it queues or the read gate's decision on a note's draft under noteFloor,
+// then runs the gates.
+func afterStageUnder(log *slog.Logger, noteFloor float64) server.AfterStage {
 	next := map[string][]server.AfterStage{
 		store.StageParse: {extract.AfterParse(
 			[]server.AfterStage{scan.QueueAfterParse, sections.QueueAfterParse}, []server.AfterStage{extract.QueueDeferredParse},
@@ -120,6 +134,7 @@ func afterStage(log *slog.Logger) server.AfterStage {
 		store.StageContents:  {contents.AfterAnswer(log)},
 		store.StageScan:      {qualitygate.QueueAfterScan},
 		store.StageQuality:   {qualitygate.DecideAfterAnswer},
+		store.StageNote:      {route.AfterDraft(noteFloor)},
 		store.StageDeliver:   {route.AfterDelivery},
 	}
 	gates := route.AfterStage(log)
@@ -161,6 +176,13 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 	if cfg.Issuer == "" {
 		return fmt.Errorf("%s sets no issuer. The API accepts only tokens an OIDC provider signed, so name it: issuer = \"https://auth.example.com\"", path)
+	}
+	noteFloor := route.DefaultNoteFloor
+	if f := cfg.Note.Floor; f != nil {
+		if *f < 0 || *f > 1 {
+			return fmt.Errorf("%s: [note] floor is a confidence from 0 to 1, not %v", path, *f)
+		}
+		noteFloor = *f
 	}
 	listen := cfg.Serve.Listen
 	if listen == "" {
@@ -211,12 +233,12 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 	handler := server.Handler(server.Config{
 		Store: st, Gate: gate, Issuer: cfg.Issuer, PublicURL: cfg.Serve.PublicURL, Version: version, Log: log,
-	}, server.TaskRoutes(st, lander, log, afterStage(log)), server.BlobRoutes(lander, log), server.ItemRoutes(st, log),
+	}, server.TaskRoutes(st, lander, log, afterStageUnder(log, noteFloor)), server.BlobRoutes(lander, log), server.ItemRoutes(st, log),
 		server.ConnectorRoutes(server.ConnectorConfig{
 			Store: st, Lander: lander, Scheduler: scheduler, Roots: roots, AfterApply: route.AfterApply(log), Links: extractors, Log: log,
 		}),
 		server.ReplayRoutes(st, replayableStages(st, extractors), log),
-		server.ReviewRoutes(st, log), server.TrustRoutes(st, log), accuracy.Routes(st, log), promptproposal.Routes(st, log))
+		server.ReviewRoutes(st, log), server.TrustRoutes(st, log), accuracy.Routes(st, noteFloor, log), promptproposal.Routes(st, log))
 	srv := &http.Server{Addr: listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 
 	var wg sync.WaitGroup

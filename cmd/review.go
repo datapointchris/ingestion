@@ -69,7 +69,10 @@ var reviewPlaceCmd = &cobra.Command{
 		"--cause names the aspect that decided it, such as subreddit, channel, theme\n" +
 		"or title, so a filter can learn from it. Left out, the cause is unstated.\n" +
 		"--note carries the questions and why the item was saved, which a model read\n" +
-		"answers. Placing an item again with the same destination, cause and note\n" +
+		"answers. With no note, a read by a model answers a note that a model drafts\n" +
+		"from the item's opening. An item whose draft fell below the note floor waits\n" +
+		"as note-unclear. Placing an item that holds a draft with no --note takes that\n" +
+		"draft. Placing an item again with the same destination, cause and note\n" +
 		"changes nothing.",
 	Example: "  ingestion review place reddit/t3_1h9xk2 reading-list --cause subreddit\n" +
 		"  ingestion review place reddit/t3_1h9xk2 work-inbox --note \"what would this change for retries?\"",
