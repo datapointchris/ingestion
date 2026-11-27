@@ -884,14 +884,17 @@ parse. An item that a tag, a rule or a confident guess placed keeps its placemen
 answer says. The replay first prints how many items it would run on, and the median tokens by
 kind of the stage's newest stored runs times that count. It queues only with `--yes`.
 
-Each model stage's answer names the parse its prompt quoted, in `input_producer` and
-`input_version`. An answer over an older parse does not count. So once a parse replay writes a
-new extractor version, each model stage's replay finds the item due. The gate's call over the new
-parse is a dispatch of its own, and its answer replaces the old one. Where the read gate decided
-the item's read from a note's draft over the older parse, the new answer appends the read that the
-side calls for again and drafts the note over the new parse. The replay's estimate leaves those
-drafts out. An item counts once in its family's trust, by the person's words against its newest
-answer. When the store opens, it names the reading parse on each stored answer that names none.
+Each model stage's answer names the parse that its prompt quoted, in `input_producer` and
+`input_version`. `items show --json` prints both. An answer over an older parse does not
+count. So once a parse replay writes a new extractor version, each model stage's replay finds the
+item due. The gate's call over the new parse is a dispatch of its own. Only its answer replaces
+the old one, so while the call waits, and where it fails, the old answer stands. Where the read
+gate decided the item's read from a note's draft over the older parse, the new answer appends the
+read that the side calls for again and drafts the note over the new parse. The replay's estimate
+leaves those drafts out. An item counts once in its family's trust, under its newest answer. Its
+person's words against that answer count. Where it holds none, the newest earlier word counts,
+read against the newest answer. The first open of a store at the release that records inputs
+names, on each stored answer, the parse that its stage quotes.
 
 `--placed-by person` runs the replay instead over each labeled item, one that a person placed
 after the gates sent it to review, which the gate otherwise never judges again. The answer
