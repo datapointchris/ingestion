@@ -35,6 +35,7 @@ type UnpairedAnswer struct {
 	Unrowed       []UnpairedFile `json:"unrowed"`
 	Missing       []BlobAnswer   `json:"missing"`
 	Leftovers     []UnpairedFile `json:"leftovers"`
+	Unnamed       []BlobAnswer   `json:"unnamed"`
 }
 
 // UnpairedFile is one file in the volume that no row pairs with.
@@ -148,10 +149,13 @@ func (h blobHandlers) unpaired(w http.ResponseWriter, r *http.Request) {
 	}
 	answer := UnpairedAnswer{
 		SchemaVersion: 1, Files: u.Files, Rows: u.Rows,
-		Unrowed: filesOf(u.Unrowed), Missing: []BlobAnswer{}, Leftovers: filesOf(u.Leftovers),
+		Unrowed: filesOf(u.Unrowed), Missing: []BlobAnswer{}, Leftovers: filesOf(u.Leftovers), Unnamed: []BlobAnswer{},
 	}
 	for _, b := range u.Missing {
 		answer.Missing = append(answer.Missing, blobAnswer(b))
+	}
+	for _, b := range u.Unnamed {
+		answer.Unnamed = append(answer.Unnamed, blobAnswer(b))
 	}
 	JSON(w, http.StatusOK, answer)
 }

@@ -30,7 +30,7 @@ import (
 )
 
 // builtin is every extractor that ingestion holds of its own.
-var builtin = []Extractor{ThreadText, PDFText, PDFDocling, AudioWhisper}
+var builtin = []Extractor{ThreadText, PDFText, PDFDocling, AudioWhisper, ArticleTrafilatura}
 
 // registered is every extractor that a source registered.
 var registered []Extractor

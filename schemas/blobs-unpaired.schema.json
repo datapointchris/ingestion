@@ -2,17 +2,18 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/datapointchris/ingestion/schemas/blobs-unpaired.schema.json",
   "title": "Where the blob volume and the blob rows disagree",
-  "description": "What GET /api/v1/blobs/unpaired answers and `ingestion blobs unpaired --json` prints. It names each blob in the volume that no row names, each row whose bytes neither the volume nor a live home holds, and each file in the volume that is not a blob and is too old for a write to be running it. It deletes nothing.",
+  "description": "What GET /api/v1/blobs/unpaired answers and `ingestion blobs unpaired --json` prints. It names each blob in the volume that no row names, each row whose bytes neither the volume nor a live home holds, each file in the volume that is not a blob and is too old for a write to be running it, and each row older than an hour that nothing names. It deletes nothing.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "files", "rows", "unrowed", "missing", "leftovers"],
+  "required": ["schema_version", "files", "rows", "unrowed", "missing", "leftovers", "unnamed"],
   "properties": {
     "schema_version": {"const": 1},
     "files": {"description": "The blobs in the volume.", "type": "integer", "minimum": 0},
     "rows": {"description": "The blob rows.", "type": "integer", "minimum": 0},
     "unrowed": {"description": "Each blob in the volume that no row names, such as the bytes of a landing whose write failed.", "type": "array", "items": {"$ref": "#/$defs/file"}},
     "missing": {"description": "Each row whose bytes neither the volume nor a live home holds.", "type": "array", "items": {"$ref": "blob.schema.json"}},
-    "leftovers": {"description": "Each file in the volume that is not a blob, such as a temporary file that no rename finished.", "type": "array", "items": {"$ref": "#/$defs/file"}}
+    "leftovers": {"description": "Each file in the volume that is not a blob, such as a temporary file that no rename finished.", "type": "array", "items": {"$ref": "#/$defs/file"}},
+    "unnamed": {"description": "Each row older than an hour that no item, home or output names, such as a page that a poll kept for an item that already held its bytes.", "type": "array", "items": {"$ref": "blob.schema.json"}}
   },
   "$defs": {
     "file": {

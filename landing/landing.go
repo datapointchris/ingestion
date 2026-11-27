@@ -133,6 +133,10 @@ type Arrival struct {
 	// Home names a file that already lives under a named root. Its bytes are
 	// hashed where they lie, and referenced rather than copied.
 	Home *Home
+	// BlobSHA256 names bytes that the volume already keeps, as a poll's
+	// worker keeps a page through the blob route before it reports the page's
+	// arrival. Land and LandIn refuse a blob that the store holds no row of.
+	BlobSHA256 string
 }
 
 // Landed is what an arrival wrote.
@@ -210,8 +214,9 @@ func (l *Lander) Land(ctx context.Context, a Arrival) (Landed, error) {
 
 // LandIn lands the arrival a in the write tx, such as the one that ends a
 // poll's lease. a carries no bytes and names no home, since bytes reach the
-// volume before any row names them. It refuses an arrival for what it holds
-// with ErrInvalidArrival, before it writes.
+// volume before any row names them, and it may name a blob already kept. It
+// refuses an arrival for what it holds with ErrInvalidArrival, before it
+// writes.
 func (l *Lander) LandIn(ctx context.Context, tx *store.Tx, a Arrival) (Landed, error) {
 	key, err := l.keyIn(a)
 	if err != nil {
@@ -242,8 +247,19 @@ func (l *Lander) keyIn(a Arrival) (string, error) {
 }
 
 // write records a under key in tx, then queues a new item's parse, or runs
-// the sighted hook where a adds a sighting to an item the store held.
+// the sighted hook where a adds a sighting to an item the store held. Where a
+// names a blob already kept, its row stands for the bytes.
 func (l *Lander) write(ctx context.Context, tx *store.Tx, a Arrival, key string, w *Written, modified string) (Landed, error) {
+	if w == nil && a.BlobSHA256 != "" {
+		blob, ok, err := tx.Blob(ctx, a.BlobSHA256)
+		if err != nil {
+			return Landed{}, err
+		}
+		if !ok {
+			return Landed{}, fmt.Errorf("%w: the store keeps no blob %s", ErrInvalidArrival, a.BlobSHA256)
+		}
+		w = &Written{SHA256: blob.SHA256, MD5: blob.MD5, Size: blob.SizeBytes}
+	}
 	landed, err := record(ctx, tx, a, key, w, modified)
 	switch {
 	case err != nil:
@@ -311,6 +327,8 @@ func (l *Lander) check(a Arrival) error {
 		return errors.New("an arrival names its media type")
 	case a.Body != nil && a.Home != nil:
 		return errors.New("an arrival carries its bytes or names their home, not both")
+	case a.BlobSHA256 != "" && (a.Body != nil || a.Home != nil):
+		return errors.New("an arrival that names a kept blob carries no bytes and names no home")
 	case a.Key == "" && a.URL == "" && a.Body == nil && a.Home == nil:
 		return errors.New("an arrival with no key carries the link or the bytes its key is derived from")
 	}
@@ -321,6 +339,11 @@ func (l *Lander) check(a Arrival) error {
 	}
 	if err := store.CheckMetrics(a.Metrics); err != nil {
 		return err
+	}
+	if a.BlobSHA256 != "" {
+		if err := CheckSHA256(a.BlobSHA256); err != nil {
+			return err
+		}
 	}
 	if a.Parent != "" {
 		if err := itemkey.Check(a.Parent); err != nil {

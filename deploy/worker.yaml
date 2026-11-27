@@ -18,6 +18,9 @@
 # - A Secret named ingestion-source-ypl, where [source.ypl] names a
 #   client_id, holding that client's secret the same way. Without it the
 #   worker runs on and claims no poll:ypl or delete:ypl task.
+# - A Secret named ingestion-source-freshrss, where [source.freshrss] names a
+#   login. Its password key holds that login's FreshRSS API password. Without
+#   it the worker runs on and claims no poll:freshrss task.
 # - A Secret named ingestion-lens-fleet-context, where [lens.fleet.context]
 #   names a client_id, holding that client's secret the same way. Without it
 #   the note and the model read under the fleet lens run without its context.
@@ -104,6 +107,12 @@ spec:
                 secretKeyRef:
                   name: ingestion-source-ypl
                   key: secret
+                  optional: true
+            - name: INGESTION_SOURCE_FRESHRSS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ingestion-source-freshrss
+                  key: password
                   optional: true
             - name: INGESTION_LENS_FLEET_CONTEXT_CLIENT_SECRET
               valueFrom:

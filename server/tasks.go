@@ -276,6 +276,9 @@ type ReportArrival struct {
 	Fields      map[string]string `json:"fields,omitempty"`
 	Metrics     map[string]int64  `json:"metrics,omitempty"`
 	SourceTS    *string           `json:"source_ts,omitempty"`
+	// BlobSHA256 names the item's bytes, which the worker kept through the
+	// blob route before it reported the arrival, such as a page's HTML.
+	BlobSHA256 *string `json:"blob_sha256,omitempty"`
 }
 
 // arrival is a as landing takes it. The connector, zone and tags are left for
@@ -283,6 +286,9 @@ type ReportArrival struct {
 func (a ReportArrival) arrival() (landing.Arrival, error) {
 	out := landing.Arrival{
 		Key: a.Key, URL: a.URL, MediaType: a.MediaType, Title: a.Title, ExternalKey: a.ExternalKey, Fields: a.Fields, Metrics: a.Metrics,
+	}
+	if a.BlobSHA256 != nil {
+		out.BlobSHA256 = *a.BlobSHA256
 	}
 	if a.SourceTS != nil {
 		at, err := time.Parse(time.RFC3339Nano, *a.SourceTS)

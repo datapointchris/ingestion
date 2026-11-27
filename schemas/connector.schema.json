@@ -9,7 +9,7 @@
   "properties": {
     "name": {"description": "The connector's name, which its file is named for.", "type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
     "mode": {"enum": ["poll", "push", "folder", "drop"]},
-    "source": {"description": "The external feed the connector reads, by its name in the data catalog.", "type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
+    "source": {"description": "What the connector reads. A poll names the source that this build registers, such as ypl or freshrss. Any other connector names the external feed by its name in the data catalog.", "type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
     "contract": {"description": "The contract the source's payloads hold to.", "type": "string"},
     "schedule": {"description": "A poll's or a folder's schedule: five cron fields, a descriptor such as @hourly, or @every 15m, read in UTC unless a CRON_TZ=<zone> prefix names another zone. A poll's once polls until one poll ends done, having landed every item its source holds, and never polls after it.", "type": "string"},
     "due_interval": {"description": "How long after its last delivery a drop or a push is due again.", "$ref": "#/$defs/interval"},

@@ -1,6 +1,7 @@
 // Package sources holds each source that this build carries, as the source
 // registers it once from its own init. A registration names the rules for
-// the source's connectors, the scopes for its service client, and an opener
+// the source's connectors, the scopes for its service client or the login
+// that opens a person's client where the source takes no service client, and an opener
 // for each stage that a worker runs for it: its poll, its delete, its
 // refresh of metrics, its extractors and its reader of comments, which the
 // comments stage asks a model about. A set checks its connectors
@@ -36,6 +37,12 @@ type Registration struct {
 	// Scopes is every scope that the source's service client asks its token
 	// for, one client serving each of the source's stages.
 	Scopes []string
+	// Login opens the client of a source that signs in as a person, with a
+	// login and a password, rather than as a service client, as a Google
+	// Reader API does. Its [source.<name>] table names api and login, and the
+	// password reaches the worker in the environment alone. A source that
+	// signs in as a service client leaves it nil.
+	Login func(api, login, password string) *http.Client
 	// Rules answers why a connector of the source cannot run, one problem
 	// each. A source with none takes no source_parameters.
 	Rules func(connectors.Connector) []string
@@ -115,11 +122,12 @@ func (r Registration) Capabilities() []string {
 }
 
 // Handlers are the worker handlers of each stage that r serves, which reach
-// the source at api through client.
-func (r Registration) Handlers(api string, client *http.Client, log *slog.Logger) []worker.Handler {
+// the source at api through client. A poll keeps the bytes that its arrivals
+// carry through blobs.
+func (r Registration) Handlers(api string, client *http.Client, blobs polling.BlobWriter, log *slog.Logger) []worker.Handler {
 	var out []worker.Handler
 	if r.Poller != nil {
-		out = append(out, polling.Handler(r.Name, r.Poller(api, client), log))
+		out = append(out, polling.Handler(r.Name, r.Poller(api, client), blobs, log))
 	}
 	if r.Deleter != nil {
 		out = append(out, deletion.Handler(r.Name, r.Deleter(api, client)))

@@ -1,0 +1,41 @@
+#!/opt/ingestion/venv/bin/python3 -I
+"""Write one JSON line per paragraph of the main text of the web page read on stdin.
+
+trafilatura finds the main text as a reader view does: the article without
+its navigation, its footer or its comment section. It keeps the page's tables,
+one row a line, and favors recall, so a page with little structure still
+yields its text. A line is {"label": null, "text": "..."}, one for each
+paragraph, heading, list item or table row, in the page's order. A page with
+no main text writes no line. A page that trafilatura cannot read exits 1
+naming why, and never quotes the page.
+"""
+
+import json
+import logging
+import sys
+
+import trafilatura
+
+
+def main() -> int:
+    # trafilatura logs what it discards, which can quote the page.
+    logging.disable(logging.CRITICAL)
+    data = sys.stdin.buffer.read()
+    try:
+        text = trafilatura.extract(data, favor_recall=True, include_tables=True, include_comments=False)
+    except Exception as error:  # lxml and trafilatura raise several types for a broken page.
+        print(f"article-trafilatura: trafilatura could not read the page ({type(error).__name__})", file=sys.stderr)
+        return 1
+    out = sys.stdout
+    for line in (text or "").splitlines():
+        paragraph = line.strip()
+        # A table's rule under its header row holds no text.
+        if paragraph.strip("|-: "):
+            out.write(json.dumps({"label": None, "text": paragraph}, ensure_ascii=False))
+            out.write("\n")
+    out.flush()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

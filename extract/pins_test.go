@@ -30,6 +30,7 @@ func TestTheExtractorVersionsNameTheirLibrariesAndModelPins(t *testing.T) {
 	}{
 		{"DoclingPins", DoclingPins, doclingLibraries, scriptPins(read(t, "../release/download-docling-models"))},
 		{"WhisperPins", WhisperPins, whisperLibraries, append(scriptPins(read(t, "../release/download-whisper-model")), ffmpegPins...)},
+		{"TrafilaturaPins", TrafilaturaPins, trafilaturaLibraries, nil},
 	} {
 		pins := append(lock.closure(t, c.libraries), c.pins...)
 		sum := sha256.Sum256([]byte(strings.Join(pins, "\n")))
@@ -38,7 +39,7 @@ func TestTheExtractorVersionsNameTheirLibrariesAndModelPins(t *testing.T) {
 		}
 	}
 	all := strings.Join(lock.pins, "\n")
-	for _, want := range []string{"docling-slim==" + DoclingVersion, "pymupdf==" + PyMuPDFVersion, "faster-whisper==" + FasterWhisperVersion} {
+	for _, want := range []string{"docling-slim==" + DoclingVersion, "pymupdf==" + PyMuPDFVersion, "faster-whisper==" + FasterWhisperVersion, "trafilatura==" + TrafilaturaVersion} {
 		if !strings.Contains(all, want) {
 			t.Errorf("the lock pins no %s", want)
 		}

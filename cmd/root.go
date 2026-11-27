@@ -13,6 +13,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/datapointchris/ingestion/connectors"
+	// Registers the freshrss source, so a set may declare its connectors and a worker polls its reading list.
+	_ "github.com/datapointchris/ingestion/freshrss"
 	// Registers the reddit-export drop format, so a set naming it reads and a drop into it lands.
 	_ "github.com/datapointchris/ingestion/redditexport"
 	// Registers the ypl source, so a set may declare its connectors and a worker polls and deletes through it.
