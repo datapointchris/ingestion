@@ -157,7 +157,7 @@ func (h reviewHandlers) list(w http.ResponseWriter, r *http.Request) {
 		Refuse(w, http.StatusInternalServerError, CodeInternal, "the server could not read the review queue")
 		return
 	}
-	answer := ReviewAnswer{SchemaVersion: 1, Items: make([]ReviewItem, 0, len(waiting)), Destinations: h.destinations(r)}
+	answer := ReviewAnswer{SchemaVersion: 2, Items: make([]ReviewItem, 0, len(waiting)), Destinations: h.destinations(r)}
 	for _, it := range waiting {
 		item := ReviewItem{
 			Key: it.Item.Key, Zone: it.Item.Zone, Title: it.Item.Title, URL: it.Item.URL, Reason: it.Reason,
