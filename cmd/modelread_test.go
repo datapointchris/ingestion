@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/datapointchris/ingestion/extract"
+	"github.com/datapointchris/ingestion/lens"
 	"github.com/datapointchris/ingestion/modelread"
 	"github.com/datapointchris/ingestion/modelstage"
 	"github.com/datapointchris/ingestion/prompts"
@@ -36,14 +37,14 @@ func (sentenceScanner) Scan(_ context.Context, text string) ([]store.Finding, []
 }
 
 // modelRead is the model read's handler that a worker opens from models, with
-// scanner over each suggestion.
-func (p *pipeline) modelRead(t *testing.T, models modelConfig, scanner modelread.Scanner) worker.Handler {
+// contexts as its lenses' context readers and scanner over each suggestion.
+func (p *pipeline) modelRead(t *testing.T, models modelConfig, contexts lens.Readers, scanner modelread.Scanner) worker.Handler {
 	t.Helper()
 	port := openModelPort(t.Context(), models, p.provider.URL, quiet)
 	if port == nil {
 		t.Fatal("the [model] table opened no port")
 	}
-	return modelread.NewHandler(port, p.worker, scanner, modelstage.Settings{Model: models.ModelRead.Model, Effort: models.ModelRead.Effort}, quiet)
+	return modelread.NewHandler(port, p.worker, contexts, scanner, modelstage.Settings{Model: models.ModelRead.Model, Effort: models.ModelRead.Effort}, quiet)
 }
 
 // readAnswered is an answer holding to prompts/model-read/answer.schema.json.
@@ -63,8 +64,8 @@ func readAnswered(summary, suggestion string) map[string]any {
 // beside them, under the rules' version. The item's suggestion carries them
 // as its schema publishes it. A person who places the read save again with
 // another note gets that note answered, and placing it again with no note
-// reads nothing. A save that its rule reads as is reaches delivery with no
-// model read.
+// reads nothing and drafts no note. A save that its rule reads as is reaches
+// delivery with no model read.
 func TestAFleetSavesModelReadAnswersEachNoteAPersonPlacesItWith(t *testing.T) {
 	p := newGatedPipeline(t, lifeSet(t, withLife))
 	stand := newStandInDispatch(t, p.provider)
@@ -93,7 +94,7 @@ func TestAFleetSavesModelReadAnswersEachNoteAPersonPlacesItWith(t *testing.T) {
 
 	models := stand.models(t, "", "")
 	models.ModelRead = stageModel{Model: "sonnet", Effort: "high"}
-	if ran := p.run(t, p.modelRead(t, models, sentenceScanner{}), p.lifeDeliverer(t, life)); ran != 2 {
+	if ran := p.run(t, p.modelRead(t, models, nil, sentenceScanner{}), p.lifeDeliverer(t, life)); ran != 2 {
 		t.Fatalf("the worker ran %d tasks, want the fleet save's model read and the other's delivery", ran)
 	}
 	starts := stand.starts()
@@ -142,7 +143,7 @@ func TestAFleetSavesModelReadAnswersEachNoteAPersonPlacesItWith(t *testing.T) {
 	if slices.ContainsFunc(p.tasks(t), func(v server.TaskView) bool { return v.Stage == store.StageModelRead }) {
 		t.Errorf("a model read's task is still open: %s", jsonOf(p.tasks(t)))
 	}
-	reader := p.modelRead(t, models, sentenceScanner{})
+	reader := p.modelRead(t, models, nil, sentenceScanner{})
 	stand.set(func(d *standInDispatch) { d.hold = "queued behind other runs" })
 	if _, err := runCLI(t, "review", "place", "reddit/t3_bb2", "work-inbox", "--note", again, "--config", p.config); err != nil {
 		t.Fatal(err)
@@ -169,8 +170,9 @@ func TestAFleetSavesModelReadAnswersEachNoteAPersonPlacesItWith(t *testing.T) {
 	if _, err := runCLI(t, "review", "place", "reddit/t3_bb2", "work-inbox", "--config", p.config); err != nil {
 		t.Fatal(err)
 	}
-	if ran := p.run(t, reader); ran != 0 || len(stand.starts()) != 2 {
-		t.Errorf("placing the read save with no note ran %d tasks and started %d calls, want none", ran, len(stand.starts()))
+	if ran := p.run(t, reader); ran != 0 || len(stand.starts()) != 2 ||
+		slices.ContainsFunc(p.tasks(t), func(v server.TaskView) bool { return v.Stage == store.StageNote }) {
+		t.Errorf("placing the read save with no note ran %d tasks, started %d calls or queued a note's draft, want none", ran, len(stand.starts()))
 	}
 
 	ruled := p.shown(t, "reddit/t3_aa1")

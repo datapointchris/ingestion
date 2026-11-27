@@ -331,7 +331,7 @@ func yplHandlers(t *testing.T, p *pipeline, api string) map[string]worker.Handle
 		t.Fatal(err)
 	}
 	handlers := map[string]worker.Handler{}
-	for _, h := range workerHandlers(p.worker, nil, openSources(t.Context(), cfg, p.provider.URL, quiet), nil, nil, modelConfig{}, quiet) {
+	for _, h := range workerHandlers(p.worker, nil, openSources(t.Context(), cfg, p.provider.URL, quiet), nil, nil, nil, modelConfig{}, quiet) {
 		handlers[h.Capability()] = h
 	}
 	return handlers

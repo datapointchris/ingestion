@@ -7,7 +7,7 @@
   "additionalProperties": false,
   "required": ["schema_version", "items"],
   "properties": {
-    "schema_version": {"const": 1},
+    "schema_version": {"const": 2},
     "items": {
       "type": "array",
       "items": {
@@ -20,8 +20,8 @@
           "title": {"type": ["string", "null"]},
           "url": {"type": ["string", "null"]},
           "reason": {
-            "description": "Why the item waits: its sightings' tags disagree, the guess fell below the floor, a connector that sighted it leaves its side to a person and the guess waits beside it, no tag or rule placed it and the quality gate gave no answer, because its run failed, its scan could not read the set in force, or it waited in review from before the quality gate ran, the side gate could not read the set in force or the item's sightings, it has no usable parse, the quality gate sent it to review, or the quality gate would drop it and a family of it has not earned hiding it, or the family's draw showed it.",
-            "enum": ["tags-disagree", "below-floor", "person-sorts", "no-guess", "gate-error", "no-parse", "quality-review", "gate-would-drop"]
+            "description": "Why the item waits: its sightings' tags disagree, the guess fell below the floor, a connector that sighted it leaves its side to a person and the guess waits beside it, no tag or rule placed it and the quality gate gave no answer, because its run failed, its scan could not read the set in force, or it waited in review from before the quality gate ran, the side gate could not read the set in force or the item's sightings, it has no usable parse, the quality gate sent it to review, or the quality gate would drop it and a family of it has not earned hiding it, or the family's draw showed it, or a read by a model waits on its note, whose draft fell below the note floor.",
+            "enum": ["tags-disagree", "below-floor", "person-sorts", "no-guess", "gate-error", "no-parse", "quality-review", "gate-would-drop", "note-unclear"]
           },
           "guess": {
             "description": "The quality gate's side guess, where it gave one. It is present under any reason, and a reader shows it wherever it is present rather than by the reason.",
@@ -35,6 +35,10 @@
           },
           "quality_answer": {
             "description": "The quality gate's newest done answer, in the shape prompts/quality/answer.schema.json holds. Null where the gate gave none. Its idea and themes are a model's reading of the item, so they take the item's zone.",
+            "type": ["object", "null"]
+          },
+          "note_draft": {
+            "description": "The note stage's newest done draft, in the shape prompts/note/answer.schema.json holds: the questions for a model read to answer, why the item was likely saved, how it bears on the owner's current work, a summary, a one-line idea and a confidence. Null where none was drafted. A model wrote it from the item, so it takes the item's zone. Placing the item with no note takes the draft.",
             "type": ["object", "null"]
           },
           "connectors": {"type": "array", "items": {"type": "string"}},

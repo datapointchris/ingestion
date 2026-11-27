@@ -174,7 +174,7 @@ func (h handler) Run(ctx context.Context, task worker.Task) worker.Result {
 // where it holds none.
 func (h handler) own(task worker.Task, prompt prompts.Prompt) *server.StageOutput {
 	i := slices.IndexFunc(task.StageOutputs, func(o server.StageOutput) bool {
-		return o.Producer == h.stage.Producer && o.ProducerVersion == prompt.Version && store.NoteAnswered(o.NoteDigest, task.Note)
+		return o.Producer == h.stage.Producer && o.ProducerVersion == prompt.Version && store.NoteAnswered(o.NoteDigest, task.Answers())
 	})
 	if i < 0 {
 		return nil
@@ -193,7 +193,7 @@ func (h handler) request(ctx context.Context, task worker.Task, prompt prompts.P
 		return modelport.Request{}, fmt.Errorf("%w: %w", modelport.ErrRefused, err)
 	}
 	return modelport.Request{
-		Subject: subject(task), Stage: h.stage.Name, PromptVersion: prompt.Version, NoteDigest: deref(store.NoteDigest(task.Note)),
+		Subject: subject(task), Stage: h.stage.Name, PromptVersion: prompt.Version, NoteDigest: deref(store.NoteDigest(task.Answers())),
 		Prompt: text, Schema: prompt.Schema, Model: h.model(task), Effort: h.settings.Effort,
 	}, nil
 }
@@ -214,7 +214,7 @@ func (h handler) model(task worker.Task) string {
 // at effort, waiting on dispatch.
 func (h handler) output(task worker.Task, prompt prompts.Prompt, model, effort, dispatch string) server.ReportOutput {
 	out := server.ReportOutput{
-		Producer: h.stage.Producer, ProducerVersion: prompt.Version, NoteDigest: store.NoteDigest(task.Note),
+		Producer: h.stage.Producer, ProducerVersion: prompt.Version, NoteDigest: store.NoteDigest(task.Answers()),
 		Model: &model, Effort: &effort, DispatchID: optional(dispatch),
 	}
 	if prompt.Lens != nil {

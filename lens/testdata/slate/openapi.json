@@ -1,0 +1,969 @@
+{
+ "components": {
+  "schemas": {
+   "CheckRequest": {
+    "description": "Someone asking that a record be checked ahead of its interval. The next check on the record clears it.",
+    "properties": {
+     "reason": {
+      "title": "Reason",
+      "type": "string"
+     },
+     "requested_by": {
+      "title": "Requested By",
+      "type": "string"
+     },
+     "requested_ts": {
+      "format": "date-time",
+      "title": "Requested Ts",
+      "type": "string"
+     }
+    },
+    "required": [
+     "requested_ts",
+     "requested_by",
+     "reason"
+    ],
+    "title": "CheckRequest",
+    "type": "object"
+   },
+   "CheckedStep": {
+    "description": "A step checked on a record, read from the latest worklog of that step whose ending performed it.\n\n`session` is the first agent session that worked in that worklog, null where none did.",
+    "properties": {
+     "ended_ts": {
+      "format": "date-time",
+      "title": "Ended Ts",
+      "type": "string"
+     },
+     "session": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Session"
+     },
+     "step": {
+      "enum": [
+       "shape",
+       "design",
+       "preflight",
+       "build",
+       "retro"
+      ],
+      "title": "Step",
+      "type": "string"
+     },
+     "worklog": {
+      "title": "Worklog",
+      "type": "string"
+     }
+    },
+    "required": [
+     "step",
+     "worklog",
+     "ended_ts"
+    ],
+    "title": "CheckedStep",
+    "type": "object"
+   },
+   "Claim": {
+    "description": "One lease on a record. `ending` and `ended_ts` are set together, once it ends.\n\n`state` is derived on every read from `expires_ts` and `ended_ts`. `worklog` names the worklog\nthe hold opened, or the one its session started or joined on the record since. `waiting` is what\nthe holder waits on now, or null while it works.\n`flow_id` is the flow of the request that took it, not one copied from its record.",
+    "properties": {
+     "directory": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Directory"
+     },
+     "ended_by": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Ended By"
+     },
+     "ended_ts": {
+      "anyOf": [
+       {
+        "format": "date-time",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Ended Ts"
+     },
+     "ending": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Ending"
+     },
+     "expires_ts": {
+      "format": "date-time",
+      "title": "Expires Ts",
+      "type": "string"
+     },
+     "flow_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Flow Id"
+     },
+     "holder": {
+      "title": "Holder",
+      "type": "string"
+     },
+     "host": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Host"
+     },
+     "id": {
+      "title": "Id",
+      "type": "integer"
+     },
+     "record_number": {
+      "title": "Record Number",
+      "type": "integer"
+     },
+     "session": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Session"
+     },
+     "started_ts": {
+      "format": "date-time",
+      "title": "Started Ts",
+      "type": "string"
+     },
+     "state": {
+      "enum": [
+       "live",
+       "expired",
+       "ended"
+      ],
+      "title": "State",
+      "type": "string"
+     },
+     "waiting": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/ClaimWait"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "worklog": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Worklog"
+     }
+    },
+    "required": [
+     "id",
+     "record_number",
+     "holder",
+     "started_ts",
+     "expires_ts",
+     "state"
+    ],
+    "title": "Claim",
+    "type": "object"
+   },
+   "ClaimWait": {
+    "description": "A stretch the holder spent waiting while the claim still held its record.",
+    "properties": {
+     "ended_by": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Ended By"
+     },
+     "ended_ts": {
+      "anyOf": [
+       {
+        "format": "date-time",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Ended Ts"
+     },
+     "started_ts": {
+      "format": "date-time",
+      "title": "Started Ts",
+      "type": "string"
+     },
+     "waiting_on": {
+      "title": "Waiting On",
+      "type": "string"
+     }
+    },
+    "required": [
+     "waiting_on",
+     "started_ts"
+    ],
+    "title": "ClaimWait",
+    "type": "object"
+   },
+   "Focus": {
+    "description": "A focus as it was set, and whether it is in force.\n\n`active` is derived on read: nothing ended it, and its `until_date` is today or later in the\nrequest's `timezone`. `held_until` is the instant it stops holding: the earlier of `ended_ts`\nand the midnight after `until_date` in that zone. `shares` holds the shares it named, in\npursuit number order.",
+    "properties": {
+     "active": {
+      "title": "Active",
+      "type": "boolean"
+     },
+     "ended_reason": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Ended Reason"
+     },
+     "ended_ts": {
+      "anyOf": [
+       {
+        "format": "date-time",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Ended Ts"
+     },
+     "held_until": {
+      "format": "date-time",
+      "title": "Held Until",
+      "type": "string"
+     },
+     "id": {
+      "title": "Id",
+      "type": "integer"
+     },
+     "set_by": {
+      "title": "Set By",
+      "type": "string"
+     },
+     "shares": {
+      "default": [],
+      "items": {
+       "$ref": "#/components/schemas/FocusShare"
+      },
+      "title": "Shares",
+      "type": "array"
+     },
+     "started_ts": {
+      "format": "date-time",
+      "title": "Started Ts",
+      "type": "string"
+     },
+     "statement": {
+      "title": "Statement",
+      "type": "string"
+     },
+     "until_date": {
+      "format": "date",
+      "title": "Until Date",
+      "type": "string"
+     }
+    },
+    "required": [
+     "id",
+     "statement",
+     "started_ts",
+     "until_date",
+     "set_by",
+     "active",
+     "held_until"
+    ],
+    "title": "Focus",
+    "type": "object"
+   },
+   "FocusShare": {
+    "description": "A share as the focus named it.",
+    "properties": {
+     "pursuit": {
+      "$ref": "#/components/schemas/PursuitSummary"
+     },
+     "share": {
+      "title": "Share",
+      "type": "number"
+     }
+    },
+    "required": [
+     "pursuit",
+     "share"
+    ],
+    "title": "FocusShare",
+    "type": "object"
+   },
+   "FocusStanding": {
+    "description": "The focus in force, and each pursuit's standing against it, as of `window.until`.\n\n`focus` is null where none is in force. `pursuits` holds every active pursuit and every other\none that drew output in the window, the furthest under its share first.",
+    "properties": {
+     "focus": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/Focus"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "pursuits": {
+      "items": {
+       "$ref": "#/components/schemas/PursuitStanding"
+      },
+      "title": "Pursuits",
+      "type": "array"
+     },
+     "unattributed": {
+      "$ref": "#/components/schemas/UnattributedUsage"
+     },
+     "window": {
+      "$ref": "#/components/schemas/FocusWindow"
+     }
+    },
+    "required": [
+     "focus",
+     "window",
+     "pursuits",
+     "unattributed"
+    ],
+    "title": "FocusStanding",
+    "type": "object"
+   },
+   "FocusWindow": {
+    "description": "The window usage is counted over.\n\nIt opens at the later of the focus's start and `USAGE_WINDOW` in `services/focus_standing.py`\nbefore `until`. The standing's window ends at the read. A usage day's ends at that day's\nmidnight, or where the focus stopped holding on its last day.",
+    "properties": {
+     "since": {
+      "format": "date-time",
+      "title": "Since",
+      "type": "string"
+     },
+     "until": {
+      "format": "date-time",
+      "title": "Until",
+      "type": "string"
+     }
+    },
+    "required": [
+     "since",
+     "until"
+    ],
+    "title": "FocusWindow",
+    "type": "object"
+   },
+   "Initiative": {
+    "description": "An initiative and the counts that say whether work is left in it.\n\nThe three counts partition `issue_count`. `repos` is derived from every issue\nnot canceled, never stored, so it cannot drift from what the work touches.\n`claim` is the initiative's unended claim, live or expired. `rank` places it, with its issues, among the\nrecords of its priority in the queue. `depends_on` is each initiative or\nissue it waits on, and `waiting_initiatives` each initiative waiting on it,\nopen or closed, by number. `tags` is the\ninitiative's own, and each of its issues reads them as its own too. `pursuits` is each\npursuit it is in, in number order, and each of its issues reads them as its own. `flow_id` is\nthe flow of the work that created it, or of the idea promoted into it. `last_check` is its\nlatest check, and `check_request` someone asking that it be checked next, each null where there\nis none. `refs` is each key or URL that the initiative names as what it came from, oldest first.",
+    "properties": {
+     "autofix": {
+      "title": "Autofix",
+      "type": "boolean"
+     },
+     "canceled_count": {
+      "default": 0,
+      "title": "Canceled Count",
+      "type": "integer"
+     },
+     "check_request": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/CheckRequest"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "claim": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/Claim"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "closed_ts": {
+      "anyOf": [
+       {
+        "format": "date-time",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Closed Ts"
+     },
+     "completed_count": {
+      "default": 0,
+      "title": "Completed Count",
+      "type": "integer"
+     },
+     "created_ts": {
+      "format": "date-time",
+      "title": "Created Ts",
+      "type": "string"
+     },
+     "depends_on": {
+      "default": [],
+      "items": {
+       "$ref": "#/components/schemas/RecordSummary"
+      },
+      "title": "Depends On",
+      "type": "array"
+     },
+     "description": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Description"
+     },
+     "flow_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Flow Id"
+     },
+     "id": {
+      "format": "uuid",
+      "title": "Id",
+      "type": "string"
+     },
+     "issue_count": {
+      "default": 0,
+      "title": "Issue Count",
+      "type": "integer"
+     },
+     "last_check": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/LastCheck"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "name": {
+      "title": "Name",
+      "type": "string"
+     },
+     "not_planned_steps": {
+      "default": [],
+      "items": {
+       "enum": [
+        "shape",
+        "design",
+        "preflight",
+        "build",
+        "retro"
+       ],
+       "type": "string"
+      },
+      "title": "Not Planned Steps",
+      "type": "array"
+     },
+     "number": {
+      "title": "Number",
+      "type": "integer"
+     },
+     "open_count": {
+      "default": 0,
+      "title": "Open Count",
+      "type": "integer"
+     },
+     "pinned_by": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Pinned By"
+     },
+     "pinned_session": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Pinned Session"
+     },
+     "pinned_ts": {
+      "anyOf": [
+       {
+        "format": "date-time",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Pinned Ts"
+     },
+     "priority": {
+      "title": "Priority",
+      "type": "integer"
+     },
+     "pursuits": {
+      "default": [],
+      "items": {
+       "$ref": "#/components/schemas/PursuitSummary"
+      },
+      "title": "Pursuits",
+      "type": "array"
+     },
+     "rank": {
+      "title": "Rank",
+      "type": "number"
+     },
+     "refs": {
+      "default": [],
+      "items": {
+       "$ref": "#/components/schemas/RecordRef"
+      },
+      "title": "Refs",
+      "type": "array"
+     },
+     "repos": {
+      "default": [],
+      "items": {
+       "type": "string"
+      },
+      "title": "Repos",
+      "type": "array"
+     },
+     "stage": {
+      "anyOf": [
+       {
+        "const": "idea",
+        "type": "string"
+       },
+       {
+        "enum": [
+         "shape",
+         "design",
+         "preflight",
+         "build",
+         "retro"
+        ],
+        "type": "string"
+       }
+      ],
+      "default": "idea",
+      "title": "Stage"
+     },
+     "status": {
+      "title": "Status",
+      "type": "string"
+     },
+     "status_reason": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Status Reason"
+     },
+     "steps": {
+      "default": [],
+      "items": {
+       "$ref": "#/components/schemas/CheckedStep"
+      },
+      "title": "Steps",
+      "type": "array"
+     },
+     "summary": {
+      "title": "Summary",
+      "type": "string"
+     },
+     "tags": {
+      "default": [],
+      "items": {
+       "type": "string"
+      },
+      "title": "Tags",
+      "type": "array"
+     },
+     "waiting_initiatives": {
+      "default": [],
+      "items": {
+       "$ref": "#/components/schemas/RecordSummary"
+      },
+      "title": "Waiting Initiatives",
+      "type": "array"
+     }
+    },
+    "required": [
+     "id",
+     "number",
+     "name",
+     "summary",
+     "status",
+     "priority",
+     "rank",
+     "autofix",
+     "created_ts"
+    ],
+    "title": "Initiative",
+    "type": "object"
+   },
+   "LastCheck": {
+    "description": "A record's latest check, as every read of it carries it.",
+    "properties": {
+     "checked_by": {
+      "title": "Checked By",
+      "type": "string"
+     },
+     "checked_ts": {
+      "format": "date-time",
+      "title": "Checked Ts",
+      "type": "string"
+     },
+     "verdict": {
+      "title": "Verdict",
+      "type": "string"
+     }
+    },
+    "required": [
+     "verdict",
+     "checked_ts",
+     "checked_by"
+    ],
+    "title": "LastCheck",
+    "type": "object"
+   },
+   "PursuitStanding": {
+    "description": "Where one pursuit stands against its share of the work, with its name and status now.\n\n`touched_ts` is the latest `touched_ts` of any initiative in the pursuit, as the live board reads\nit. Null where the pursuit holds no initiative.",
+    "properties": {
+     "factor": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Factor"
+     },
+     "name": {
+      "title": "Name",
+      "type": "string"
+     },
+     "number": {
+      "title": "Number",
+      "type": "integer"
+     },
+     "share": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Share"
+     },
+     "share_named": {
+      "title": "Share Named",
+      "type": "boolean"
+     },
+     "split_output_tokens": {
+      "title": "Split Output Tokens",
+      "type": "number"
+     },
+     "status": {
+      "title": "Status",
+      "type": "string"
+     },
+     "touched_ts": {
+      "anyOf": [
+       {
+        "format": "date-time",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Touched Ts"
+     },
+     "usage": {
+      "title": "Usage",
+      "type": "number"
+     },
+     "worklog_count": {
+      "title": "Worklog Count",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "number",
+     "share",
+     "share_named",
+     "split_output_tokens",
+     "worklog_count",
+     "usage",
+     "factor",
+     "name",
+     "status",
+     "touched_ts"
+    ],
+    "title": "PursuitStanding",
+    "type": "object"
+   },
+   "PursuitSummary": {
+    "description": "A pursuit as a record in it reads it: the number a write sets, and the name a person knows.",
+    "properties": {
+     "name": {
+      "title": "Name",
+      "type": "string"
+     },
+     "number": {
+      "title": "Number",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "number",
+     "name"
+    ],
+    "title": "PursuitSummary",
+    "type": "object"
+   },
+   "RecordRef": {
+    "description": "`kind` is `url` for an http or https URL with a host, `key` for anything else.",
+    "properties": {
+     "kind": {
+      "enum": [
+       "url",
+       "key"
+      ],
+      "title": "Kind",
+      "type": "string"
+     },
+     "linked_by": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Linked By"
+     },
+     "linked_ts": {
+      "format": "date-time",
+      "title": "Linked Ts",
+      "type": "string"
+     },
+     "note": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Note"
+     },
+     "ref": {
+      "title": "Ref",
+      "type": "string"
+     }
+    },
+    "required": [
+     "ref",
+     "kind",
+     "linked_ts"
+    ],
+    "title": "RecordRef",
+    "type": "object"
+   },
+   "RecordSummary": {
+    "description": "Enough of a record of any kind to print it on one line. `title` is an initiative's name.",
+    "properties": {
+     "kind": {
+      "title": "Kind",
+      "type": "string"
+     },
+     "number": {
+      "title": "Number",
+      "type": "integer"
+     },
+     "status": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Status"
+     },
+     "title": {
+      "title": "Title",
+      "type": "string"
+     }
+    },
+    "required": [
+     "number",
+     "kind",
+     "title"
+    ],
+    "title": "RecordSummary",
+    "type": "object"
+   },
+   "UnattributedUsage": {
+    "description": "The window's output that reached no pursuit.\n\n`output_tokens` and `worklog_count` are the worklogs whose record reaches none.\n`outside_worklogs_output_tokens` is what sessions spent while in no worklog.",
+    "properties": {
+     "output_tokens": {
+      "title": "Output Tokens",
+      "type": "integer"
+     },
+     "outside_worklogs_output_tokens": {
+      "title": "Outside Worklogs Output Tokens",
+      "type": "integer"
+     },
+     "worklog_count": {
+      "title": "Worklog Count",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "output_tokens",
+     "worklog_count",
+     "outside_worklogs_output_tokens"
+    ],
+    "title": "UnattributedUsage",
+    "type": "object"
+   }
+  }
+ },
+ "info": {
+  "title": "slate, the two reads a lens context reader makes",
+  "version": "0.1.0"
+ },
+ "openapi": "3.1.0",
+ "paths": {
+  "/api/v1/focus": {
+   "get": {
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/FocusStanding"
+        }
+       }
+      },
+      "description": "Successful Response"
+     }
+    }
+   }
+  },
+  "/api/v1/initiatives": {
+   "get": {
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "items": {
+          "$ref": "#/components/schemas/Initiative"
+         },
+         "title": "Response Read Many Api V1 Initiatives Get",
+         "type": "array"
+        }
+       }
+      },
+      "description": "Successful Response"
+     }
+    }
+   }
+  }
+ }
+}

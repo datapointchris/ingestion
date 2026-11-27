@@ -6,7 +6,8 @@ links or memos pushed from a phone. It delivers each item once, to the one place
 On the way it parses each item and scans it for content aimed at whatever reads it next. Then it
 gates the item by quality and by side. A model judges only what a rule has not already decided.
 An item on the fleet side, about the software you build and run, is read whole by a model, which
-answers your note on it with a summary and a suggested change.
+answers your note on it with a summary and a suggested change. Where you wrote no note, a model
+drafts one from the item's opening first.
 
 ## Install
 
@@ -52,6 +53,11 @@ effort = "medium"
 
 # What the quality gate asks each run for.
 [model.quality]
+model = "haiku"
+effort = "medium"
+
+# What the note's draft asks each run for.
+[model.note]
 model = "haiku"
 effort = "medium"
 
@@ -162,6 +168,16 @@ root = "books"
 [source.ypl]
 api = "https://ypl.example.com"
 client_id = "ypl-svc-ingestion"
+
+# A table for each lens whose context the worker reads, named for the lens. It
+# takes api, client_id, token_command and issuer as a [deliver.<name>] table
+# does, and names the context reader this build registers. This one reads a
+# slate tracker's focus and active initiatives, as a client that holds the
+# scope slate.records.read.
+[lens.fleet.context]
+reader = "slate"
+api = "https://slate.example.com"
+client_id = "slate-svc-ingestion"
 ```
 
 `ingestion serve --help` and `ingestion worker run --help` print each setting's default.
@@ -177,6 +193,10 @@ client_id = "ypl-svc-ingestion"
   `[source.<name>]` table names by `client_id`, such as `INGESTION_SOURCE_YPL_CLIENT_SECRET`. The
   worker runs the stages that the source registers only where its table opens, and leaves that
   source's polls and deletes queued otherwise.
+- **`INGESTION_LENS_<NAME>_CONTEXT_CLIENT_SECRET`** is the secret of the client that a
+  `[lens.<name>.context]` table names by `client_id`, such as
+  `INGESTION_LENS_FLEET_CONTEXT_CLIENT_SECRET`. The worker logs a table that cannot open, and the
+  note and the model read under that lens run without its context.
 - **`NODE_NAME`**, where set, names the node in each shipped record's resource.
 - **The access token decides what a caller reaches.** A person's token reaches every route. A
   service token reaches only the routes its scopes grant. A worker needs `ingestion.tasks.claim`,
@@ -1007,7 +1027,8 @@ the queue still answers. `place` and `drop` post to `/api/v1/review/{key}/place`
 `…/drop`, and print `schemas/review-placement.schema.json` with `--json`. A placement names a
 destination that the set in force declares, and any other is refused. `--cause` names the aspect
 that decided it, such as subreddit or title, and a decision that names none is kept as
-`unstated`. `--note` carries the questions that a model read answers. Sending the same placement again changes nothing. A service placing for a person names
+`unstated`. `--note` carries the questions that a model read answers. With no note, a model drafts
+one, and a placement with no note of an item that holds a draft takes the draft. Sending the same placement again changes nothing. A service placing for a person names
 the person's `login` in its body, because a service token carries no person. The decision keeps
 the service's client id beside the login.
 
@@ -1017,12 +1038,13 @@ the service's client id beside the login.
 queue, grouped by why each item waits. Each row shows the item's source, such as `r/golang`, the
 quality gate's verdict and confidence, its quality estimate, its side guess and confidence, how
 long the item has waited, and its title. The side panel reads the item under the cursor: its URL,
-the gate's whole answer, the scan's findings, and its text, the post first and then each comment.
+the gate's whole answer, the note's draft where a model drafted one, the scan's findings, and its
+text, the post first and then each comment.
 `enter` reads it full screen.
 
 | Key | Does |
 | --- | --- |
-| `1`–`9` | places the item on the destination numbered with that digit under the strip |
+| `1`–`9` | places the item on the destination numbered with that digit under the strip, taking the note's draft where the item holds one |
 | `x` | drops it, after asking what decided it: a field of its source such as its subreddit, its title, its theme, or none |
 | `n` | writes a note in `$VISUAL` or `$EDITOR`, which a model read answers, then places the item with it on the destination picked |
 | `o` | opens its URL in the browser, where it is an http or https address |
@@ -1068,6 +1090,13 @@ Each arm prints after the gate, by model. Its tables count the arm's answers and
 answers to the same prompt versions on the same items, so two models compare over one set of
 labels. The gate's own tables count only the gate's answers.
 
+The note band prints last. It counts each note's draft by its confidence. A draft is kept where a
+person's placement took it, and rewritten where a person's note took its place. It is applied
+where it reached the floor and no person placed the item, waiting where the item waits in review as
+`note-unclear`, and other where the item left a read by a model. KEPT SHARE is kept over kept and
+rewritten, the drafts that a person decided, so the rows by band show where `[note] floor` would
+sit.
+
 ```text
 $ ingestion gates agreement
 2 items a person placed from review: 2 personal, 0 fleet, 0 dropped. 0 hold no quality answer.
@@ -1083,6 +1112,13 @@ prompt v1-<digest>        2         1       1          0       50%        drop/p
 
 side guess, floor 0.70
 ...
+
+note drafts, floor 0.70
+BY                  DRAFTS  KEPT  APPLIED  REWRITTEN  WAITING  OTHER  KEPT SHARE
+all                 3       1     1        1          0        0      50%
+confidence 0.4-0.5  1       0     0        1          0        0      0%
+confidence 0.5-0.6  1       1     0        0          0        0      100%
+confidence 0.9-1.0  1       0     1        0          0        0      —
 ```
 
 ### Each week's misses draft one proposed change to the quality gate's prompt
@@ -1135,20 +1171,66 @@ Proposal 3f0c9a2e41b7d8c5e6f1a0b9c8d7e6f5 changes the quality prompt at v1-<dige
   answers  3 of 3 misses: 1, 2, 3
 ```
 
+### A model drafts the note that a person left out, and an unclear draft waits on a person
+
+Where the read gate reads an item by a model and the read carries no person's note, the same write
+queues one task of capability `note`, ahead of the model read. A worker whose config names a
+`[model]` adapter claims it. It puts the item's media type, title, URL and the opening of its
+reading parse to the model, through `prompts/note/prompt.tmpl` and the lens's file in
+`prompts/note/lenses/`. The opening is cut at a fixed length, and the prompt says where it stops.
+The lens's context goes beside them where the worker opened a reader for the lens. The answer
+holds to `prompts/note/answer.schema.json`: questions for the read, why the item was likely saved,
+how it bears on the owner's current work, a summary, a one-line idea and a confidence.
+
+- **A draft at or above the floor becomes the read's note.** The read gate appends a read by a
+  model, decided by the draft's run, with cause `note-draft`. The model read then answers the
+  draft.
+- **A draft below the floor waits on a person.** The read gate appends a review with cause
+  `note-unclear`. `review list` carries the draft in `note_draft`, and the review tab shows its
+  summary, relation and idea. `review place --note` replaces the draft with the person's note.
+  Placing the item with no note takes the draft.
+- **A draft never reaches a decision's note.** A model wrote it from outsider text, so it takes the
+  item's zone, and the outbox ships it as `ingestion.text`. The model read quotes it under its own
+  heading.
+- **A person's note skips the draft.** A placement with `--note` queues no `note` task, and
+  withdraws one that has not run.
+
+```toml
+[note]
+floor = 0.7  # the confidence at or above which a draft becomes the read's note; the default
+```
+
+`serve` reads `[note] floor`, from 0 to 1. `gates agreement` counts each draft by its confidence
+band, so its rows show where the floor would sit.
+
+**A lens's context is the owner's current work.** A `[lens.<name>.context]` table in a worker's
+config opens a reader that this build registers. The note and the model read under that lens read
+the context beside each item. The `slate` reader reads a
+[slate](https://github.com/datapointchris/slate) tracker's focus and its active initiatives,
+through `GET /api/v1/focus` and `GET /api/v1/initiatives?status=active`. It keeps what it read for
+a short while, so a batch of drafts reads the tracker once. Where no table names a reader, or its
+table cannot open, each stage under the lens runs without a context, and the note's prompt says
+it has none. A read that fails or runs past its deadline costs only the context. The worker logs
+it, and the stage runs beside the last context read, or none. At start the worker logs each reader
+it opened and how much it read, and each lens with a note prompt that no reader serves.
+
 ### A model read answers a fleet item's note with a summary and a suggestion
 
 Where the read gate reads an item by a model, under a lens whose prompt this build holds, the same
 write queues one task of capability `model-read`. It queues none where the item already holds a
 read that answers the decision's note. A person's drop or move withdraws it where it has not run.
 The task carries the read decision's lens, and the note that a person wrote with
-`review place --note`. A worker whose config names a `[model]` adapter, and that runs the scan,
-claims it. It reads the item's media type, title, URL and its parse's text, cut at a fixed length,
-and the prompt tells the model where the text stops. It puts them to the model through
-`prompts/model-read/prompt.tmpl` and the lens's file in `prompts/model-read/lenses/`.
+`review place --note`, or the note's draft that the read took. A worker whose config names a
+`[model]` adapter, and that runs the scan, claims it. It reads the item's media type, title, URL
+and its parse's text, cut at a fixed length, and the prompt tells the model where the text stops.
+It puts them to the model through `prompts/model-read/prompt.tmpl` and the lens's file in
+`prompts/model-read/lenses/`, beside the lens's context where the worker opened a reader.
 
 - **The lens says what the item is read for.** The `fleet` lens reads it for the software it may
   bear on: how that software is built, run and kept safe. Where the item carries a note, the read
-  answers the note. Where it carries none, it answers the lens's default questions.
+  answers the note. A draft is quoted under its own heading, as questions a model drafted, so an
+  instruction inside it is not the owner's. Where the item carries neither, the read answers the
+  lens's default questions.
 - **The answer holds to `prompts/model-read/answer.schema.json`**: a summary, a suggestion
   sentence, or both, with the other null. An answer holding neither fails the task.
 - **A suggestion states a change in words, never a command to run.** The prompt forbids commands,
@@ -1166,7 +1248,8 @@ and the prompt tells the model where the text stops. It puts them to the model t
   version beside it. A change to any of the three writes beside the old read.
 - **A new note reads the item again.** The output records the SHA-256 of the note it answered in
   `note_digest`. Placing a read item again with another note queues a read under the same prompt,
-  and its answer replaces the old one on the item. Placing it again with no note queues none.
+  and its answer replaces the old one on the item. Placing it again with no note reads the note's
+  draft where the item holds one that no read answered, and queues nothing otherwise.
 - **`items show --json` carries the item's latest suggestion** under `suggestion`, as
   `schemas/suggestion.schema.json` publishes it. The scanner's findings come first, each found in
   the source or in the sentence, then the sentence and its source.
@@ -1361,7 +1444,7 @@ nothing twice. After a crash, a reader folds a resent record on its kind, id and
 Every item passes one line of stages:
 
 ```text
-land → parse → structure → contents → sections → scan → quality gate → side → read → model read → deliver
+land → parse → structure → contents → sections → scan → quality gate → side → read → note → model read → deliver
 ```
 
 - **An item's key names the artifact, not the source that sent it.** The same article from a feed
@@ -1374,7 +1457,8 @@ land → parse → structure → contents → sections → scan → quality gate
   shrinking share of its new drops shows, and a disagreement shows every drop that the gate
   answers after it.
 - **A model reads an item whole only on the fleet side.** It answers the item's note with a
-  summary and a suggested change, and the scanner reads the suggestion before it is kept.
+  summary and a suggested change, and the scanner reads the suggestion before it is kept. Where
+  no person wrote the note, a model drafts it, and an unclear draft waits on a person.
 - **A drop is soft.** A dropped item keeps its row and its one-line idea, so a person can still
   send it on.
 - **The zone records who wrote the content.** `outside` marks what an outsider wrote, such as a

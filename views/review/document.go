@@ -16,7 +16,8 @@ import (
 )
 
 // document is the item's reading pane as markdown: its title, URL and where it came from, the
-// quality gate's whole answer, the scan's findings, then the parse's text, a section a unit, the
+// note's draft where one was drafted, the quality gate's whole answer, the scan's findings, then
+// the parse's text, a section a unit, the
 // post first and then each comment. Every value that an item carries is drawn literally, so markdown in
 // a stranger's text reads as typed.
 func (b *Board) document(key string) string {
@@ -35,6 +36,7 @@ func (b *Board) document(key string) string {
 	for _, s := range it.Sightings {
 		fmt.Fprintf(&d, "- **from** %s\n", literalLine(sightingWords(s)))
 	}
+	d.WriteString(draftSection(it))
 	d.WriteString("\n## The quality gate's answer\n\n")
 	d.WriteString(answerSection(it))
 	d.WriteString(b.parseSections(key))
@@ -68,6 +70,31 @@ func sightingWords(s server.ReviewSighting) string {
 		parts = append(parts, "tags "+strings.Join(s.Tags, ", "))
 	}
 	return strings.Join(parts, " · ")
+}
+
+// draftSection is the note's draft as a list: how sure it is, its summary, how it bears on the
+// owner's work, its idea, why the item was likely saved and its questions. A model drafted it from
+// the item, so every field is drawn literally. It is empty where no draft was made.
+func draftSection(it item) string {
+	switch {
+	case it.draftFault != "":
+		return "\n## The note's draft\n\nThe draft the store keeps could not be read: " + literalLine(it.draftFault) + "\n"
+	case it.draft == nil:
+		return ""
+	}
+	a := it.draft
+	rows := []string{
+		fmt.Sprintf("- **confidence** %s", confidence(a.Confidence)),
+		"- **summary** " + literalLine(a.Summary),
+		"- **relation** " + literalLine(a.Relation),
+		"- **idea** " + literalLine(a.Idea),
+		"- **why saved** " + literalLine(a.WhySaved),
+	}
+	for _, q := range a.Questions {
+		rows = append(rows, "- **question** "+literalLine(q))
+	}
+	return "\n## The note's draft\n\nA model drafted this from the item's opening. Placing the item with no note takes it.\n\n" +
+		strings.Join(rows, "\n") + "\n"
 }
 
 // answerSection is the gate's whole answer as a list, or why there is none. With no answer, the

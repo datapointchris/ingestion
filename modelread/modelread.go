@@ -25,6 +25,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/datapointchris/ingestion/lens"
 	"github.com/datapointchris/ingestion/modelport"
 	"github.com/datapointchris/ingestion/modelstage"
 	"github.com/datapointchris/ingestion/prompts"
@@ -87,14 +88,17 @@ type Scanner interface {
 
 // NewHandler is the worker handler that runs the model read through port
 // under modelstage's dispatch-once protocol. It reads each task's parse
-// through client, and scans each suggestion with scanner.
-func NewHandler(port modelport.Port, client *worker.Client, scanner Scanner, settings modelstage.Settings, log *slog.Logger) worker.Handler {
+// through client and its lens's context through contexts, and scans each
+// suggestion with scanner.
+func NewHandler(port modelport.Port, client *worker.Client, contexts lens.Readers, scanner Scanner, settings modelstage.Settings,
+	log *slog.Logger,
+) worker.Handler {
 	settings.Model, settings.Effort = cmp.Or(settings.Model, DefaultModel), cmp.Or(settings.Effort, DefaultEffort)
 	return modelstage.NewHandler(port, modelstage.Stage{
 		Name: Capability, Producer: Producer,
 		Prompt: promptOf,
 		Data: func(ctx context.Context, task worker.Task) (any, error) {
-			return read(ctx, client, task)
+			return read(ctx, client, contexts, task, log)
 		},
 		Keep: func(ctx context.Context, _ worker.Task, p prompts.Prompt, raw json.RawMessage, out *server.ReportOutput) ([]any, error) {
 			return keep(ctx, scanner, p, raw, out)
@@ -113,26 +117,29 @@ func promptOf(task worker.Task) (prompts.Prompt, error) {
 	return p, nil
 }
 
-// promptData is what the prompt quotes of the item, and the note that a
-// person wrote.
+// promptData is what the prompt quotes of the item, its note, which a model
+// drafted where Drafted is set, and its lens's context.
 type promptData struct {
-	MediaType, Title, URL, Text, Note string
-	Truncated                         bool
-	Shown, Total                      int
+	MediaType, Title, URL, Text, Note, Context string
+	Drafted, Truncated                         bool
+	Shown, Total                               int
 }
 
 // read is the task's item as the prompt quotes it: its title, its newest
-// parse's text up to textRunes, and its note.
-func read(ctx context.Context, client *worker.Client, task worker.Task) (promptData, error) {
+// parse's text up to textRunes, its note, and its lens's context, which is
+// empty where no reader is opened for the lens or none could be read, and
+// logged on log.
+func read(ctx context.Context, client *worker.Client, contexts lens.Readers, task worker.Task, log *slog.Logger) (promptData, error) {
 	parse, err := client.TaskParse(ctx, task.ID, task.LeaseToken, store.ParsePick{})
 	if err != nil {
 		return promptData{}, fmt.Errorf("read the parse: %w", err)
 	}
+	context := contexts.Text(ctx, deref(task.Lens), log.With("task", task.ID))
 	text, _ := store.JoinUnits(parse.Units)
 	runes := []rune(text)
 	data := promptData{
-		MediaType: task.MediaType, Title: deref(task.Title), URL: deref(task.URL), Text: text, Note: strings.TrimSpace(deref(task.Note)),
-		Total: len(runes),
+		MediaType: task.MediaType, Title: deref(task.Title), URL: deref(task.URL), Text: text, Note: strings.TrimSpace(deref(task.Answers())),
+		Drafted: store.NoteDigest(task.Note) == nil && task.NoteDraft != nil, Context: context, Total: len(runes),
 	}
 	if len(runes) > textRunes {
 		data.Text, data.Truncated, data.Shown = string(runes[:textRunes]), true, textRunes

@@ -29,6 +29,7 @@ import (
 //go:embed contents/prompt.tmpl contents/answer.schema.json
 //go:embed model-read/prompt.tmpl model-read/answer.schema.json model-read/lenses/*.tmpl
 //go:embed prompt-proposal/prompt.tmpl prompt-proposal/answer.schema.json
+//go:embed note/prompt.tmpl note/answer.schema.json note/lenses/*.tmpl
 var files embed.FS
 
 // Prompt is one stage's prompt and answer schema at one version.
@@ -65,6 +66,10 @@ var PromptProposal = load("prompt-proposal", "1", nil)
 
 // ModelRead is the model read's prompt under each lens, by the lens's name.
 var ModelRead = loadLenses("model-read", "1", map[string]string{"fleet": "1"})
+
+// Note is the note stage's prompt under each lens, by the lens's name. A read
+// under a lens with no note prompt answers the lens's own questions.
+var Note = loadLenses("note", "1", map[string]string{"fleet": "1"})
 
 // Lenses names each lens that ModelRead holds, in order.
 func Lenses() []string { return slices.Sorted(maps.Keys(ModelRead)) }

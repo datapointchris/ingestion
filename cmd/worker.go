@@ -26,10 +26,13 @@ import (
 	"github.com/datapointchris/ingestion/contents"
 	"github.com/datapointchris/ingestion/deliver"
 	"github.com/datapointchris/ingestion/extract"
+	"github.com/datapointchris/ingestion/lens"
 	"github.com/datapointchris/ingestion/modelport"
 	"github.com/datapointchris/ingestion/modelread"
 	"github.com/datapointchris/ingestion/modelstage"
+	"github.com/datapointchris/ingestion/note"
 	"github.com/datapointchris/ingestion/promptproposal"
+	"github.com/datapointchris/ingestion/prompts"
 	"github.com/datapointchris/ingestion/qualitygate"
 	"github.com/datapointchris/ingestion/scan"
 	"github.com/datapointchris/ingestion/sections"
@@ -47,12 +50,13 @@ const (
 // workerHandlers lists the stage handlers for a worker to run: each
 // extractor's, the structure's where pdf-structure is installed, the scan's
 // where scanner is installed, the contents stage's, the quality gate's, its
-// arm's and the prompt proposal's draft where port is open, the model read's where
-// both are, each of
-// deliverers by its name, and each of sourceHandlers, which openSources
-// answers. A stage whose work runs in a worker adds its handler here.
+// arm's, the note's and the prompt proposal's draft where port is open, the
+// model read's where both are, each of deliverers by its name, and each of
+// sourceHandlers, which openSources answers. The note and the model read
+// quote each lens's context that contexts reads. A stage whose work runs in a
+// worker adds its handler here.
 func workerHandlers(client *worker.Client, deliverers map[string]deliver.Deliverer, sourceHandlers []worker.Handler,
-	port modelport.Port, scanner *scan.Scanner, models modelConfig, log *slog.Logger,
+	port modelport.Port, scanner *scan.Scanner, contexts lens.Readers, models modelConfig, log *slog.Logger,
 ) []worker.Handler {
 	handlers := extract.Builtin().Handlers(client, log)
 	if structure := sections.NewHandler(sections.Program, client, log); structure != nil {
@@ -66,10 +70,11 @@ func workerHandlers(client *worker.Client, deliverers map[string]deliver.Deliver
 		handlers = append(handlers,
 			contents.NewHandler(port, client, modelstage.Settings{Model: models.Contents.Model, Effort: models.Contents.Effort}, log),
 			qualitygate.NewHandler(port, client, quality, log), qualitygate.NewArmHandler(port, client, quality, log),
+			note.NewHandler(port, client, contexts, modelstage.Settings{Model: models.Note.Model, Effort: models.Note.Effort}, log),
 			promptproposal.NewHandler(port, modelstage.Settings{Model: models.PromptProposal.Model, Effort: models.PromptProposal.Effort}, log))
 	}
 	if port != nil && scanner != nil {
-		handlers = append(handlers, modelread.NewHandler(port, client, scanner,
+		handlers = append(handlers, modelread.NewHandler(port, client, contexts, scanner,
 			modelstage.Settings{Model: models.ModelRead.Model, Effort: models.ModelRead.Effort}, log))
 	}
 	for _, name := range slices.Sorted(maps.Keys(deliverers)) {
@@ -114,6 +119,58 @@ func sourcesHelp() string {
 		fmt.Fprintf(&b, "  %s  %s\n  %s  %s\n", name, sourceSecretEnv(name), strings.Repeat(" ", len(name)), strings.Join(r.Scopes, " "))
 	}
 	return b.String()
+}
+
+// openLensReaders opens the context reader that each [lens.<name>.context]
+// table in cfg names, by the lens's name, and reads it once, so the start log
+// says whether it reads. issuer is the file's, which a table takes where it
+// names none. A table that names no reader this build registers, or that
+// cannot open, is logged and left out, so the stages under that lens run
+// without its context, as they do where no table names one. Each lens with a
+// note prompt and no reader is logged too.
+func openLensReaders(ctx context.Context, cfg fileConfig, issuer string, log *slog.Logger) lens.Readers {
+	out := lens.Readers{}
+	for _, name := range slices.Sorted(maps.Keys(cfg.Lens)) {
+		table := cfg.Lens[name].Context
+		withoutIt := "so the note and the model read under the " + name + " lens run without its context"
+		r, ok := lens.Lookup(table.Reader)
+		if !ok {
+			log.Error("[lens."+name+".context] names no context reader this build registers, "+withoutIt,
+				"reader", table.Reader, "registered", strings.Join(lens.Names(), ", "))
+			continue
+		}
+		client, err := serviceHTTPClient(ctx, table.serviceClient, lensSecretEnv(name), issuer, r.Scopes)
+		if err != nil {
+			log.Error("[lens."+name+".context] cannot open, "+withoutIt, "reader", table.Reader, "error", err)
+			continue
+		}
+		out[name] = r.Open(table.API, client)
+		log.Info("the lens's context reader opened", "lens", name, "reader", table.Reader, "api", table.API)
+		if text := out.Text(ctx, name, log); text != "" {
+			log.Info("the lens's context reader read the owner's current work", "lens", name, "runes", len([]rune(text)))
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(prompts.Note)) {
+		if _, ok := out[name]; !ok {
+			log.Info("no [lens."+name+".context] table opens a reader, so the note and the model read under the "+name+
+				" lens run without the owner's current work", "lens", name)
+		}
+	}
+	return out
+}
+
+// logModels logs what each model stage asks its run for, the stage's
+// default where models names neither.
+func logModels(models modelConfig, log *slog.Logger) {
+	asked := func(m stageModel, model, effort string) string {
+		return cmp.Or(m.Model, model) + " at " + cmp.Or(m.Effort, effort)
+	}
+	log.Info("each model stage asks its run for a model at an effort",
+		"contents", asked(models.Contents, contents.DefaultModel, contents.DefaultEffort),
+		"quality", asked(models.Quality, qualitygate.DefaultModel, qualitygate.DefaultEffort),
+		"note", asked(models.Note, note.DefaultModel, note.DefaultEffort),
+		"model-read", asked(models.ModelRead, modelread.DefaultModel, modelread.DefaultEffort),
+		"prompt-proposal", asked(models.PromptProposal, promptproposal.DefaultModel, promptproposal.DefaultEffort))
 }
 
 // openModelPort opens the adapter that cfg's [model] table names. With none
@@ -285,6 +342,9 @@ var workerRunCmd = &cobra.Command{
 		"  [model.quality]    what the quality gate asks its run for\n" +
 		"  model              the model (default " + qualitygate.DefaultModel + ")\n" +
 		"  effort             the effort (default " + qualitygate.DefaultEffort + ")\n" +
+		"  [model.note]       what a note's draft asks its run for\n" +
+		"  model              the model (default " + note.DefaultModel + ")\n" +
+		"  effort             the effort (default " + note.DefaultEffort + ")\n" +
 		"  [model.model-read] what the model read asks its run for\n" +
 		"  model              the model (default " + modelread.DefaultModel + ")\n" +
 		"  effort             the effort (default " + modelread.DefaultEffort + ")\n" +
@@ -292,7 +352,20 @@ var workerRunCmd = &cobra.Command{
 		"  model              the model (default " + promptproposal.DefaultModel + ")\n" +
 		"  effort             the effort (default " + promptproposal.DefaultEffort + ")\n" +
 		"\n" +
-		"The [model.queue] client needs the scopes " + strings.Join(modelport.QueueScopes, " ") + ".",
+		"The [model.queue] client needs the scopes " + strings.Join(modelport.QueueScopes, " ") + ".\n" +
+		"\n" +
+		"The note and the model read quote the owner's current work under a lens\n" +
+		"where a [lens.<lens>.context] table names a context reader this build\n" +
+		"registers: " + strings.Join(lens.Names(), ", ") + ". The table takes api, client_id, token_command and\n" +
+		"issuer as a [deliver.<name>] table does, and its client's secret is in\n" +
+		"INGESTION_LENS_<LENS>_CONTEXT_CLIENT_SECRET, such as " + lensSecretEnv("fleet") + ".\n" +
+		"With no table, or one that cannot open, each runs without the context.\n" +
+		"A read that fails runs beside the last context read, or none.\n" +
+		"\n" +
+		"  [lens.fleet.context]\n" +
+		"  reader             " + lens.Slate + ", whose client needs the scope " + strings.Join(lens.SlateScopes, " ") + "\n" +
+		"  api                the reader's address\n" +
+		"  client_id          the service client it reads as",
 	Example: "  # a worker, as a service client\n" +
 		"  INGESTION_CLIENT_SECRET=... ingestion worker run --config /etc/ingestion/config.toml",
 	Args: cobra.NoArgs,
@@ -344,7 +417,12 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 	}
 	deliverers := openDeliverers(ctx, cfg, d.Issuer.Value, run.Log)
 	port := openModelPort(ctx, cfg.Model, d.Issuer.Value, run.Log)
+	if port != nil {
+		logModels(cfg.Model, run.Log)
+	}
+	contexts := openLensReaders(ctx, cfg, d.Issuer.Value, run.Log)
 	client := worker.NewClient(d.API.Value, oauth2.NewClient(ctx, source))
 	sourceHandlers := openSources(ctx, cfg, d.Issuer.Value, run.Log)
-	return worker.Run(ctx, client, run, workerHandlers(client, deliverers, sourceHandlers, port, scan.Installed(run.Log), cfg.Model, run.Log)...)
+	handlers := workerHandlers(client, deliverers, sourceHandlers, port, scan.Installed(run.Log), contexts, cfg.Model, run.Log)
+	return worker.Run(ctx, client, run, handlers...)
 }

@@ -159,7 +159,7 @@ func (t *Tx) DeleteOutstanding(ctx context.Context, key, connector string) (bool
 
 // modelStages are the stages that read an item with a model, where a
 // connector's first fill holds every item after the first to reach one.
-var modelStages = []string{StageContents, StageQuality, StageQualityArm, StageModelRead}
+var modelStages = []string{StageContents, StageQuality, StageQualityArm, StageNote, StageModelRead}
 
 // ModelStages are the stages that read an item with a model.
 func ModelStages() []string { return slices.Clone(modelStages) }
@@ -351,7 +351,10 @@ func (c Claim) slotPartitions() (partition string, args []any, bounds map[string
 // source time every attempt sends. A model stage's task carries the item's
 // outputs at its stage, so a task whose run is already dispatched reads that
 // run rather than starting another. A model read's task carries the item's
-// newest read decision, whose lens and note the read answers. A poll carries
+// newest read decision, whose lens and note the read answers, and the item's
+// newest done note draft, which the read answers where the decision took it.
+// A note task carries the newest read decision too, whose lens it drafts
+// under. A poll carries
 // its connector's cursor, whose position it reads on from. A delete task
 // carries the sighting whose source it removes the item from. A prompt-proposal task
 // carries the prompt proposal that it drafts, which holds its run's dispatch.
@@ -361,6 +364,7 @@ type Leased struct {
 	Delivery *Delivery
 	Outputs  []Output
 	Read     *Decision
+	Draft    *Output
 	Cursor   *Cursor
 	Sighting *Sighting
 	Proposal *PromptProposal
@@ -482,7 +486,7 @@ func (s *Store) Claim(ctx context.Context, c Claim) ([]Leased, error) {
 					return err
 				}
 			}
-			if task.Stage == StageModelRead && task.ItemKey != nil {
+			if (task.Stage == StageModelRead || task.Stage == StageNote) && task.ItemKey != nil {
 				read, ok, err := tx.NewestDecision(ctx, *task.ItemKey, GateRead)
 				if err != nil {
 					return err
@@ -490,6 +494,13 @@ func (s *Store) Claim(ctx context.Context, c Claim) ([]Leased, error) {
 				if ok {
 					leased.Read = &read
 				}
+			}
+			if task.Stage == StageModelRead && task.ItemKey != nil {
+				drafts, err := readInto[Output](ctx, tx.tx, table("outputs"), `item_key = ? AND stage = ?`, *task.ItemKey, StageNote)
+				if err != nil {
+					return err
+				}
+				leased.Draft = NewestDone(drafts, StageNote)
 			}
 			if task.Stage == StageDeliver && task.ItemKey != nil && task.Destination != nil {
 				d, ok, err := tx.Delivery(ctx, *task.ItemKey, *task.Destination)

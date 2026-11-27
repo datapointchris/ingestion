@@ -35,7 +35,7 @@
       "enum": ["outside", "owner"]
     },
     "sha256": {"description": "A SHA-256, in lowercase hex.", "type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "stage": {"description": "A stage that writes an output or holds a task. A poll's task fetches a connector's source before any item lands. quality-arm is the quality gate's prompt asked of the model that its task names, as a measurement, and sits on no item's line. structure profiles a PDF's outline, page labels, creation date, title and fonts. contents is a model's reading of the printed contents pages of a PDF whose outline gave it no sections. delete removes a landed item from the source of a connector that declares after_landing delete, and sits on no item's line. prompt-proposal drafts a prompt proposal from the quality gate's misses, and sits on no item's line. refresh-metrics reads again, at a source, the metrics of each item in review that a connector of the source sighted, writes them onto those sightings, and sits on no item's line.", "enum": ["poll", "land", "parse", "structure", "contents", "scan", "quality", "quality-arm", "model-read", "deliver", "delete", "prompt-proposal", "refresh-metrics"]},
+    "stage": {"description": "A stage that writes an output or holds a task. A poll's task fetches a connector's source before any item lands. quality-arm is the quality gate's prompt asked of the model that its task names, as a measurement, and sits on no item's line. note drafts a model read's note where the read carries no person's note. structure profiles a PDF's outline, page labels, creation date, title and fonts. contents is a model's reading of the printed contents pages of a PDF whose outline gave it no sections. delete removes a landed item from the source of a connector that declares after_landing delete, and sits on no item's line. prompt-proposal drafts a prompt proposal from the quality gate's misses, and sits on no item's line. refresh-metrics reads again, at a source, the metrics of each item in review that a connector of the source sighted, writes them onto those sightings, and sits on no item's line.", "enum": ["poll", "land", "parse", "structure", "contents", "scan", "quality", "quality-arm", "note", "model-read", "deliver", "delete", "prompt-proposal", "refresh-metrics"]},
     "timestamp": {"type": "string", "format": "date-time"},
     "severity": {"description": "A scan finding's severity, from least to most severe.", "enum": ["info", "low", "medium", "high", "critical"]},
     "finding": {
@@ -233,7 +233,7 @@
         "gate": {"enum": ["quality", "side", "read"]},
         "sequence": {"description": "The decision's place among the item's decisions at this gate. The newest decides.", "type": "integer", "minimum": 1},
         "verdict": {
-          "description": "quality: pass, drop or review. side: personal, fleet, review, or drop where the destination takes no side or a person dropped the item. read: as-is or model.",
+          "description": "quality: pass, drop or review. side: personal, fleet, review, or drop where the destination takes no side or a person dropped the item. read: as-is, model, or review where a note's draft fell below the note floor.",
           "enum": ["pass", "drop", "review", "personal", "fleet", "as-is", "model"]
         },
         "decided_by": {
@@ -243,7 +243,7 @@
         },
         "confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
         "cause": {
-          "description": "What decided. The quality gate writes pass, drop, unsure, or below-drop-floor where it would drop the item below its confidence floor. The side gate writes tags, tags-disagree, rule, guess, below-floor, person-sorts, no-guess, gate-error, gate-would-drop where the quality gate dropped the item and a family of it has not earned hiding it, quality-drop where every family hides it, or quality-review, and the read gate connector or side-default. A person's decision names an aspect, such as subreddit, channel, theme or title, or unstated. When a person's push names its destination, the side gate and the read gate each write push.",
+          "description": "What decided. The quality gate writes pass, drop, unsure, or below-drop-floor where it would drop the item below its confidence floor. The side gate writes tags, tags-disagree, rule, guess, below-floor, person-sorts, no-guess, gate-error, gate-would-drop where the quality gate dropped the item and a family of it has not earned hiding it, quality-drop where every family hides it, or quality-review, and the read gate connector, side-default, note-draft where the read answers the note stage's draft, by the model where the draft reached the note floor or by a person who took it, or note-unclear where the draft fell below the floor. A person's decision names an aspect, such as subreddit, channel, theme or title, or unstated. When a person's push names its destination, the side gate and the read gate each write push.",
           "type": "string",
           "pattern": "^[a-z][a-z-]{0,63}$"
         },

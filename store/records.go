@@ -44,9 +44,12 @@ const (
 	StageContents = "contents"
 	// StageSections is the write of an item's sections that serve makes from
 	// its structure or its contents, which queues no task.
-	StageSections  = "sections"
-	StageScan      = "scan"
-	StageQuality   = "quality"
+	StageSections = "sections"
+	StageScan     = "scan"
+	StageQuality  = "quality"
+	// StageNote is a model's draft of the note that a model read answers,
+	// where the read decision carries no person's note.
+	StageNote      = "note"
 	StageModelRead = "model-read"
 	StageDeliver   = "deliver"
 )

@@ -26,7 +26,8 @@ func (b *Board) Actions() []gotermboard.Action {
 		digit := gotermboard.Action{Keys: []string{strconv.Itoa(n)}, Run: b.onItem(func(m *gotermboard.Model, it item) tea.Cmd { return b.place(m, it, n, nil, "") })}
 		if n == 1 {
 			digit.Label = "place the item on the destination the strip numbers with that digit, at once, as your decision. " +
-				"It takes that destination's side, or drops where the destination takes none, and leaves the queue"
+				"It takes that destination's side, or drops where the destination takes none, and leaves the queue. " +
+				"An item that waits as note-unclear takes the note's draft"
 			digit.Footer = "1-9 place"
 		}
 		actions = append(actions, digit)

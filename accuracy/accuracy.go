@@ -16,6 +16,14 @@
 // a side, and its drop with a person's drop. The side gate's guess agrees
 // where it names the person's side, and a person's drop gives it nothing to
 // compare. An unsure answer neither agrees nor disagrees.
+//
+// The note band reads every note's draft by its confidence. A draft is kept
+// where a person's placement took it, and rewritten where a person's note took
+// its place. It is applied where it reached the floor and the read gate made
+// it the read's note with no person, waiting where the item waits in review as
+// note-unclear, and other where the item left a read by a model. Kept over kept
+// and rewritten counts only what a person decided, so it shows where the note
+// floor would sit.
 package accuracy
 
 import (
@@ -45,7 +53,46 @@ type Report struct {
 	Side       Gate `json:"side"`
 	// Arms are each arm's answers by model, the first model first.
 	Arms []Arm `json:"arms"`
+	// Note is how each note's draft fared, overall and by its confidence.
+	Note NoteDrafts `json:"note"`
 }
+
+// NoteDrafts is how the note stage's drafts fared against the floor at or
+// above which a draft becomes the read's note.
+type NoteDrafts struct {
+	Floor        float64    `json:"floor"`
+	Overall      NoteCounts `json:"overall"`
+	ByConfidence []NoteBand `json:"by_confidence"`
+}
+
+// NoteCounts is how a set of drafts fared, one draft to an item.
+type NoteCounts struct {
+	Drafts    int `json:"drafts"`
+	Kept      int `json:"kept"`
+	Applied   int `json:"applied"`
+	Rewritten int `json:"rewritten"`
+	Waiting   int `json:"waiting"`
+	Other     int `json:"other"`
+	// KeptShare is Kept over Kept and Rewritten, and nil where both are 0.
+	KeptShare *float64 `json:"kept_share"`
+}
+
+// NoteBand is the drafts whose confidence lies from From up to To, To itself
+// only in the top band.
+type NoteBand struct {
+	From float64 `json:"from"`
+	To   float64 `json:"to"`
+	NoteCounts
+}
+
+// How one draft fared.
+const (
+	NoteKept      = "kept"
+	NoteApplied   = "applied"
+	NoteRewritten = "rewritten"
+	NoteWaiting   = "waiting"
+	NoteOther     = "other"
+)
 
 // Arm is one model's answers to the gate's prompt, beside the gate's own.
 type Arm struct {
@@ -150,11 +197,12 @@ type comparison struct {
 
 // SchemaVersion is the version of schemas/gate-agreement.schema.json that a
 // report holds to.
-const SchemaVersion = 2
+const SchemaVersion = 3
 
-// Measure is the report over records, of which it counts each labeled item.
-func Measure(records []store.ItemRecords) Report {
-	report := Report{SchemaVersion: SchemaVersion, Arms: []Arm{}}
+// Measure is the report over records, of which it counts each labeled item,
+// and over drafted, each item holding a note's draft, under noteFloor.
+func Measure(records, drafted []store.ItemRecords, noteFloor float64) Report {
+	report := Report{SchemaVersion: SchemaVersion, Arms: []Arm{}, Note: MeasureNotes(drafted, noteFloor)}
 	var quality, side []comparison
 	type armComparisons struct {
 		items                                map[string]bool
@@ -219,6 +267,81 @@ func Measure(records []store.ItemRecords) Report {
 		})
 	}
 	return report
+}
+
+// MeasureNotes is how the newest done draft of each of records fared, under
+// floor.
+func MeasureNotes(records []store.ItemRecords, floor float64) NoteDrafts {
+	n := NoteDrafts{Floor: floor, ByConfidence: []NoteBand{}}
+	byBand := map[int][]string{}
+	var all []string
+	for _, r := range records {
+		newest := store.NewestDone(r.Outputs, store.StageNote)
+		if newest == nil {
+			continue
+		}
+		d, err := route.DraftOf(*newest)
+		if err != nil {
+			continue
+		}
+		outcome := NoteOutcome(r)
+		all = append(all, outcome)
+		band := bandOf(d.Confidence)
+		byBand[band] = append(byBand[band], outcome)
+	}
+	n.Overall = countNotes(all)
+	for _, band := range sortedKeys(byBand) {
+		n.ByConfidence = append(n.ByConfidence, NoteBand{From: float64(band) / bands, To: float64(band+1) / bands, NoteCounts: countNotes(byBand[band])})
+	}
+	return n
+}
+
+// NoteOutcome is how the item's draft fared, by its newest decisions.
+func NoteOutcome(r store.ItemRecords) string {
+	read, ok := r.NewestDecision(store.GateRead)
+	if _, onASide := r.Side(); !ok || !onASide {
+		return NoteOther
+	}
+	switch {
+	case store.NoteDigest(read.Note) != nil:
+		return NoteRewritten
+	case read.Verdict == connectors.ReadModel && read.Cause == route.CauseNoteDraft && read.ByPerson():
+		return NoteKept
+	case read.Verdict == connectors.ReadModel && read.Cause == route.CauseNoteDraft:
+		return NoteApplied
+	case read.Verdict == route.VerdictReview && read.Cause == route.CauseNoteUnclear:
+		return NoteWaiting
+	}
+	return NoteOther
+}
+
+func countNotes(outcomes []string) NoteCounts {
+	c := NoteCounts{Drafts: len(outcomes)}
+	for _, o := range outcomes {
+		switch o {
+		case NoteKept:
+			c.Kept++
+		case NoteApplied:
+			c.Applied++
+		case NoteRewritten:
+			c.Rewritten++
+		case NoteWaiting:
+			c.Waiting++
+		default:
+			c.Other++
+		}
+	}
+	if decided := c.Kept + c.Rewritten; decided > 0 {
+		share := float64(c.Kept) / float64(decided)
+		c.KeptShare = &share
+	}
+	return c
+}
+
+// bandOf is the band of bands that confidence lies in. The epsilon keeps a
+// confidence such as 0.7 in its own band.
+func bandOf(confidence float64) int {
+	return min(max(int(math.Floor(confidence*bands+1e-9)), 0), bands-1)
 }
 
 // AnswersAt is each done answer of the gate's prompt among outputs at stage,
@@ -314,8 +437,7 @@ func gate(floor float64, comparisons []comparison) Gate {
 	byBand := map[int][]comparison{}
 	byConnector, byModel, byVersion := map[string][]comparison{}, map[string][]comparison{}, map[string][]comparison{}
 	for _, c := range comparisons {
-		// The epsilon keeps a confidence such as 0.7 in its own band.
-		band := min(max(int(math.Floor(c.confidence*bands+1e-9)), 0), bands-1)
+		band := bandOf(c.confidence)
 		byBand[band] = append(byBand[band], c)
 		for _, name := range c.connectors {
 			byConnector[name] = append(byConnector[name], c)
@@ -374,8 +496,9 @@ func sortedKeys[K cmp.Ordered, V any](m map[K]V) []K {
 	return keys
 }
 
-// Routes is the route that reads the gates' agreement with every label.
-func Routes(st *store.Store, log *slog.Logger) server.Routes {
+// Routes is the route that reads the gates' agreement with every label, and
+// how each note's draft fared under noteFloor.
+func Routes(st *store.Store, noteFloor float64, log *slog.Logger) server.Routes {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -387,7 +510,13 @@ func Routes(st *store.Store, log *slog.Logger) server.Routes {
 				server.Refuse(w, http.StatusInternalServerError, server.CodeInternal, "the server could not read the items a person placed from review")
 				return
 			}
-			server.JSON(w, http.StatusOK, Measure(records))
+			drafted, err := st.DraftedItems(req.Context())
+			if err != nil {
+				log.ErrorContext(req.Context(), "read the items holding a note's draft", "error", err)
+				server.Refuse(w, http.StatusInternalServerError, server.CodeInternal, "the server could not read the items holding a note's draft")
+				return
+			}
+			server.JSON(w, http.StatusOK, Measure(records, drafted, noteFloor))
 		})
 	}
 }

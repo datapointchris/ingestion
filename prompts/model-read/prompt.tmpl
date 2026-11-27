@@ -12,6 +12,14 @@ URL: {{.URL}}
 {{- if .Truncated}}
 The item stops after {{.Shown}} of its {{.Total}} characters.
 {{- end}}
+{{- if .Context}}
+
+The owner keeps the record between the two CURRENT WORK lines below. It is the owner's current work, which the summary and the suggestion bear on where the item allows:
+
+----- CURRENT WORK -----
+{{.Context}}
+----- CURRENT WORK ENDS -----
+{{- end}}
 
 {{template "lens" .}}
 

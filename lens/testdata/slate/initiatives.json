@@ -1,0 +1,33 @@
+[
+  {
+    "id": "0190f0aa-0000-7000-8000-000000000101",
+    "number": 101,
+    "name": "The irrigation controller waters each bed by its soil reading",
+    "summary": "Each bed's valve opens on its own moisture sensor rather than a timer.",
+    "description": null,
+    "status": "active",
+    "priority": 2,
+    "rank": 1.5,
+    "autofix": false,
+    "created_ts": "2030-02-10T09:00:00Z",
+    "tags": ["garden"],
+    "pursuits": [{"number": 11, "name": "Garden automation"}],
+    "issue_count": 4,
+    "open_count": 3,
+    "completed_count": 1,
+    "canceled_count": 0,
+    "repos": ["valves"]
+  },
+  {
+    "id": "0190f0aa-0000-7000-8000-000000000102",
+    "number": 102,
+    "name": "The kitchen ledger imports each receipt",
+    "summary": "A photographed receipt lands as one ledger row per line item.",
+    "status": "active",
+    "priority": 3,
+    "rank": 2.0,
+    "autofix": false,
+    "created_ts": "2030-02-11T09:00:00Z",
+    "pursuits": [{"number": 12, "name": "Kitchen ledger"}]
+  }
+]

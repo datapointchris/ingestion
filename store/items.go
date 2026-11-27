@@ -257,8 +257,8 @@ type Condition struct {
 
 // line is every stage and gate, in the order that an item passes them.
 var line = []string{
-	StageLand, StageParse, StageStructure, StageContents, StageSections, StageScan, StageQuality, GateSide, GateRead, StageModelRead,
-	StageDeliver,
+	StageLand, StageParse, StageStructure, StageContents, StageSections, StageScan, StageQuality, GateSide, GateRead, StageNote,
+	StageModelRead, StageDeliver,
 }
 
 // besideScan are the stages that run beside a PDF's scan, so one that failed
@@ -298,6 +298,7 @@ var reached = map[string]string{
 	StageQuality:   "gated",
 	GateSide:       "placed",
 	GateRead:       "read",
+	StageNote:      "read",
 	StageModelRead: "read",
 	StageDeliver:   "delivered",
 }
@@ -312,7 +313,8 @@ const PhaseReview = "review"
 // decision, waiting where a model stage holds it, and otherwise the furthest
 // stage whose condition is True. A person can place an
 // item whose parse or quality gate failed, which moves it on from that stage.
-// A failed stage of besideScan fails no phase.
+// A failed stage of besideScan fails no phase, and neither does a failed note
+// where the newest read decision waits on no draft.
 func (r ItemRecords) Phase() string {
 	side, sided := r.NewestDecision(GateSide)
 	if sided && side.Verdict == VerdictDrop {
@@ -327,7 +329,7 @@ func (r ItemRecords) Phase() string {
 	}
 	for stage, t := range newest {
 		if t.State == TaskFailed && slices.Contains(line, stage) && stage != StageParse && !slices.Contains(besideScan, stage) &&
-			(stage != StageQuality || !r.SideSettled()) {
+			(stage != StageQuality || !r.SideSettled()) && (stage != StageNote || r.awaitsNote()) {
 			return "failed"
 		}
 	}
@@ -351,6 +353,18 @@ func (r ItemRecords) Phase() string {
 		}
 	}
 	return phase
+}
+
+// ReadAwaitsNote says whether a read decision waits on the note stage's draft,
+// given the item's outputs. The read gate sets it from its own rule, so the
+// phase and the gate never disagree on it. Unset, every read waits.
+var ReadAwaitsNote = func(Decision, []Output) bool { return true }
+
+// awaitsNote says whether the item's newest read decision still waits on the
+// note stage's draft, as ReadAwaitsNote decides it.
+func (r ItemRecords) awaitsNote() bool {
+	read, ok := r.NewestDecision(GateRead)
+	return ok && ReadAwaitsNote(read, r.Outputs)
 }
 
 // SideSettled says whether the item's newest side decision is one that no
@@ -415,6 +429,11 @@ func (r ItemRecords) condition(step string) (Condition, bool) {
 		return Condition{}, false
 	case StageDeliver:
 		return r.deliveryCondition()
+	case StageNote:
+		if c, ok := r.outputCondition(step); ok && (c.Status != ConditionFalse || r.awaitsNote()) {
+			return c, true
+		}
+		return Condition{}, false
 	default:
 		return r.outputCondition(step)
 	}

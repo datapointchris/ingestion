@@ -17,6 +17,7 @@ import (
 	"github.com/datapointchris/gotermboard/keywrites"
 	"github.com/datapointchris/gotermboard/markdown"
 
+	"github.com/datapointchris/ingestion/note"
 	"github.com/datapointchris/ingestion/qualitygate"
 	"github.com/datapointchris/ingestion/redditexport"
 	"github.com/datapointchris/ingestion/server"
@@ -58,11 +59,14 @@ type held struct {
 	index        map[string]int
 }
 
-// item is one waiting item with the quality gate's answer decoded, or why it could not be.
+// item is one waiting item with the quality gate's answer and the note's draft decoded, or why
+// either could not be.
 type item struct {
 	server.ReviewItem
 	answer      *qualitygate.Answer
 	answerFault string
+	draft       *note.Answer
+	draftFault  string
 }
 
 func (h held) item(key string) (item, bool) {
@@ -137,6 +141,13 @@ func (b *Board) readQueue(ctx context.Context) (held, string, error) {
 				decoded.answerFault = err.Error()
 			} else {
 				decoded.answer = &a
+			}
+		}
+		if len(it.NoteDraft) > 0 && string(it.NoteDraft) != "null" {
+			if a, err := note.DecodeAnswer(it.NoteDraft); err != nil {
+				decoded.draftFault = err.Error()
+			} else {
+				decoded.draft = &a
 			}
 		}
 		h.items = append(h.items, decoded)

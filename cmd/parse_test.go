@@ -102,7 +102,7 @@ func newPipelineOver(t *testing.T, extractors *extract.Registry, after server.Af
 			Store: st, Lander: lander, Scheduler: connectors.NewScheduler(st, lander, log),
 			AfterApply: route.AfterApply(log), Links: extractors, Log: log,
 		}),
-		server.ReplayRoutes(st, replayableStages(st, extractors), log), accuracy.Routes(st, log), promptproposal.Routes(st, log)))
+		server.ReplayRoutes(st, replayableStages(st, extractors), log), accuracy.Routes(st, route.DefaultNoteFloor, log), promptproposal.Routes(st, log)))
 	t.Cleanup(api.Close)
 	person := provider.Person(t, "ingestion-cli-test", "person")
 	tokenFile, config := filepath.Join(dir, "token.json"), filepath.Join(dir, "config.toml")
