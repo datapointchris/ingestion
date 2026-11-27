@@ -78,6 +78,8 @@
           "lens": {"type": ["string", "null"]},
           "lens_version": {"type": ["string", "null"]},
           "note_digest": {"description": "The hex SHA-256 of the note a model read answered, and null where it answered none.", "type": ["string", "null"]},
+          "input_producer": {"description": "The extractor of the parse that a scan read or that a model stage's prompt quoted, and null where the output read no parse. A model stage's answer counts only while its stage still quotes that parse.", "type": ["string", "null"]},
+          "input_version": {"description": "The version of the parse that input_producer names.", "type": ["string", "null"]},
           "state": {"enum": ["waiting", "done", "failed", "deferred"]},
           "units": {"description": "A parse's unit count.", "type": ["integer", "null"]},
           "findings": {

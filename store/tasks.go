@@ -157,9 +157,34 @@ func (t *Tx) DeleteOutstanding(ctx context.Context, key, connector string) (bool
 	return found, err
 }
 
-// modelStages are the stages that read an item with a model, where a
-// connector's first fill holds every item after the first to reach one.
-var modelStages = []string{StageContents, StageQuality, StageQualityArm, StageNote, StageModelRead}
+// ExtractorPDFText names the extractor that reads a PDF's text one unit per
+// page. The contents stage quotes its parse, because the placement maps each
+// entry to one of its pages.
+const ExtractorPDFText = "pdf-text"
+
+// modelStageQuotes is each stage that reads an item with a model, where a
+// connector's first fill holds every item after the first to reach one. Each
+// names the parse of the item that its prompt quotes, the reading parse where
+// the pick names no extractor.
+var modelStageQuotes = []struct {
+	stage  string
+	quotes ParsePick
+}{
+	{StageContents, ParsePick{Extractor: ExtractorPDFText}},
+	{StageQuality, ParsePick{}},
+	{StageQualityArm, ParsePick{}},
+	{StageNote, ParsePick{}},
+	{StageModelRead, ParsePick{}},
+}
+
+// modelStages are the stages of modelStageQuotes, in its order.
+var modelStages = func() []string {
+	stages := make([]string, len(modelStageQuotes))
+	for i, s := range modelStageQuotes {
+		stages[i] = s.stage
+	}
+	return stages
+}()
 
 // ModelStages are the stages that read an item with a model.
 func ModelStages() []string { return slices.Clone(modelStages) }
@@ -349,12 +374,14 @@ func (c Claim) slotPartitions() (partition string, args []any, bounds map[string
 // holding no scope to read items. A poll task has no item, so its Item is
 // empty. A deliver task carries its delivery's row too, whose title, URL and
 // source time every attempt sends. A model stage's task carries the item's
-// outputs at its stage, so a task whose run is already dispatched reads that
-// run rather than starting another. A model read's task carries the item's
+// outputs at its stage, each replacement that waits beside a done one
+// included, so a task whose run is already dispatched reads that run rather
+// than starting another. A model read's task carries the item's
 // newest read decision, whose lens and note the read answers, and the item's
 // newest done note draft, which the read answers where the decision took it.
 // A note task carries the newest read decision too, whose lens it drafts
-// under. A poll carries
+// under. A task of a stage whose prompt quotes a parse carries the done parse
+// that its stage quotes, which its call reads and its output names. A poll carries
 // its connector's cursor, whose position it reads on from. A delete task
 // carries the sighting whose source it removes the item from. A prompt-proposal task
 // carries the prompt proposal that it drafts, which holds its run's dispatch.
@@ -363,6 +390,7 @@ type Leased struct {
 	Item     Item
 	Delivery *Delivery
 	Outputs  []Output
+	Parse    *Output
 	Read     *Decision
 	Draft    *Output
 	Cursor   *Cursor
@@ -485,6 +513,19 @@ func (s *Store) Claim(ctx context.Context, c Claim) ([]Leased, error) {
 					*task.ItemKey, task.Stage); err != nil {
 					return err
 				}
+				waiting, err := tx.Replacements(ctx, *task.ItemKey, task.Stage)
+				if err != nil {
+					return err
+				}
+				leased.Outputs = append(leased.Outputs, waiting...)
+			}
+			if pick, quotes := QuotedPick(task.Stage); quotes && task.ItemKey != nil {
+				parses, err := readInto[Output](ctx, tx.tx, table("outputs"), `item_key = ? AND stage = ? ORDER BY created_ts, rowid`,
+					*task.ItemKey, StageParse)
+				if err != nil {
+					return err
+				}
+				leased.Parse = PickedParse(parses, pick)
 			}
 			if (task.Stage == StageModelRead || task.Stage == StageNote) && task.ItemKey != nil {
 				read, ok, err := tx.NewestDecision(ctx, *task.ItemKey, GateRead)

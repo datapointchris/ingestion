@@ -165,7 +165,7 @@ func quote(column string) string { return `"` + column + `"` }
 
 // unlogged names the tables the store keeps for itself, which the outbox never
 // ships. Every other table a schema file creates is declared in Tables.
-var unlogged = []string{"outbox_marks", "write_stamp"}
+var unlogged = []string{"outbox_marks", "write_stamp", "output_replacements"}
 
 // guard makes the database refuse a write that would hide a version from the
 // outbox: a row stamped other than by the write in flight, which write_stamp

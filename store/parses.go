@@ -19,33 +19,76 @@ var ErrUnitsOutOfOrder = errors.New("a parse's units are numbered from 1 in thei
 var ErrUnitsOutsideParse = errors.New("only a parse holds units")
 
 // PutOutputWithUnits writes o, a stage's output, and the units that only a parse
-// holds. A done output is kept against a later one that is not done and
-// answers the same note, so a rerun that fails leaves the done output readable
-// and fails only its task. A model read of a new note replaces it, so its
-// dispatch is stored. A done parse is kept against any later one, output and
-// units alike. A changed extractor takes a new version, which writes beside
-// the old.
+// holds. Where o's stage quotes a parse and o names none, o first names the
+// parse that its stage quotes now. Only an answer replaces a done output. A
+// later one that is not done is dropped where it answers the same note over
+// the same parse, so a rerun that fails leaves the done output readable and
+// fails only its task. One over another parse waits beside the done output
+// as its replacement, which holds the call's dispatch, until the call
+// answers. A model read of a new note replaces the done read. A done parse is
+// kept against any later one, output and units alike. A changed extractor
+// takes a new version, which writes beside the old.
 func (t *Tx) PutOutputWithUnits(ctx context.Context, o Output, units []Unit) error {
 	if o.Stage != StageParse && len(units) > 0 {
 		return fmt.Errorf("%w: a %s output carries %d units", ErrUnitsOutsideParse, o.Stage, len(units))
 	}
+	if err := t.nameQuotedInput(ctx, &o); err != nil {
+		return err
+	}
 	var state string
-	var note sql.NullString
-	err := t.tx.QueryRowContext(ctx, `SELECT state, note_digest FROM outputs WHERE item_key = ? AND stage = ? AND producer = ? AND producer_version = ?`,
-		o.ItemKey, o.Stage, o.Producer, o.ProducerVersion).Scan(&state, &note)
+	var note, inputProducer, inputVersion sql.NullString
+	err := t.tx.QueryRowContext(ctx, `SELECT state, note_digest, input_producer, input_version FROM outputs
+		WHERE item_key = ? AND stage = ? AND producer = ? AND producer_version = ?`,
+		o.ItemKey, o.Stage, o.Producer, o.ProducerVersion).Scan(&state, &note, &inputProducer, &inputVersion)
 	switch {
 	case err != nil && !errors.Is(err, sql.ErrNoRows):
 		return fmt.Errorf("read %s's %s output by %s %s: %w", o.ItemKey, o.Stage, o.Producer, o.ProducerVersion, err)
-	case err == nil && state == OutputDone && (o.Stage == StageParse || (o.State != OutputDone && note.String == deref(o.NoteDigest))):
+	case err == nil && state == OutputDone && o.Stage == StageParse:
 		return nil
+	case err == nil && state == OutputDone && o.State != OutputDone && note.String == deref(o.NoteDigest):
+		if SameParse(InputOf(nullable(inputProducer), nullable(inputVersion)), o.Input()) {
+			return nil
+		}
+		o.CreatedTS, o.UpdatedTS = t.stamp(), t.stamp()
+		return t.put(ctx, replacements, o)
 	}
 	if err := t.PutOutput(ctx, o); err != nil {
 		return err
+	}
+	if o.State == OutputDone && o.Stage != StageParse {
+		if _, err := t.tx.ExecContext(ctx, `DELETE FROM output_replacements
+			WHERE item_key = ? AND stage = ? AND producer = ? AND producer_version = ?`,
+			o.ItemKey, o.Stage, o.Producer, o.ProducerVersion); err != nil {
+			return fmt.Errorf("drop %s's %s replacement by %s %s: %w", o.ItemKey, o.Stage, o.Producer, o.ProducerVersion, err)
+		}
 	}
 	if o.Stage != StageParse {
 		return nil
 	}
 	return t.putUnits(ctx, o.ItemKey, o.Producer, o.ProducerVersion, units)
+}
+
+// replacements is output_replacements, the outputs that wait beside a done
+// output until their call answers. It has the outputs table's columns, and the
+// store keeps it for itself.
+var replacements = func() Table {
+	t := table("outputs")
+	t.Name = "output_replacements"
+	return t
+}()
+
+// Replacements reads the item's outputs at stage that wait beside a done
+// output until their call answers.
+func (t *Tx) Replacements(ctx context.Context, key, stage string) ([]Output, error) {
+	return readInto[Output](ctx, t.tx, replacements, `item_key = ? AND stage = ? ORDER BY created_ts, rowid`, key, stage)
+}
+
+// nullable is s as a pointer, nil where s is null.
+func nullable(s sql.NullString) *string {
+	if !s.Valid {
+		return nil
+	}
+	return &s.String
 }
 
 // putUnits writes the units that extractor at version made of the item under
@@ -141,22 +184,171 @@ func readingRank(o Output) int {
 	return 0
 }
 
-// ReadingParseScanned says whether outputs, oldest first as Tx.Outputs reads
-// them, hold a done scan of the item's reading parse: its newest done parse
-// by a preferred extractor where it holds one, and its newest done parse
-// otherwise. The side gate places an item only then, so no item is placed
-// before the scan of the parse that its readers read.
-func ReadingParseScanned(outputs []Output) bool {
+// PickedParse is the done parse among outputs, oldest first as Tx.Outputs
+// reads them, that pick names: the newest of pick's extractor and version
+// where each is set, a preferred extractor's first, as Parse reads it. It is
+// nil where none is done.
+func PickedParse(outputs []Output, pick ParsePick) *Output {
 	var parse *Output
 	for i := range outputs {
-		if outputs[i].Stage == StageParse && outputs[i].State == OutputDone && (parse == nil || readingRank(outputs[i]) >= readingRank(*parse)) {
-			parse = &outputs[i]
+		o := &outputs[i]
+		if o.Stage != StageParse || o.State != OutputDone || (pick.Extractor != "" && o.Producer != pick.Extractor) ||
+			(pick.Version != "" && o.ProducerVersion != pick.Version) {
+			continue
+		}
+		if parse == nil || readingRank(*o) >= readingRank(*parse) {
+			parse = o
 		}
 	}
+	return parse
+}
+
+// ReadingParse is the item's reading parse among outputs: its newest done
+// parse by a preferred extractor where it holds one, and its newest done
+// parse otherwise. Every reader of the item's text reads it.
+func ReadingParse(outputs []Output) *Output { return PickedParse(outputs, ParsePick{}) }
+
+// ReadingParseScanned says whether outputs, oldest first as Tx.Outputs reads
+// them, hold a done scan of the item's reading parse. The side gate places an
+// item only then, so no item is placed before the scan of the parse that its
+// readers read.
+func ReadingParseScanned(outputs []Output) bool {
+	parse := ReadingParse(outputs)
 	return parse != nil && slices.ContainsFunc(outputs, func(o Output) bool {
-		return o.Stage == StageScan && o.State == OutputDone && o.InputProducer != nil && *o.InputProducer == parse.Producer &&
-			o.InputVersion != nil && *o.InputVersion == parse.ProducerVersion
+		return o.Stage == StageScan && o.State == OutputDone && o.ReadParse(parse)
 	})
+}
+
+// ParseRef names one parse by its extractor and version.
+type ParseRef struct {
+	Extractor string `json:"extractor"`
+	Version   string `json:"version"`
+}
+
+// InputOf is the parse that an output's input producer and version name, and
+// nil where they name none.
+func InputOf(producer, version *string) *ParseRef {
+	if producer == nil || version == nil {
+		return nil
+	}
+	return &ParseRef{Extractor: *producer, Version: *version}
+}
+
+// SameParse says whether a and b name one parse, or both name none. Each
+// test of whether an output read a parse asks it.
+func SameParse(a, b *ParseRef) bool {
+	return (a == nil) == (b == nil) && (a == nil || *a == *b)
+}
+
+// Input is the parse that o names as the one it read, and nil where it names
+// none.
+func (o Output) Input() *ParseRef { return InputOf(o.InputProducer, o.InputVersion) }
+
+// Ref names o, a parse, and is nil where o is nil.
+func (o *Output) Ref() *ParseRef {
+	if o == nil {
+		return nil
+	}
+	return &ParseRef{Extractor: o.Producer, Version: o.ProducerVersion}
+}
+
+// ReadParse says whether o names parse as the parse it read.
+func (o Output) ReadParse(parse *Output) bool {
+	return parse != nil && SameParse(o.Input(), parse.Ref())
+}
+
+// QuotedPick is the pick of the parse that stage's prompt quotes, as
+// modelStageQuotes declares it, and false where the stage quotes none.
+func QuotedPick(stage string) (ParsePick, bool) {
+	for _, s := range modelStageQuotes {
+		if s.stage == stage {
+			return s.quotes, true
+		}
+	}
+	return ParsePick{}, false
+}
+
+// QuotedParse is the done parse among outputs that stage's prompt quotes now,
+// and nil where it quotes none or the item holds none.
+func QuotedParse(outputs []Output, stage string) *Output {
+	pick, ok := QuotedPick(stage)
+	if !ok {
+		return nil
+	}
+	return PickedParse(outputs, pick)
+}
+
+// ReadsQuotedParse says whether o, a stage's output among the item's outputs,
+// read the parse that its stage's prompt quotes now. An answer over an older
+// parse is not current, so its stage is due on the item again. A stage that
+// quotes no parse, such as a prompt proposal's draft, answers over none, so
+// no parse makes its output stale.
+func ReadsQuotedParse(o Output, outputs []Output) bool {
+	if _, ok := QuotedPick(o.Stage); !ok {
+		return true
+	}
+	return o.ReadParse(QuotedParse(outputs, o.Stage))
+}
+
+// nameQuotedInput names on o the parse that its stage quotes now of its item,
+// where o's stage quotes a parse and o names none. A worker of an older build
+// reports none, so serve names it in the write that keeps the output.
+func (t *Tx) nameQuotedInput(ctx context.Context, o *Output) error {
+	pick, quotes := QuotedPick(o.Stage)
+	if !quotes || o.Input() != nil {
+		return nil
+	}
+	outputs, err := t.Outputs(ctx, o.ItemKey)
+	if err != nil {
+		return err
+	}
+	if parse := PickedParse(outputs, pick); parse != nil {
+		producer, version := parse.Producer, parse.ProducerVersion
+		o.InputProducer, o.InputVersion = &producer, &version
+	}
+	return nil
+}
+
+// fillQuotedInputs names, on each output of a stage whose prompt quotes a
+// parse, where the output names none, the parse that its stage quotes now.
+// Open runs it only on the open that raises a store to
+// namedInputsGeneration. Such an output was written before a stage recorded
+// the parse it read, so it takes the parse that its readers read then, and no
+// item whose parse never changed is due again.
+func (s *Store) fillQuotedInputs(ctx context.Context) (int, error) {
+	filled := 0
+	err := s.Update(ctx, func(tx *Tx) error {
+		filled = 0
+		args := make([]any, len(modelStages))
+		for i, stage := range modelStages {
+			args[i] = stage
+		}
+		keys, err := tx.ids(ctx, `SELECT DISTINCT item_key FROM outputs WHERE input_producer IS NULL
+			AND stage IN (?`+strings.Repeat(", ?", len(modelStages)-1)+`) ORDER BY item_key`, args...)
+		if err != nil {
+			return fmt.Errorf("find each output that names no parse: %w", err)
+		}
+		for _, key := range keys {
+			outputs, err := tx.Outputs(ctx, key)
+			if err != nil {
+				return err
+			}
+			for _, o := range outputs {
+				parse := QuotedParse(outputs, o.Stage)
+				if o.InputProducer != nil || parse == nil {
+					continue
+				}
+				if _, err := tx.tx.ExecContext(ctx, `UPDATE outputs SET input_producer = ?, input_version = ?, updated_ts = ?
+					WHERE item_key = ? AND stage = ? AND producer = ? AND producer_version = ?`,
+					parse.Producer, parse.ProducerVersion, tx.stamp(), key, o.Stage, o.Producer, o.ProducerVersion); err != nil {
+					return fmt.Errorf("name the parse that %s's %s output read: %w", key, o.Stage, err)
+				}
+				filled++
+			}
+		}
+		return nil
+	})
+	return filled, err
 }
 
 // ScanRules is the rules version within a scan's producer version.

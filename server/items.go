@@ -256,6 +256,8 @@ type OutputView struct {
 	Lens            *string         `json:"lens"`
 	LensVersion     *string         `json:"lens_version"`
 	NoteDigest      *string         `json:"note_digest"`
+	InputProducer   *string         `json:"input_producer"`
+	InputVersion    *string         `json:"input_version"`
 	State           string          `json:"state"`
 	Units           *int            `json:"units"`
 	Findings        []FindingView   `json:"findings"`
@@ -639,7 +641,7 @@ func itemAnswer(rec store.ItemRecords) ItemAnswer {
 func outputView(rec store.ItemRecords, o store.Output) OutputView {
 	view := OutputView{
 		Stage: o.Stage, Producer: o.Producer, ProducerVersion: o.ProducerVersion, Lens: o.Lens, LensVersion: o.LensVersion,
-		NoteDigest: o.NoteDigest, State: o.State, Answer: o.Answer, RunID: o.RunID, DispatchID: o.DispatchID, Model: o.Model, Effort: o.Effort,
+		NoteDigest: o.NoteDigest, InputProducer: o.InputProducer, InputVersion: o.InputVersion, State: o.State, Answer: o.Answer, RunID: o.RunID, DispatchID: o.DispatchID, Model: o.Model, Effort: o.Effort,
 		AnsweredModel: o.AnsweredModel, Tokens: o.Tokens, Error: o.Error, RulesVersion: o.RulesVersion,
 	}
 	if n, ok := rec.UnitCount(o); ok {

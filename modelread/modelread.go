@@ -125,12 +125,12 @@ type promptData struct {
 	Shown, Total                               int
 }
 
-// read is the task's item as the prompt quotes it: its title, its newest
-// parse's text up to textRunes, its note, and its lens's context, which is
+// read is the task's item as the prompt quotes it: its title, the text of the
+// reading parse that the claim named up to textRunes, its note, and its lens's context, which is
 // empty where no reader is opened for the lens or none could be read, and
 // logged on log.
 func read(ctx context.Context, client *worker.Client, contexts lens.Readers, task worker.Task, log *slog.Logger) (promptData, error) {
-	parse, err := client.TaskParse(ctx, task.ID, task.LeaseToken, store.ParsePick{})
+	parse, err := client.QuotedParse(ctx, task)
 	if err != nil {
 		return promptData{}, fmt.Errorf("read the parse: %w", err)
 	}

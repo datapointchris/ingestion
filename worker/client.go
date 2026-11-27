@@ -113,6 +113,17 @@ func (c *Client) TaskParse(ctx context.Context, id string, token int64, pick sto
 	return answer, nil
 }
 
+// QuotedParse reads the parse that task's claim named as the one its stage's
+// prompt quotes, so the call reads the parse that its output names. It fails
+// where the claim named none, as where the item holds no done parse that the
+// stage quotes, and the task tries again after its backoff.
+func (c *Client) QuotedParse(ctx context.Context, task Task) (server.TaskParseAnswer, error) {
+	if task.Parse == nil {
+		return server.TaskParseAnswer{}, fmt.Errorf("the claim of the %s task %s named no parse that its prompt quotes", task.Stage, task.ID)
+	}
+	return c.TaskParse(ctx, task.ID, task.LeaseToken, store.ParsePick{Extractor: task.Parse.Extractor, Version: task.Parse.Version})
+}
+
 // blobTimeout bounds one blob's transfer, which may be a whole book.
 const blobTimeout = 10 * time.Minute
 

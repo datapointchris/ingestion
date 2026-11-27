@@ -134,15 +134,17 @@ func AfterAnswer(log *slog.Logger) server.AfterStage {
 	}
 }
 
-// place places the entries of the book's newest done answer on its pdf-text
-// parse, and writes the sections they make through sections.Write. It writes
-// none where the entries make no usable outline, or where it left out more
-// than mostLeftOut of a level's paged entries at or above the chapter level,
-// and logs which.
+// place places the entries of the book's newest done answer on the pdf-text
+// parse that the answer read, and writes the sections they make through
+// sections.Write. It places none where store.ReadsQuotedParse finds the
+// answer stale, so the contents replay answers the book again first. It
+// writes none where the entries make no usable outline, or where it left out
+// more than mostLeftOut of a level's paged entries at or above the chapter
+// level, and logs which.
 func place(ctx context.Context, tx *store.Tx, r store.ItemRecords, log *slog.Logger) error {
 	key := r.Item.Key
 	newest := store.NewestDone(r.Outputs, store.StageContents)
-	if newest == nil {
+	if newest == nil || !store.ReadsQuotedParse(*newest, r.Outputs) {
 		return nil
 	}
 	answer, err := ReadAnswer(newest.Answer)
@@ -153,7 +155,8 @@ func place(ctx context.Context, tx *store.Tx, r store.ItemRecords, log *slog.Log
 	if err != nil {
 		return err
 	}
-	parse, err := tx.Parse(ctx, key, store.ParsePick{Extractor: sections.ParsedBy.Name})
+	read := newest.Input()
+	parse, err := tx.Parse(ctx, key, store.ParsePick{Extractor: read.Extractor, Version: read.Version})
 	if err != nil {
 		return fmt.Errorf("read the parse that %s's contents are placed on: %w", key, err)
 	}
@@ -225,11 +228,11 @@ func waitsForContents(r store.ItemRecords) bool {
 
 // due says whether a replay runs the stage on a book: the book waits for its
 // contents, no contents task of it is open, and it holds no done answer of
-// the prompt in force.
+// the prompt in force over its newest pdf-text parse.
 func due(r store.ItemRecords, open bool) bool {
 	return !open && waitsForContents(r) && !slices.ContainsFunc(r.Outputs, func(o store.Output) bool {
 		return o.Stage == store.StageContents && o.Producer == Producer && o.ProducerVersion == prompts.Contents.Version &&
-			o.State == store.OutputDone
+			o.State == store.OutputDone && store.ReadsQuotedParse(o, r.Outputs)
 	})
 }
 
