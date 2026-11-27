@@ -1090,10 +1090,12 @@ Each arm prints after the gate, by model. Its tables count the arm's answers and
 answers to the same prompt versions on the same items, so two models compare over one set of
 labels. The gate's own tables count only the gate's answers.
 
-The note band prints last. It counts each note's draft by its confidence: kept where the read
-answers the draft, rewritten where a person's note took its place, waiting where the item waits in
-review as `note-unclear`, and other where the item left a read by a model. KEPT SHARE is kept over
-kept and rewritten, so the rows by band show where `[note] floor` would sit.
+The note band prints last. It counts each note's draft by its confidence. A draft is kept where a
+person's placement took it, and rewritten where a person's note took its place. It is applied
+where it reached the floor and no person placed the item, waiting where the item waits in review as
+`note-unclear`, and other where the item left a read by a model. KEPT SHARE is kept over kept and
+rewritten, the drafts that a person decided, so the rows by band show where `[note] floor` would
+sit.
 
 ```text
 $ ingestion gates agreement
@@ -1112,11 +1114,11 @@ side guess, floor 0.70
 ...
 
 note drafts, floor 0.70
-BY                  DRAFTS  KEPT  REWRITTEN  WAITING  OTHER  KEPT SHARE
-all                 3       2     1          0        0      67%
-confidence 0.4-0.5  1       0     1          0        0      0%
-confidence 0.5-0.6  1       1     0          0        0      100%
-confidence 0.9-1.0  1       1     0          0        0      100%
+BY                  DRAFTS  KEPT  APPLIED  REWRITTEN  WAITING  OTHER  KEPT SHARE
+all                 3       1     1        1          0        0      50%
+confidence 0.4-0.5  1       0     0        1          0        0      0%
+confidence 0.5-0.6  1       1     0        0          0        0      100%
+confidence 0.9-1.0  1       0     1        0          0        0      —
 ```
 
 ### Each week's misses draft one proposed change to the quality gate's prompt

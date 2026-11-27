@@ -17,11 +17,13 @@
 // where it names the person's side, and a person's drop gives it nothing to
 // compare. An unsure answer neither agrees nor disagrees.
 //
-// The note band reads every note's draft by its confidence: kept where the
-// read answers the draft, rewritten where a person's note took its place,
-// waiting where the item waits in review as note-unclear, and other where the
-// item left a read by a model. Kept over kept and rewritten shows where the
-// note floor would sit.
+// The note band reads every note's draft by its confidence. A draft is kept
+// where a person's placement took it, and rewritten where a person's note took
+// its place. It is applied where it reached the floor and the read gate made
+// it the read's note with no person, waiting where the item waits in review as
+// note-unclear, and other where the item left a read by a model. Kept over kept
+// and rewritten counts only what a person decided, so it shows where the note
+// floor would sit.
 package accuracy
 
 import (
@@ -67,6 +69,7 @@ type NoteDrafts struct {
 type NoteCounts struct {
 	Drafts    int `json:"drafts"`
 	Kept      int `json:"kept"`
+	Applied   int `json:"applied"`
 	Rewritten int `json:"rewritten"`
 	Waiting   int `json:"waiting"`
 	Other     int `json:"other"`
@@ -85,6 +88,7 @@ type NoteBand struct {
 // How one draft fared.
 const (
 	NoteKept      = "kept"
+	NoteApplied   = "applied"
 	NoteRewritten = "rewritten"
 	NoteWaiting   = "waiting"
 	NoteOther     = "other"
@@ -301,8 +305,10 @@ func NoteOutcome(r store.ItemRecords) string {
 	switch {
 	case store.NoteDigest(read.Note) != nil:
 		return NoteRewritten
-	case read.Verdict == connectors.ReadModel && read.Cause == route.CauseNoteDraft:
+	case read.Verdict == connectors.ReadModel && read.Cause == route.CauseNoteDraft && read.ByPerson():
 		return NoteKept
+	case read.Verdict == connectors.ReadModel && read.Cause == route.CauseNoteDraft:
+		return NoteApplied
 	case read.Verdict == route.VerdictReview && read.Cause == route.CauseNoteUnclear:
 		return NoteWaiting
 	}
@@ -315,6 +321,8 @@ func countNotes(outcomes []string) NoteCounts {
 		switch o {
 		case NoteKept:
 			c.Kept++
+		case NoteApplied:
+			c.Applied++
 		case NoteRewritten:
 			c.Rewritten++
 		case NoteWaiting:

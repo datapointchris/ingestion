@@ -140,7 +140,7 @@ func (d *standInDispatch) promptOfRun(id string) string {
 // draft's place. A worker that opens no context reader drafts without the
 // current work, and placing its save with no note takes its draft below the
 // floor. No draft reaches a decision's note, and gates agreement counts each
-// draft by its confidence as kept or rewritten.
+// draft by its confidence as kept, applied or rewritten.
 func TestANoteDraftAtTheFloorIsTheReadsNoteAndOneBelowWaitsOnAPerson(t *testing.T) {
 	p := newGatedPipeline(t, lifeSet(t, withLife))
 	stand := newStandInDispatch(t, p.provider)
@@ -301,12 +301,10 @@ func TestANoteDraftAtTheFloorIsTheReadsNoteAndOneBelowWaitsOnAPerson(t *testing.
 	if err := json.Unmarshal([]byte(out), &report); err != nil {
 		t.Fatal(err)
 	}
-	if n := report.Note.Overall; n.Drafts != 3 || n.Kept != 2 || n.Rewritten != 1 || n.Waiting != 0 || len(report.Note.ByConfidence) != 3 {
-		t.Errorf("the note band is %s, want three drafts in three bands, two kept and one rewritten", jsonOf(report.Note))
-	}
-	if out, err = runCLI(t, "gates", "agreement", "--config", p.config); err != nil || !strings.Contains(out, "note drafts, floor 0.70") ||
-		!strings.Contains(out, "confidence 0.4-0.5") {
-		t.Errorf("gates agreement printed %q, %v, want the note band by confidence", out, err)
+	n := report.Note
+	if o := n.Overall; n.Floor != route.DefaultNoteFloor || o.Drafts != 3 || o.Kept != 1 || o.Applied != 1 || o.Rewritten != 1 || o.Waiting != 0 ||
+		len(n.ByConfidence) != 3 || n.ByConfidence[0].From != 0.4 || n.ByConfidence[0].To != 0.5 || n.ByConfidence[0].Rewritten != 1 {
+		t.Errorf("the note band is %s, want three drafts in three bands at the default floor: one kept, one applied and the lowest rewritten", jsonOf(n))
 	}
 }
 

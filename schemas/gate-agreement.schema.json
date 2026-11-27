@@ -39,7 +39,7 @@
       }
     },
     "note": {
-      "description": "How each item's newest note draft fared, against the floor at or above which a draft becomes the read's note. A draft is kept where the read answers it, rewritten where a person's note took its place, waiting where its item waits in review as note-unclear, and other where the item left a read by a model.",
+      "description": "How each item's newest note draft fared, against the floor at or above which a draft becomes the read's note. A draft is kept where a person's placement took it, and rewritten where a person's note took its place. It is applied where it reached the floor and the read gate made it the read's note with no person, waiting where its item waits in review as note-unclear, and other where the item left a read by a model.",
       "type": "object",
       "additionalProperties": false,
       "required": ["floor", "overall", "by_confidence"],
@@ -52,12 +52,13 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["from", "to", "drafts", "kept", "rewritten", "waiting", "other", "kept_share"],
+            "required": ["from", "to", "drafts", "kept", "applied", "rewritten", "waiting", "other", "kept_share"],
             "properties": {
               "from": {"type": "number"},
               "to": {"type": "number"},
               "drafts": {"type": "integer", "minimum": 0},
               "kept": {"type": "integer", "minimum": 0},
+              "applied": {"type": "integer", "minimum": 0},
               "rewritten": {"type": "integer", "minimum": 0},
               "waiting": {"type": "integer", "minimum": 0},
               "other": {"type": "integer", "minimum": 0},
@@ -72,14 +73,15 @@
     "note_counts": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["drafts", "kept", "rewritten", "waiting", "other", "kept_share"],
+      "required": ["drafts", "kept", "applied", "rewritten", "waiting", "other", "kept_share"],
       "properties": {
         "drafts": {"type": "integer", "minimum": 0},
         "kept": {"type": "integer", "minimum": 0},
+        "applied": {"type": "integer", "minimum": 0},
         "rewritten": {"type": "integer", "minimum": 0},
         "waiting": {"type": "integer", "minimum": 0},
         "other": {"type": "integer", "minimum": 0},
-        "kept_share": {"description": "kept over kept and rewritten, and null where both are 0.", "type": ["number", "null"]}
+        "kept_share": {"description": "kept over kept and rewritten, the drafts a person decided, and null where both are 0.", "type": ["number", "null"]}
       }
     },
     "answers": {
