@@ -25,7 +25,7 @@ import (
 // the watch URL that the poll lands a video under.
 var (
 	CaptionsExtractor = extract.Extractor{
-		Name: "youtube-captions", Version: "1", MediaType: MediaTypeVideo,
+		Name: "youtube-captions", Version: "2", MediaType: MediaTypeVideo,
 		ReadsURL: true, Open: openCaptions, DefersTo: whisperName, SlotLimit: 1, LinkKind: itemkey.YouTube, LinkURL: WatchURL,
 	}
 	WhisperExtractor = WhisperExtractorAt(extract.WhisperProgram)
