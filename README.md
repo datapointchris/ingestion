@@ -428,8 +428,9 @@ newest task past its parse failed.
   `{"connector": "<name>", "url": "<link>", "destination": "<name>"}` under an `Idempotency-Key`,
   and answers as a drop does. The link lands as an `outside` item under its key, and the
   connector's tags go on its sighting. A retry under that key answers the first landing, and
-  another link under it is refused with 409. A push connector names no `zone`, because the route
-  reads it from each push.
+  another link under it is refused with 409. The route sets each item's zone by what the push
+  carries. It lands a link outside, and a memo as the owner's. So an apply refuses a push
+  connector that declares a `zone`.
   - **A memo's recording is the body itself**, sent to `POST /api/v1/items?connector=<name>`
     with any Content-Type, as an iPhone Shortcut sends a file. The route reads the body's opening:
     a `{` is a link's JSON, and an M4A, MP3 or WAV recording is a memo. Any other body answers
@@ -437,8 +438,9 @@ newest task past its parse failed.
     `recorded_at`, in RFC 3339, is the memo's source time.
   - **A memo lands as the owner's**, one item in the `owner` zone under `memo/<hash>`. The hash
     names the caller and the `Idempotency-Key`, so a retry lands on the first attempt's item. The
-    recording is kept under its SHA-256, and its parse is queued at `audio-whisper`. Under one
-    key, a retry answers the first landing. Another recording under that key answers 409.
+    route streams the recording to the blob volume under its SHA-256, and queues its parse at
+    `audio-whisper`. Under one key, a retry answers the first landing, whatever `recorded_at` it
+    names. Another recording under that key answers 409.
   - **A link lands only where an extractor of this build declares its kind**, such as
     `youtube-captions` for a YouTube video's link. The service stores nothing that it did not
     fetch through an extractor. A link of any other kind answers 422 `link_not_read`, naming the
@@ -661,12 +663,18 @@ program as `youtube-whisper` over the memo's bytes, in the slot group `heavy`.
 - **The memo then reads `split`**, and routes nothing of its own. Its side decision is `split`,
   by `gate`, for `topics`. The `topics` table keeps each topic's units, title and idea, and the
   outbox ships the title and idea as `ingestion.text`.
-- **A topic waits in review where its connector declares `person_sorts`**, as `phone` in
-  `examples/declarations/` does. `fleet-relate` reads a topic by a model after its note's draft.
+- **Each topic waits in review as `owners-words`**, because the quality gate never reads the
+  owner's words. A tag or a rule still places it first. `fleet-relate` reads a topic by a model
+  after its note's draft.
   `learning` and `watch` refuse a topic, because neither deliverer takes one.
 - **The connector's first fill holds every memo after the first at the `topics` stage.** The
   fill also holds each later model stage of the first memo's topics. `ingestion connectors
   release <name>` sends the rest.
+- **A memo's topics are written once, over the parse that the answer read.** When a newer parse
+  lands while the call runs, the memo still splits over the older one.
+- **`ingestion items replay --stage topics` asks again for a memo that never split**, once a
+  person confirms its estimate. It covers a memo whose topics task failed, and one whose scan
+  queued none. It skips a memo that holds a done answer over the parse that the stage quotes.
 
 ### Parsing an item, and running a stage again
 
@@ -1059,8 +1067,9 @@ places the item by the first rung that decides it. A memo passes none of them. I
    a rule or a person puts an item on the fleet side, never a guess. A fleet guess, a guess below
    the floor, or `unsure` sends the item to review as `below-floor`, with the guess beside it.
    Where a connector that sighted the item declares `person_sorts: true`, no guess places it, and
-   a pass sends it to review as `person-sorts`, with the guess beside it. So does an item that
-   the gate never reads, such as a memo's topic.
+   a pass sends it to review as `person-sorts`, with the guess beside it. The gate never reads
+   an item that holds the owner's own words, such as a memo's topic. Such an item waits in
+   review as `owners-words`.
 4. **Review.** An item that no tag or rule placed, and that holds no answer of the quality gate,
    waits as `no-guess` once an apply runs the side gate again. That is an item whose quality task
    failed, or whose scan could not read the set in force and so queued none.
@@ -1068,8 +1077,8 @@ places the item by the first rung that decides it. A memo passes none of them. I
 The gate runs again in the write that ends each later stage before it, such as the quality gate,
 in the write that applies a changed set, and in the write that lands another connector's sighting
 of the item. Each run passes over an item whose reading parse is not scanned yet. Each run decides
-again an item that the gate sent to review as `no-guess`, `below-floor`, `person-sorts` or
-`gate-error`, or that the quality gate dropped or sent to review. So a guess, a rule, or a second
+again an item that the gate sent to review as `no-guess`, `below-floor`, `person-sorts`,
+`owners-words` or `gate-error`, or that the quality gate dropped or sent to review. So a guess, a rule, or a second
 sighting's tag that arrives later places it. A person's placement withdraws the item's queued
 quality task. A tag's or a rule's leaves it queued, so the gate answers that item too, and its
 answer moves nothing. A placed item stays where it is: a later sighting or parse moves nothing, and only a

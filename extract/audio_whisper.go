@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/datapointchris/ingestion/isolatedprocess"
-	"github.com/datapointchris/ingestion/server"
+	"github.com/datapointchris/ingestion/store"
 )
 
 // WhisperProgram is where the worker image installs audio-whisper, which
@@ -49,9 +49,10 @@ const WhisperVersion = "1+faster-whisper-" + FasterWhisperVersion + "-" + Whispe
 // parse never run at once on one worker.
 var AudioWhisper = AudioWhisperAt(WhisperProgram)
 
-// AudioWhisperTimeout bounds one parse by AudioWhisper. The route takes a
-// memo of about 3.5 hours at most, and a four-thread run transcribes well
-// under the audio's length.
+// AudioWhisperTimeout bounds one parse by AudioWhisper. The longest memo that
+// the push route takes is the recording that server.MaxMemoBytes holds. A run
+// measures well under the audio's length with `/usr/bin/time -v audio-whisper
+// < <the audio>`, so the bound leaves room past it.
 const AudioWhisperTimeout = 12 * time.Hour
 
 // AudioWhisperAt is AudioWhisper, run by the audio-whisper program at
@@ -59,7 +60,7 @@ const AudioWhisperTimeout = 12 * time.Hour
 // span as SpanLabel writes it, and the parse keeps an AudioAnswer.
 func AudioWhisperAt(program string) Extractor {
 	return Extractor{
-		Name: "audio-whisper", Version: WhisperVersion, MediaType: server.MemoMediaTypes[0], AlsoReads: server.MemoMediaTypes[1:],
+		Name: "audio-whisper", Version: WhisperVersion, MediaType: store.MemoMediaTypes[0], AlsoReads: store.MemoMediaTypes[1:],
 		Program: program, SlotGroup: SlotGroupHeavy, Timeout: AudioWhisperTimeout,
 		Extract: func(ctx context.Context, body io.Reader) (Read, error) {
 			transcript, err := Transcribe(ctx, program, body)

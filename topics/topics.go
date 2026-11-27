@@ -13,10 +13,12 @@
 // retry` asks again.
 //
 // When the task ends done, serve writes the memo's topics rows and lands each
-// topic as an item in the owner's zone, keyed <memo key>#<n>, with the memo as
-// its parent and a sighting from each connector that sighted the memo. Each
-// topic's parse is its run of the memo's units, and a scan task follows it.
-// The side gate then splits the memo, and places each topic on its own.
+// topic through its lander as an item in the owner's zone, keyed <memo
+// key>#<n>, with the memo as its parent and a sighting from each connector
+// that sighted the memo. Each topic's parse is its run of the memo's units, and
+// a scan task follows it. The side gate then splits the memo, and places each
+// topic on its own. `items replay --stage topics` asks again for a memo that
+// never split.
 package topics
 
 import (
@@ -25,11 +27,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/datapointchris/ingestion/extract"
 	"github.com/datapointchris/ingestion/itemkey"
 	"github.com/datapointchris/ingestion/landing"
+	"github.com/datapointchris/ingestion/modelstage"
 	"github.com/datapointchris/ingestion/prompts"
 	"github.com/datapointchris/ingestion/scan"
 	"github.com/datapointchris/ingestion/server"
@@ -127,10 +131,51 @@ func QueueAfterScan(ctx context.Context, tx *store.Tx, task store.Task) error {
 	return err
 }
 
+// Replayable is the stage as `items replay --stage topics` runs it again: a
+// task for each memo that due names, once a request confirms the estimate.
+func Replayable(st *store.Store) server.Replayable {
+	return server.Replayable{
+		Capability: func(store.Item) (string, bool) { return Capability, true },
+		Queue: func(ctx context.Context, tx *store.Tx, item store.Item) (bool, error) {
+			r, err := tx.Records(ctx, item.Key)
+			if err != nil {
+				return false, err
+			}
+			_, open, err := tx.OpenTask(ctx, item.Key, store.StageTopics)
+			if err != nil || !due(r, open) {
+				return false, err
+			}
+			_, err = tx.Enqueue(ctx, store.Task{ItemKey: &item.Key, Stage: store.StageTopics, Capability: Capability})
+			return err == nil, err
+		},
+		Estimate: func(ctx context.Context, items []store.Item) (int, *store.Tokens, error) {
+			return modelstage.Estimate(ctx, st, store.StageTopics, items, due)
+		},
+	}
+}
+
+// due says whether a replay asks the stage of an item: it is a memo whose
+// reading parse is scanned, it has not split, no topics task of it is open,
+// and it holds no done answer of the prompt in force over the parse that the
+// stage quotes. So a memo whose topics task failed, or whose scan queued none,
+// is asked again.
+func due(r store.ItemRecords, open bool) bool {
+	if open || !r.Item.SplitsIntoTopics() || !store.ReadingParseScanned(r.Outputs) {
+		return false
+	}
+	if side, sided := r.NewestDecision(store.GateSide); sided && side.Verdict == store.VerdictSplit {
+		return false
+	}
+	return !slices.ContainsFunc(r.Outputs, func(o store.Output) bool {
+		return o.Stage == store.StageTopics && o.Producer == Producer && o.ProducerVersion == prompts.Topics.Version &&
+			o.State == store.OutputDone && store.ReadsQuotedParse(o, r.Outputs)
+	})
+}
+
 // AfterAnswer is the hook that runs in the write that ends a memo's topics
-// task done. It writes the memo's topics and lands each as an item, where the
-// memo holds none yet.
-func AfterAnswer(log *slog.Logger) server.AfterStage {
+// task done. It writes the memo's topics and lands each as an item through
+// lander, serve's own, where the memo holds none yet.
+func AfterAnswer(lander *landing.Lander, log *slog.Logger) server.AfterStage {
 	return func(ctx context.Context, tx *store.Tx, task store.Task) error {
 		if task.ItemKey == nil {
 			return nil
@@ -139,7 +184,7 @@ func AfterAnswer(log *slog.Logger) server.AfterStage {
 		if err != nil || !r.Item.SplitsIntoTopics() {
 			return err
 		}
-		return split(ctx, tx, r, log)
+		return split(ctx, tx, lander, r, log)
 	}
 }
 
@@ -150,13 +195,15 @@ func AfterAnswer(log *slog.Logger) server.AfterStage {
 // connector's person_sorts and tags reach it. Its parse is its run of the
 // memo's units, numbered from 1 with their labels, and a scan task is queued
 // for it. Where the memo's recording time is known, each topic's source time
-// is when its first unit starts. split writes nothing where the answer is
-// stale, as store.ReadsQuotedParse decides, or where its topics do not cover
-// the parse, and logs the second.
-func split(ctx context.Context, tx *store.Tx, r store.ItemRecords, log *slog.Logger) error {
+// is when its first unit starts. It splits the parse that the answer quoted,
+// even where a newer parse has landed since, because a memo's topics are
+// written once. It writes nothing where the topics do not cover that parse.
+// The worker of the same build fails such an answer, so serve meets one only
+// from an older worker, and logs it as an error.
+func split(ctx context.Context, tx *store.Tx, lander *landing.Lander, r store.ItemRecords, log *slog.Logger) error {
 	key := r.Item.Key
 	newest := store.NewestDone(r.Outputs, store.StageTopics)
-	if newest == nil || !store.ReadsQuotedParse(*newest, r.Outputs) {
+	if newest == nil {
 		return nil
 	}
 	if held, err := tx.Topics(ctx, key); err != nil || len(held) > 0 {
@@ -175,7 +222,7 @@ func split(ctx context.Context, tx *store.Tx, r store.ItemRecords, log *slog.Log
 		return fmt.Errorf("read the parse that %s's topics split: %w", key, err)
 	}
 	if err := answer.Covers(len(parse.Units)); err != nil {
-		log.WarnContext(ctx, "the topics answer does not hold each unit of the memo once, so the memo lands no topic", "key", key, "error", err)
+		log.ErrorContext(ctx, "the topics answer does not hold each unit of the memo once, so the memo lands no topic", "key", key, "error", err)
 		return nil
 	}
 	sightings, err := tx.Sightings(ctx, key)
@@ -195,10 +242,6 @@ func split(ctx context.Context, tx *store.Tx, r store.ItemRecords, log *slog.Log
 		}
 	}
 	if wrote, err := tx.PutTopics(ctx, rows); err != nil || !wrote {
-		return err
-	}
-	lander, err := landing.New(landing.Config{})
-	if err != nil {
 		return err
 	}
 	recorded, starts := recordedAt(r.Item), startsOf(parse.Output)

@@ -16,7 +16,7 @@ import (
 )
 
 // DefaultModel and DefaultEffort are what the stage's run is asked for where
-// config names neither. A dispatch service may refuse an effort below medium.
+// config names neither.
 const (
 	DefaultModel  = "sonnet"
 	DefaultEffort = "medium"

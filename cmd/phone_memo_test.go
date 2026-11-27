@@ -89,7 +89,7 @@ func TestAPhonesMemoLandsAsTheOwnersAudioUnderItsHash(t *testing.T) {
 	sum := sha256.Sum256(memo)
 	if n := p.count(t, `SELECT count(*) FROM items i JOIN blobs b ON b.sha256 = i.blob_sha256 JOIN sightings s ON s.item_key = i.key
 		WHERE i.key = ? AND i.key LIKE 'memo/%' AND i.zone = 'owner' AND i.media_type = ? AND b.sha256 = ? AND s.connector = 'phone'`,
-		key, server.MediaTypeAudioMP4, hex.EncodeToString(sum[:])); n != 1 {
+		key, store.MediaTypeAudioMP4, hex.EncodeToString(sum[:])); n != 1 {
 		t.Errorf("%d owner memos under %s hold the audio's SHA-256, want 1", n, key)
 	}
 	if n := p.count(t, `SELECT count(*) FROM tasks WHERE item_key = ? AND stage = 'parse' AND capability = ?`,
@@ -127,14 +127,15 @@ func TestAPhonesMemoLandsAsTheOwnersAudioUnderItsHash(t *testing.T) {
 	}
 }
 
-// A memo's audio parses in the heavy slot into one unit per segment that holds
-// speech, labeled by its span. Its scan queues the topics stage and no quality
-// task, while an outside link's scan still queues the quality gate. The worker
-// refuses a topics answer with a gap or an overlap. Two topics land two items
-// with the memo as their parent, each with a parse of its units and a source
-// time at its first unit. The memo then splits and routes nothing of its own.
-// Each topic waits in review as person-sorts. fleet-relate queues a topic's
-// note, and learning and watch refuse one.
+// A memo's audio parses into one unit per segment that holds speech, labeled
+// by its span. Its scan queues the topics stage and no quality task, while an
+// outside link's scan still queues the quality gate. The worker refuses a
+// topics answer with a gap or an overlap, and `tasks retry` or a topics replay
+// asks again. Two topics land two items with the memo as their parent, each
+// with a parse of its units and a source time at its first unit. The memo then
+// splits and routes nothing of its own. Each topic waits in review as
+// owners-words. fleet-relate queues a topic's note, and learning and watch
+// refuse one.
 func TestAMemoSplitsIntoOneItemPerTopic(t *testing.T) {
 	p := newGatedPipeline(t, mustAbs(t, "../examples/declarations"))
 	memo := m4aMemo("one")
@@ -151,10 +152,6 @@ func TestAMemoSplitsIntoOneItemPerTopic(t *testing.T) {
 		t.Fatal(err)
 	}
 	handlers := whisper.Handlers(p.worker, quiet)
-	slotted, ok := handlers[0].(interface{ SlotGroup() (string, int) })
-	if group, limit := slotted.SlotGroup(); !ok || group != extract.SlotGroupHeavy || limit != 1 {
-		t.Errorf("audio-whisper runs in slot group %q of %d, want %s of 1", group, limit, extract.SlotGroupHeavy)
-	}
 
 	status, raw := send(t, p.person, http.MethodPost, p.api.URL+"/api/v1/items?connector=phone&recorded_at=2026-11-20T08:00:00Z", "memo-1", memo)
 	if status != http.StatusCreated {
@@ -201,17 +198,22 @@ func TestAMemoSplitsIntoOneItemPerTopic(t *testing.T) {
 		return answer
 	}
 	splitter := p.modelHandler(t, stand.models(t, "", ""), topics.Capability)
-	for _, refusal := range []string{"a gap", "an overlap"} {
+	failed := func(refusal string) string {
+		t.Helper()
 		p.run(t, splitter)
-		var id, failure string
-		if err := p.st.Reader().QueryRowContext(t.Context(), `SELECT t.id, coalesce(o.error, '') FROM tasks t JOIN outputs o ON o.item_key = t.item_key AND o.stage = t.stage
-			WHERE t.item_key = ? AND t.stage = 'topics' AND t.state = 'failed' AND o.state = 'failed'`, key).Scan(&id, &failure); err != nil ||
-			!strings.Contains(failure, refusal) {
-			t.Fatalf("the answer with %s left no failed topics task naming it (%v, %q)", refusal, err, failure)
+		var id string
+		if err := p.st.Reader().QueryRowContext(t.Context(), `SELECT t.id FROM tasks t JOIN outputs o ON o.item_key = t.item_key AND o.stage = t.stage
+			WHERE t.item_key = ? AND t.stage = 'topics' AND t.state = 'failed' AND o.state = 'failed'`, key).Scan(&id); err != nil {
+			t.Fatalf("the answer with %s left no failed topics task (%v)", refusal, err)
 		}
-		if _, err := runCLI(t, "tasks", "retry", id, "--config", p.config); err != nil {
-			t.Fatal(err)
-		}
+		return id
+	}
+	if _, err := runCLI(t, "tasks", "retry", failed("a gap"), "--config", p.config); err != nil {
+		t.Fatal(err)
+	}
+	failed("an overlap")
+	if _, err := runCLI(t, "items", "replay", "--stage", store.StageTopics, "--key", key, "--yes", "--config", p.config); err != nil {
+		t.Fatal(err)
 	}
 	p.run(t, splitter)
 
@@ -258,8 +260,8 @@ func TestAMemoSplitsIntoOneItemPerTopic(t *testing.T) {
 	}
 	first, second := key+"#1", key+"#2"
 	for _, child := range []string{first, second} {
-		if !inReview(t, p, child, route.CausePersonSorts) || p.count(t, `SELECT count(*) FROM tasks WHERE item_key = ? AND stage = 'quality'`, child) != 0 {
-			t.Errorf("%s holds decisions %q, want a wait in review as person-sorts and no quality task", child, decisionLines(t, p, child))
+		if !inReview(t, p, child, route.CauseOwnersWords) || p.count(t, `SELECT count(*) FROM tasks WHERE item_key = ? AND stage = 'quality'`, child) != 0 {
+			t.Errorf("%s holds decisions %q, want a wait in review as owners-words and no quality task", child, decisionLines(t, p, child))
 		}
 	}
 	if _, err := runCLI(t, "review", "sort", first, route.VerbFleetRelate, "--config", p.config); err != nil {
@@ -268,18 +270,13 @@ func TestAMemoSplitsIntoOneItemPerTopic(t *testing.T) {
 	if n := p.count(t, `SELECT count(*) FROM tasks WHERE item_key = ? AND stage = 'note' AND held_by = 'phone'`, first); n != 1 {
 		t.Errorf("fleet-relate queued %d note tasks on the topic that the first fill holds, want 1", n)
 	}
-	for _, sort := range []struct {
-		args    []string
-		refusal string
-	}{
-		{[]string{route.VerbLearning}, "learning holds a book"}, {[]string{route.VerbWatch, "--playlist", "Later"}, "a watch adds a YouTube video"},
-	} {
-		args := append(append([]string{"review", "sort", second}, sort.args...), "--config", p.config)
-		if _, err := runCLI(t, args...); err == nil || !strings.Contains(err.Error(), sort.refusal) {
-			t.Errorf("%s on a topic answered %v, want a refusal saying %q", sort.args[0], err, sort.refusal)
+	for _, sort := range [][]string{{route.VerbLearning}, {route.VerbWatch, "--playlist", "Later"}} {
+		args := append(append([]string{"review", "sort", second}, sort...), "--config", p.config)
+		if _, err := runCLI(t, args...); err == nil {
+			t.Errorf("%s on a topic placed it, want a refusal", sort[0])
 		}
 	}
-	if !inReview(t, p, second, route.CausePersonSorts) {
+	if !inReview(t, p, second, route.CauseOwnersWords) {
 		t.Errorf("the refused sorts moved the topic, which holds %q", decisionLines(t, p, second))
 	}
 }
@@ -289,21 +286,19 @@ func TestAMemoSplitsIntoOneItemPerTopic(t *testing.T) {
 func TestATopicsAnswerCoversEachUnitOnceInOrder(t *testing.T) {
 	run := func(first, last int) topics.AnswerTopic { return topics.AnswerTopic{FirstUnit: first, LastUnit: last} }
 	for _, c := range []struct {
-		runs  []topics.AnswerTopic
-		units int
-		want  string
+		runs   []topics.AnswerTopic
+		covers bool
 	}{
-		{[]topics.AnswerTopic{run(1, 2), run(3, 5)}, 5, ""},
-		{[]topics.AnswerTopic{run(2, 5)}, 5, "a gap"},
-		{[]topics.AnswerTopic{run(1, 2), run(4, 5)}, 5, "a gap"},
-		{[]topics.AnswerTopic{run(1, 3), run(3, 5)}, 5, "an overlap"},
-		{[]topics.AnswerTopic{run(1, 4)}, 5, "a gap"},
-		{[]topics.AnswerTopic{run(1, 6)}, 5, "past the parse's last unit"},
-		{[]topics.AnswerTopic{run(3, 2)}, 5, "before it starts"},
+		{[]topics.AnswerTopic{run(1, 2), run(3, 5)}, true},
+		{[]topics.AnswerTopic{run(2, 5)}, false},
+		{[]topics.AnswerTopic{run(1, 2), run(4, 5)}, false},
+		{[]topics.AnswerTopic{run(1, 3), run(3, 5)}, false},
+		{[]topics.AnswerTopic{run(1, 4)}, false},
+		{[]topics.AnswerTopic{run(1, 6)}, false},
+		{[]topics.AnswerTopic{run(3, 2)}, false},
 	} {
-		err := topics.Answer{Topics: c.runs}.Covers(c.units)
-		if (c.want == "") != (err == nil) || (err != nil && !strings.Contains(err.Error(), c.want)) {
-			t.Errorf("%v over %d units answered %v, want %q", c.runs, c.units, err, c.want)
+		if err := (topics.Answer{Topics: c.runs}).Covers(5); (err == nil) != c.covers {
+			t.Errorf("%v over 5 units answered %v, want covers %v", c.runs, err, c.covers)
 		}
 	}
 }

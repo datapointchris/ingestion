@@ -43,8 +43,8 @@ const (
 // schemas/replay.schema.json's stage enum holds them. ReplayRoutes takes the
 // stages that the service replays.
 var ReplayStages = []string{
-	store.StageParse, store.StageStructure, store.StageContents, store.StageScan, store.StageQuality, store.StageQualityArm,
-	store.StageModelRead, store.StageDeliver,
+	store.StageParse, store.StageStructure, store.StageContents, store.StageScan, store.StageTopics, store.StageQuality,
+	store.StageQualityArm, store.StageModelRead, store.StageDeliver,
 }
 
 // ReplayRequest asks to run Stage again over the items that Connector and Key

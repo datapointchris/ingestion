@@ -24,6 +24,7 @@ import (
 	"github.com/datapointchris/ingestion/deliver"
 	"github.com/datapointchris/ingestion/extract"
 	"github.com/datapointchris/ingestion/itemkey"
+	"github.com/datapointchris/ingestion/landing"
 	"github.com/datapointchris/ingestion/sections"
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
@@ -434,12 +435,14 @@ func TestEachChapterEntersLearningPartOfItsBookOnceTheBookIsThere(t *testing.T) 
 	// Until chaptersQueue is set, a delivery's end queues no chapter, as in a
 	// release whose deliverer wrote none.
 	var chaptersQueue atomic.Bool
-	after := afterStage(quiet)
-	p := newPipelineOver(t, extractors, func(ctx context.Context, tx *store.Tx, task store.Task) error {
-		if task.Stage == store.StageDeliver && !chaptersQueue.Load() {
-			return nil
+	p := newPipelineOver(t, extractors, func(lander *landing.Lander) server.AfterStage {
+		after := afterStage(quiet)(lander)
+		return func(ctx context.Context, tx *store.Tx, task store.Task) error {
+			if task.Stage == store.StageDeliver && !chaptersQueue.Load() {
+				return nil
+			}
+			return after(ctx, tx, task)
 		}
-		return after(ctx, tx, task)
 	}, map[string]string{"books": books})
 	declarations := lifeSet(t, withLife+"  - name: learning\n    side: personal\n    tags: [book]\n    deliverer: learning-resources\n")
 	p.apply(t, declarations)

@@ -83,8 +83,8 @@ type Connector struct {
 	Freshness string   `json:"freshness,omitempty" yaml:"freshness"`
 	Tags      []string `json:"tags" yaml:"tags"`
 	// Zone is who writes what the connector carries, as its items' default.
-	// A push connector names none, since its route reads the zone from each
-	// request.
+	// A push connector names none, because the route sets each item's zone by
+	// what the push carries: a link lands outside, and a memo as the owner's.
 	Zone     store.Zone `json:"zone,omitempty" yaml:"zone"`
 	ReadRule string     `json:"read_rule,omitempty" yaml:"read_rule"`
 	// Root names the [serve.homes] root a folder connector reads, and Path
@@ -419,7 +419,11 @@ func Validate(s Set, roots []string) []Invalid {
 func (c Connector) problems(compiled declarationSchemas, roots []string) []string {
 	var out []string
 	for _, problem := range schemas.Problems(compiled.connector, c.normalized()) {
-		if field, ok := strings.CutSuffix(problem, ": false schema"); ok {
+		field, ok := strings.CutSuffix(problem, ": false schema")
+		switch {
+		case ok && field == "zone" && c.Mode == ModePush:
+			problem = "zone: a push connector names none, because the route sets each item's zone by what the push carries, so delete the line"
+		case ok:
 			problem = fmt.Sprintf("%s: a %s connector does not take it", field, c.Mode)
 		}
 		if problem == "schedule: 'not' failed" {

@@ -126,16 +126,19 @@ func init() {
 	rootCmd.AddCommand(serveCmd)
 }
 
-// afterStage is afterStageUnder at the default note floor.
-func afterStage(log *slog.Logger) server.AfterStage {
-	return afterStageUnder(log, route.DefaultNoteFloor)
+// afterStage is afterStageUnder at the default note floor, over the lander
+// that it is handed.
+func afterStage(log *slog.Logger) func(*landing.Lander) server.AfterStage {
+	return func(lander *landing.Lander) server.AfterStage {
+		return afterStageUnder(lander, log, route.DefaultNoteFloor)
+	}
 }
 
 // afterStageUnder runs in the write that ends an item's task done. It runs
 // what follows the stage that ended, keyed by that stage, such as the stages
-// it queues or the read gate's decision on a note's draft under noteFloor,
-// then runs the gates.
-func afterStageUnder(log *slog.Logger, noteFloor float64) server.AfterStage {
+// it queues, the topics that lander lands, or the read gate's decision on a
+// note's draft under noteFloor, then runs the gates.
+func afterStageUnder(lander *landing.Lander, log *slog.Logger, noteFloor float64) server.AfterStage {
 	next := map[string][]server.AfterStage{
 		store.StageParse: {extract.AfterParse(
 			[]server.AfterStage{scan.QueueAfterParse, sections.QueueAfterParse}, []server.AfterStage{extract.QueueDeferredParse},
@@ -143,7 +146,7 @@ func afterStageUnder(log *slog.Logger, noteFloor float64) server.AfterStage {
 		store.StageStructure: {sections.AfterStructure, contents.AfterStructure(log), sections.QueueDoclingParse},
 		store.StageContents:  {contents.AfterAnswer(log)},
 		store.StageScan:      {qualitygate.QueueAfterScan, topics.QueueAfterScan},
-		store.StageTopics:    {topics.AfterAnswer(log)},
+		store.StageTopics:    {topics.AfterAnswer(lander, log)},
 		store.StageQuality:   {qualitygate.DecideAfterAnswer, route.RedraftAfterAnswer},
 		store.StageNote:      {route.AfterDraft(noteFloor)},
 		store.StageDeliver:   {route.AfterDelivery},
@@ -167,6 +170,7 @@ func replayableStages(st *store.Store, extractors *extract.Registry) map[string]
 		store.StageParse:      extractors.Replayable(),
 		store.StageStructure:  sections.Replayable(),
 		store.StageContents:   contents.Replayable(st),
+		store.StageTopics:     topics.Replayable(st),
 		store.StageScan:       scan.Replayable(extractors),
 		store.StageQuality:    qualitygate.Replayable(st),
 		store.StageQualityArm: qualitygate.ArmReplayable(st),
@@ -248,7 +252,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 	handler := server.Handler(server.Config{
 		Store: st, Gate: gate, Issuer: cfg.Issuer, PublicURL: cfg.Serve.PublicURL, Version: version, Log: log,
-	}, server.TaskRoutes(st, lander, log, afterStageUnder(log, noteFloor)), server.BlobRoutes(lander, log), server.ItemRoutes(st, log),
+	}, server.TaskRoutes(st, lander, log, afterStageUnder(lander, log, noteFloor)), server.BlobRoutes(lander, log), server.ItemRoutes(st, log),
 		server.ConnectorRoutes(server.ConnectorConfig{
 			Store: st, Lander: lander, Scheduler: scheduler, Roots: roots, AfterApply: route.AfterApply(log), Links: extractors, Log: log,
 		}),

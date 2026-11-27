@@ -64,13 +64,13 @@ func (p *pipeline) advance(d time.Duration) { p.ahead.Add(int64(d)) }
 
 // newPipeline serves the routes with after run in the write that ends each
 // item's task done, as serve runs the gates there.
-func newPipeline(t *testing.T, extractors *extract.Registry, after server.AfterStage) *pipeline {
+func newPipeline(t *testing.T, extractors *extract.Registry, after func(*landing.Lander) server.AfterStage) *pipeline {
 	t.Helper()
 	return newPipelineOver(t, extractors, after, nil)
 }
 
 // newPipelineOver is newPipeline whose lander reads homes as [serve.homes].
-func newPipelineOver(t *testing.T, extractors *extract.Registry, after server.AfterStage, homes map[string]string) *pipeline {
+func newPipelineOver(t *testing.T, extractors *extract.Registry, after func(*landing.Lander) server.AfterStage, homes map[string]string) *pipeline {
 	t.Helper()
 	ctx := t.Context()
 	dir := t.TempDir()
@@ -92,11 +92,15 @@ func newPipelineOver(t *testing.T, extractors *extract.Registry, after server.Af
 	if err != nil {
 		t.Fatal(err)
 	}
+	var hook server.AfterStage
+	if after != nil {
+		hook = after(lander)
+	}
 	provider := authtest.NewProvider(t)
 	provider.Register("ingestion-svc-worker", "worker-secret", server.ScopeTasksClaim)
 	gate := verifiedGate{provider.Verifier(t, "ingestion-cli-", "ingestion-svc-")}
 	api := httptest.NewServer(server.Handler(server.Config{Store: st, Gate: gate, Issuer: provider.URL, Version: "test", Log: log},
-		server.TaskRoutes(st, lander, log, after), server.BlobRoutes(lander, log), server.ItemRoutes(st, log), server.ReviewRoutes(st, comments.StateOf, "", log),
+		server.TaskRoutes(st, lander, log, hook), server.BlobRoutes(lander, log), server.ItemRoutes(st, log), server.ReviewRoutes(st, comments.StateOf, "", log),
 		server.TrustRoutes(st, log), server.RoutingRuleRoutes(st, log),
 		server.ConnectorRoutes(server.ConnectorConfig{
 			Store: st, Lander: lander, Scheduler: connectors.NewScheduler(st, lander, log),

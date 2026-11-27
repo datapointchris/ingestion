@@ -5,9 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"slices"
 	"strings"
-
-	"github.com/datapointchris/ingestion/itemkey"
 )
 
 // Each record's JSON names are its table's column names, which
@@ -49,7 +48,8 @@ const (
 	StageSections = "sections"
 	StageScan     = "scan"
 	// StageTopics is a model's split of a memo's transcript into one child
-	// item per topic, where an outsider's item passes the quality gate.
+	// item per topic. Only a memo reaches it, at the point on the line where
+	// an outsider's item reaches the quality gate.
 	StageTopics  = "topics"
 	StageQuality = "quality"
 	// StageNote is a model's draft of the note that a model read answers,
@@ -127,12 +127,24 @@ func (i Item) PlacedThroughParent() bool {
 // own.
 const MediaTypeMemoTopic = "application/x-memo-topic"
 
-// SplitsIntoTopics says whether the item is a memo, the owner's own words
-// keyed by its caller and Idempotency-Key, which the topics stage splits into
-// one child per topic. A memo passes no quality gate, and routes nothing of its
-// own once it is split.
+// The media types of a memo's recording, as the push route reads them from
+// the body's leading bytes.
+const (
+	MediaTypeAudioMP4  = "audio/mp4"
+	MediaTypeAudioMPEG = "audio/mpeg"
+	MediaTypeAudioWAV  = "audio/wav"
+)
+
+// MemoMediaTypes are the containers of a memo's recording, which the push
+// route sniffs, audio-whisper transcribes, and SplitsIntoTopics reads.
+var MemoMediaTypes = []string{MediaTypeAudioMP4, MediaTypeAudioMPEG, MediaTypeAudioWAV}
+
+// SplitsIntoTopics says whether the item is a memo, a recording of the
+// owner's own words, which the topics stage splits into one child per topic.
+// A memo passes no quality gate, and routes nothing of its own once it is
+// split.
 func (i Item) SplitsIntoTopics() bool {
-	return i.Zone == Owner && i.ParentKey == nil && strings.HasPrefix(i.Key, itemkey.Memo+"/") && !strings.Contains(i.Key, "#")
+	return i.Zone == Owner && i.ParentKey == nil && slices.Contains(MemoMediaTypes, i.MediaType)
 }
 
 // SkipsQualityGate says whether the quality gate never reads the item. The

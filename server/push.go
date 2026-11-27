@@ -34,27 +34,16 @@ const (
 	// reads at its source, so the push stores nothing.
 	CodeLinkNotRead = "link_not_read"
 	// CodeMediaNotRead is a body that is neither a JSON link nor the audio of
-	// a memo in a container that MemoMediaTypes names.
+	// a memo in a container that store.MemoMediaTypes names.
 	CodeMediaNotRead = "media_not_read"
 	// CodeMemoTooLarge is a memo past MaxMemoBytes.
 	CodeMemoTooLarge = "memo_too_large"
 )
 
-// MaxMemoBytes bounds one pushed memo, which is what the edge in front of the
-// service takes in one request body. It holds about 3.5 hours of audio at 64
-// kbps.
+// MaxMemoBytes bounds one pushed memo's body, and a body past it answers 413.
+// It holds about 3.5 hours of audio at 64 kbps. The route streams the body to
+// the blob volume, so serve's memory stays flat in the memo's size.
 const MaxMemoBytes = 100 << 20
-
-// The media types of a memo's audio, as the push route reads them from the
-// body's leading bytes.
-const (
-	MediaTypeAudioMP4  = "audio/mp4"
-	MediaTypeAudioMPEG = "audio/mpeg"
-	MediaTypeAudioWAV  = "audio/wav"
-)
-
-// MemoMediaTypes are the audio containers that a pushed memo lands as.
-var MemoMediaTypes = []string{MediaTypeAudioMP4, MediaTypeAudioMPEG, MediaTypeAudioWAV}
 
 // sniffBytes bounds the opening that the route reads to tell a link from a
 // memo.
@@ -66,18 +55,18 @@ const sniffBytes = 512
 var mp4AudioBrands = []string{"M4A ", "M4B ", "M4P ", "F4A ", "F4B "}
 
 // SniffMemo is the media type of a memo whose body opens with head, and false
-// where head opens none of MemoMediaTypes: an MP4 whose ftyp box names an
+// where head opens none of store.MemoMediaTypes: an MP4 whose ftyp box names an
 // audio brand, an MP3 that opens with its ID3 tag or a frame, or a RIFF WAVE.
 // The route reads the bytes rather than the Content-Type, because a phone's
 // share may name no type or the wrong one.
 func SniffMemo(head []byte) (string, bool) {
 	switch {
 	case mp4Audio(head):
-		return MediaTypeAudioMP4, true
+		return store.MediaTypeAudioMP4, true
 	case bytes.HasPrefix(head, []byte("ID3")) || mpegFrame(head):
-		return MediaTypeAudioMPEG, true
+		return store.MediaTypeAudioMPEG, true
 	case len(head) >= 12 && string(head[:4]) == "RIFF" && string(head[8:12]) == "WAVE":
-		return MediaTypeAudioWAV, true
+		return store.MediaTypeAudioWAV, true
 	}
 	return "", false
 }
@@ -156,7 +145,7 @@ func (h connectorHandlers) push(w http.ResponseWriter, r *http.Request) {
 	mediaType, ok := SniffMemo(head)
 	if !ok {
 		Refuse(w, http.StatusUnsupportedMediaType, CodeMediaNotRead,
-			"the body is neither a JSON link, which opens with {, nor a memo's audio as %s, so nothing was stored", strings.Join(MemoMediaTypes, ", "))
+			"the body is neither a JSON link, which opens with {, nor a memo's audio as %s, so nothing was stored", strings.Join(store.MemoMediaTypes, ", "))
 		return
 	}
 	h.pushMemo(w, r, body, mediaType)
@@ -275,12 +264,14 @@ func (h connectorHandlers) pushLink(w http.ResponseWriter, r *http.Request, raw 
 // pushMemo lands body, a memo's audio of mediaType, as the owner's item
 // through the push connector that the query's connector names. Its key is
 // itemkey.FromMemo of the caller and the Idempotency-Key, so a share of the
-// same file sent again under that key answers what the first one landed.
-// Landing keeps the audio under its SHA-256, and queues its transcript. The
-// query's recorded_at, an RFC 3339 time, is the item's source time, and
-// without it the landing time stands. A memo past MaxMemoBytes answers 413.
+// same file sent again under that key answers what the first one landed. The
+// fingerprint names the connector and the recording, and leaves recorded_at
+// out, so a re-share that spells the time another way still replays. Landing
+// streams the audio to the blob volume under its SHA-256, and queues its
+// transcript. The query's recorded_at, an RFC 3339 time, is the item's source
+// time, and without it the landing time stands. A memo past MaxMemoBytes
+// answers 413.
 func (h connectorHandlers) pushMemo(w http.ResponseWriter, r *http.Request, body io.Reader, mediaType string) {
-	key := requestKey(r)
 	query := r.URL.Query()
 	name, recordedAt := query.Get("connector"), query.Get("recorded_at")
 	if name == "" {
@@ -300,69 +291,75 @@ func (h connectorHandlers) pushMemo(w http.ResponseWriter, r *http.Request, body
 	if !ok {
 		return
 	}
-	audio, err := io.ReadAll(body)
-	var tooLarge *http.MaxBytesError
-	if errors.As(err, &tooLarge) {
-		Refuse(w, http.StatusRequestEntityTooLarge, CodeMemoTooLarge, "a memo holds at most %d bytes, so nothing was stored", MaxMemoBytes)
-		return
-	}
-	if err != nil {
-		Refuse(w, http.StatusBadRequest, CodeInvalidBody, "the memo could not be read: %v", err)
-		return
-	}
-	caller := callerOf(r)
-	itemKey, err := itemkey.FromMemo(caller, key)
+	itemKey, err := itemkey.FromMemo(callerOf(r), requestKey(r))
 	if err != nil {
 		h.internal(w, r, "key the memo", err)
 		return
 	}
-	sum := sha256.Sum256(audio)
-	fingerprint := fingerprintOf(store.KeyedRoutePushes, c.Name, mediaType, hex.EncodeToString(sum[:]), recordedAt)
-	prior, found, err := h.cfg.Store.KeyedRequest(r.Context(), caller, key)
-	if err != nil {
-		h.internal(w, r, "read the memo's key", err)
-		return
-	}
-	if found {
-		h.answerReplay(w, prior, fingerprint)
-		return
-	}
-	landed, err := h.cfg.Lander.Land(r.Context(), landing.Arrival{
-		Connector: c.Name, Zone: store.Owner, Key: itemKey, MediaType: mediaType, Body: bytes.NewReader(audio), SourceTime: recorded, Tags: c.Tags,
-	})
-	if err != nil {
-		h.internal(w, r, "land the memo", err)
-		return
-	}
-	zones, err := h.cfg.Store.ItemZones(r.Context(), []string{itemKey})
-	if err != nil {
-		h.internal(w, r, "read the landed memo", err)
-		return
-	}
-	answer := PushAnswer{SchemaVersion: 1, Items: []PushedItem{{Key: itemKey, Zone: zones[itemKey], Created: landed.ItemAdded}}}
-	var replay *store.KeyedRequest
-	err = h.cfg.Store.Update(r.Context(), func(tx *store.Tx) error {
-		prior, found, err := tx.KeyedRequest(r.Context(), caller, key)
-		if err != nil || found {
-			replay = &prior
-			return err
+	read := &memoBody{r: body}
+	hashed := sha256.New()
+	audio := io.TeeReader(read, hashed)
+	// fingerprint reads what of the recording Land left unread, then names
+	// the whole recording.
+	fingerprint := func() (string, bool) {
+		if _, err := io.Copy(io.Discard, audio); err != nil {
+			read.refuse(w)
+			return "", false
 		}
-		if err := h.keep(r, tx, caller, key, store.KeyedRoutePushes, c.Name, fingerprint, http.StatusCreated, answer); err != nil {
-			return err
-		}
-		return connectors.Delivered(r.Context(), tx, c)
+		return fingerprintOf(store.KeyedRoutePushes, c.Name, mediaType, hex.EncodeToString(hashed.Sum(nil))), true
+	}
+	answer, ok := h.landKeyed(w, r, keyedLanding{
+		route: store.KeyedRoutePushes, connector: c, fingerprint: fingerprint,
+		land: func() ([]landing.Landed, string, bool) {
+			landed, err := h.cfg.Lander.Land(r.Context(), landing.Arrival{
+				Connector: c.Name, Zone: store.Owner, Key: itemKey, MediaType: mediaType, Body: audio, SourceTime: recorded, Tags: c.Tags,
+			})
+			switch {
+			case read.err != nil:
+				read.refuse(w)
+				return nil, "", false
+			case err != nil:
+				h.internal(w, r, "land the memo", err)
+				return nil, "", false
+			}
+			sum, ok := fingerprint()
+			return []landing.Landed{landed}, sum, ok
+		},
 	})
-	switch {
-	case err != nil:
-		h.internal(w, r, "record the memo", err)
-		return
-	case replay != nil:
-		h.answerReplay(w, *replay, fingerprint)
+	if !ok {
 		return
 	}
-	h.cfg.Log.Info("landed a memo", "connector", c.Name, "item", itemKey, "created", landed.ItemAdded, "media_type", mediaType,
-		"bytes", len(audio), "sha256", landed.SHA256)
-	JSON(w, http.StatusCreated, answer)
+	h.cfg.Log.Info("landed a memo", "connector", c.Name, "item", itemKey, "created", answer.Items[0].Created, "media_type", mediaType,
+		"bytes", read.n, "sha256", hex.EncodeToString(hashed.Sum(nil)))
+}
+
+// memoBody reads a memo's body, and counts what it read. It keeps the first
+// error that a read met other than io.EOF, so the route tells a body that
+// failed from a landing that failed.
+type memoBody struct {
+	r   io.Reader
+	n   int64
+	err error
+}
+
+func (b *memoBody) Read(p []byte) (int, error) {
+	n, err := b.r.Read(p)
+	b.n += int64(n)
+	if err != nil && !errors.Is(err, io.EOF) && b.err == nil {
+		b.err = err
+	}
+	return n, err
+}
+
+// refuse answers a body that could not be read: 413 where it ran past
+// MaxMemoBytes, and 400 otherwise.
+func (b *memoBody) refuse(w http.ResponseWriter) {
+	var tooLarge *http.MaxBytesError
+	if errors.As(b.err, &tooLarge) {
+		Refuse(w, http.StatusRequestEntityTooLarge, CodeMemoTooLarge, "a memo holds at most %d bytes, so nothing was stored", MaxMemoBytes)
+		return
+	}
+	Refuse(w, http.StatusBadRequest, CodeInvalidBody, "the memo could not be read: %v", b.err)
 }
 
 // pushConnector is the push connector called name in the set in force, and

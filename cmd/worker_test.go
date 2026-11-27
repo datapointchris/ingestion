@@ -24,7 +24,7 @@ import (
 func TestDoclingAndWhisperParsesShareOneHeavySlotWhereNoSlotLimitIsConfigured(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	p := newPipeline(t, extract.Builtin(), func(context.Context, *store.Tx, store.Task) error { return nil })
+	p := newPipeline(t, extract.Builtin(), nil)
 	p.apply(t, mustAbs(t, "../examples/declarations"))
 	var books []string
 	for _, body := range []string{"one", "two", "three"} {
@@ -109,7 +109,7 @@ func TestDoclingAndWhisperParsesShareOneHeavySlotWhereNoSlotLimitIsConfigured(t 
 func TestADeployThatStopsTheWorkerMidParseQueuesItsTaskAgain(t *testing.T) {
 	ctx, stop := context.WithCancel(t.Context())
 	defer stop()
-	p := newPipeline(t, extract.Builtin(), func(context.Context, *store.Tx, store.Task) error { return nil })
+	p := newPipeline(t, extract.Builtin(), nil)
 	p.apply(t, mustAbs(t, "../examples/declarations"))
 	landed, err := p.lander.Land(ctx, landing.Arrival{
 		Connector: "books-folder", Zone: store.Outside, MediaType: extract.MediaTypePDF, Body: strings.NewReader("a book"),
