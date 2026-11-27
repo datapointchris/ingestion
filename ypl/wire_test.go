@@ -64,25 +64,27 @@ func TestTheClientWaitsLongerThanYPLHoldsARead(t *testing.T) {
 	}
 }
 
-// Captions holds every field of ypl's captions answer and no other. A field ypl
-// renames is refused here. A field ypl stops sending would otherwise decode to
-// zero, so the decoded answer has to encode back to the document.
-func TestCaptionsHoldsEveryFieldOfYPLsCaptionsAnswer(t *testing.T) {
-	var captions Captions
-	raw := wireDocument(t, "captions", &captions)
-	encoded, err := json.Marshal(captions)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var sent, held any
-	if err := json.Unmarshal(raw, &sent); err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(encoded, &held); err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(sent, held) {
-		t.Errorf("Captions encodes ypl's captions answer as\n%s\nand ypl sent\n%s", encoded, raw)
+// Captions and VideoComments each hold every field of ypl's answer and no
+// other. A field ypl renames is refused here. A field ypl stops sending would
+// otherwise decode to zero, so the decoded answer has to encode back to the
+// document.
+func TestTheClientHoldsEveryFieldOfYPLsCaptionsAndCommentsAnswers(t *testing.T) {
+	for name, into := range map[string]any{"captions": &Captions{}, "comments": &VideoComments{}} {
+		raw := wireDocument(t, name, into)
+		encoded, err := json.Marshal(into)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var sent, held any
+		if err := json.Unmarshal(raw, &sent); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(encoded, &held); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(sent, held) {
+			t.Errorf("the client encodes ypl's %s answer as\n%s\nand ypl sent\n%s", name, encoded, raw)
+		}
 	}
 }
 

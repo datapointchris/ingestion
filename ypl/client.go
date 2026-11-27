@@ -314,9 +314,9 @@ func (c *Client) Videos(ctx context.Context, ids []string) ([]Video, error) {
 	return out, nil
 }
 
-// VideoComments is up to 100 of a video's top-level comments, those YouTube
-// ranks most relevant first, as ypl answers them. Comments is empty and
-// CommentsDisabled true for a video whose comments are off.
+// VideoComments is a video's top-level comments as ypl answers them, most
+// relevant first. Comments is empty and CommentsDisabled true for a video
+// whose comments are off.
 type VideoComments struct {
 	VideoID          string    `json:"video_id"`
 	CommentsDisabled bool      `json:"comments_disabled"`
@@ -334,8 +334,8 @@ type Comment struct {
 	PublishedAt     string  `json:"published_at"`
 }
 
-// Comments reads up to 100 of video's top-level comments from YouTube now, in
-// one read that costs ypl one unit of the day's quota.
+// Comments reads video's top-level comments through ypl, in one read that ypl
+// counts against its quota.
 func (c *Client) Comments(ctx context.Context, video string) (VideoComments, error) {
 	var out VideoComments
 	err := c.do(ctx, http.MethodGet, "/api/v1/youtube/videos/"+url.PathEscape(video)+"/comments", nil, http.StatusOK, &out)

@@ -21,8 +21,8 @@ const (
 	// schema, so the smallest model does it.
 	DefaultModel  = "haiku"
 	DefaultEffort = "medium"
-	// clipRunes bounds each comment that the prompt quotes, so a hundred
-	// comments keep the prompt to a size that a small model reads whole.
+	// clipRunes bounds each comment that the prompt quotes, so the prompt stays
+	// a size that a small model reads whole however many comments ypl answers.
 	clipRunes = 400
 )
 
