@@ -83,15 +83,19 @@ func TestTheSideGatePlacesEachItemByTheFirstRungThatDecidesIt(t *testing.T) {
 
 // A block's review share sends a seeded draw of its items to review as
 // rule-would-hide, and drops the rest as rule:<name>. A replay over the same
-// rule and item keys draws the same items. A higher share keeps every item
-// that a lower one drew, so raising it never hides an item already shown.
+// rule and item keys draws the same items. A later version at a higher share
+// keeps every item that a lower one drew, so editing the rule to raise it
+// never hides an item already shown.
 func TestARulesReviewShareIsADrawThatAReplayRepeats(t *testing.T) {
 	keys := make([]string, 400)
 	for i := range keys {
 		keys[i] = fmt.Sprintf("url/%016x", i)
 	}
+	versions := map[float64]int{0.1: 1, 0.2: 2, 0: 3}
 	drawn := func(share float64) []string {
-		rule := []store.RoutingRule{{Name: "quiet-feed", Action: store.RuleBlock, MatchConnector: ptr("feed-reader"), ReviewShare: share}}
+		rule := []store.RoutingRule{{
+			Name: "quiet-feed", Sequence: versions[share], Action: store.RuleBlock, MatchConnector: ptr("feed-reader"), ReviewShare: share,
+		}}
 		var out []string
 		for _, key := range keys {
 			d := route.Side(set, rule, key, []store.Sighting{sighting("feed-reader", "")}, nil)

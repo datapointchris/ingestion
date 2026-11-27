@@ -57,10 +57,12 @@ var gatesRoutingRulesPutCmd = &cobra.Command{
 		"one named must hold on one of the item's sightings. --review-share is the share\n" +
 		"of matched items that wait in review as rule-would-hide instead, from 0 to 1.\n" +
 		"\n" +
-		"The write runs the side gate again over each scanned item that waits on it, so\n" +
-		"the rule decides what it matches there. An item that a tag, a rule, a model's\n" +
-		"confident guess or a person placed stays where it is. Writing what the newest\n" +
-		"version already says appends nothing. The name cannot be a declared rule's.",
+		"The write runs the side gate again over each scanned item that waits on it,\n" +
+		"and over each item that the rule's earlier version dropped or sent to review,\n" +
+		"so the version decides what it matches there. An item that a tag, another\n" +
+		"rule, a model's confident guess or a person placed stays where it is. Writing\n" +
+		"what the newest version already says appends nothing, and runs the gate again.\n" +
+		"The name cannot be a declared rule's.",
 	Example: "  ingestion gates routing-rules put quiet-feed --block --connector feed-reader --review-share 0.1\n" +
 		"  ingestion gates routing-rules put cooking --keep reading-list --connector reddit-exports \\\n" +
 		"    --field subreddit --value Cooking --review-share 0.05",
@@ -71,10 +73,11 @@ var gatesRoutingRulesPutCmd = &cobra.Command{
 var gatesRoutingRulesRetireCmd = &cobra.Command{
 	Use:   "retire <name>",
 	Short: "Retire an accepted routing rule, which takes it out of force",
-	Long: "Appends a retired copy of the rule's newest version, under person:<login>. Each\n" +
-		"item that the rule placed or dropped stays where it is, and each item that its\n" +
-		"share sent to review still waits there. Retiring a retired rule changes nothing.\n" +
-		"`put` brings it back as a new version.",
+	Long: "Appends a retired copy of the rule's newest version, under person:<login>. The\n" +
+		"side gate then decides again each item that the rule dropped or sent to review,\n" +
+		"as though the rule had never held. Each item that it placed on a destination\n" +
+		"stays there. Retiring a retired rule appends nothing. `put` brings it back as a\n" +
+		"new version.",
 	Example: "  ingestion gates routing-rules retire quiet-feed",
 	Args:    cobra.ExactArgs(1),
 	RunE:    runGatesRoutingRulesRetire,
@@ -194,8 +197,8 @@ func runGatesRoutingRulesRetire(cmd *cobra.Command, args []string) error {
 		_, err = fmt.Fprintf(w, "Routing rule %s was retired already, at version %d.\n", answer.Rule.Name, answer.Rule.Sequence)
 		return err
 	}
-	_, err = fmt.Fprintf(w, "Retired routing rule %s as version %d. Each item it placed stays where it is, and each it sent to review still waits there.\n",
-		answer.Rule.Name, answer.Rule.Sequence)
+	_, err = fmt.Fprintf(w, "Retired routing rule %s as version %d. The side gate decided again each item that it dropped or sent to review, "+
+		"and each item that it placed stays there.\n", answer.Rule.Name, answer.Rule.Sequence)
 	return err
 }
 

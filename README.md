@@ -1062,9 +1062,17 @@ wins over a dislike, as NewsBlur weighs them.
   `rule-would-hide`, so a wrong rule shows itself. A seeded draw over the rule's name and the
   item's key picks them. A replay picks the same items, and raising the share keeps every item
   that a lower one picked.
-- **A write runs the side gate again** over each scanned item that waits on it, as an apply does.
-  An item that a tag, a rule, a model's confident guess or a person placed stays where it is.
-  Retiring a rule moves nothing that it placed, and each item that it sent to review still waits.
+- **A write runs the side gate again** over each scanned item that waits on it, as an apply does,
+  and over each item that the rule dropped or sent to review. So each item follows the rule's
+  newest version. An item that a tag, another rule, a model's confident guess or a person placed
+  stays where it is. A write that repeats the newest version runs the gate too, so a retry
+  decides what a failed first attempt could not.
+- **Retiring a rule brings back what it hid.** The side gate decides again each item that the rule
+  dropped or sent to review, as though the rule had never held. An item that it placed on a
+  destination stays there, because its delivery may have run.
+- **The quality gate still reads each item that a rule decides.** The rule's decision stands
+  whatever the gate answers. A retired block's items are then placed from that answer, with no
+  new model call.
 - **A rule never weighs in the review tab's order.**
 - **A rule matches what a source states**: a connector, a tag, or a sighting's field. A theme or a
   genre is a model's output, and a title is outsider text, so no rule matches either before the
@@ -1077,18 +1085,20 @@ $ ingestion gates routing-rules list
 NAME        VERSION  ACTION  MATCH                        DESTINATION  REVIEW SHARE  STATE     DECIDED BY
 quiet-misc  1        block   that reddit-exports sighted  —            10%           in force  person:person
 $ ingestion gates routing-rules retire quiet-misc
-Retired routing rule quiet-misc as version 2. Each item it placed stays where it is, and each it sent to review still waits there.
+Retired routing rule quiet-misc as version 2. The side gate decided again each item that it dropped or sent to review, and each item that it placed stays there.
 ```
 
 `put` sends `PUT /api/v1/routing-rules/{name}`, whose body holds to
 `schemas/routing-rules.schema.json#/$defs/accepted`. `retire` posts to
 `/api/v1/routing-rules/{name}/retire`. Each needs `ingestion.routing-rules.write` and prints
 `schemas/routing-rule-version.schema.json` with `--json`. A service writing for a person names the
-person's `login`. Where a service names no login, it writes as `service:<client id>`, as a mark does. The
+person's `login`. Where a service names no login, it writes as `service:<client id>`. The
 body's `proposal` names the proposal that the person accepted, which the version keeps. Writing
-what the newest version already says appends nothing. The set in force refuses a rule naming a
-connector or destination that it does not declare, a keep on a destination with no side, and a
-name that `routing-rules.yml` declares. `list` reads `GET /api/v1/routing-rules` under
+what the newest version already says appends nothing. A rule that the set in force cannot hold
+is refused with 422 `routing_rule_refused`, and the answer names each reason. `connectors apply`
+refuses a set in turn where an accepted rule could not hold under it: a declared rule under an
+accepted rule's name, retired ones included, or a set that drops what a rule in force names.
+`list` reads `GET /api/v1/routing-rules` under
 `ingestion.items.read`, in `schemas/routing-rules-list.schema.json`. A match's values copy a
 source's field, so `match_values` ships on the text channel.
 

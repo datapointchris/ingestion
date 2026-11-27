@@ -70,7 +70,7 @@ type RoutingRuleView struct {
 
 func ruleView(r store.RoutingRule) RoutingRuleView {
 	return RoutingRuleView{
-		Name: r.Name, Sequence: r.Sequence, Action: r.Action, Match: route.MatchOf(r), Destination: r.Destination, ReviewShare: r.ReviewShare,
+		Name: r.Name, Sequence: r.Sequence, Action: r.Action, Match: connectors.MatchOf(r), Destination: r.Destination, ReviewShare: r.ReviewShare,
 		Retired: r.Retired, Proposal: r.Proposal, DecidedBy: r.DecidedBy, ClientID: r.ClientID, DecidedTS: r.DecidedTS,
 	}
 }
@@ -148,11 +148,10 @@ func (h ruleHandlers) put(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m := body.Match
-	rule := store.RoutingRule{
-		Name: name, Action: body.Action, MatchConnector: optional(m.Connector), MatchTag: optional(m.Tag), MatchField: optional(m.Field),
-		MatchValues: m.Values, Destination: optional(body.Destination), ReviewShare: *body.ReviewShare, Proposal: optional(body.Proposal),
+	rule := connectors.WithMatch(store.RoutingRule{
+		Name: name, Action: body.Action, Destination: optional(body.Destination), ReviewShare: *body.ReviewShare, Proposal: optional(body.Proposal),
 		DecidedBy: decidedBy, ClientID: optional(clientID),
-	}
+	}, m)
 	var written store.RoutingRule
 	var appended bool
 	err = h.store.Update(r.Context(), func(tx *store.Tx) error {
@@ -192,7 +191,7 @@ func (h ruleHandlers) retire(w http.ResponseWriter, r *http.Request) {
 	var appended bool
 	err := h.store.Update(r.Context(), func(tx *store.Tx) error {
 		var err error
-		written, appended, err = route.RetireRule(r.Context(), tx, name, decidedBy, optional(clientID))
+		written, appended, err = route.RetireRule(r.Context(), tx, name, decidedBy, optional(clientID), h.log)
 		return err
 	})
 	switch {
@@ -223,8 +222,7 @@ func pathRuleName(w http.ResponseWriter, r *http.Request) (string, bool) {
 
 // ruleDecider is who writes a routing rule, and the client that sent it, and
 // refuses the request where it cannot say. A service that names no login
-// writes it as service:<client id>, as a mark does, since the scope is
-// granted only to a client that relays a person's word.
+// writes it as service:<client id>.
 func ruleDecider(w http.ResponseWriter, r *http.Request, login string) (decidedBy, clientID string, ok bool) {
 	if caller, _ := goapiauth.IdentityFrom(r.Context()); caller.Service && login == "" {
 		return requester(caller), caller.ClientID, true

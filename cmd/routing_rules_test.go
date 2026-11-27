@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 
-	"github.com/datapointchris/earnedtrust/seededhash"
 	"golang.org/x/oauth2/clientcredentials"
 
 	"github.com/datapointchris/ingestion/extract"
@@ -23,8 +23,9 @@ import (
 // with their rows kept, all but the seeded share. That share waits in review
 // as rule-would-hide, naming the rule. A service whose token lacks
 // ingestion.routing-rules.write is refused with 403. One holding it writes
-// the rule for the person it names, and a second copy appends nothing. A
-// retired rule decides no later save.
+// the rule for the person it names, and a second copy appends nothing.
+// Retiring the block, as a person does once its share shows it wrong, brings
+// back each save that it dropped, and decides no later save.
 func TestABlockRuleDropsAConnectorsSavesButItsReviewShare(t *testing.T) {
 	ctx := t.Context()
 	p := newGatedPipeline(t, mustAbs(t, "../examples/declarations"))
@@ -68,20 +69,16 @@ func TestABlockRuleDropsAConnectorsSavesButItsReviewShare(t *testing.T) {
 		t.Fatalf("routing-rules put answered %s, want version 1 of a block by the person, appended", out)
 	}
 
-	shown := 0
-	for _, key := range append(before, land(60)...) {
+	saves, shown := slices.Concat(before, land(60)), 0
+	for _, key := range saves {
 		d, ok, phase := side(key)
-		drawn := seededhash.Fraction("rule:quiet-misc", key) < 0.1
 		switch {
 		case !ok || d.DecidedBy != "rule:quiet-misc":
 			t.Errorf("%s is decided by %s, want the rule", key, d.DecidedBy)
-		case drawn && (d.Verdict != route.VerdictReview || d.Cause != route.CauseRuleWouldHide || phase != store.PhaseReview):
-			t.Errorf("%s falls in the rule's share, and is %s for %s in phase %s, want review as %s", key, d.Verdict, d.Cause, phase, route.CauseRuleWouldHide)
-		case !drawn && (d.Verdict != route.VerdictDrop || d.Cause != route.CauseRule || phase != "dropped"):
-			t.Errorf("%s is %s for %s in phase %s, want dropped by the rule", key, d.Verdict, d.Cause, phase)
-		}
-		if drawn {
+		case d.Verdict == route.VerdictReview && d.Cause == route.CauseRuleWouldHide && phase == store.PhaseReview:
 			shown++
+		case d.Verdict != route.VerdictDrop || d.Cause != route.CauseRule || phase != "dropped":
+			t.Errorf("%s is %s for %s in phase %s, want dropped by the rule or in review as %s", key, d.Verdict, d.Cause, phase, route.CauseRuleWouldHide)
 		}
 	}
 	if shown == 0 || shown == 63 {
@@ -141,9 +138,14 @@ func TestABlockRuleDropsAConnectorsSavesButItsReviewShare(t *testing.T) {
 		t.Errorf("the same rule again answered %d with %s, want version 2 and nothing appended", status, jsonOf(answer))
 	}
 
-	if out, err := runCLI(t, "gates", "routing-rules", "retire", "quiet-misc", "--config", p.config); err != nil ||
-		!strings.HasPrefix(out, "Retired routing rule quiet-misc as version 3.") {
+	if out, err := runCLI(t, "gates", "routing-rules", "retire", "quiet-misc", "--config", p.config); err != nil {
 		t.Fatalf("routing-rules retire printed %q, %v", out, err)
+	}
+	for _, key := range saves {
+		if d, _, phase := side(key); d.DecidedBy != route.ByGate || d.Verdict != route.VerdictReview || phase != store.PhaseReview {
+			t.Errorf("once the wrong block retired, %s is %s by %s in phase %s, want it back in review until the quality gate answers",
+				key, d.Verdict, d.DecidedBy, phase)
+		}
 	}
 	if d, ok, _ := side(land(1)[0]); ok {
 		t.Errorf("a save landed after the rule retired is %s by %s, want it waiting at the quality gate", d.Verdict, d.DecidedBy)

@@ -44,7 +44,9 @@ func commitOrNone(c *string) string {
 // commit the caller saw in force, nil for none. An apply of the set in force
 // answers Unchanged whatever it replaces, so a retry lands nothing twice. Any
 // other apply whose replaces is not the commit in force is a MovedError. An
-// invalid set is an InvalidError. Either writes nothing. A connector the set
+// invalid set is an InvalidError, and so is a set that an accepted routing
+// rule could not hold under, as acceptedRulesRefused reads it in the write.
+// Either writes nothing. A connector the set
 // drops keeps its cursor, and the scheduler does not run it. A connector that
 // the set declares other than once loses its cursor's finished time, so a
 // backfill declared again on a schedule reads stale and overdue as any poll
@@ -78,6 +80,12 @@ func Apply(ctx context.Context, st *store.Store, set Set, commit string, replace
 				e.Current = &current.Commit
 			}
 			return e
+		}
+		if invalid, err := set.acceptedRulesRefused(ctx, tx); err != nil || len(invalid) > 0 {
+			if err != nil {
+				return err
+			}
+			return &InvalidError{Invalid: invalid}
 		}
 		applied.AppliedTS = store.Stamp(tx.Now())
 		if err := tx.PutDeclarations(ctx, store.Declarations{

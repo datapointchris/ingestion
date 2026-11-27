@@ -71,8 +71,18 @@ func (t *Tx) RoutingRulesInForce(ctx context.Context) ([]RoutingRule, error) {
 	return readInto[RoutingRule](ctx, t.tx, table("routing_rules"), newestRuleVersion+` AND retired = 0 ORDER BY name`)
 }
 
+// newestRuleVersions selects the newest version of every rule, each retired
+// one included, by name.
+const newestRuleVersions = newestRuleVersion + ` ORDER BY name`
+
 // RoutingRules reads the newest version of every rule, each retired one
 // included, by name.
 func (s *Store) RoutingRules(ctx context.Context) ([]RoutingRule, error) {
-	return readInto[RoutingRule](ctx, s.read, table("routing_rules"), newestRuleVersion+` ORDER BY name`)
+	return readInto[RoutingRule](ctx, s.read, table("routing_rules"), newestRuleVersions)
+}
+
+// RoutingRules reads the newest version of every rule, each retired one
+// included, by name, as this write sees them.
+func (t *Tx) RoutingRules(ctx context.Context) ([]RoutingRule, error) {
+	return readInto[RoutingRule](ctx, t.tx, table("routing_rules"), newestRuleVersions)
 }

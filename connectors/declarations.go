@@ -367,7 +367,7 @@ func Validate(s Set, roots []string) []Invalid {
 		connectors[c.Name] = true
 		add("connector "+c.Name, problems)
 	}
-	destinations, pushOnly := map[string]bool{}, map[string]bool{}
+	destinations := map[string]bool{}
 	tagged := map[string]string{}
 	sideDefaults := map[string]string{}
 	for _, d := range s.Destinations {
@@ -381,9 +381,6 @@ func Validate(s Set, roots []string) []Invalid {
 		}
 		if d.PushOnly && (d.DefaultForSide || len(d.Tags) > 0) {
 			problems = append(problems, "a push-only destination takes no tag and is no side's default, since only a push places an item there")
-		}
-		if d.PushOnly {
-			pushOnly[d.Name] = true
 		}
 		if d.DefaultForSide && d.Side != "" {
 			if other, taken := sideDefaults[d.Side]; taken {
@@ -406,15 +403,7 @@ func Validate(s Set, roots []string) []Invalid {
 			problems = append(problems, "another routing rule has this name")
 		}
 		rules[r.Name] = true
-		if r.Match.Connector != "" && !connectors[r.Match.Connector] {
-			problems = append(problems, fmt.Sprintf("match names connector %s, which the set does not declare", r.Match.Connector))
-		}
-		if r.Destination != "" && !destinations[r.Destination] {
-			problems = append(problems, fmt.Sprintf("destination %s is not one %s declares", r.Destination, DestinationsFile))
-		}
-		if pushOnly[r.Destination] {
-			problems = append(problems, fmt.Sprintf("destination %s is push-only, so only a push places an item there", r.Destination))
-		}
+		problems = append(problems, s.ruleTargetProblems(r.Match, r.Destination)...)
 		add("routing rule "+r.Name, problems)
 	}
 	return out

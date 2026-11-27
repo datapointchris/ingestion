@@ -281,10 +281,7 @@ func byRules(set connectors.Set, accepted []store.RoutingRule, key string, sight
 		}
 		d := store.Decision{Gate: store.GateSide, Verdict: VerdictDrop, DecidedBy: byRule(r.name), Cause: CauseRule}
 		if r.destination != "" {
-			destination, ok := set.Destination(r.destination)
-			if !ok || destination.PushOnly {
-				continue
-			}
+			destination, _ := set.Destination(r.destination)
 			d.Verdict, d.Destination = verdictOf(destination), &destination.Name
 		}
 		if r.drawsReview(key) {
@@ -370,26 +367,33 @@ func AfterSighting(log *slog.Logger) func(context.Context, *store.Tx, string) er
 // side's default or a deliverer that the set adds reaches the items that
 // waited for one.
 func AfterApply(log *slog.Logger) connectors.AfterApply {
-	return func(ctx context.Context, tx *store.Tx) error {
-		keys, err := tx.UnplacedScannedKeys(ctx)
-		if err != nil {
-			return err
-		}
-		for _, key := range keys {
-			if _, err := Gate(ctx, tx, key, log); err != nil {
-				return fmt.Errorf("the side gate on %s: %w", key, err)
-			}
-		}
-		if keys, err = tx.UnsettledKeysReadAs(ctx, connectors.ReadAsIs); err != nil {
-			return err
-		}
-		for _, key := range keys {
-			if _, err := QueueDelivery(ctx, tx, key); err != nil {
-				return fmt.Errorf("queue the delivery of %s: %w", key, err)
-			}
-		}
-		return nil
+	return func(ctx context.Context, tx *store.Tx) error { return regate(ctx, tx, log, "") }
+}
+
+// regate is AfterApply's work, which also decides again each item whose
+// newest side decision reopened made and did not place: a rule's drop, or a
+// review drawn by its share. A write of a rule's version passes byRule(name), so
+// its items follow that version, or the rungs below it once it is retired. An
+// empty reopened reopens nothing.
+func regate(ctx context.Context, tx *store.Tx, log *slog.Logger, reopened string) error {
+	keys, err := tx.UnplacedScannedKeys(ctx)
+	if err != nil {
+		return err
 	}
+	for _, key := range keys {
+		if _, err := gate(ctx, tx, key, log, reopened); err != nil {
+			return fmt.Errorf("the side gate on %s: %w", key, err)
+		}
+	}
+	if keys, err = tx.UnsettledKeysReadAs(ctx, connectors.ReadAsIs); err != nil {
+		return err
+	}
+	for _, key := range keys {
+		if _, err := QueueDelivery(ctx, tx, key); err != nil {
+			return fmt.Errorf("queue the delivery of %s: %w", key, err)
+		}
+	}
+	return nil
 }
 
 // Gate runs the side gate over the item under key and, where it places the
@@ -406,9 +410,22 @@ func AfterApply(log *slog.Logger) connectors.AfterApply {
 // item to review as CauseGateError and logs why, so the scan stands and the
 // next stage or apply runs the gate again.
 func Gate(ctx context.Context, tx *store.Tx, key string, log *slog.Logger) ([]store.Decision, error) {
+	return gate(ctx, tx, key, log, "")
+}
+
+// gate is Gate, which also decides again over an item whose newest side
+// decision reopened made, where that decision drops the item or waits in
+// review. Where the quality gate has yet to answer such an item, the rungs
+// below the rules send it to review rather than leave the reopened decision
+// standing.
+func gate(ctx context.Context, tx *store.Tx, key string, log *slog.Logger, reopened string) ([]store.Decision, error) {
 	newest, sided, err := tx.NewestDecision(ctx, key, store.GateSide)
-	if err != nil || (sided && !newest.Provisional()) {
+	if err != nil {
 		return nil, err
+	}
+	reopens := sided && reopened != "" && newest.DecidedBy == reopened && (newest.Verdict == VerdictDrop || newest.Verdict == VerdictReview)
+	if sided && !newest.Provisional() && !reopens {
+		return nil, nil
 	}
 	outputs, err := tx.Outputs(ctx, key)
 	if err != nil || !store.ReadingParseScanned(outputs) {
@@ -427,7 +444,7 @@ func Gate(ctx context.Context, tx *store.Tx, key string, log *slog.Logger) ([]st
 		}
 		var waits bool
 		guessed := byGuess(GuessOf(outputs), personSorts(set, sightings))
-		if side, waits, err = byQuality(ctx, tx, key, guessed, outputs, sightings, held); err != nil || waits {
+		if side, waits, err = byQuality(ctx, tx, key, guessed, outputs, sightings, held); err != nil || (waits && !reopens) {
 			return nil, err
 		}
 	}
