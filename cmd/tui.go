@@ -60,14 +60,15 @@ func tuiTabList() []tuiTab {
 	return []tuiTab{
 		{
 			tabReview,
-			"review lists the items that wait on a person's placement, grouped by why each waits,\n" +
-				"with the channel, the gate's verdict and confidence, its quality estimate, its fit to\n" +
-				"your current work, its side guess, the source's length, views and likes per view, and\n" +
-				"how long ago the item was made at its source. v cycles how the rows are grouped and\n" +
-				"s how they are sorted, and the strip names both. / filters on the title and the\n" +
-				"channel. The side panel reads the item under the cursor: its card, the quality gate's\n" +
-				"whole answer with its reason, the scan's findings, and its text. enter reads it full\n" +
-				"screen.\n" +
+			"review lists the items that wait on a person's placement, grouped by channel. Each row\n" +
+				"gives the channel and the title, then why it waits, the gate's verdict and confidence,\n" +
+				"its quality estimate, its fit to your current work, its side guess, the source's\n" +
+				"length, views and likes per view, and how long ago the item was made at its source.\n" +
+				"A narrow screen cuts the title first. v cycles the grouping: by channel, by connector,\n" +
+				"or none for one list. s cycles the sort, and the strip names both. / filters on the\n" +
+				"title and the channel. The side panel reads the item under the cursor: its card, the\n" +
+				"quality gate's whole answer with its reason, the scan's findings, and its text. enter\n" +
+				"reads it full screen.\n" +
 				"\n" +
 				"A choice's key places the item at once, and the bar under the strip says where each\n" +
 				"sends it:\n" +
@@ -169,10 +170,15 @@ func runTUICommand(cmd *cobra.Command, _ []string) error {
 	if o.once || o.asJSON {
 		return printTUITab(cmd.Context(), cmd.OutOrStdout(), o)
 	}
-	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
+	if !onTerminal() {
 		return fmt.Errorf("%w: ingestion tui needs a terminal; --once prints one frame and --json the snapshot", goclikit.ErrUsage)
 	}
 	return runTUI(cmd.Context(), cmd.ErrOrStderr(), o)
+}
+
+// onTerminal says a person holds the keyboard and reads the screen, which the program needs.
+func onTerminal() bool {
+	return term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
 }
 
 // printTUITab reads the tab --view names, or the first, and prints it once. It builds no other.

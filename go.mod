@@ -12,7 +12,7 @@ require (
 	github.com/datapointchris/goclikit v0.7.0
 	github.com/datapointchris/goclilogin v0.9.2
 	github.com/datapointchris/goselfupdate v0.11.6
-	github.com/datapointchris/gotermboard v0.68.0
+	github.com/datapointchris/gotermboard v0.70.0
 	github.com/datapointchris/gotermstyle v0.7.0
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c
 	github.com/robfig/cron/v3 v3.0.1
