@@ -26,6 +26,7 @@ ingestion --version   # prints the version, which proves the binary runs
 ingestion version     # adds the commit and the date it was built from
 ingestion update      # replaces the binary with the latest release
 ingestion --help      # lists every command, and each command answers --help
+ingestion             # opens `ingestion tui` at a terminal, and prints the help with none
 ```
 
 ## Configuration
@@ -1375,12 +1376,13 @@ source's field, so `match_values` ships on the text channel.
 
 ### `ingestion tui` reads each waiting item whole, and one key decides it
 
-`ingestion tui` opens a terminal board with a tab per view. Its `review` tab lists the review
-queue, grouped by why each item waits. Each row shows the item's channel, such as a video's
-channel or `r/golang`, and why it waits. Then come the quality gate's verdict and confidence, its
+`ingestion tui` opens a terminal board with a tab per view, and bare `ingestion` opens it too.
+Its `review` tab lists the review queue, grouped by channel. Each row shows the item's channel,
+such as a video's channel or `r/golang`, then its title and why it waits. A narrow screen cuts
+the title before the columns after it. Then come the quality gate's verdict and confidence, its
 quality estimate, its fit, and its side guess and confidence. A video's row adds its length,
-views and likes per view. Each row ends on how long ago the item was made at its source, and its
-title. The side panel reads the item under the cursor. It opens on the card:
+views and likes per view. Each row ends on how long ago the item was made at its source. The
+side panel reads the item under the cursor. It opens on the card:
 
 - the channel, the length and the upload day
 - the views, likes and comments, and the likes per view
@@ -1394,8 +1396,8 @@ screen.
 
 `s` cycles the sort: newest made at its source, the gate's quality, likes per view, shortest
 first, and the gate's fit. An item with no value for the sort comes after every item with one.
-`v` cycles the grouping: why each item waits, its connector, its channel, the gate's verdict, or
-none. `/` filters the rows by any word of the title or the channel, and of the URL, the gate's
+`v` cycles the grouping: its channel, its connector, or none. None draws one list under the
+column titles. `/` filters the rows by any word of the title or the channel, and of the URL, the gate's
 idea and themes, or a sighting's fields.
 
 | Key | Does |

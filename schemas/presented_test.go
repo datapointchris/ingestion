@@ -10,8 +10,9 @@ import (
 )
 
 // The review tab cycles store's sorts and groupings, and the server takes a
-// card that the record schema accepts. A sort that one names and the other
-// does not would refuse every decision made under it.
+// card that the record schema accepts. A sort or grouping that the tab names
+// and the schema does not would refuse every decision made under it. The
+// schema keeps each grouping that a card drawn by an older build names.
 func TestTheTabsSortsAndGroupingsAreTheOnesTheRecordSchemaAccepts(t *testing.T) {
 	raw, err := schemas.Files.ReadFile("ingestion-record.schema.json")
 	if err != nil {
@@ -32,8 +33,11 @@ func TestTheTabsSortsAndGroupingsAreTheOnesTheRecordSchemaAccepts(t *testing.T) 
 	if got := doc.Defs.Presented.Properties.Sort.Enum; !slices.Equal(got, store.PresentedSorts) {
 		t.Errorf("the record schema enumerates the sorts %v, and store.PresentedSorts is %v", got, store.PresentedSorts)
 	}
-	if got := doc.Defs.Presented.Properties.Grouping.Enum; !slices.Equal(got, store.PresentedGroupings) {
-		t.Errorf("the record schema enumerates the groupings %v, and store.PresentedGroupings is %v", got, store.PresentedGroupings)
+	got := doc.Defs.Presented.Properties.Grouping.Enum
+	for _, grouping := range store.PresentedGroupings {
+		if !slices.Contains(got, grouping) {
+			t.Errorf("the record schema enumerates the groupings %v, which leave out the tab's %q", got, grouping)
+		}
 	}
 }
 

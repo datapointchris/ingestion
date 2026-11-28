@@ -119,49 +119,31 @@ const (
 	CauseLearningRefused = "learning-refused"
 )
 
-// ReviewReason is one reason an item waits in review: its name, the line
-// that `review list --help` gives it, and its group's heading in the TUI.
+// ReviewReason is one reason an item waits in review: its name and the line
+// that `review list --help` gives it.
 type ReviewReason struct {
-	Name    string
-	Help    string
-	Heading string
+	Name string
+	Help string
 }
 
-// ReviewReasons lists why an item may wait in review, in the order that the
-// TUI groups them. The gate's own doubts lead, because the reading pane
-// decides them best. review-list.schema.json's reason enum holds these names.
+// ReviewReasons lists why an item may wait in review, in the order that
+// `review list --help` gives them. The gate's own doubts lead, because the
+// reading pane decides them best. review-list.schema.json's reason enum holds
+// these names.
 var ReviewReasons = []ReviewReason{
-	{store.ReasonQualityReview, "the quality gate sent it to review", "the gate asks"},
-	{
-		CauseGateWouldDrop, "the quality gate would drop it, and its family has not earned hiding it, or the family's draw showed it",
-		"the gate would drop it",
-	},
-	{
-		CauseRuleWouldHide, "a routing rule would drop it or place it without you, and the rule's review share drew it",
-		"a rule would decide it",
-	},
-	{
-		CauseNoteUnclear, "a model read waits on its note, whose draft fell below the note floor: write a note, or place it with none to take the draft",
-		"the note's draft is unclear",
-	},
-	{
-		store.ReasonShelved, "you put it on the shelf, which review does not offer: choose where it goes",
-		"it waited on the shelf",
-	},
-	{
-		CauseLearningRefused, "you sorted it to learning, and the quality gate's newest answer did not pass it: choose where it goes",
-		"learning refused it",
-	},
-	{CauseBelowFloor, "the quality gate guessed fleet, or its guess fell below its floor", "fleet guess, or below its floor"},
-	{
-		CausePersonSorts, "a connector that sighted it declares person_sorts, so its guess only shows",
-		"its connector leaves the side to you, the guess beside it",
-	},
-	{CauseOwnersWords, "it holds your own words, such as a memo's topic, which the quality gate never reads", "your own words"},
-	{CauseTagsDisagree, "its sightings' tags name destinations on two sides", "tags name both sides"},
-	{CauseNoGuess, "no tag or rule placed it, and the quality gate gave no answer", "no rule, no answer"},
-	{CauseGateError, "the side gate could not read the set in force or its sightings", "the gate could not read the set or the sightings"},
-	{store.ReasonNoParse, "no parse of it is usable", "no usable parse"},
+	{store.ReasonQualityReview, "the quality gate sent it to review"},
+	{CauseGateWouldDrop, "the quality gate would drop it, and its family has not earned hiding it, or the family's draw showed it"},
+	{CauseRuleWouldHide, "a routing rule would drop it or place it without you, and the rule's review share drew it"},
+	{CauseNoteUnclear, "a model read waits on its note, whose draft fell below the note floor: write a note, or place it with none to take the draft"},
+	{store.ReasonShelved, "you put it on the shelf, which review does not offer: choose where it goes"},
+	{CauseLearningRefused, "you sorted it to learning, and the quality gate's newest answer did not pass it: choose where it goes"},
+	{CauseBelowFloor, "the quality gate guessed fleet, or its guess fell below its floor"},
+	{CausePersonSorts, "a connector that sighted it declares person_sorts, so its guess only shows"},
+	{CauseOwnersWords, "it holds your own words, such as a memo's topic, which the quality gate never reads"},
+	{CauseTagsDisagree, "its sightings' tags name destinations on two sides"},
+	{CauseNoGuess, "no tag or rule placed it, and the quality gate gave no answer"},
+	{CauseGateError, "the side gate could not read the set in force or its sightings"},
+	{store.ReasonNoParse, "no parse of it is usable"},
 }
 
 // DefaultNoteFloor is the confidence at or above which a note's draft becomes

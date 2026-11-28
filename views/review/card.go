@@ -113,15 +113,6 @@ func connectorsOf(it item) string {
 // connectors that brought it.
 func sourceOf(it item) string { return cmp.Or(channelOf(it), connectorsOf(it)) }
 
-// verdictOf is the gate's verdict on it, and "" where it gave no answer that
-// reads.
-func verdictOf(it item) string {
-	if it.answer == nil {
-		return ""
-	}
-	return it.answer.Verdict
-}
-
 // length is seconds as h:mm:ss or m:ss.
 func length(seconds int64) string {
 	if seconds >= 3600 {

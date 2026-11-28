@@ -240,7 +240,7 @@ func TestANoteDraftAtTheFloorIsTheReadsNoteAndOneBelowWaitsOnAPerson(t *testing.
 	}
 	holdsTo(t, []byte(tab), "tui-review.schema.json")
 	var snap review.Snapshot
-	if err := json.Unmarshal([]byte(tab), &snap); err != nil || len(snap.Items) != 1 || snap.Items[0].Group != "reason/"+route.CauseNoteUnclear {
+	if err := json.Unmarshal([]byte(tab), &snap); err != nil || len(snap.Items) != 1 || snap.Items[0].Item.Reason != route.CauseNoteUnclear {
 		t.Errorf("the review tab lists %s, want the unsure save as note-unclear", jsonOf(snap.Items))
 	}
 	t.Setenv("COLUMNS", "200")
