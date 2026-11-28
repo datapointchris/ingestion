@@ -386,19 +386,36 @@ func TestAPushedPageLandsOnceAndItsParseFetchesIt(t *testing.T) {
 	stand, api := newStandInFreshRSS(t)
 	pages := newStandInPages(t, []int{6}, []int{8})
 	p, extractors := newFreshRSSPipeline(t)
-	parse := extractors.Handlers(p.worker, publicweb.NewReader(&http.Client{Timeout: 10 * time.Second, Transport: standInPagesAlone(pages)}), quiet)
+	// meanwhile runs inside the parse's GET of /post/10, which then answers a
+	// page that differs from the one that a GET before it answered.
+	var meanwhile func()
+	racing := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/post/10" || meanwhile == nil {
+			return standInPagesAlone(pages).RoundTrip(r)
+		}
+		meanwhile()
+		meanwhile = nil
+		changed := strings.Replace(standInPage(10), "Page text", "Changed text", 1)
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/html"}}, Body: io.NopCloser(strings.NewReader(changed)), Request: r}, nil
+	})
+	parse := extractors.Handlers(p.worker, publicweb.NewReader(&http.Client{Timeout: 10 * time.Second, Transport: racing}), quiet)
 	link := func(n int) string { return fmt.Sprintf("%s/post/%d", pages.URL, n) }
-	keyOf := func(n int) string {
-		key, err := itemkey.FromURL(link(n))
+	keyOfLink := func(link string) string {
+		key, err := itemkey.FromURL(link)
 		if err != nil {
 			t.Fatal(err)
 		}
 		return key
 	}
+	keyOf := func(n int) string { return keyOfLink(link(n)) }
+	pushLink := func(t *testing.T, link, wait string) error {
+		t.Helper()
+		_, err := runCLI(t, "push", link, "--to", "psyche", "--relate", "--wait", wait, "--config", p.config)
+		return err
+	}
 	pushOf := func(t *testing.T, n int, wait string) error {
 		t.Helper()
-		_, err := runCLI(t, "push", link(n), "--to", "psyche", "--relate", "--wait", wait, "--config", p.config)
-		return err
+		return pushLink(t, link(n), wait)
 	}
 
 	if code := exitCode(io.Discard, pushOf(t, 1, "0")); code != 1 {
@@ -412,8 +429,8 @@ func TestAPushedPageLandsOnceAndItsParseFetchesIt(t *testing.T) {
 		t.Fatalf("%d parses ran, want the pushed page's", ran)
 	}
 	fetched := p.item(t, keyOf(1)).Item
-	if p.blobText(t, fetched.BlobSHA256) != standInPage(1) || fetched.Title == nil || *fetched.Title != "Test entry 1 | Test site" {
-		t.Errorf("the parse kept %s, want the page as the item's bytes and its title as the item's", jsonOf(fetched))
+	if p.blobText(t, fetched.BlobSHA256) != standInPage(1) || fetched.Title == nil || *fetched.Title != "Test entry 1" {
+		t.Errorf("the parse kept %s, want the page as the item's bytes and its title, cut of the site's name, as the item's", jsonOf(fetched))
 	}
 	if parsed := p.readParse(t, keyOf(1), ""); parsed.Extractor != extract.ArticleTrafilatura.Name || len(parsed.Units) != 1 ||
 		parsed.Units[0].Text != "Page text of test entry 1." {
@@ -442,6 +459,43 @@ func TestAPushedPageLandsOnceAndItsParseFetchesIt(t *testing.T) {
 	err := pushOf(t, 6, "30s")
 	if code := exitCode(io.Discard, err); code != 1 || !strings.Contains(fmt.Sprint(err), "parse failed: the page was not fetched: HTTP 403") {
 		t.Errorf("a push of a page that answered 403 exited %d (%v), want 1 naming the refusal", code, err)
+	}
+	stand.add(pages, time.Now(), "Uncategorized", 6)
+	p.runConnector(t, "freshrss")
+	p.run(t, poll)
+	if ran := p.run(t, parse...); ran != 1 {
+		t.Fatalf("%d parses ran once the feed landed the refused page's content, want its failed parse run again", ran)
+	}
+	if parsed := p.readParse(t, keyOf(6), ""); len(parsed.Units) != 1 || parsed.Units[0].Text != "Feed content of test entry 6." {
+		t.Errorf("the refused page parsed as %s, want the feed's paragraph", jsonOf(parsed))
+	}
+
+	paper := pages.URL + "/post/9.pdf"
+	_ = pushLink(t, paper, "0")
+	if ran := p.run(t, parse...); ran != 2 {
+		t.Fatalf("%d parses ran on a pushed link to a PDF, want the page's parse that hands it on and the PDF's", ran)
+	}
+	handed := p.item(t, keyOfLink(paper)).Item
+	if handed.MediaType != extract.MediaTypePDF || p.blobText(t, handed.BlobSHA256) != standInPDF(9) {
+		t.Errorf("the pushed PDF kept %s, want the PDF as the item's bytes and its type", jsonOf(handed))
+	}
+	if parsed := p.readParse(t, keyOfLink(paper), ""); parsed.Extractor != extract.PDFText.Name || len(parsed.Units) != 1 {
+		t.Errorf("the pushed PDF parsed as %s, want pdf-text's one page", jsonOf(parsed))
+	}
+
+	meanwhile = func() {
+		stand.add(pages, time.Now(), "Uncategorized", 10)
+		p.runConnector(t, "freshrss")
+		p.run(t, poll)
+	}
+	_ = pushOf(t, 10, "0")
+	if ran := p.run(t, parse...); ran != 2 {
+		t.Fatalf("%d parses ran where the feed landed the page during the parse's GET, want that parse and one over the feed's page", ran)
+	}
+	if raced := p.item(t, keyOf(10)).Item; p.blobText(t, raced.BlobSHA256) != standInPage(10) ||
+		p.readParse(t, keyOf(10), "").Units[0].Text != "Page text of test entry 10." {
+		t.Errorf("the page that a feed landed during the parse's GET parsed as %s, want the bytes that the item holds",
+			jsonOf(p.readParse(t, keyOf(10), "")))
 	}
 
 	_ = pushOf(t, 8, "0")

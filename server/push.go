@@ -99,13 +99,37 @@ func mpegFrame(head []byte) bool {
 	return version != 1 && layer != 0 && bitrate != 0xF && rate != 3
 }
 
+// LinkLanding is how a link lands as an item, as the extractors of a build
+// read it. The push route and a feed's poll both ask it, so a link lands
+// alike whichever connector meets it first.
+type LinkLanding struct {
+	// Lands is LinkReadAtSource or LinkPage, and "" where the link does not
+	// land.
+	Lands string
+	// MediaType and URL are what the item lands as, where the link lands.
+	MediaType, URL string
+	// Site is the kind of key whose site hosts a link that does not land,
+	// such as youtube for a channel's page, and "" otherwise.
+	Site string
+}
+
+// How a link lands.
+const (
+	// LinkReadAtSource is a link that an extractor reads at its source, such
+	// as a video's, so its item holds no bytes.
+	LinkReadAtSource = "read-at-source"
+	// LinkPage is a link to a web page, whose item's bytes are the page that a
+	// GET of it answers.
+	LinkPage = "page"
+)
+
 // LinkExtractors answers whether an extractor reads a pushed link at its
 // source, or fetches the web page that it names, and as what media type and
 // URL it lands.
 type LinkExtractors interface {
-	// LinkArrival is the media type and URL that a link keyed key lands with,
-	// and false where no extractor reads such a link.
-	LinkArrival(key string) (mediaType, link string, ok bool)
+	// LinkLanding is how the link keyed key lands, where link is its
+	// canonical URL.
+	LinkLanding(key, link string) LinkLanding
 	// LinkKinds names, in order, each kind of key whose link an extractor
 	// reads.
 	LinkKinds() []string
@@ -187,28 +211,24 @@ func (h connectorHandlers) pushLink(w http.ResponseWriter, r *http.Request, raw 
 		Refuse(w, http.StatusBadRequest, CodeInvalidLink, "%v, so nothing was stored", err)
 		return
 	}
-	mediaType, landAt, read := "", "", false
-	pageType, fetched := "", false
+	var linked LinkLanding
 	if h.cfg.Links != nil {
-		mediaType, landAt, read = h.cfg.Links.LinkArrival(itemKey)
-		pageType, fetched = h.cfg.Links.PageMediaType()
+		linked = h.cfg.Links.LinkLanding(itemKey, link)
 	}
-	kind, _, _ := strings.Cut(itemKey, "/")
-	switch site := itemkey.SiteKind(link); {
-	case read:
-	case kind == itemkey.URL && site != "" && slices.Contains(kindsOf(h.cfg.Links), site):
+	switch kind, _, _ := strings.Cut(itemKey, "/"); {
+	case linked.Lands != "":
+	case linked.Site != "":
 		Refuse(w, http.StatusUnprocessableEntity, CodeLinkNotRead,
 			"the link is on a %s site but names no single %s item, as a channel's or a playlist's page names none, so nothing was stored. %s",
-			site, site, kindsRead(h.cfg.Links))
+			linked.Site, linked.Site, kindsRead(h.cfg.Links))
 		return
-	case kind == itemkey.URL && fetched:
-		mediaType, landAt = pageType, link
 	default:
 		Refuse(w, http.StatusUnprocessableEntity, CodeLinkNotRead,
 			"the link keys as %s, and no extractor of this build reads a %s link at its source, so nothing was stored. %s",
 			itemKey, kind, kindsRead(h.cfg.Links))
 		return
 	}
+	mediaType, landAt := linked.MediaType, linked.URL
 	c, ok := h.pushConnector(w, r, body.Connector)
 	if !ok {
 		return

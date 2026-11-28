@@ -5,10 +5,10 @@
 package publicweb
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"html"
 	"io"
 	"mime"
 	"net"
@@ -16,9 +16,12 @@ import (
 	"net/netip"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
+
+	"golang.org/x/net/html"
 )
 
 // pageTimeout bounds one page's GET, its redirects and its body included. A
@@ -100,17 +103,26 @@ type Refusal struct {
 // Reader GETs the page that a link names.
 type Reader struct {
 	client *http.Client
+	// also are the media types beyond HTML that the reader answers.
+	also []string
 }
 
 // NewReader is the reader that GETs pages through client, as Client opens
 // one.
 func NewReader(client *http.Client) Reader { return Reader{client: client} }
 
+// Accepting is r answering a page of any of mediaTypes too, such as a PDF
+// that a pushed link names, where r alone refuses each type but HTML.
+func (r Reader) Accepting(mediaTypes ...string) Reader {
+	r.also = append(slices.Clone(r.also), mediaTypes...)
+	return r
+}
+
 // Read GETs the page at link, and answers its bytes and its media type as
 // the page's Content-Type names it, or why it refused. It refuses a page that
 // did not answer 2xx, a redirect to the site's home or a section above the
-// page, a media type that is not HTML, a page past MaxPageBytes, a bot's
-// challenge, and a GET that reached nothing.
+// page, a media type that is neither HTML nor one that the reader accepts, a
+// page past MaxPageBytes, a bot's challenge, and a GET that reached nothing.
 func (r Reader) Read(ctx context.Context, link string) (body []byte, mediaType string, refused *Refusal) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, link, http.NoBody)
 	if err != nil {
@@ -134,7 +146,7 @@ func (r Reader) Read(ctx context.Context, link string) (body []byte, mediaType s
 	}
 	mediaType = resp.Header.Get("Content-Type")
 	parsed, _, err := mime.ParseMediaType(mediaType)
-	if err != nil || parsed != "text/html" && parsed != "application/xhtml+xml" {
+	if err != nil || parsed != "text/html" && parsed != "application/xhtml+xml" && !slices.Contains(r.also, parsed) {
 		return nil, "", &Refusal{Reason: fmt.Sprintf("media type %q", parsed)}
 	}
 	body, err = io.ReadAll(io.LimitReader(resp.Body, MaxPageBytes+1))
@@ -164,9 +176,9 @@ func redirectedAway(requested, final *url.URL) bool {
 	return landed == "" || strings.HasPrefix(asked, landed+"/")
 }
 
-// Title is the text of page's title element, unescaped with its whitespace
-// collapsed, and "" where the page's opening holds none.
-func Title(page []byte) string {
+// titleElementText is the text of page's first title element, unescaped with
+// its whitespace collapsed, and "" where the page's opening holds none.
+func titleElementText(page []byte) string {
 	m := titleElement.FindSubmatch(page[:min(len(page), titleWindow)])
 	if m == nil {
 		return ""
@@ -174,9 +186,112 @@ func Title(page []byte) string {
 	return strings.Join(strings.Fields(html.UnescapeString(string(m[1]))), " ")
 }
 
+// PageTitle is an HTML page's own title, read as life's get_page_title reads
+// one, so a page keeps one title whichever of the two read it. It is the
+// page's og:title, else its first title element outside an inline SVG, else
+// its first h1, with a trailing site name cut. It is "" where the page holds
+// none. An inline SVG draws its own title, so a logo's can come first.
+func PageTitle(page []byte) string {
+	og, document, heading := titles(page)
+	for _, t := range []string{og, document, heading} {
+		if t = strings.Join(strings.Fields(t), " "); t != "" {
+			return withoutSiteName(t)
+		}
+	}
+	return ""
+}
+
+// titles reads page's og:title, its first title element outside an SVG, and
+// the text of its first h1.
+func titles(page []byte) (og, document, heading string) {
+	z := html.NewTokenizer(bytes.NewReader(page))
+	svgDepth := 0
+	var h1 *strings.Builder
+	for {
+		token := z.Next()
+		switch token {
+		case html.ErrorToken:
+			return og, document, heading
+		case html.StartTagToken, html.SelfClosingTagToken:
+			name, hasAttr := z.TagName()
+			opens := token == html.StartTagToken
+			switch string(name) {
+			case "svg":
+				if opens {
+					svgDepth++
+				}
+			case "meta":
+				if hasAttr {
+					og = ogTitle(z, og)
+				}
+			case "title":
+				if opens && document == "" && svgDepth == 0 && z.Next() == html.TextToken {
+					document = string(z.Text())
+				}
+			case "h1":
+				if opens && heading == "" && h1 == nil {
+					h1 = &strings.Builder{}
+				}
+			}
+		case html.EndTagToken:
+			switch name, _ := z.TagName(); string(name) {
+			case "svg":
+				svgDepth = max(svgDepth-1, 0)
+			case "h1":
+				if h1 != nil {
+					heading, h1 = h1.String(), nil
+				}
+			}
+		case html.TextToken:
+			if h1 != nil {
+				h1.Write(z.Text())
+			}
+		}
+		if strings.TrimSpace(og) != "" {
+			return og, document, heading
+		}
+	}
+}
+
+// ogTitle is the content of the meta tag under z where its property is
+// og:title, and have otherwise.
+func ogTitle(z *html.Tokenizer, have string) string {
+	var property, content string
+	for more := true; more; {
+		var key, value []byte
+		key, value, more = z.TagAttr()
+		switch string(key) {
+		case "property":
+			property = string(value)
+		case "content":
+			content = string(value)
+		}
+	}
+	if property != "og:title" {
+		return have
+	}
+	return content
+}
+
+// withoutSiteName cuts a trailing site name from title, so "Article | Site"
+// reads "Article". It cuts at the last place where the first separator that
+// title holds appears. It cuts only where four words or fewer follow, so a
+// title that holds a separator of its own stays whole.
+func withoutSiteName(title string) string {
+	for _, separator := range titleSeparators {
+		if i := strings.LastIndex(title, separator); i >= 0 {
+			if len(strings.Fields(title[i+len(separator):])) <= 4 {
+				title = title[:i]
+			}
+			break
+		}
+	}
+	return strings.TrimSpace(strings.TrimSuffix(title, " - YouTube"))
+}
+
 // challenge says whether page's title names a bot's challenge.
 func challenge(page []byte) bool {
-	title := Title(page)
+	title := titleElementText(page)
 	if title == "" {
 		return false
 	}

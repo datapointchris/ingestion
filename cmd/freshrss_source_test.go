@@ -164,14 +164,21 @@ func (s *standInFreshRSS) addLink(crawled time.Time, label string, n int, link s
 }
 
 // newStandInPages serves each /post/<n> as a page whose article reads
-// "Page text of test entry <n>.". It answers 403 for each n in refused, as a
-// site that refuses the worker's GET does. It answers 503 to the first GET
-// of each n in unavailableOnce, as a site that is down for a while does.
+// "Page text of test entry <n>.", and each /post/<n>.pdf as standInPDF(n). It
+// answers 403 for each n in refused, as a site that refuses the worker's GET
+// does. It answers 503 to the first GET of each n in unavailableOnce, as a
+// site that is down for a while does.
 func newStandInPages(t *testing.T, refused, unavailableOnce []int) *httptest.Server {
 	t.Helper()
 	var mu sync.Mutex
 	asked := map[int]int{}
 	pages := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if number, ok := strings.CutSuffix(strings.TrimPrefix(r.URL.Path, "/post/"), ".pdf"); ok {
+			n, _ := strconv.Atoi(number)
+			w.Header().Set("Content-Type", extract.MediaTypePDF)
+			_, _ = io.WriteString(w, standInPDF(n))
+			return
+		}
 		n, err := strconv.Atoi(strings.TrimPrefix(r.URL.Path, "/post/"))
 		mu.Lock()
 		asked[n]++
@@ -196,6 +203,10 @@ func standInPage(n int) string {
 	return fmt.Sprintf("<!doctype html><html><head><title>Test entry %d | Test site</title></head><body><nav>Home</nav><article>\n"+
 		"<p>Page text of test entry %d.</p>\n</article></body></html>", n, n)
 }
+
+// standInPDF is a document that the pipeline's stand-in for pdf-text reads as
+// one page.
+func standInPDF(n int) string { return fmt.Sprintf("%%PDF-1.7\nText: PDF text of test entry %d.\n", n) }
 
 // standInPagesAlone is a transport that reaches pages and nothing else, so a
 // GET of a link elsewhere fails rather than reaching the internet.
@@ -224,18 +235,25 @@ func newStandInPoller(api, pages *httptest.Server) freshrss.Poller {
 // hourly, and the cli-push connector, which pushes to the destination psyche.
 // Its parse of a page runs a stand-in for article-trafilatura that writes one
 // unit for each line that holds a paragraph, and fetches the page of an item
-// that holds no bytes.
+// that holds no bytes. Its parse of a PDF runs a stand-in for pdf-text that
+// writes one unit for each line that opens on "Text: ".
 func newFreshRSSPipeline(t *testing.T) (*pipeline, *extract.Registry) {
 	t.Helper()
 	dir := t.TempDir()
-	program := filepath.Join(dir, "article-trafilatura")
-	script := `#!/bin/sh` + "\n" + `sed -n 's|.*<p>\([^<]*\)</p>.*|{"text": "\1"}|p'` + "\n"
-	if err := os.WriteFile(program, []byte(script), 0o700); err != nil {
-		t.Fatal(err)
+	stand := func(name, script string) string {
+		program := filepath.Join(dir, name)
+		if err := os.WriteFile(program, []byte("#!/bin/sh\n"+script+"\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return program
 	}
-	article := extract.Program(extract.ArticleTrafilatura.Name, extract.ArticleTrafilatura.Version, extract.MediaTypeHTML, program)
+	article := extract.Program(extract.ArticleTrafilatura.Name, extract.ArticleTrafilatura.Version, extract.MediaTypeHTML,
+		stand("article-trafilatura", `sed -n 's|.*<p>\([^<]*\)</p>.*|{"text": "\1"}|p'`))
 	article.FetchesPage = true
-	extractors, err := extract.NewRegistry(article)
+	pdf := extract.Program(extract.PDFText.Name, extract.PDFText.Version, extract.MediaTypePDF,
+		stand("pdf-text", `sed -n 's|^Text: \(.*\)$|{"text": "\1"}|p'`))
+	pdf.TakesFetchedPages = true
+	extractors, err := extract.NewRegistry(article, pdf)
 	if err != nil {
 		t.Fatal(err)
 	}

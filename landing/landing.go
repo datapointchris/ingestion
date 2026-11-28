@@ -51,7 +51,8 @@ type Config struct {
 	// file under a root is referenced in place rather than copied.
 	Homes map[string]string
 	// QueueParse queues the parse of an item new to the store, in the write
-	// that adds it. Nil queues none.
+	// that adds it. It runs again in the write that gives bytes to an item
+	// that held none, or that a fetched page retypes. Nil queues none.
 	QueueParse func(context.Context, *store.Tx, store.Item) error
 	// Sighted runs in the write that adds a sighting to an item the store
 	// already held, under the item's key, such as the gates run again. Nil
@@ -143,8 +144,11 @@ type Arrival struct {
 type Landed struct {
 	Key string
 	// SHA256 names the arrival's bytes, and is "" where it read none.
-	SHA256        string
-	ItemAdded     bool
+	SHA256    string
+	ItemAdded bool
+	// BytesFilled says that the arrival gave bytes to an item that held none,
+	// such as a feed's entry for a pushed page whose GET was refused.
+	BytesFilled   bool
 	SightingAdded bool
 	BlobAdded     bool
 	HomeAdded     bool
@@ -246,9 +250,10 @@ func (l *Lander) keyIn(a Arrival) (string, error) {
 	return linkKey(a)
 }
 
-// write records a under key in tx, then queues a new item's parse, or runs
-// the sighted hook where a adds a sighting to an item the store held. Where a
-// names a blob already kept, its row stands for the bytes.
+// write records a under key in tx. It then queues the parse of an item that a
+// adds or gives bytes to, and runs the sighted hook where a adds a sighting to
+// an item the store held. Where a names a blob already kept, its row stands
+// for the bytes.
 func (l *Lander) write(ctx context.Context, tx *store.Tx, a Arrival, key string, w *Written, modified string) (Landed, error) {
 	if w == nil && a.BlobSHA256 != "" {
 		blob, ok, err := tx.Blob(ctx, a.BlobSHA256)
@@ -261,16 +266,19 @@ func (l *Lander) write(ctx context.Context, tx *store.Tx, a Arrival, key string,
 		w = &Written{SHA256: blob.SHA256, MD5: blob.MD5, Size: blob.SizeBytes}
 	}
 	landed, err := record(ctx, tx, a, key, w, modified)
-	switch {
-	case err != nil:
+	if err != nil {
 		return landed, err
-	case landed.ItemAdded && l.queueParse != nil:
+	}
+	if (landed.ItemAdded || landed.BytesFilled) && l.queueParse != nil {
 		item, _, err := tx.Item(ctx, key)
 		if err != nil {
 			return landed, err
 		}
-		return landed, l.queueParse(ctx, tx, item)
-	case landed.SightingAdded && !landed.ItemAdded && l.sighted != nil:
+		if err := l.queueParse(ctx, tx, item); err != nil {
+			return landed, err
+		}
+	}
+	if landed.SightingAdded && !landed.ItemAdded && l.sighted != nil {
 		return landed, l.sighted(ctx, tx, key)
 	}
 	return landed, nil
@@ -468,6 +476,7 @@ func record(ctx context.Context, tx *store.Tx, a Arrival, key string, w *Written
 			return landed, err
 		}
 		landed.ItemAdded = !found
+		landed.BytesFilled = found && existing.BlobSHA256 == nil && merged.BlobSHA256 != nil
 		landed.Changed = true
 	}
 	if found && merged.Zone != existing.Zone {
@@ -529,19 +538,35 @@ func record(ctx context.Context, tx *store.Tx, a Arrival, key string, w *Written
 // not hold.
 var ErrNoBlob = errors.New("the store keeps no such blob")
 
-// KeepFetched makes the bytes named sum, which the volume already keeps, the
-// bytes of the item keyed key where it holds none, in tx. A parse that fetched
-// the page of an item that landed no bytes, such as a pushed link, reports
-// them so. title fills the item's title where it holds none. An item that
-// holds bytes already keeps them, as a second landing of it would.
-func KeepFetched(ctx context.Context, tx *store.Tx, key, sum, title string) error {
-	if err := CheckSHA256(sum); err != nil {
+// ErrHoldsOtherBytes is a fetched page of an item that took other bytes
+// while its parse fetched the page, such as from a feed's entry for it.
+var ErrHoldsOtherBytes = errors.New("the item holds other bytes than the page that its parse fetched")
+
+// Fetched is a page that a parse fetched for an item that landed no bytes,
+// such as a pushed link's.
+type Fetched struct {
+	// SHA256 names the page's bytes, which the volume already keeps.
+	SHA256 string
+	// Title is the page's own title, which fills an item that holds none.
+	Title string
+	// MediaType is the type that the item takes, where the page is not of the
+	// type that the item landed as, and "" otherwise.
+	MediaType string
+}
+
+// KeepFetched makes page the bytes of the item keyed key, in tx. An item
+// that holds those bytes already is filled only with the page's title. A
+// page of another type retypes the item, and queues the parse of its new
+// type. It answers ErrHoldsOtherBytes where the item holds other bytes, so the
+// first bytes stand, as a second landing of the item would leave them.
+func (l *Lander) KeepFetched(ctx context.Context, tx *store.Tx, key string, page Fetched) error {
+	if err := CheckSHA256(page.SHA256); err != nil {
 		return fmt.Errorf("%w: %w", ErrNoBlob, err)
 	}
-	if _, ok, err := tx.Blob(ctx, sum); err != nil {
+	if _, ok, err := tx.Blob(ctx, page.SHA256); err != nil {
 		return err
 	} else if !ok {
-		return fmt.Errorf("%w: %s", ErrNoBlob, sum)
+		return fmt.Errorf("%w: %s", ErrNoBlob, page.SHA256)
 	}
 	item, found, err := tx.Item(ctx, key)
 	if err != nil {
@@ -550,15 +575,26 @@ func KeepFetched(ctx context.Context, tx *store.Tx, key, sum, title string) erro
 	if !found {
 		return fmt.Errorf("%s: %w", key, store.ErrNoItem)
 	}
+	if item.BlobSHA256 != nil && *item.BlobSHA256 != page.SHA256 {
+		return fmt.Errorf("%s: %w", key, ErrHoldsOtherBytes)
+	}
 	merged := item
-	merged.BlobSHA256 = fill(merged.BlobSHA256, sum)
-	if title != "" {
-		merged.Title = fill(merged.Title, title)
+	merged.BlobSHA256 = fill(merged.BlobSHA256, page.SHA256)
+	merged.Title = fill(merged.Title, page.Title)
+	retyped := item.BlobSHA256 == nil && page.MediaType != "" && page.MediaType != item.MediaType
+	if retyped {
+		merged.MediaType = page.MediaType
 	}
 	if reflect.DeepEqual(merged, item) {
 		return nil
 	}
-	return tx.PutItem(ctx, merged)
+	if err := tx.PutItem(ctx, merged); err != nil {
+		return err
+	}
+	if retyped && l.queueParse != nil {
+		return l.queueParse(ctx, tx, merged)
+	}
+	return nil
 }
 
 // raiseChildren makes every item below key at least as strict as zone. A
