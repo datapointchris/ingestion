@@ -12,13 +12,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/datapointchris/ingestion/route"
 	"github.com/datapointchris/ingestion/store"
 )
 
 // LifeArticles is the deliverer that saves each item as an article in life's
 // reading list, through life's POST /api/v1/articles with the item's key as
 // the article's source_key.
-const LifeArticles = "life-articles"
+const LifeArticles = route.ArticlesDeliverer
 
 // LifeArticlesScopes is what the life client asks its token for: the one
 // create that the deliverer saves through.
