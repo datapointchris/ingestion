@@ -46,7 +46,7 @@
       "required": ["sort", "grouping", "rank", "position", "shown", "quality", "fit", "verdict", "verdict_confidence", "side", "side_confidence", "drawn_ts"],
       "properties": {
         "sort": {"enum": ["newest", "quality", "likes-per-view", "length", "fit"]},
-        "grouping": {"enum": ["reason", "connector", "channel", "verdict", "none"]},
+        "grouping": {"description": "channel, connector, or none for one list. A card drawn while review offered the reason or verdict grouping names it.", "enum": ["channel", "connector", "none", "reason", "verdict"]},
         "rank": {"type": "integer", "minimum": 1},
         "position": {"type": "integer", "minimum": 1},
         "shown": {"type": "integer", "minimum": 1},

@@ -29,17 +29,34 @@ var rootCmd = &cobra.Command{
 	Long: "ingestion takes in items from outside sources: exports, feeds, playlists,\n" +
 		"folders and links pushed from a phone. It lands each item once under one key,\n" +
 		"parses and scans it, gates it by quality and by side, and delivers it to the\n" +
-		"one place it belongs.\n" +
+		"one place it belongs. Bare ingestion opens `ingestion tui`, and prints this\n" +
+		"help with no terminal.\n" +
 		"\n" +
 		"Every command answers --help.",
-	Example: "  ingestion --version\n" +
+	Example: "  ingestion\n" +
+		"  ingestion --version\n" +
 		"  ingestion version\n" +
 		"  ingestion update",
+	Args: cobra.ArbitraryArgs,
+	RunE: runBare,
 	// Execute prints the error itself, so cobra's own printer would say it twice.
 	SilenceErrors: true,
 	// A command that fails while running is not a misuse of its flags, and a
 	// usage dump would bury the reason.
 	SilenceUsage: true,
+}
+
+// runBare opens `ingestion tui` for a person at a terminal, prints the help for a program or an
+// agent with none, and refuses a word that names no command, as cobra would.
+func runBare(cmd *cobra.Command, args []string) error {
+	if len(args) > 0 {
+		return goclikit.UnknownCommand(cmd, args[0])
+	}
+	if !onTerminal() {
+		return cmd.Help()
+	}
+	tuiCmd.SetContext(cmd.Context())
+	return tuiCmd.RunE(tuiCmd, nil)
 }
 
 // Execute runs the command tree and exits with its code.

@@ -398,7 +398,8 @@ type Decision struct {
 
 // The sorts and the groupings that a review card's Presented names, the
 // first of each the review tab's default. schemas/ingestion-record.schema.json
-// enumerates the same values, and a test holds the two equal.
+// enumerates each, and a test holds it to them. The schema also keeps reason
+// and verdict, which a card drawn by an older build names.
 const (
 	SortNewest       = "newest"
 	SortQuality      = "quality"
@@ -406,16 +407,14 @@ const (
 	SortLength       = "length"
 	SortFit          = "fit"
 
-	GroupByReason    = "reason"
-	GroupByConnector = "connector"
 	GroupByChannel   = "channel"
-	GroupByVerdict   = "verdict"
+	GroupByConnector = "connector"
 	GroupByNone      = "none"
 )
 
 var (
 	PresentedSorts     = []string{SortNewest, SortQuality, SortLikesPerView, SortLength, SortFit}
-	PresentedGroupings = []string{GroupByReason, GroupByConnector, GroupByChannel, GroupByVerdict, GroupByNone}
+	PresentedGroupings = []string{GroupByChannel, GroupByConnector, GroupByNone}
 )
 
 // Presented is a review card as a person saw it when they decided: the sort

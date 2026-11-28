@@ -55,7 +55,7 @@
         "additionalProperties": false,
         "required": ["group", "source", "rank", "item"],
         "properties": {
-          "group": {"description": "The key of the group the item draws under, such as reason/quality-review.", "type": "string"},
+          "group": {"description": "The key of the group the item draws under, such as channel/r/golang.", "type": "string"},
           "source": {"description": "What the row's first column names: the channel that published the item, such as a video's channel or r/<subreddit>, or else its connectors.", "type": "string"},
           "rank": {"description": "The item's place under the sort in force among every item shown, from 1.", "type": "integer", "minimum": 1},
           "item": {"$ref": "review-list.schema.json#/properties/items/items"}

@@ -112,8 +112,8 @@ func TestTheReviewTabShowsTheGatesAnswerAndDecidesByKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(snap.Items) != 2 || snap.Items[0].Item.Key != "reddit/t3_bb2" || snap.Items[0].Source != "r/golang" ||
-		snap.Items[0].Group != "reason/"+store.ReasonQualityReview || len(snap.Items[0].Item.QualityAnswer) == 0 {
-		t.Fatalf("the snapshot lists %s, want both saves under the gate's review, the drop first from r/golang with its answer", jsonOf(snap.Items))
+		snap.Items[0].Group != "channel/r/golang" || snap.Items[0].Item.Reason != store.ReasonQualityReview || len(snap.Items[0].Item.QualityAnswer) == 0 {
+		t.Fatalf("the snapshot lists %s, want both saves under the gate's review, the drop first in its channel r/golang with its answer", jsonOf(snap.Items))
 	}
 	if len(snap.NoteChoices) != 7 || snap.NoteChoices[2].Key != "3" || text(snap.NoteChoices[2].Choice) != route.ChoiceSuggestion ||
 		text(snap.NoteChoices[5].Destination) != "reading-list" || text(snap.NoteChoices[6].Destination) != "dropped" {
@@ -179,10 +179,10 @@ func TestTheReviewTabShowsTheGatesAnswerAndDecidesByKey(t *testing.T) {
 		side.ClientID == nil || *side.ClientID != "ingestion-cli-test" {
 		t.Errorf("after d then s the hostile save holds %+v, want the person's drop for its subreddit", side)
 	}
-	if pr := side.Presented; pr == nil || pr.Sort != "newest" || pr.Grouping != "reason" || pr.Rank < 1 || pr.Position != 1 || pr.Shown != 2 ||
+	if pr := side.Presented; pr == nil || pr.Sort != "newest" || pr.Grouping != store.GroupByChannel || pr.Rank < 1 || pr.Position != 1 || pr.Shown != 2 ||
 		pr.Quality == nil || *pr.Quality != 7 || pr.Verdict == nil || *pr.Verdict != qualitygate.AnswerDrop || pr.Side == nil || *pr.Side != connectors.SidePersonal ||
 		side.DecidedAfterMS == nil || *side.DecidedAfterMS < 0 {
-		t.Errorf("the drop keeps presented %s after %v ms, want the first of two cards under newest and reason with the gate's drop and side guess",
+		t.Errorf("the drop keeps presented %s after %v ms, want the first of two cards under newest and channel with the gate's drop and side guess",
 			jsonOf(side.Presented), side.DecidedAfterMS)
 	}
 

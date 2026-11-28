@@ -151,9 +151,9 @@ func rowKeys(rows []gotermboard.Row) []string {
 }
 
 // The tab sorts the queue by when each item was made at its source, the gate's quality, likes per
-// view, shortest first, and the gate's fit, each item with no value last. It groups by connector,
-// channel or the gate's verdict, each group in the sort's order, and its filter reads the title
-// and the channel.
+// view, shortest first, and the gate's fit, each item with no value last. It groups by channel or
+// connector, each group in the sort's order, or draws one list, and its filter reads the title and
+// the channel.
 func TestTheReviewTabSortsGroupsAndFiltersTheQueue(t *testing.T) {
 	b := readBoard(t, &fakeService{answer: deck()})
 	for i, want := range [][]string{
@@ -177,7 +177,7 @@ func TestTheReviewTabSortsGroupsAndFiltersTheQueue(t *testing.T) {
 	for grouping, want := range map[string][][]string{
 		store.GroupByConnector: {{"connector/ypl-capture", "vidc", "vida"}, {"connector/reddit-exports", "t3_dd4"}, {"connector/ypl-channel", "vidb"}},
 		store.GroupByChannel:   {{"channel/Allotment Lab", "vidc", "vida"}, {"channel/Sea Notes", "vidb"}, {"channel/r/baking", "t3_dd4"}},
-		store.GroupByVerdict:   {{"verdict/pass", "vida"}, {"verdict/unsure", "vidb"}, {"verdict/drop", "vidc"}, {"verdict/none", "t3_dd4"}},
+		store.GroupByNone:      {{"all", "vidc", "vidb", "vida", "t3_dd4"}},
 	} {
 		if got := drawn(b, grouping); !slices.EqualFunc(got, want, slices.Equal) {
 			t.Errorf("grouped by %s under quality the frame draws %v, want %v", grouping, got, want)
