@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/datapointchris/ingestion/schemas/suggestion.schema.json",
   "title": "One suggestion a model read made from an item",
-  "description": "An item's latest suggestion, with what a person needs to judge it before acting on it: the scanner's findings first, then the sentence, then its source. The sentence is a model's answer over outsider text, so the suggestion takes the item's zone. A reader that copies this file keeps its bytes and its $id.",
+  "description": "An item's latest suggestion, with what a person needs to judge it before acting on it: the scanner's findings first, then the sentence and the read's summary, then its source. The sentence and the summary are a model's answer over outsider text, so the suggestion takes the item's zone. A reader that copies this file keeps its bytes and its $id.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "item_key", "sentence", "zone", "findings", "prompt_version", "suggested_ts"],
@@ -14,6 +14,7 @@
       "pattern": "^(reddit|youtube|url|file|memo)/[A-Za-z0-9_-]+(#[0-9]+)*$"
     },
     "sentence": {"description": "The suggestion, one sentence.", "type": "string", "minLength": 1},
+    "summary": {"description": "What the item says, from the model read that wrote the sentence, and null where that read answered a suggestion alone. The scanner reads only the sentence, so no finding covers the summary. It is optional, so a suggestion a reader kept before the field existed stays valid.", "type": ["string", "null"]},
     "title": {"description": "The source's title.", "type": ["string", "null"]},
     "url": {"description": "The source's canonical URL.", "type": ["string", "null"]},
     "zone": {"description": "Who wrote the source: outside or owner.", "enum": ["outside", "owner"]},

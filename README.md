@@ -1641,7 +1641,8 @@ It puts them to the model through `prompts/model-read/prompt.tmpl` and the lens'
   draft where the item holds one that no read answered, and queues nothing otherwise.
 - **`items show --json` carries the item's latest suggestion** under `suggestion`, as
   `schemas/suggestion.schema.json` publishes it. The scanner's findings come first, each found in
-  the source or in the sentence, then the sentence and its source.
+  the source or in the sentence, then the sentence, the same read's summary, and its source. The
+  scanner reads only the sentence, so no finding covers the summary.
 - **Each call is dispatched once**, through the protocol that `modelstage` holds for every model
   stage.
 

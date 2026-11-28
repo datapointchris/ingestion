@@ -88,9 +88,12 @@ type ItemAnswer struct {
 // schemas/suggestion.schema.json publishes it: its newest done model read
 // whose answer holds a sentence, with the scanner's findings first.
 type SuggestionView struct {
-	SchemaVersion int                     `json:"schema_version"`
-	ItemKey       string                  `json:"item_key"`
-	Sentence      string                  `json:"sentence"`
+	SchemaVersion int    `json:"schema_version"`
+	ItemKey       string `json:"item_key"`
+	Sentence      string `json:"sentence"`
+	// Summary is the same read's summary, and nil where it answered a
+	// suggestion alone. The scanner reads only the sentence.
+	Summary       *string                 `json:"summary"`
 	Title         *string                 `json:"title"`
 	URL           *string                 `json:"url"`
 	Zone          store.Zone              `json:"zone"`
@@ -122,23 +125,25 @@ const (
 func suggestion(rec store.ItemRecords) *SuggestionView {
 	var read *store.Output
 	sentence := ""
+	var summary *string
 	for i := range rec.Outputs {
 		o := &rec.Outputs[i]
 		if o.Stage != store.StageModelRead || o.State != store.OutputDone || (read != nil && o.UpdatedTS < read.UpdatedTS) {
 			continue
 		}
 		var answer struct {
+			Summary    *string `json:"summary"`
 			Suggestion *string `json:"suggestion"`
 		}
 		if json.Unmarshal(o.Answer, &answer) == nil && answer.Suggestion != nil && *answer.Suggestion != "" {
-			read, sentence = o, *answer.Suggestion
+			read, sentence, summary = o, *answer.Suggestion, answer.Summary
 		}
 	}
 	if read == nil {
 		return nil
 	}
 	s := &SuggestionView{
-		SchemaVersion: 1, ItemKey: rec.Item.Key, Sentence: sentence, Title: rec.Item.Title, URL: rec.Item.URL, Zone: rec.Item.Zone,
+		SchemaVersion: 1, ItemKey: rec.Item.Key, Sentence: sentence, Summary: summary, Title: rec.Item.Title, URL: rec.Item.URL, Zone: rec.Item.Zone,
 		Findings: []SuggestionFindingView{}, PromptVersion: read.ProducerVersion, SuggestedTS: read.UpdatedTS,
 	}
 	if read.Lens != nil && *read.Lens != "" {

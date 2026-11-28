@@ -130,9 +130,9 @@ func TestAFleetSavesModelReadAnswersEachNoteAPersonPlacesItWith(t *testing.T) {
 	if err != nil || !strings.Contains(out, "lens fleet v"+fleet.Lens.Version) || !strings.Contains(out, "suggestion "+strconv.Quote(sentence)) {
 		t.Errorf("items show printed %q, %v, want the lens and the suggestion quoted", out, err)
 	}
-	if s := shown.Suggestion; s == nil || s.Sentence != sentence || text(s.Lens) != "fleet "+fleet.Lens.Version || len(s.Findings) != 1 ||
-		s.Findings[0].Rule != commandRule || s.Findings[0].In != server.FoundInSentence || text(s.Findings[0].Span) != "sudo" {
-		t.Errorf("the save's suggestion is %s, want the sentence under the fleet lens with its one finding in the sentence", jsonOf(s))
+	if s := shown.Suggestion; s == nil || s.Sentence != sentence || text(s.Summary) != "A post about setup scripts." || text(s.Lens) != "fleet "+fleet.Lens.Version ||
+		len(s.Findings) != 1 || s.Findings[0].Rule != commandRule || s.Findings[0].In != server.FoundInSentence || text(s.Findings[0].Span) != "sudo" {
+		t.Errorf("the save's suggestion is %s, want the sentence and its summary under the fleet lens with its one finding in the sentence", jsonOf(s))
 	}
 	raw, err := runCLI(t, "items", "show", "reddit/t3_bb2", "--json", "--config", p.config)
 	if err != nil {
