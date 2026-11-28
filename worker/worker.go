@@ -31,28 +31,9 @@ type Task = server.LeasedTask
 // back, within the pod's grace period.
 const stopReportTimeout = 10 * time.Second
 
-// Result is how a handler's run ended.
-type Result struct {
-	// Outcome is server.OutcomeDone, OutcomeFailed or OutcomeRetry.
-	Outcome    string
-	Error      *string
-	RetryAfter time.Duration
-	// Wait marks a retry that waits on the far end, or on a stopping worker,
-	// rather than one that a fault in the run caused. Such a retry spends no
-	// attempt, and the service counts how long the task has waited since the
-	// first, as Task.WaitedSeconds.
-	Wait bool
-	// Outputs are the stage's records for the task's item, and Delivery is how
-	// a deliver task's write ended. Arrivals are what a poll that ends done
-	// found at its source, and Cursor its connector's next position. Metrics
-	// are what a refresh that ends done read again of each item. The service
-	// writes each in the transaction that ends the lease.
-	Outputs  []server.ReportOutput
-	Delivery *server.ReportDelivery
-	Arrivals []server.ReportArrival
-	Cursor   *string
-	Metrics  []server.ReportMetrics
-}
+// Result is how a handler's run ended. It is the result that the report
+// carries, so a field that the service reads is one that a handler sets.
+type Result = server.TaskResult
 
 // Handler runs the tasks of one capability.
 type Handler interface {
@@ -301,16 +282,14 @@ func runTask(ctx context.Context, client *Client, cfg Config, h Handler, task Ta
 		// claims it at once. Its lease never lapses, and a lapse counts toward
 		// failing a task whose runs end their worker.
 		if result.Outcome != server.OutcomeDone {
-			result = Result{Outcome: server.OutcomeRetry, Wait: true}
+			result = Result{Outcome: server.OutcomeRetry, Wait: true, Page: result.Page}
 		}
 		stopCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), stopReportTimeout)
 		defer stop()
 		ctx, runCtx = stopCtx, stopCtx
 	}
 	err := report(ctx, runCtx, client, cfg, log, task, server.ReportRequest{
-		Token: task.LeaseToken, Outcome: result.Outcome, Error: result.Error, Wait: result.Wait,
-		RetryAfterSeconds: int(result.RetryAfter.Seconds()), Outputs: result.Outputs, Delivery: result.Delivery,
-		Arrivals: result.Arrivals, Cursor: result.Cursor, Metrics: result.Metrics,
+		Token: task.LeaseToken, RetryAfterSeconds: int(result.RetryAfter.Seconds()), TaskResult: result,
 	})
 	switch {
 	case errors.Is(err, ErrStaleLease):

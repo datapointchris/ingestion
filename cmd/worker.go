@@ -32,9 +32,9 @@ import (
 	"github.com/datapointchris/ingestion/modelread"
 	"github.com/datapointchris/ingestion/modelstage"
 	"github.com/datapointchris/ingestion/note"
-	"github.com/datapointchris/ingestion/polling"
 	"github.com/datapointchris/ingestion/promptproposal"
 	"github.com/datapointchris/ingestion/prompts"
+	"github.com/datapointchris/ingestion/publicweb"
 	"github.com/datapointchris/ingestion/qualitygate"
 	"github.com/datapointchris/ingestion/scan"
 	"github.com/datapointchris/ingestion/sections"
@@ -62,7 +62,7 @@ const (
 func workerHandlers(client *worker.Client, deliverers map[string]deliver.Deliverer, opened openedSources,
 	port modelport.Port, scanner *scan.Scanner, contexts lens.Readers, models modelConfig, log *slog.Logger,
 ) []worker.Handler {
-	handlers := extract.Builtin().Handlers(client, log)
+	handlers := extract.Builtin().Handlers(client, publicweb.NewReader(publicweb.Client()), log)
 	if structure := sections.NewHandler(sections.Program, client, log); structure != nil {
 		handlers = append(handlers, structure)
 	}
@@ -109,7 +109,7 @@ type openedSources struct {
 // registered source with no table, or whose table cannot open, is logged and
 // left out, so the worker's other stages run on and its tasks wait queued for
 // a worker that opens it.
-func openSources(ctx context.Context, cfg fileConfig, issuer string, blobs polling.BlobWriter, log *slog.Logger) openedSources {
+func openSources(ctx context.Context, cfg fileConfig, issuer string, blobs worker.BlobWriter, log *slog.Logger) openedSources {
 	out := openedSources{comments: comments.Readers{}}
 	for _, name := range sources.Names() {
 		r, _ := sources.Lookup(name)

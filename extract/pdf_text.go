@@ -17,5 +17,6 @@ const MediaTypePDF = "application/pdf"
 var PDFText = func() Extractor {
 	e := Program(store.ExtractorPDFText, "1+pymupdf-"+PyMuPDFVersion, MediaTypePDF, ProgramDir+"/"+store.ExtractorPDFText)
 	e.Positional = true
+	e.TakesFetchedPages = true
 	return e
 }()

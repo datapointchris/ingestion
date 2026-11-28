@@ -210,7 +210,8 @@ type ConnectorConfig struct {
 	Roots []string
 	// AfterApply runs in the write that applies a changed set.
 	AfterApply connectors.AfterApply
-	// Links answers whether an extractor reads a pushed link. Nil lands none.
+	// Links answers whether an extractor reads a pushed link, or fetches the
+	// page that it names. Nil lands none.
 	Links LinkExtractors
 	Log   *slog.Logger
 }

@@ -98,20 +98,18 @@ func TestTwoWorkersRaceOneTaskALapsedLeaseReturnsItAndTheStaleReportIsRefused(t 
 		t.Errorf("a heartbeat under the stale token answered %v, want the stale lease refused", err)
 	}
 	units := []store.Unit{{N: 1, Text: "page text"}}
-	err = winner.Report(ctx, stale.ID, server.ReportRequest{
-		Token: stale.LeaseToken, Outcome: server.OutcomeDone,
+	done := server.TaskResult{
+		Outcome: server.OutcomeDone,
 		Outputs: []server.ReportOutput{{Producer: "html", ProducerVersion: "1", State: store.OutputDone, Units: units}},
-	})
+	}
+	err = winner.Report(ctx, stale.ID, server.ReportRequest{Token: stale.LeaseToken, TaskResult: done})
 	if !errors.Is(err, worker.ErrStaleLease) {
 		t.Errorf("a report under the stale token answered %v, want the stale lease refused", err)
 	}
 	if records, _ := st.Item(ctx, key); len(records.Outputs) != 0 {
 		t.Errorf("a refused report wrote %d outputs", len(records.Outputs))
 	}
-	current := server.ReportRequest{
-		Token: 2, Outcome: server.OutcomeDone,
-		Outputs: []server.ReportOutput{{Producer: "html", ProducerVersion: "1", State: store.OutputDone, Units: units}},
-	}
+	current := server.ReportRequest{Token: 2, TaskResult: done}
 	if err := loser.Report(ctx, stale.ID, current); err != nil {
 		t.Fatalf("the current token's report: %v", err)
 	}

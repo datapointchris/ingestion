@@ -151,7 +151,7 @@ func TestAMemoSplitsIntoOneItemPerTopic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handlers := whisper.Handlers(p.worker, quiet)
+	handlers := whisper.Handlers(p.worker, noPages, quiet)
 
 	status, raw := send(t, p.person, http.MethodPost, p.api.URL+"/api/v1/items?connector=phone&recorded_at=2026-11-20T08:00:00Z", "memo-1", memo)
 	if status != http.StatusCreated {

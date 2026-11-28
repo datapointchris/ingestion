@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/datapointchris/ingestion/itemkey"
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
 )
@@ -164,6 +165,19 @@ type Extractor struct {
 	// the item's key, as its poll lands it. An extractor with a LinkKind sets
 	// it, so an item's URL is the same whichever connector landed it first.
 	LinkURL func(id string) string
+	// FetchesPage marks the extractor of a web page whose parse, where its
+	// item holds no bytes, GETs the page at the item's URL through publicweb
+	// and keeps it as the item's bytes before reading it. A pushed link that
+	// keys as a url lands as its media type with no bytes, so the service
+	// stores only the page that it fetched. Only one primary extractor that
+	// reads bytes sets it.
+	FetchesPage bool
+	// TakesFetchedPages marks an extractor whose media type a fetched page
+	// may answer in place of a web page, such as a PDF that a pushed link
+	// names. The parse that fetched it keeps it, and hands the item to this
+	// extractor's parse under this media type. Only a primary extractor that
+	// reads bytes sets it.
+	TakesFetchedPages bool
 }
 
 // Unit is one part of a parse, as an extractor writes it. The parse numbers
@@ -185,15 +199,22 @@ func Capability(e Extractor) string { return store.StageParse + ":" + e.Name }
 type Registry struct {
 	byType map[string]Extractor
 	byLink map[string]Extractor
-	all    []Extractor
+	// page is the extractor that FetchesPage, and nil where none does.
+	page *Extractor
+	// fetchedTypes are the media types of the extractors that
+	// TakesFetchedPages.
+	fetchedTypes []string
+	all          []Extractor
 }
 
 // NewRegistry registers extractors. It refuses one with no name, version,
 // media type or way to run, two of one name, two primary ones of one media
 // type or one link kind, and one that defers to an extractor it does not hold
 // as secondary. It refuses a link kind on an extractor that is secondary or
-// reads bytes. It refuses a slot group that SlotGroups does not hold, and a
-// SlotLimit beside a slot group, whose limit is the group's.
+// reads bytes, and a page fetch on one that is secondary or reads its item at
+// its source, or beside another. It refuses a fetched page's hand-off to one
+// that is secondary or reads its item at its source. It refuses a slot group that SlotGroups does
+// not hold, and a SlotLimit beside a slot group, whose limit is the group's.
 func NewRegistry(extractors ...Extractor) (*Registry, error) {
 	r := &Registry{byType: map[string]Extractor{}, byLink: map[string]Extractor{}}
 	names := map[string]bool{}
@@ -213,9 +234,21 @@ func NewRegistry(extractors ...Extractor) (*Registry, error) {
 			return nil, fmt.Errorf("extractor %s runs in slot group %s, so it sets no SlotLimit of its own", e.Name, e.SlotGroup)
 		case e.LinkKind != "" && (e.Secondary || !e.ReadsURL || e.LinkURL == nil):
 			return nil, fmt.Errorf("extractor %s reads %s links, so it is primary, reads its item at its source and sets LinkURL", e.Name, e.LinkKind)
+		case e.FetchesPage && (e.Secondary || e.ReadsURL):
+			return nil, fmt.Errorf("extractor %s fetches a page that it keeps as its item's bytes, so it is primary and reads bytes", e.Name)
+		case e.FetchesPage && r.page != nil:
+			return nil, fmt.Errorf("extractors %s and %s both fetch pages", r.page.Name, e.Name)
+		case e.TakesFetchedPages && (e.Secondary || e.ReadsURL):
+			return nil, fmt.Errorf("extractor %s takes a fetched page as its item's bytes, so it is primary and reads bytes", e.Name)
 		}
 		names[e.Name] = true
 		r.all = append(r.all, e)
+		if e.FetchesPage {
+			r.page = &e
+		}
+		if e.TakesFetchedPages {
+			r.fetchedTypes = append(r.fetchedTypes, e.MediaType)
+		}
 		if e.Secondary {
 			continue
 		}
@@ -273,18 +306,72 @@ func (r *Registry) LinkArrival(key string) (mediaType, link string, ok bool) {
 	return e.MediaType, e.LinkURL(id), true
 }
 
+// LinkLanding is how the link keyed key lands, where link is its canonical
+// URL. An extractor that reads the key's kind reads it at its source, as
+// LinkArrival names it. A url link lands as a page where an extractor
+// FetchesPage. A site whose items an extractor reads hosts no such page, as
+// a channel's page names no single video. Any other link does not land.
+func (r *Registry) LinkLanding(key, link string) server.LinkLanding {
+	if mediaType, at, ok := r.LinkArrival(key); ok {
+		return server.LinkLanding{Lands: server.LinkReadAtSource, MediaType: mediaType, URL: at}
+	}
+	if kind, _, _ := strings.Cut(key, "/"); kind != itemkey.URL {
+		return server.LinkLanding{}
+	}
+	if site := itemkey.SiteKind(link); site != "" {
+		if _, read := r.byLink[site]; read {
+			return server.LinkLanding{Site: site}
+		}
+	}
+	if r.page == nil {
+		return server.LinkLanding{}
+	}
+	return server.LinkLanding{Lands: server.LinkPage, MediaType: r.page.MediaType, URL: link}
+}
+
 // LinkKinds names, in order, each kind of key whose link an extractor reads.
 func (r *Registry) LinkKinds() []string { return slices.Sorted(maps.Keys(r.byLink)) }
 
+// PageMediaType is the media type that a pushed link to a web page lands as,
+// with no bytes, so that the extractor that FetchesPage GETs the page in its
+// parse. It is false where no extractor fetches pages.
+func (r *Registry) PageMediaType() (string, bool) {
+	if r.page == nil {
+		return "", false
+	}
+	return r.page.MediaType, true
+}
+
 // QueueParse queues a parse task for item where an extractor reads its media
 // type. Landing calls it in the write that adds the item, so every item lands
-// with its parse queued.
+// with its parse queued. Landing calls it again where a write gives the item
+// bytes or a new type. There, a parse by the extractor that is queued, leased
+// or done stands, and a failed one is queued again to read the new bytes.
 func (r *Registry) QueueParse(ctx context.Context, tx *store.Tx, item store.Item) error {
 	e, ok := r.For(item.MediaType)
 	if !ok {
 		return nil
 	}
-	_, err := tx.Enqueue(ctx, store.Task{ItemKey: &item.Key, Stage: store.StageParse, Capability: Capability(e)})
+	capability := Capability(e)
+	records, err := tx.Records(ctx, item.Key)
+	if err != nil {
+		return err
+	}
+	failed := ""
+	for _, t := range records.Tasks {
+		switch {
+		case t.Capability != capability:
+		case t.State != store.TaskFailed:
+			return nil
+		default:
+			failed = t.ID
+		}
+	}
+	if failed != "" {
+		_, err := tx.RetryTask(ctx, failed)
+		return err
+	}
+	_, err = tx.Enqueue(ctx, store.Task{ItemKey: &item.Key, Stage: store.StageParse, Capability: capability})
 	return err
 }
 

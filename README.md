@@ -455,11 +455,24 @@ newest task past its parse failed.
     route streams the recording to the blob volume under its SHA-256, and queues its parse at
     `audio-whisper`. Under one key, a retry answers the first landing, whatever `recorded_at` it
     names. Another recording under that key answers 409.
-  - **A link lands only where an extractor of this build declares its kind**, such as
-    `youtube-captions` for a YouTube video's link. The service stores nothing that it did not
-    fetch through an extractor. A link of any other kind answers 422 `link_not_read`, naming the
-    kinds that the build lands, and stores nothing. So does a link on such a source's site that
-    names no single item, such as a channel's page.
+  - **A link lands only where an extractor of this build reads it at its source, or fetches its
+    page.** `youtube-captions` reads a YouTube video's link. Any other link to a web page keys as
+    `url/<hash>`, and lands as `text/html` with no bytes. The worker's `article-trafilatura` parse
+    then GETs the page, as a FreshRSS poll does. The service keeps the page as the item's bytes,
+    and the page's own title as the item's where it holds none. The title is the page's
+    `og:title`, else its `<title>`, else its first `<h1>`, with a trailing site name cut. The
+    service stores nothing that it did not fetch itself. A Reddit post's link answers 422
+    `link_not_read`, naming what the build lands, and stores nothing. So does a link on a video
+    site that names no single video, such as a channel's page.
+  - **When the link's page is a PDF, the item becomes a PDF**, and `pdf-text` parses it. The
+    parse that GET it keeps it, and ends deferred. When the page is any other file, the parse
+    fails with its media type.
+  - **When the page refuses the GET, the parse fails and says why**, as `the page was not
+    fetched: HTTP 403`. `ingestion items show` and `ingestion push` print it. The refusals are
+    the ones that a FreshRSS poll meets. When a refusal may clear, as a 503 or a timeout may, the
+    parse queues again after a wait, until its claims reach `extract.ReadAttempts`. `ingestion
+    tasks retry` queues a failed one again. When a feed's entry later carries the same page, the
+    item takes the feed's bytes, and its failed parse queues again over them.
   - **The item lands under the URL that its source names it by**, as the source's poll lands it,
     whatever form of the link was pushed. So a video's item holds its watch URL, whichever
     connector landed it first.
@@ -651,7 +664,8 @@ claims `poll:freshrss`.
   The next poll reads on from there.
 - **When an entry links a YouTube video, the entry lands as the video, with no bytes.** A pushed
   link of the video lands the same way. When an entry links a Reddit post, the entry lands
-  nothing. No extractor reads a Reddit post from its link.
+  nothing. No extractor reads a Reddit post from its link. Nor does an entry land whose link is a
+  video site's page that names no single video, such as a channel's. A push of each answers 422.
 - **An entry lands once, under its link's key, as `text/html`.** Its key is the canonical link's
   `url/<hash>`. So when the same page arrives another way, it is one item with a sighting of each.
   The sighting keeps the entry's id, `feed_stream_id`, `feed_title` and `feed_label`. That label is
@@ -1713,9 +1727,9 @@ pushing youtube/<video id> to psyche relate: 7 units, 0 findings, 0 suggestions
   the push connector that `--connector` names, whose default `ingestion push --help` prints, and
   the destination `psyche`. So the set in force declares both, and `examples/declarations/` holds
   each. The item is the person's, placed at `psyche` and read as is, so no gate and no model
-  stage reads it. Only a link that an extractor reads at its source lands, such as a YouTube
-  video's. Any other link exits 2, and the service stores nothing for it. So does a set that
-  declares no `psyche` destination.
+  stage reads it. Only a link that an extractor reads at its source or fetches lands, such as a
+  YouTube video's or an article's. Any other link exits 2, and the service stores nothing for it.
+  So does a set that declares no `psyche` destination.
 - **A push of an item already landed starts no stage in the service**, so no model reads the item
   there. psyche's relate is its only model call. A key that the service has not landed exits 2,
   because a key names no link to land.

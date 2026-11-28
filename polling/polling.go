@@ -8,13 +8,8 @@
 package polling
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
-	"fmt"
-	"io"
 	"log/slog"
 	"maps"
 	"slices"
@@ -36,12 +31,6 @@ type Poll struct {
 	// the arrival's BlobSHA256. A poller keeps each arrival's bytes as it
 	// reads them, so a poll holds one artifact in memory at a time.
 	Keep func(ctx context.Context, body []byte, mediaType string) (string, error)
-}
-
-// BlobWriter keeps bytes under their SHA-256 in the service, as
-// worker.Client does through the blob route.
-type BlobWriter interface {
-	PutBlob(ctx context.Context, sum, mediaType string, r io.Reader) (server.BlobAnswer, error)
 }
 
 // Outcome is how one poll ended.
@@ -72,25 +61,20 @@ type Poller interface {
 
 // Handler is the worker handler that runs source's poll tasks through p,
 // keeping the bytes that an arrival carries through blobs.
-func Handler(source string, p Poller, blobs BlobWriter, log *slog.Logger) worker.Handler {
+func Handler(source string, p Poller, blobs worker.BlobWriter, log *slog.Logger) worker.Handler {
 	return handler{source: source, poller: p, blobs: blobs, log: log}
 }
 
 type handler struct {
 	source string
 	poller Poller
-	blobs  BlobWriter
+	blobs  worker.BlobWriter
 	log    *slog.Logger
 }
 
 // keep writes body through the handler's blobs, under its SHA-256.
 func (h handler) keep(ctx context.Context, body []byte, mediaType string) (string, error) {
-	sum := sha256.Sum256(body)
-	name := hex.EncodeToString(sum[:])
-	if _, err := h.blobs.PutBlob(ctx, name, mediaType, bytes.NewReader(body)); err != nil {
-		return "", fmt.Errorf("keep %d bytes of %s: %w", len(body), mediaType, err)
-	}
-	return name, nil
+	return worker.Keep(ctx, h.blobs, mediaType, body)
 }
 
 func (h handler) Capability() string { return store.PollCapability(h.source) }

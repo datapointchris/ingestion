@@ -14,9 +14,13 @@ const MediaTypeHTML = "text/html"
 //
 // Its version names trafilatura's and TrafilaturaPins, so a parse by other
 // libraries writes beside the old one. A change to the program's own reading
-// raises the leading number.
-var ArticleTrafilatura = Program("article-trafilatura", "1+trafilatura-"+TrafilaturaVersion+"-"+TrafilaturaPins,
-	MediaTypeHTML, ProgramDir+"/article-trafilatura")
+// raises the leading number. It fetches the page of an item that landed no
+// bytes, as a pushed link does.
+var ArticleTrafilatura = func() Extractor {
+	e := Program("article-trafilatura", "1+trafilatura-"+TrafilaturaVersion+"-"+TrafilaturaPins, MediaTypeHTML, ProgramDir+"/article-trafilatura")
+	e.FetchesPage = true
+	return e
+}()
 
 // TrafilaturaPins is the first 12 hex digits of the SHA-256 of the pin of each
 // library in trafilaturaLibraries' closure in release/python-requirements.txt,

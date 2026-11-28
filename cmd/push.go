@@ -30,8 +30,9 @@ var pushCmd = &cobra.Command{
 		"not landed lands first, through the push connector that --connector names, as an\n" +
 		"outside item that you place at psyche. That placement keeps every gate and model\n" +
 		"stage off the item. Only a link that an extractor of the service reads at its\n" +
-		"source lands, such as a YouTube video's, and the service stores nothing for any\n" +
-		"other. The set in force declares the connector and a destination named psyche.\n" +
+		"source lands, such as a YouTube video's, or a web page that the parse fetches,\n" +
+		"such as an article's. The service stores nothing for any other link. The set in\n" +
+		"force declares the connector and a destination named psyche.\n" +
 		"\n" +
 		"The push then waits up to --wait for the item's parse and the scan of it, and\n" +
 		"hands them on. A captions parse waits its turn at ypl's door, which the default\n" +
@@ -50,6 +51,7 @@ var pushCmd = &cobra.Command{
 		"wait ends with no scanned parse, naming the stage it waited at, when that stage\n" +
 		"failed or nothing queued it, and when psyche fails.",
 	Example: "  ingestion push https://www.youtube.com/watch?v=<video id> --to psyche --relate\n" +
+		"  ingestion push https://example.com/<an article> --to psyche --relate\n" +
 		"  ingestion push reddit/t3_aq7ggd --to psyche --relate\n" +
 		"  ingestion push https://www.reddit.com/r/golang/comments/aq7ggd/ --to psyche --relate --enriched\n" +
 		"  ingestion push reddit/t3_aq7ggd --to psyche --relate --json --wait 0",

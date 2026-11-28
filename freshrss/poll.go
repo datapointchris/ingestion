@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/datapointchris/ingestion/extract"
 	"github.com/datapointchris/ingestion/itemkey"
 	"github.com/datapointchris/ingestion/polling"
 	"github.com/datapointchris/ingestion/publicweb"
@@ -62,29 +61,29 @@ const (
 	// extractor reads at its source, such as a YouTube video, which lands
 	// with no bytes, as a pushed link of it does.
 	countReadAtSource = "read_at_source"
-	// countAnotherSourcesLink is an entry whose link names an item of another
-	// source that no extractor reads from its link, such as a Reddit post.
+	// countAnotherSourcesLink is an entry whose link does not land, as a
+	// pushed link of it would not. It names an item of another source that no
+	// extractor reads from its link, such as a Reddit post. Or it names a page
+	// of a site whose items an extractor reads, such as a channel's.
 	countAnotherSourcesLink = "another_sources_link"
 )
 
-// LinkArrivals answers the media type and URL that a link keyed key lands
-// with, as extract.Registry does, and false where no extractor reads the
-// key's kind from its link.
-type LinkArrivals interface {
-	LinkArrival(key string) (mediaType, link string, ok bool)
+// LinkLandings answers how a link keyed key lands, where link is its
+// canonical URL, as extract.Registry answers the push route too.
+type LinkLandings interface {
+	LinkLanding(key, link string) server.LinkLanding
 }
 
 // Poller reads the reading list for each freshrss connector's poll.
 type Poller struct {
 	client *Client
 	pages  publicweb.Reader
-	links  LinkArrivals
+	links  LinkLandings
 }
 
 // NewPoller is the poller that reads the API through client, GETs each new
-// entry's page through pages, and asks links how an entry lands whose link
-// names an item of another source.
-func NewPoller(client *Client, pages publicweb.Reader, links LinkArrivals) Poller {
+// entry's page through pages, and asks links how each entry's link lands.
+func NewPoller(client *Client, pages publicweb.Reader, links LinkLandings) Poller {
 	return Poller{client: client, pages: pages, links: links}
 }
 
@@ -294,14 +293,15 @@ func (p Poller) decide(ctx context.Context, keep func(context.Context, []byte, s
 		published := time.Unix(e.Published, 0).UTC().Format(time.RFC3339)
 		a.SourceTS = &published
 	}
-	if kind, _, _ := strings.Cut(key, "/"); kind != itemkey.URL {
-		mediaType, at, ok := p.links.LinkArrival(key)
-		if !ok {
-			return decision{count: countAnotherSourcesLink}, nil
-		}
+	linked := p.links.LinkLanding(key, canonical)
+	switch linked.Lands {
+	case server.LinkReadAtSource:
 		landed[key] = true
-		a.MediaType, a.URL = mediaType, at
+		a.MediaType, a.URL = linked.MediaType, linked.URL
 		return decision{arrival: a, count: countReadAtSource}, nil
+	case server.LinkPage:
+	default:
+		return decision{count: countAnotherSourcesLink}, nil
 	}
 	d := decision{arrival: a}
 	body, mediaType, refused := p.pages.Read(ctx, canonical)
@@ -322,7 +322,7 @@ func (p Poller) decide(ctx context.Context, keep func(context.Context, []byte, s
 		return decision{}, err
 	}
 	landed[key] = true
-	a.MediaType, a.BlobSHA256 = extract.MediaTypeHTML, &sum
+	a.MediaType, a.BlobSHA256 = linked.MediaType, &sum
 	return d, nil
 }
 

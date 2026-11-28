@@ -37,6 +37,7 @@ var (
 	errBadDelivery             = errors.New("the delivery is not one the store records")
 	errArrivalsOutsideDonePoll = errors.New("only a poll that ends done reports arrivals or a cursor")
 	errMetricsOutsideRefresh   = errors.New("only a refresh of a source's metrics reports metrics")
+	errPageOutsideParse        = errors.New("only an item's parse reports a page that it fetched")
 )
 
 // MaxListed is the most tasks one list answers.
@@ -225,28 +226,58 @@ const (
 	OutcomeRetry  = "retry"
 )
 
-// ReportRequest ends a lease. Outputs are the stage's records for the task's
+// ReportRequest ends a lease with the result of the task's run, under the
+// token that holds the lease. A retry's wait travels in whole seconds.
+type ReportRequest struct {
+	Token             int64 `json:"token"`
+	RetryAfterSeconds int   `json:"retry_after_seconds,omitempty"`
+	TaskResult
+}
+
+// TaskResult is how a worker's run of a task ended, as its handler answers it
+// and its report carries it. Outputs are the stage's records for the task's
 // item, and Delivery is how a deliver task's write ended. Arrivals are what a
 // poll that ends done found at its source, in source order, and Cursor the
 // connector's next position, where the poll moves it. Metrics are what a
 // refresh of a source's metrics read again, however it ended, so a refresh
-// stopped partway keeps what it read. Each is written in
-// the same transaction that ends the lease. A poll that ends done has
-// reported every item its source holds past its cursor, so a connector
-// scheduled once never polls after it.
-type ReportRequest struct {
-	Token             int64   `json:"token"`
-	Outcome           string  `json:"outcome"`
-	Error             *string `json:"error,omitempty"`
-	RetryAfterSeconds int     `json:"retry_after_seconds,omitempty"`
-	// Wait marks a retry that its far end asked for, or that a stopping
-	// worker hands back, so the claim spends none of the task's attempts.
+// stopped partway keeps what it read. Each is written in the same transaction
+// that ends the lease. A poll that ends done has reported every item its
+// source holds past its cursor, so a connector scheduled once never polls
+// after it.
+type TaskResult struct {
+	// Outcome is OutcomeDone, OutcomeFailed or OutcomeRetry.
+	Outcome string  `json:"outcome"`
+	Error   *string `json:"error,omitempty"`
+	// RetryAfter is how long a retry waits before its next claim. The report
+	// carries it as RetryAfterSeconds.
+	RetryAfter time.Duration `json:"-"`
+	// Wait marks a retry that waits on the far end, or on a stopping worker,
+	// rather than one that a fault in the run caused. Such a retry spends no
+	// attempt, and the service counts how long the task has waited since the
+	// first, as the claim's waited_seconds.
 	Wait     bool            `json:"wait,omitempty"`
 	Outputs  []ReportOutput  `json:"outputs,omitempty"`
 	Delivery *ReportDelivery `json:"delivery,omitempty"`
 	Arrivals []ReportArrival `json:"arrivals,omitempty"`
 	Cursor   *string         `json:"cursor,omitempty"`
 	Metrics  []ReportMetrics `json:"metrics,omitempty"`
+	// Page is the page that a parse fetched and kept for an item that held
+	// no bytes, which the service makes the item's bytes.
+	Page *ReportPage `json:"page,omitempty"`
+}
+
+// ReportPage is the page that a parse GET at its item's URL, because the item
+// held no bytes, and kept through the blob route before it reported. serve
+// makes it the item's bytes in the write that ends the lease, whatever the
+// parse's outcome, where the item still holds none. Title is the page's own
+// title, which fills an item that holds no title, and is outsider text.
+// MediaType is the type that the item takes where the page is not of the
+// type that the item landed as, such as a PDF. The item's parse is then the
+// parse of that type's extractor, and MediaType is "" otherwise.
+type ReportPage struct {
+	BlobSHA256 string `json:"blob_sha256"`
+	Title      string `json:"title,omitempty"`
+	MediaType  string `json:"media_type,omitempty"`
 }
 
 // ReportMetrics is one item's metrics as a refresh read them again at its
@@ -653,6 +684,9 @@ func (h taskHandlers) report(w http.ResponseWriter, r *http.Request) {
 	}
 	var polled connectors.PollLanded
 	var refreshed connectors.MetricsRefreshed
+	// superseded says that the item took other bytes while the parse fetched
+	// its page, so nothing that the parse read is kept.
+	superseded := false
 	task, err := h.store.Report(r.Context(), r.PathValue("id"), body.Token, outcome, func(tx *store.Tx, task store.Task, ended *store.Outcome) error {
 		if (len(body.Arrivals) > 0 || body.Cursor != nil) && (task.Stage != store.StagePoll || outcome.State != store.TaskDone) {
 			return errArrivalsOutsideDonePoll
@@ -679,7 +713,27 @@ func (h taskHandlers) report(w http.ResponseWriter, r *http.Request) {
 				ended.State, ended.Error = store.TaskFailed, &polled.Failure
 			}
 		}
+		if p := body.Page; p != nil {
+			if task.Stage != store.StageParse || task.ItemKey == nil {
+				return errPageOutsideParse
+			}
+			if h.lander == nil {
+				return errors.New("these routes hold no lander, so a fetched page cannot land")
+			}
+			err := h.lander.KeepFetched(r.Context(), tx, *task.ItemKey, landing.Fetched{SHA256: p.BlobSHA256, Title: p.Title, MediaType: p.MediaType})
+			switch {
+			case errors.Is(err, landing.ErrHoldsOtherBytes):
+				why := "the item took other bytes while its parse fetched the page, so the parse runs again over those"
+				ended.State, ended.Error, ended.RetryAfter, ended.Wait = store.TaskQueued, &why, 0, false
+				superseded = true
+			case err != nil:
+				return err
+			}
+		}
 		for _, o := range body.Outputs {
+			if superseded {
+				break
+			}
 			if err := tx.KeepRun(r.Context(), task, o.output(), o.Units); err != nil {
 				return err
 			}
@@ -694,7 +748,7 @@ func (h taskHandlers) report(w http.ResponseWriter, r *http.Request) {
 				return fmt.Errorf("%w: %w", errBadDelivery, err)
 			}
 		}
-		if h.after != nil && outcome.State == store.TaskDone && task.ItemKey != nil {
+		if h.after != nil && outcome.State == store.TaskDone && !superseded && task.ItemKey != nil {
 			return h.after(r.Context(), tx, task)
 		}
 		return nil
@@ -705,7 +759,8 @@ func (h taskHandlers) report(w http.ResponseWriter, r *http.Request) {
 	h.log.Info("a task ended", "task", task.ID, "item", text(task.ItemKey), "connector", text(task.Connector), "source", text(task.Source),
 		"stage", task.Stage, "state", task.State, "outputs", len(body.Outputs), "arrivals", polled.Arrivals, "items_added", polled.Items,
 		"sightings_added", polled.Sightings, "deletes_queued", polled.Deletes, "arrivals_refused", polled.Refused,
-		"metrics_read", refreshed.Items, "sightings_refreshed", refreshed.Sightings, "metrics_unsighted", refreshed.Unsighted)
+		"metrics_read", refreshed.Items, "sightings_refreshed", refreshed.Sightings, "metrics_unsighted", refreshed.Unsighted,
+		"page_kept", body.Page != nil && !superseded, "page_superseded", superseded)
 	JSON(w, http.StatusOK, viewOf(task, h.store.Now()))
 }
 
@@ -897,8 +952,10 @@ func (h taskHandlers) leaseRefused(w http.ResponseWriter, r *http.Request, err e
 		Refuse(w, http.StatusUnprocessableEntity, CodeInvalidBody, "task %s delivers nothing, so it reports no delivery", r.PathValue("id"))
 	case errors.Is(err, errBadDelivery):
 		Refuse(w, http.StatusUnprocessableEntity, CodeInvalidBody, "%v", err)
-	case errors.Is(err, errArrivalsOutsideDonePoll), errors.Is(err, errMetricsOutsideRefresh):
+	case errors.Is(err, errArrivalsOutsideDonePoll), errors.Is(err, errMetricsOutsideRefresh), errors.Is(err, errPageOutsideParse):
 		Refuse(w, http.StatusUnprocessableEntity, CodeInvalidBody, "task %s: %v", r.PathValue("id"), err)
+	case errors.Is(err, landing.ErrNoBlob):
+		Refuse(w, http.StatusUnprocessableEntity, CodeInvalidBody, "the page names bytes that the service does not keep: %v", err)
 	case errors.Is(err, store.ErrInvalidMetric):
 		Refuse(w, http.StatusUnprocessableEntity, CodeInvalidBody, "%v", err)
 	case errors.Is(err, store.ErrUnitsOutsideParse), errors.Is(err, store.ErrUnitsOutOfOrder):

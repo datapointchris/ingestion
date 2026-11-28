@@ -210,7 +210,7 @@ func (p *pipeline) leasedParse(t *testing.T) []byte {
 	if err != nil || resp.StatusCode != http.StatusOK {
 		t.Fatalf("the task's parse route answered %d %s, %v", resp.StatusCode, raw, err)
 	}
-	if err := p.worker.Report(ctx, task.ID, server.ReportRequest{Token: task.LeaseToken, Outcome: server.OutcomeRetry}); err != nil {
+	if err := p.worker.Report(ctx, task.ID, server.ReportRequest{Token: task.LeaseToken, TaskResult: server.TaskResult{Outcome: server.OutcomeRetry}}); err != nil {
 		t.Fatal(err)
 	}
 	return raw
