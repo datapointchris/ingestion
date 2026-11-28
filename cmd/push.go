@@ -167,7 +167,7 @@ func isLink(ref string) bool {
 // pushLink lands link through connector as an item placed at psyche, and
 // answers the item that the service landed or already held.
 func pushLink(ctx context.Context, config, api, connector, link string) (server.PushedItem, error) {
-	body, err := json.Marshal(server.PushRequest{Connector: connector, URL: link, Destination: push.Program})
+	body, err := json.Marshal(server.PushRequest{Connector: connector, URL: link, Destination: push.Destination})
 	if err != nil {
 		return server.PushedItem{}, err
 	}

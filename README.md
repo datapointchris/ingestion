@@ -1226,7 +1226,7 @@ one, and a placement with no note of an item that holds a draft takes the draft.
 the person's `login` in its body, because a service token carries no person. The decision keeps
 the service's client id beside the login.
 
-### Review offers seven choices: five that place an item, archive and drop
+### Each of review's choices places, archives or drops an item
 
 Each choice says where the item goes and what runs on it then. `ingestion review place <key>
 <choice>` posts the choice to `POST /api/v1/review/{key}/place`. `review archive` and `review
@@ -1262,7 +1262,9 @@ Archived youtube/Ks-_Mh1QhMc, liked for its channel. Its record stays with no de
   `ypl-watch` for anything but a YouTube video.
 - **`review place` also takes a destination's name**, for a destination that no choice reaches.
   The item takes that destination's side, as a tag or a rule would place it. The route's body
-  names `destination` rather than `choice`, and a caller sends one of the two.
+  names `destination` rather than `choice`, and a caller sends one of the two. A name that is
+  both a choice's and a destination's is read as the choice. The tab's note menu numbers each
+  such destination after the choices.
 - **A psyche placement lands first, then `psyche relate` reads the item's parse and its scan on
   the machine that placed it.** The service keeps nothing of the relate. Where it fails, the item
   stays at psyche, and `ingestion push <key> --to psyche --relate` runs it again.
@@ -1274,9 +1276,14 @@ Archived youtube/Ks-_Mh1QhMc, liked for its channel. Its record stays with no de
   where none is named. The tab's `E` asks the same from a menu.
 - **A drop for low quality writes the `low-quality` mark** in the same write as the drop, so the
   gate families count it as `items mark` would.
-- **A read decision of verdict `shelf` that no opening followed waits in review as `shelved`.**
-  An older release's store may hold one. Review offers no shelf, so a person places the item by a
-  choice.
+- **An archive or a drop writes its mark only for a caller that may write marks.** A person's
+  token may. A service's token may only where it also holds `ingestion.marks.write`, the scope of
+  `POST /api/v1/items/{key}/marks`. A mark against the gate's drop raises the trust that hides
+  later drops, so `ingestion.review.place` alone does not write one. The decision is written
+  either way.
+- **Two reasons wait in review only on records already written.** `shelved` is a read decision
+  of verdict `shelf` that no opening followed. `learning-refused` is a learning sort that the
+  quality gate did not pass. A person places either item by a choice.
 - **`ypl-watch` inserts the video through ypl's `POST /api/v1/youtube/playlists/{id}/items`.**
   Each insert spends ypl's Data API quota. YouTube keeps a second copy of a video that a playlist
   holds already. The `deliveries` row keeps the playlist picked, and is never queued again once
@@ -1606,10 +1613,11 @@ It puts them to the model through `prompts/model-read/prompt.tmpl` and the lens'
 
 - **The lens says what the item is read for.** The `fleet` lens reads it for the software it may
   bear on: how that software is built, run and kept safe. The `personal` lens reads it for the
-  owner's own life, under a connector whose `read_rule` is `model`. The `suggestion` choice
-  reads under the `fleet` lens. Only the
-  `fleet` lens drafts a missing note. Where the item carries a note, the read answers the note. A draft is quoted under its own heading, as questions a model drafted, so an
-  instruction inside it is not the owner's. Where the item carries neither, the read answers the
+  owner's own life, under a connector whose `read_rule` is `model`. The `learning` lens reads it
+  to learn its subject, concept by concept, for the read decisions already written under it. The
+  `suggestion` choice reads under the `fleet` lens. Only the `fleet` lens drafts a missing note.
+  Where the item carries a note, the read answers the note. A draft is quoted under its own
+  heading, as questions a model drafted, so an instruction inside it is not the owner's. Where the item carries neither, the read answers the
   lens's default questions.
 - **The answer holds to `prompts/model-read/answer.schema.json`**: a summary, a suggestion
   sentence, or both, with the other null. An answer holding neither fails the task.

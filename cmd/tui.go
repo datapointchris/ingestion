@@ -76,16 +76,16 @@ func tuiTabList() []tuiTab {
 				"\n" +
 				review.ChoiceBindings[route.ChoiceWatch].Key + " asks which playlist, listing the service's default first and then the playlists\n" +
 				"that `" + playlistsProgram + " playlists list` reads on this machine. " + review.ChoiceBindings[route.ChoicePsyche].Key + " hands the terminal to\n" +
-				push.Program + " relate on this machine while the placement is sent, and enter returns to the board.\n" +
+				push.Program + " relate on this machine once the placement lands, and enter returns to the board.\n" +
 				review.ChoiceBindings[route.ChoiceArchive].Key + " asks what you liked: the channel, the theme or this item alone, and\n" +
 				"the decision keeps the answer as its cause. " + review.KeyDrop + " drops the item after asking what decided it,\n" +
 				"and a drop for low quality marks it low quality too. " + review.KeyNote + " writes a note in $VISUAL or $EDITOR,\n" +
-				"then places the item with the note by the choice whose digit you pick. Each decision\n" +
-				"keeps the card as it was drawn and how long you took. " + review.KeyComments + " reads what a video's top\n" +
-				"comments say, with one model call that the card shows once it lands, and asks again\n" +
-				"where the read failed. o opens its URL. Each key calls the routes that `ingestion\n" +
-				"review place`, `review archive` and `review drop` call, under the same login, so the\n" +
-				"decision is yours.",
+				"then places the item with the note by the choice, or the destination no choice reaches,\n" +
+				"whose digit you pick. Each decision keeps the card as it was drawn and how long you\n" +
+				"took. " + review.KeyComments + " reads what a video's top comments say, with one model call that the card\n" +
+				"shows once it lands, and asks again where the read failed. o opens its URL. Each key\n" +
+				"calls the routes that `ingestion review place`, `review archive` and `review drop` call,\n" +
+				"under the same login, so the decision is yours.",
 			func(ctx context.Context, o tuiOptions) tuiBoard {
 				return reviewTab{review.NewBoard(ctx, reviewService(o), review.Outside{Open: openInBrowser})}
 			},

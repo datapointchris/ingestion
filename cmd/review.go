@@ -75,7 +75,8 @@ var reviewPlaceCmd = &cobra.Command{
 		"suggestion on the fleet side's default, and for psyche on the destination\n" +
 		"named psyche, as review list --json lists under choices. A name that is no\n" +
 		"choice names a destination of the set in force, and places the item on it\n" +
-		"with the side it takes. The push-only psyche and the watch, which picks a\n" +
+		"with the side it takes. A name that is both a choice's and a destination's\n" +
+		"is read as the choice. The push-only psyche and the watch, which picks a\n" +
 		"playlist, take only their choices. Any item can be placed, including one that\n" +
 		"a rule already placed.\n" +
 		"\n" +

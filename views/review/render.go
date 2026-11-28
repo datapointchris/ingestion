@@ -120,8 +120,8 @@ func choiceBar(h held, unread bool, width int) []gotermboard.Line {
 		})
 	}
 	digits := KeyNote + " note, then by its digit:"
-	for i, c := range noteChoices(h) {
-		digits += fmt.Sprintf("  %d %s", i+1, c.Choice)
+	for i, e := range noteEntries(h) {
+		digits += fmt.Sprintf("  %d %s", i+1, e.name())
 	}
 	return append(lines, gotermboard.Line{gotermboard.C(cut(digits, width), "")})
 }
@@ -149,6 +149,14 @@ func choiceLabel(c server.ReviewChoice, watchDefault *string) string {
 		return c.Choice + " → " + *c.Destination + ", " + outsider(*watchDefault) + " unless picked"
 	}
 	return c.Choice + " → " + *c.Destination
+}
+
+// destinationLabel is a destination with the side it gives, as `reading-list → personal`.
+func destinationLabel(d server.ReviewDestination) string {
+	if d.Side == nil {
+		return d.Name + " → drops"
+	}
+	return d.Name + " → " + *d.Side
 }
 
 // statuses are the reads the strip names: the queue and the parses, and the playlists once a
@@ -387,8 +395,8 @@ const SchemaVersion = 4
 // Snapshot is what --json prints: each waiting item ordered by the board's default grouping and,
 // within each group, by the sort in force, beside the group it draws under, the source the row
 // names and its rank under the sort, then the key that picks each choice, the digit that the
-// note's menu places by each placing choice with, and how each read stands. A display left grouped
-// otherwise does not change it.
+// note's menu places with by each placing choice or destination, and how each read stands. A
+// display left grouped otherwise does not change it.
 type Snapshot struct {
 	SchemaVersion        int                  `json:"schema_version"`
 	TakenAt              time.Time            `json:"taken_at"`
@@ -408,10 +416,12 @@ type ChoiceKey struct {
 	server.ReviewChoice
 }
 
-// NoteChoiceKey is the digit that the note's menu places by a choice with.
+// NoteChoiceKey is the digit that the note's menu places with, by a choice or, where no choice
+// reaches it, on a destination by name. One of Choice and Destination is set.
 type NoteChoiceKey struct {
-	Key    string `json:"key"`
-	Choice string `json:"choice"`
+	Key         string  `json:"key"`
+	Choice      *string `json:"choice"`
+	Destination *string `json:"destination"`
 }
 
 // ItemShown is one row: the queue's item as the service answered it, the group it draws under, and
@@ -440,8 +450,14 @@ func (b *Board) Snapshot(now time.Time) Snapshot {
 			snap.Choices = append(snap.Choices, ChoiceKey{Key: bound.Key, ReviewChoice: c})
 		}
 	}
-	for i, c := range noteChoices(h) {
-		snap.NoteChoices = append(snap.NoteChoices, NoteChoiceKey{Key: strconv.Itoa(i + 1), Choice: c.Choice})
+	for i, e := range noteEntries(h) {
+		shown := NoteChoiceKey{Key: strconv.Itoa(i + 1)}
+		if e.choice != nil {
+			shown.Choice = &e.choice.Choice
+		} else {
+			shown.Destination = &e.destination.Name
+		}
+		snap.NoteChoices = append(snap.NoteChoices, shown)
 	}
 	for _, s := range snap.Sources {
 		if s.ReadAt.IsZero() && s.Name == sourceQueue {

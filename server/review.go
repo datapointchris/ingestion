@@ -225,10 +225,10 @@ type PlaceRequest struct {
 	DecidedAfterMS *int64           `json:"decided_after_ms,omitempty"`
 }
 
-// ArchiveRequest archives an item: done, its record kept with no destination.
-// Liked names what the person liked, one of route.Likes, and an archive that
-// names none is kept as unstated. Login, Presented and DecidedAfterMS are a
-// PlaceRequest's.
+// ArchiveRequest archives an item: done, its record kept with no destination,
+// and the read mark written where the caller may write marks. Liked names what
+// the person liked, one of route.Likes, and an archive that names none is kept
+// as unstated. Login, Presented and DecidedAfterMS are a PlaceRequest's.
 type ArchiveRequest struct {
 	Liked          string           `json:"liked,omitempty"`
 	Login          string           `json:"login,omitempty"`
@@ -238,8 +238,8 @@ type ArchiveRequest struct {
 
 // DropRequest drops an item, which keeps its row. Cause names the aspect that
 // decided it, and a drop that names none is kept as unstated. A drop for
-// low-quality also writes the low-quality mark. Presented and DecidedAfterMS
-// are a PlaceRequest's.
+// low-quality also writes the low-quality mark where the caller may write
+// marks. Presented and DecidedAfterMS are a PlaceRequest's.
 type DropRequest struct {
 	Cause          string           `json:"cause,omitempty"`
 	Note           *string          `json:"note,omitempty"`
@@ -433,7 +433,7 @@ func (h reviewHandlers) drop(w http.ResponseWriter, r *http.Request) {
 	if h.refusedPresented(w, r, body.Presented, body.DecidedAfterMS) {
 		return
 	}
-	h.decide(w, r, route.Placement{Cause: body.Cause, Note: body.Note, Presented: body.Presented, DecidedAfterMS: body.DecidedAfterMS}, body.Login)
+	h.decide(w, r, route.Placement{Cause: body.Cause, Note: body.Note, Presented: body.Presented, DecidedAfterMS: body.DecidedAfterMS, Unmarked: !mayMark(r)}, body.Login)
 }
 
 // choose picks the item by body's choice, which place has checked but for
@@ -493,18 +493,19 @@ func (h reviewHandlers) archive(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	unmarked := !mayMark(r)
 	var made []store.Decision
 	err := h.store.Update(r.Context(), func(tx *store.Tx) error {
 		var err error
 		made, err = route.Archive(r.Context(), tx, key, route.Archival{
-			Liked: body.Liked, Login: login, ClientID: clientID, Presented: body.Presented, DecidedAfterMS: body.DecidedAfterMS,
+			Liked: body.Liked, Login: login, ClientID: clientID, Presented: body.Presented, DecidedAfterMS: body.DecidedAfterMS, Unmarked: unmarked,
 		})
 		return err
 	})
 	if h.refusedDecision(w, r, key, err) {
 		return
 	}
-	h.log.Info("a person archived an item", "item", key, "decided_by", made[0].DecidedBy, "client", clientID, "cause", made[0].Cause)
+	h.log.Info("a person archived an item", "item", key, "decided_by", made[0].DecidedBy, "client", clientID, "cause", made[0].Cause, "unmarked", unmarked)
 	JSON(w, http.StatusOK, placementAnswer(key, made))
 }
 
@@ -600,7 +601,7 @@ func (h reviewHandlers) decide(w http.ResponseWriter, r *http.Request, p route.P
 	}
 	answer := placementAnswer(key, made)
 	h.log.Info("a person decided an item", "item", key, "verdict", made[0].Verdict, "destination", p.Destination,
-		"decided_by", made[0].DecidedBy, "client", p.ClientID, "cause", made[0].Cause)
+		"decided_by", made[0].DecidedBy, "client", p.ClientID, "cause", made[0].Cause, "unmarked", p.Unmarked)
 	JSON(w, http.StatusOK, answer)
 }
 

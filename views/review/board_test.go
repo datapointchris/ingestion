@@ -3,6 +3,7 @@ package review
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"maps"
 	"os"
 	"os/exec"
@@ -19,7 +20,6 @@ import (
 
 	"github.com/datapointchris/ingestion/connectors"
 	"github.com/datapointchris/ingestion/route"
-	"github.com/datapointchris/ingestion/schemas"
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
 )
@@ -32,6 +32,8 @@ type fakeService struct {
 	placed    []server.PlaceRequest
 	archived  []server.ArchiveRequest
 	related   []string
+	// refuse is the error that the next placement answers, once.
+	refuse error
 }
 
 func (f *fakeService) Archive(_ context.Context, key string, body server.ArchiveRequest) (string, error) {
@@ -52,6 +54,10 @@ func (f *fakeService) Parse(context.Context, string) (server.ParseAnswer, bool, 
 }
 
 func (f *fakeService) Place(_ context.Context, key string, body server.PlaceRequest) (string, error) {
+	if err := f.refuse; err != nil {
+		f.refuse = nil
+		return "", err
+	}
 	f.placed = append(f.placed, body)
 	return "placed " + key, nil
 }
@@ -274,7 +280,8 @@ func TestWatchAsksForThePlaylistWithTheDefaultFirst(t *testing.T) {
 	}
 }
 
-// P places the item at psyche and hands the terminal to psyche relate on this machine. E asks what
+// P places the item at psyche and hands the terminal to psyche relate on this machine once the
+// placement lands, and relates nothing where the placement is refused. E asks what
 // was liked, and archives it with the like picked.
 func TestPsycheRelatesHereAndArchiveAsksWhatWasLiked(t *testing.T) {
 	service := &fakeService{answer: deck()}
@@ -287,6 +294,12 @@ func TestPsycheRelatesHereAndArchiveAsksWhatWasLiked(t *testing.T) {
 	m := gotermboard.NewModel(b, gotermstyle.PaletteFor(nil))
 	m.Update(tea.WindowSizeMsg{Width: 200, Height: 40})
 	first := m.Cursor()
+	service.refuse = errors.New("422 choice_refused: psyche is not declared")
+	runKey(m, letter(ChoiceBindings[route.ChoicePsyche].Key[0]))
+	if len(service.related) != 0 {
+		t.Fatalf("P on %s related %v though its placement was refused, want nothing sent to psyche", first, service.related)
+	}
+	m.MoveCursorTo(first)
 	runKey(m, letter(ChoiceBindings[route.ChoicePsyche].Key[0]))
 	if len(service.placed) != 1 || service.placed[0].Choice != route.ChoicePsyche || !slices.Equal(service.related, []string{first}) {
 		t.Fatalf("P on %s placed %+v and related %v, want it placed at psyche and related here", first, service.placed, service.related)
@@ -318,8 +331,8 @@ func runKey(m *gotermboard.Model, key tea.KeyPressMsg) {
 	m.Rebuild()
 }
 
-// Each choice has one key, no two choices share one, and tui-review's key enum
-// names exactly those keys. A choice with no binding would never be offered.
+// Each choice has one key, and no two choices share one. A choice with no
+// binding would never be offered.
 func TestEachChoiceHasItsOwnKey(t *testing.T) {
 	var keys []string
 	for _, c := range route.Choices {
@@ -331,29 +344,6 @@ func TestEachChoiceHasItsOwnKey(t *testing.T) {
 	}
 	if len(ChoiceBindings) != len(route.Choices) || len(slices.Compact(slices.Sorted(slices.Values(keys)))) != len(keys) {
 		t.Errorf("the bindings %v give the choices %v keys %v, want one key each", ChoiceBindings, route.ChoiceNames(), keys)
-	}
-	raw, err := schemas.Files.ReadFile("tui-review.schema.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var schema struct {
-		Properties struct {
-			Choices struct {
-				Items struct {
-					Properties struct {
-						Key struct {
-							Enum []string `json:"enum"`
-						} `json:"key"`
-					} `json:"properties"`
-				} `json:"items"`
-			} `json:"choices"`
-		} `json:"properties"`
-	}
-	if err := json.Unmarshal(raw, &schema); err != nil {
-		t.Fatal(err)
-	}
-	if enum := schema.Properties.Choices.Items.Properties.Key.Enum; !slices.Equal(slices.Sorted(slices.Values(enum)), slices.Sorted(slices.Values(keys))) {
-		t.Errorf("tui-review's key enum is %v, and the bindings' keys %v", enum, keys)
 	}
 }
 

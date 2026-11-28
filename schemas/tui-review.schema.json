@@ -31,16 +31,21 @@
     },
     "watch_default_playlist": {"$ref": "review-list.schema.json#/properties/watch_default_playlist"},
     "note_choices": {
-      "description": "Each choice that a digit of the note's menu places by, in the order of choices: each one that places an item. Null where the queue came without its choices or was not read.",
+      "description": "What each digit of the note's menu places with: each choice that places an item, in the order of choices, then each of the review list's destinations that none of them reaches, by name, up to nine in all. Null where the queue came without its choices or was not read.",
       "type": ["array", "null"],
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["key", "choice"],
+        "required": ["key", "choice", "destination"],
         "properties": {
           "key": {"type": "string", "pattern": "^[1-9]$"},
-          "choice": {"enum": ["articles", "learning", "suggestion", "watch", "psyche"]}
-        }
+          "choice": {"description": "The placing choice, or null where the digit places on a destination.", "enum": ["articles", "learning", "suggestion", "watch", "psyche", null]},
+          "destination": {"description": "The destination that the digit places on by name, or null where it places by a choice.", "type": ["string", "null"]}
+        },
+        "oneOf": [
+          {"properties": {"choice": {"type": "string"}, "destination": {"type": "null"}}},
+          {"properties": {"choice": {"type": "null"}, "destination": {"type": "string"}}}
+        ]
       }
     },
     "items": {

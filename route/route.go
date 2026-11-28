@@ -114,6 +114,9 @@ const (
 	// sends to review an item whose draft fell below the floor.
 	CauseNoteDraft   = "note-draft"
 	CauseNoteUnclear = "note-unclear"
+	// CauseLearningRefused sends to review a learning sort that the quality
+	// gate did not pass, which records already written carry.
+	CauseLearningRefused = "learning-refused"
 )
 
 // ReviewReason is one reason an item waits in review: its name, the line
@@ -144,6 +147,10 @@ var ReviewReasons = []ReviewReason{
 	{
 		store.ReasonShelved, "you put it on the shelf, which review does not offer: choose where it goes",
 		"it waited on the shelf",
+	},
+	{
+		CauseLearningRefused, "you sorted it to learning, and the quality gate's newest answer did not pass it: choose where it goes",
+		"learning refused it",
 	},
 	{CauseBelowFloor, "the quality gate guessed fleet, or its guess fell below its floor", "fleet guess, or below its floor"},
 	{
@@ -1050,6 +1057,9 @@ type Placement struct {
 	// decision keeps both, and the read decision after it neither.
 	Presented      *store.Presented
 	DecidedAfterMS *int64
+	// Unmarked keeps a drop for low quality from writing the low-quality mark,
+	// for a caller that may not write marks.
+	Unmarked bool
 }
 
 // NotDeclaredError is a placement naming a destination that the set in force
@@ -1193,7 +1203,7 @@ func Place(ctx context.Context, tx *store.Tx, key string, p Placement) ([]store.
 	switch {
 	case err != nil:
 		return nil, err
-	case p.Destination == "" && p.Cause == CauseLowQuality:
+	case p.Destination == "" && p.Cause == CauseLowQuality && !p.Unmarked:
 		_, _, err = gatetrust.Mark(ctx, tx, key, gatetrust.Marking{Mark: gatetrust.MarkLowQuality, DecidedBy: side.DecidedBy, ClientID: p.ClientID})
 	case sided && p.Destination != "" && gateDropped(held):
 		_, err = gatetrust.Disagree(ctx, tx, key, side.DecidedBy, p.ClientID)

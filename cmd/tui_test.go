@@ -115,8 +115,9 @@ func TestTheReviewTabShowsTheGatesAnswerAndDecidesByKey(t *testing.T) {
 		snap.Items[0].Group != "reason/"+store.ReasonQualityReview || len(snap.Items[0].Item.QualityAnswer) == 0 {
 		t.Fatalf("the snapshot lists %s, want both saves under the gate's review, the drop first from r/golang with its answer", jsonOf(snap.Items))
 	}
-	if len(snap.NoteChoices) != 5 || snap.NoteChoices[2].Key != "3" || snap.NoteChoices[2].Choice != route.ChoiceSuggestion {
-		t.Errorf("the note's menu is %s, want the five placing choices keyed 1 to 5, suggestion third", jsonOf(snap.NoteChoices))
+	if len(snap.NoteChoices) != 7 || snap.NoteChoices[2].Key != "3" || text(snap.NoteChoices[2].Choice) != route.ChoiceSuggestion ||
+		text(snap.NoteChoices[5].Destination) != "reading-list" || text(snap.NoteChoices[6].Destination) != "dropped" {
+		t.Errorf("the note's menu is %s, want the five placing choices keyed 1 to 5, suggestion third, then reading-list and dropped, which no choice reaches", jsonOf(snap.NoteChoices))
 	}
 	keyed := map[string]string{}
 	for _, c := range snap.Choices {
@@ -189,11 +190,11 @@ func TestTheReviewTabShowsTheGatesAnswerAndDecidesByKey(t *testing.T) {
 		t.Fatalf("after the drop the cursor is on %q, want the next waiting save", m.Cursor())
 	}
 	runKey(t, m, letter('n'))
-	runKey(t, m, letter('3'))
-	if _, side, read := p.decisions(t, "reddit/t3_cc3"); side.Verdict != connectors.SideFleet || side.Destination == nil || *side.Destination != "work-inbox" ||
-		side.Note == nil || *side.Note != "why save this?" || read.Verdict != connectors.ReadModel ||
+	runKey(t, m, letter('6'))
+	if _, side, read := p.decisions(t, "reddit/t3_cc3"); side.Verdict != connectors.SidePersonal || text(side.Destination) != "reading-list" ||
+		side.Note == nil || *side.Note != "why save this?" || read.Verdict != connectors.ReadAsIs ||
 		side.Presented == nil || side.Presented.Position != 1 || side.Presented.Shown != 1 || side.DecidedAfterMS == nil || read.Presented != nil {
-		t.Errorf("after n, a note and 3 the save holds %+v and read %+v, want the person's placement on work-inbox with the note and its card, read by a model", side, read)
+		t.Errorf("after n, a note and 6 the save holds %+v and read %+v, want the person's placement on reading-list, which no choice reaches, with the note and its card", side, read)
 	}
 	if left := board.Snapshot(time.Now()).Items; len(left) != 0 {
 		t.Errorf("after both decisions the tab still lists %s", jsonOf(left))

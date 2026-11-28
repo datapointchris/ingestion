@@ -12,8 +12,8 @@ import (
 	"github.com/datapointchris/ingestion/store"
 )
 
-// The choices that review offers a person for an item that waits on them. The first five place it
-// on a destination. Archive keeps its record with no destination, and drop drops it.
+// The choices that review offers a person for an item that waits on them. A choice with a Side
+// places it on a destination. Archive keeps its record with no destination, and drop drops it.
 const (
 	ChoiceArticles   = "articles"
 	ChoiceLearning   = "learning"
@@ -34,8 +34,8 @@ const (
 	WatchDeliverer    = "ypl-watch"
 )
 
-// PsycheDestination is the destination that the psyche choice places an item on, the one that a
-// push to psyche names.
+// PsycheDestination is the destination that the psyche choice and a push to psyche place an item
+// on.
 const PsycheDestination = "psyche"
 
 // Choice is what one of review's choices does with an item. A placing choice puts it on Side, on the
@@ -185,8 +185,8 @@ var ErrUnknownChoice = errors.New("the choice is none that places an item")
 
 // Choose appends a person's pick of the item under key by p's choice: its side decision on the
 // choice's destination, under the cause the person named or unstated, and its read decision, decided
-// by the person under the choice's name. Articles, learning, watch and psyche read it as is, so no
-// model reads it, whatever the quality gate answered. A suggestion reads it by a model under the
+// by the person under the choice's name. A choice whose Read is as-is reads it as is, so no model
+// reads it, whatever the quality gate answered. A suggestion reads it by a model under the
 // fleet lens, after a note's draft, and takes a draft already done. Watch keeps the playlist on its
 // side decision for the delivery, and a watch whose item's delivery already holds another playlist
 // is refused, since a delivery adds the video to one. A pick that repeats the newest side decision,
@@ -273,13 +273,14 @@ const (
 var Likes = []string{LikedChannel, LikedTheme, LikedThisItem}
 
 // Archival is a person's archive of an item: done, such as a video watched elsewhere. Liked is what
-// they liked, one of Likes, or empty where they named none. Login, ClientID, Presented and
-// DecidedAfterMS are a Placement's.
+// they liked, one of Likes, or empty where they named none. Login, ClientID, Presented,
+// DecidedAfterMS and Unmarked are a Placement's, and Unmarked keeps the read mark unwritten.
 type Archival struct {
 	Liked           string
 	Login, ClientID string
 	Presented       *store.Presented
 	DecidedAfterMS  *int64
+	Unmarked        bool
 }
 
 // ErrUnknownLike is an archive naming a like that is none of Likes.
@@ -288,8 +289,9 @@ var ErrUnknownLike = errors.New("the like is none that an archive names")
 // Archive appends a person's archive of the item under key: its side decision on the personal side
 // with no destination, under the like as its cause, or unstated, and its read decision, verdict
 // archive, so nothing reads or delivers it. It then writes the person's read mark, which teaches the
-// quality gate as the mark does. An archive that repeats the newest side decision appends nothing.
-// It answers store.ErrNoItem, a ChapterError and ErrUnknownLike.
+// quality gate as the mark does, unless the archival is Unmarked. An archive that repeats the
+// newest side decision appends nothing. It answers store.ErrNoItem, a ChapterError and
+// ErrUnknownLike.
 func Archive(ctx context.Context, tx *store.Tx, key string, a Archival) ([]store.Decision, error) {
 	if a.Liked != "" && !slices.Contains(Likes, a.Liked) {
 		return nil, fmt.Errorf("%q: %w, which are %s", a.Liked, ErrUnknownLike, strings.Join(Likes, ", "))
@@ -307,8 +309,8 @@ func Archive(ctx context.Context, tx *store.Tx, key string, a Archival) ([]store
 	}
 	read := store.Decision{Gate: store.GateRead, Verdict: store.VerdictArchive, DecidedBy: side.DecidedBy, Cause: ChoiceArchive, ClientID: side.ClientID}
 	made, err := decide(ctx, tx, key, side, set, nil, nil, &read)
-	if err != nil {
-		return nil, err
+	if err != nil || a.Unmarked {
+		return made, err
 	}
 	_, _, err = gatetrust.Mark(ctx, tx, key, gatetrust.Marking{Mark: gatetrust.MarkRead, DecidedBy: side.DecidedBy, ClientID: a.ClientID})
 	return made, err

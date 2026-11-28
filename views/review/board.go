@@ -65,6 +65,7 @@ const (
 type held struct {
 	at, readFrom time.Time
 	choices      []server.ReviewChoice
+	destinations []server.ReviewDestination
 	watchDefault *string
 	items        []item
 	index        map[string]int
@@ -176,7 +177,7 @@ func (b *Board) readQueue(ctx context.Context) (held, string, error) {
 	}
 	b.queueErr.Store(nil)
 	h := held{
-		at: time.Now(), readFrom: readFrom, choices: answer.Choices, watchDefault: answer.WatchDefaultPlaylist,
+		at: time.Now(), readFrom: readFrom, choices: answer.Choices, destinations: answer.Destinations, watchDefault: answer.WatchDefaultPlaylist,
 		index: make(map[string]int, len(answer.Items)),
 	}
 	for i, it := range answer.Items {

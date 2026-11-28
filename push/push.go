@@ -17,14 +17,17 @@ import (
 
 	"github.com/datapointchris/ingestion/modelread"
 	"github.com/datapointchris/ingestion/qualitygate"
+	"github.com/datapointchris/ingestion/route"
 	"github.com/datapointchris/ingestion/scan"
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
 )
 
-// Program is the program that a push to psyche runs, found on PATH. A link
-// that a push lands is placed at the destination of the same name.
+// Program is the program that a push to psyche runs, found on PATH.
 const Program = "psyche"
+
+// Destination is the destination that a link a push lands is placed at.
+const Destination = route.PsycheDestination
 
 // Connector is the push connector that a new link lands through, where the
 // push names no other.

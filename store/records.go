@@ -538,7 +538,9 @@ func (d Decision) Provisional() bool {
 // to review. The gates sent it there where an earlier side decision was a
 // review, or where the quality gate's review came before the placement. A
 // placement that no review came before labels nothing, as one made before the
-// gates ran, or one carried over from a judgment made elsewhere.
+// gates ran, or one carried over from a judgment made elsewhere. An archive
+// labels nothing either. It says the item is done rather than which side it
+// belongs on, and its read mark carries the person's word.
 func ReviewPlacement(decisions []Decision) (Decision, bool) {
 	var placement Decision
 	sided := false
@@ -547,13 +549,21 @@ func ReviewPlacement(decisions []Decision) (Decision, bool) {
 			placement, sided = d, true
 		}
 	}
-	if !sided || !placement.ByPerson() {
+	if !sided || !placement.ByPerson() || archives(decisions, placement) {
 		return Decision{}, false
 	}
 	if _, ok := ReviewBefore(decisions, placement); !ok {
 		return Decision{}, false
 	}
 	return placement, true
+}
+
+// archives says whether side came with a read decision of verdict archive by
+// the same person in the same write, as an archive writes the two.
+func archives(decisions []Decision, side Decision) bool {
+	return slices.ContainsFunc(decisions, func(d Decision) bool {
+		return d.Gate == GateRead && d.Verdict == VerdictArchive && d.DecidedTS == side.DecidedTS && d.DecidedBy == side.DecidedBy
+	})
 }
 
 // ReviewBefore is the review among decisions that sent the item to the person

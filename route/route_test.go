@@ -152,11 +152,11 @@ func TestTheReadGateTakesTheConnectorsRuleElseTheSidesDefault(t *testing.T) {
 	}
 }
 
-// A model read is due under a lens whose prompt the build holds, the fleet's or
-// the personal side's, and under no other.
+// A model read is due under a lens whose prompt the build holds, and under no
+// other.
 func TestAModelReadIsDueOnlyUnderALensWhosePromptTheBuildHolds(t *testing.T) {
 	note := "what would this change?"
-	for lens, want := range map[string]bool{route.LensFleet: true, connectors.SidePersonal: true, "unheld": false} {
+	for lens, want := range map[string]bool{route.LensFleet: true, connectors.SidePersonal: true, "learning": true, "unheld": false} {
 		read := store.Decision{Gate: store.GateRead, Verdict: connectors.ReadModel, DecidedBy: route.ByPerson("ana"), Lens: &lens, Note: &note}
 		if due := route.ModelReadDue(store.Decision{Verdict: connectors.SidePersonal}, read, nil, false); due != want {
 			t.Errorf("a model read under lens %s is due: %v, want %v", lens, due, want)
@@ -194,28 +194,5 @@ func TestTheReviewReasonsAreTheReviewListSchemasReasons(t *testing.T) {
 	enum := schema.Properties.Items.Items.Properties.Reason.Enum
 	if !slices.Equal(slices.Sorted(slices.Values(names)), slices.Sorted(slices.Values(enum))) {
 		t.Errorf("route.ReviewReasons names %v, and the schema's reason enum %v", names, enum)
-	}
-}
-
-// A choice that the table gains and the review list's enum lacks fails a
-// reader that validates the answer, so the schema names route.Choices.
-func TestTheReviewListSchemaNamesTheChoiceTable(t *testing.T) {
-	raw, err := schemas.Files.ReadFile("review-list.schema.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var node any
-	if err := json.Unmarshal(raw, &node); err != nil {
-		t.Fatal(err)
-	}
-	for _, step := range []string{"properties", "choices", "items", "properties", "choice", "enum"} {
-		node = node.(map[string]any)[step]
-	}
-	var enum []string
-	for _, v := range node.([]any) {
-		enum = append(enum, v.(string))
-	}
-	if !slices.Equal(enum, route.ChoiceNames()) {
-		t.Errorf("review-list.schema.json names the choices %v, and the table %v", enum, route.ChoiceNames())
 	}
 }

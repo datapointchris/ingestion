@@ -73,9 +73,8 @@ const (
 type ChoiceBinding struct{ Key, Footer string }
 
 // ChoiceBindings is the binding of each of route.Choices, which a test holds to route.Choices. Each
-// placing choice and archive takes an uppercase key, since every fleet TUI keeps the lowercase
-// letters it would take: f the summaries, p the panel, t going to what the row names. E is Gmail's
-// archive.
+// placing choice and archive takes an uppercase key, so it never takes a lowercase key that
+// gotermboard binds on every board. E is Gmail's archive.
 var ChoiceBindings = map[string]ChoiceBinding{
 	route.ChoiceArticles:   {Key: "A", Footer: "articles"},
 	route.ChoiceLearning:   {Key: "L", Footer: "learning"},
@@ -114,53 +113,97 @@ func queuedChoice(h held, name string) (server.ReviewChoice, string) {
 	return h.choices[i], ""
 }
 
-// noteChoices is each choice in the queue's read that places an item, in order, which the note's
-// menu numbers from 1.
-func noteChoices(h held) []server.ReviewChoice {
-	var out []server.ReviewChoice
+// noteEntry is one place that the note's menu numbers: a choice that places an item, or a
+// destination of the set in force that no such choice reaches, which the placement names.
+type noteEntry struct {
+	choice      *server.ReviewChoice
+	destination *server.ReviewDestination
+}
+
+// name is the entry as the menu and the snapshot name it.
+func (e noteEntry) name() string {
+	if e.choice != nil {
+		return e.choice.Choice
+	}
+	return e.destination.Name
+}
+
+// noteEntries is each choice in the queue's read that places an item, in order, then each
+// destination that none of them reaches, which the note's menu numbers from 1 to 9.
+func noteEntries(h held) []noteEntry {
+	var out []noteEntry
+	reached := map[string]bool{}
 	for _, c := range h.choices {
 		if r, ok := route.ChoiceOf(c.Choice); ok && r.Places() {
-			out = append(out, c)
+			out = append(out, noteEntry{choice: &c})
+			if c.Destination != nil {
+				reached[*c.Destination] = true
+			}
 		}
 	}
-	return out
+	for _, d := range h.destinations {
+		if !reached[d.Name] {
+			out = append(out, noteEntry{destination: &d})
+		}
+	}
+	return out[:min(len(out), 9)]
 }
 
 // pick places it by choice, with a note where one was written. A watch first asks which playlist.
-// A psyche pick also hands the terminal to psyche relate on this machine while the placement is
-// sent, since the relate reads the item's parse rather than its placement.
+// A psyche pick hands the terminal to psyche relate on this machine once the placement lands, and
+// relates nothing where it does not.
 func (b *Board) pick(m *gotermboard.Model, it item, choice server.ReviewChoice, note *string, noteFile string) tea.Cmd {
 	if choice.Playlist {
 		return b.watch(m, it, choice.Choice, note, noteFile, b.queue.Value().watchDefault)
 	}
-	write := b.placeWrite(m, it, choice.Choice, "", note, noteFile)
 	if !choice.RunsHere {
-		return write
+		return b.placeWrite(m, it, server.PlaceRequest{Choice: choice.Choice, Note: note}, noteFile, nil)
 	}
+	landed := make(chan bool, 1)
+	write := b.placeWrite(m, it, server.PlaceRequest{Choice: choice.Choice, Note: note}, noteFile, landed)
 	key := it.Key
-	return tea.Batch(write, b.outside.HandOver(m, b.service.Relate(b.ctx, key), func(m *gotermboard.Model, err error, stderr []byte) tea.Cmd {
-		if err != nil {
-			m.Say("the relate of " + outsider(key) + " failed: " + gotermboard.LastLine(stderr, err) + ". `ingestion push " + key + " --to psyche --relate` runs it again")
-		} else {
-			m.Say("related " + outsider(key) + " in psyche")
+	relate := func() tea.Msg {
+		select {
+		case ok := <-landed:
+			if !ok {
+				return nil
+			}
+		case <-b.ctx.Done():
+			return nil
 		}
-		return nil
-	}))
+		return b.outside.HandOver(m, b.service.Relate(b.ctx, key), func(m *gotermboard.Model, err error, stderr []byte) tea.Cmd {
+			if err != nil {
+				m.Say("the relate of " + outsider(key) + " failed: " + gotermboard.LastLine(stderr, err) + ". `ingestion push " + key + " --to psyche --relate` runs it again")
+			} else {
+				m.Say("related " + outsider(key) + " in psyche")
+			}
+			return nil
+		})()
+	}
+	return tea.Batch(write, relate)
 }
 
-// placeWrite places it by choice, a watch into playlist where it names one, with a note where one
-// was written. A note's file goes once the placement lands, and stays, named in the error, where it
-// does not.
-func (b *Board) placeWrite(m *gotermboard.Model, it item, choice, playlist string, note *string, noteFile string) tea.Cmd {
+// placeWrite sends body, the placement of it, with the card as presented. A note's file goes once
+// the placement lands, and stays, named in the error, where it does not. Where landed is not nil,
+// it carries whether the placement landed, and a failure says that nothing went to psyche.
+func (b *Board) placeWrite(m *gotermboard.Model, it item, body server.PlaceRequest, noteFile string, landed chan<- bool) tea.Cmd {
 	key := it.Key
-	body := server.PlaceRequest{Choice: choice, Playlist: playlist, Note: note}
 	body.Presented, body.DecidedAfterMS = b.presented(m, key, time.Now())
-	doing := "placing " + key + " by " + choice
-	if playlist != "" {
-		doing += " into " + playlist
+	doing := "placing " + key + " by " + body.Choice
+	switch {
+	case body.Destination != "":
+		doing = "placing " + key + " on " + body.Destination
+	case body.Playlist != "":
+		doing += " into " + body.Playlist
 	}
 	return b.writeRow(m, key, doing, func() (string, error) {
 		said, err := b.service.Place(b.ctx, key, body)
+		if landed != nil {
+			landed <- err == nil
+			if err != nil {
+				err = fmt.Errorf("%w; nothing went to psyche", err)
+			}
+		}
 		if noteFile == "" {
 			return said, err
 		}
@@ -210,7 +253,7 @@ func (b *Board) watch(m *gotermboard.Model, it item, choice string, note *string
 				m.Say("no playlist named, and the service names no default, so nothing was placed")
 				return nil
 			}
-			return b.placeWrite(m, it, choice, playlist, note, noteFile)
+			return b.placeWrite(m, it, server.PlaceRequest{Choice: choice, Playlist: playlist, Note: note}, noteFile, nil)
 		},
 	})
 	return nil
@@ -371,10 +414,10 @@ func causesOf(it item) []cause {
 }
 
 // note hands the terminal to the person's editor on a file for the note, then asks by its digit
-// the choice that places the item with the note. A note that is not placed stays in its file, and
-// the footer names the file.
+// the choice or destination that places the item with the note. A note that is not placed stays in
+// its file, and the footer names the file.
 func (b *Board) note(m *gotermboard.Model, it item) tea.Cmd {
-	placing := noteChoices(b.queue.Value())
+	placing := noteEntries(b.queue.Value())
 	if len(placing) == 0 {
 		_, why := queuedChoice(b.queue.Value(), route.ChoiceArticles)
 		m.Say(cmp.Or(why, "the service names no choice that places, so a note places nothing"))
@@ -403,8 +446,14 @@ func (b *Board) note(m *gotermboard.Model, it item) tea.Cmd {
 			return nil
 		}
 		var choices []gotermboard.Choice
-		for i, c := range placing {
-			choices = append(choices, gotermboard.Choice{Key: strconv.Itoa(i + 1), Label: choiceLabel(c, b.queue.Value().watchDefault)})
+		for i, e := range placing {
+			var label string
+			if e.choice != nil {
+				label = choiceLabel(*e.choice, b.queue.Value().watchDefault)
+			} else {
+				label = destinationLabel(*e.destination)
+			}
+			choices = append(choices, gotermboard.Choice{Key: strconv.Itoa(i + 1), Label: label})
 		}
 		m.Ask(gotermboard.Question{
 			Text: "place " + outsider(it.Key) + " with the note by:", Choices: choices,
@@ -414,12 +463,15 @@ func (b *Board) note(m *gotermboard.Model, it item) tea.Cmd {
 			},
 			Answer: func(picked string) tea.Cmd {
 				n, _ := strconv.Atoi(picked)
-				c := placing[n-1]
-				if c.Missing != nil {
-					m.Say(*c.Missing + "; the note is kept at " + path)
+				e := placing[n-1]
+				switch {
+				case e.destination != nil:
+					return b.placeWrite(m, it, server.PlaceRequest{Destination: e.destination.Name, Note: &note}, path, nil)
+				case e.choice.Missing != nil:
+					m.Say(*e.choice.Missing + "; the note is kept at " + path)
 					return nil
 				}
-				return b.pick(m, it, c, &note, path)
+				return b.pick(m, it, *e.choice, &note, path)
 			},
 		})
 		return nil

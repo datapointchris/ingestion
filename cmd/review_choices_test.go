@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/datapointchris/ingestion/accuracy"
 	"github.com/datapointchris/ingestion/connectors"
 	"github.com/datapointchris/ingestion/deliver"
 	"github.com/datapointchris/ingestion/extract"
@@ -17,7 +18,6 @@ import (
 	"github.com/datapointchris/ingestion/route"
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
-	"github.com/datapointchris/ingestion/views/review"
 	"github.com/datapointchris/ingestion/ypl"
 )
 
@@ -64,7 +64,7 @@ func choiceSet(t *testing.T) string {
 //     liked as its cause and the read mark
 //   - a drop for low quality keeps its cause and writes the low-quality mark
 //
-// Then the TUI draws one tab, whose bar gives each choice its key and line.
+// Each placement and the drop then label the gate's agreement, and the archive labels nothing.
 func TestEachReviewChoiceReachesWhatItNames(t *testing.T) {
 	stand, api := newStandInYPL(t)
 	videos := []string{"articlevid1", "learndrop01", "suggestvid1", "watchvid001", "psychevid01", "archivevid1", "dropvideo01"}
@@ -234,22 +234,10 @@ func TestEachReviewChoiceReachesWhatItNames(t *testing.T) {
 			side, marks("dropvideo01", gatetrust.MarkLowQuality))
 	}
 
-	t.Setenv("COLUMNS", "160")
-	t.Setenv("LINES", "60")
-	frame, err := runCLI(t, "tui", "--once", "--config", p.config)
-	if err != nil {
-		t.Fatalf("the review tab drew no frame: %v\n%s", err, frame)
-	}
-	for _, c := range route.Choices {
-		if line := review.ChoiceBindings[c.Name].Key + " " + c.Name; !strings.Contains(frame, line) || !strings.Contains(frame, c.Help) {
-			t.Errorf("the frame names no %q with its line %q:\n%s", line, c.Help, frame)
-		}
-	}
-	if strings.Contains(frame, "shelf") {
-		t.Errorf("the frame names the shelf:\n%s", frame)
-	}
-	if out, err := runCLI(t, "tui", "--view", "shelf", "--once", "--config", p.config); err == nil {
-		t.Errorf("tui --view shelf printed %q, want it refused", out)
+	out, err = runCLI(t, "gates", "agreement", "--json", "--config", p.config)
+	var agreement accuracy.Report
+	if err != nil || json.Unmarshal([]byte(out), &agreement) != nil || agreement.Labels.Items != len(videos)-1 || agreement.Labels.Drop != 1 {
+		t.Errorf("gates agreement labeled %+v, %v, want each choice's item but the archive's, one of them a drop", agreement.Labels, err)
 	}
 }
 
