@@ -27,6 +27,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/datapointchris/ingestion/itemflow"
 	"github.com/datapointchris/ingestion/modelport"
 	"github.com/datapointchris/ingestion/prompts"
 	"github.com/datapointchris/ingestion/server"
@@ -102,8 +103,12 @@ func (h handler) Capability() string { return h.stage.Name }
 // Run answers the stage on the task's item. Where the prompt in force already
 // dispatched a run that has not answered, it reads that run. Where that run
 // failed, the task runs again only once `tasks retry` queues it, and it
-// dispatches again under a key that names the failed dispatch.
+// dispatches again under a key that names the failed dispatch. Each call for
+// an item runs in the item's flow.
 func (h handler) Run(ctx context.Context, task worker.Task) worker.Result {
+	if task.ItemKey != nil {
+		ctx = itemflow.Join(ctx, task.FlowID, *task.ItemKey)
+	}
 	log := h.log.With("task", task.ID, "item", deref(task.ItemKey), "stage", h.stage.Name, "adapter", h.port.Adapter())
 	if task.ProposalID != nil {
 		log = log.With("proposal", *task.ProposalID)

@@ -12,7 +12,8 @@
 // deliverer that its config opens through Handler, and claims only those
 // deliverers' tasks. The service then records how each write ended, and never
 // queues a settled delivery again, because a destination may forget a record
-// it held and save the item twice.
+// it held and save the item twice. Each write runs in the item's flow, so its
+// request carries the item's trace in traceparent and its key in baggage.
 package deliver
 
 import (
@@ -22,6 +23,7 @@ import (
 	"time"
 
 	"github.com/datapointchris/ingestion/connectors"
+	"github.com/datapointchris/ingestion/itemflow"
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
 	"github.com/datapointchris/ingestion/worker"
@@ -173,7 +175,7 @@ func (h handler) Run(ctx context.Context, task worker.Task) worker.Result {
 		reason := "a deliver task names its item and its destination"
 		return worker.Result{Outcome: server.OutcomeFailed, Error: &reason}
 	}
-	o := h.deliverer.Deliver(ctx, Item{
+	o := h.deliverer.Deliver(itemflow.Join(ctx, task.FlowID, *task.ItemKey), Item{
 		Key: *task.ItemKey, Zone: task.Zone, Title: task.Title, URL: task.URL, LandedTS: task.LandedTS, SourceTS: task.SourceTS,
 		Path: task.Path, Chapter: task.Chapter, Playlist: task.Playlist, Attempt: task.Attempts,
 	})

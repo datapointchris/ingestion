@@ -290,7 +290,10 @@ func openDeliverers(ctx context.Context, cfg fileConfig, issuer string, log *slo
 // serviceHTTPClient is the HTTP client that carries the token of the service
 // client that table names: the token its token_command prints, or a
 // client-credentials token for its client_id, whose secret is in the
-// variable secretEnv.
+// variable secretEnv. Each request sends the trace and baggage that its
+// context carries, so a call made in an item's flow names the item's trace
+// and key. Its token requests go through a client of their own, which sends
+// neither.
 func serviceHTTPClient(ctx context.Context, table serviceClient, secretEnv, issuer string, scopes []string) (*http.Client, error) {
 	if table.API == "" {
 		return nil, errors.New("it names no api")
@@ -318,7 +321,9 @@ func serviceHTTPClient(ctx context.Context, table serviceClient, secretEnv, issu
 	if err != nil {
 		return nil, err
 	}
-	return oauth2.NewClient(ctx, source), nil
+	client := oauth2.NewClient(ctx, source)
+	client.Transport = goclikit.TraceForwardingTransport(client.Transport)
+	return client, nil
 }
 
 var workerCmd = &cobra.Command{

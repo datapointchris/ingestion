@@ -74,8 +74,12 @@ type SlotGroup struct {
 // own. A refresh of a source's metrics names its source, and its capability
 // is refresh-metrics:<source>.
 type LeasedTask struct {
-	ID             string  `json:"id"`
-	ItemKey        *string `json:"item_key"`
+	ID      string  `json:"id"`
+	ItemKey *string `json:"item_key"`
+	// FlowID is the flow of the task's item, a W3C trace id, which each call
+	// that the task makes for the item carries in its traceparent. A task
+	// that names no item carries none.
+	FlowID         string  `json:"flow_id,omitempty"`
 	Connector      *string `json:"connector"`
 	Source         *string `json:"source,omitempty"`
 	Stage          string  `json:"stage"`
@@ -545,7 +549,7 @@ func (h taskHandlers) claim(w http.ResponseWriter, r *http.Request) {
 	answer := ClaimAnswer{Tasks: []LeasedTask{}}
 	for _, t := range tasks {
 		leased := LeasedTask{
-			ID: t.ID, ItemKey: t.ItemKey, Connector: t.Connector, Source: t.Source, Stage: t.Stage, Capability: t.Capability, Attempts: t.Attempts,
+			ID: t.ID, ItemKey: t.ItemKey, FlowID: t.Item.FlowID, Connector: t.Connector, Source: t.Source, Stage: t.Stage, Capability: t.Capability, Attempts: t.Attempts,
 			LeaseToken: *t.LeaseToken, LeaseExpiresTS: *t.LeaseExpiresTS, MediaType: t.Item.MediaType, BlobSHA256: t.Item.BlobSHA256,
 			Zone: t.Item.Zone, Title: t.Item.Title, URL: t.Item.URL, LandedTS: t.Item.CreatedTS, Destination: t.Destination,
 			Model: t.Model, ProposalID: t.ProposalID, WaitedSeconds: waited(t.Task), Keys: keysOf[t.ID],
