@@ -1,15 +1,20 @@
 package extract
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/datapointchris/ingestion/publicweb"
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
 	"github.com/datapointchris/ingestion/worker"
@@ -19,11 +24,16 @@ import (
 // service gave no answer.
 const blobRetry = 30 * time.Second
 
+// pageRetry is how long a parse waits to GET its page again after a refusal
+// that may clear, such as a 503. With ReadAttempts it spans most of an hour.
+const pageRetry = 15 * time.Minute
+
 // Handlers is a worker handler for each extractor of r that reads an item's
 // bytes and runs here: each written in Go, and each whose program is
-// installed. An extractor that ReadsURL runs through its source's handlers,
-// as SourceHandler opens it. A worker claims only these extractors' tasks.
-func (r *Registry) Handlers(client *worker.Client, log *slog.Logger) []worker.Handler {
+// installed. The extractor that FetchesPage GETs a page through pages. An
+// extractor that ReadsURL runs through its source's handlers, as
+// SourceHandler opens it. A worker claims only these extractors' tasks.
+func (r *Registry) Handlers(client *worker.Client, pages publicweb.Reader, log *slog.Logger) []worker.Handler {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -32,7 +42,7 @@ func (r *Registry) Handlers(client *worker.Client, log *slog.Logger) []worker.Ha
 		if e.ReadsURL || !installed(e, log) {
 			continue
 		}
-		out = append(out, handler{extractor: e, client: client})
+		out = append(out, handler{extractor: e, client: client, pages: pages})
 	}
 	return out
 }
@@ -65,10 +75,12 @@ func installed(e Extractor, log *slog.Logger) bool {
 }
 
 // handler runs one extractor's parse tasks: it reads the item's bytes through
-// the service, extracts them, and reports the units.
+// the service, or fetches its page through pages, extracts them, and reports
+// the units.
 type handler struct {
 	extractor Extractor
 	client    *worker.Client
+	pages     publicweb.Reader
 }
 
 func (h handler) Capability() string { return Capability(h.extractor) }
@@ -79,24 +91,39 @@ func (h handler) SlotGroup() (string, int) {
 	return h.extractor.SlotGroup, SlotGroups[h.extractor.SlotGroup]
 }
 
-// Run parses the task's item. A parse that fails, or finds no text, fails
-// its task with the reason kept, so the item waits in review rather than
-// passing a gate on empty text. A blank unit keeps its place where the
-// extractor is positional, and is dropped otherwise.
+// Run parses the task's item. Where the item holds no bytes and the
+// extractor FetchesPage, it first fetches the item's page, and the result
+// names the page that it kept whatever the parse's outcome. A parse that
+// fails, or finds no text, fails its task with the reason kept, so the item
+// waits in review rather than passing a gate on empty text. A blank unit keeps
+// its place where the extractor is positional, and is dropped otherwise.
 func (h handler) Run(ctx context.Context, task worker.Task) worker.Result {
-	if task.BlobSHA256 == nil {
+	var body io.Reader
+	var page *server.ReportPage
+	switch {
+	case task.BlobSHA256 != nil:
+		blob, _, err := h.client.Blob(ctx, *task.BlobSHA256)
+		if err != nil {
+			return h.unreachedService("read the item's bytes", err)
+		}
+		defer func() { _ = blob.Close() }()
+		body = blob
+	case h.extractor.FetchesPage && task.URL != nil:
+		fetched, kept, stopped := h.fetch(ctx, task)
+		if stopped != nil {
+			return *stopped
+		}
+		body, page = bytes.NewReader(fetched), &kept
+	default:
 		return failed(h.extractor, "the item holds no bytes to parse")
 	}
-	body, _, err := h.client.Blob(ctx, *task.BlobSHA256)
-	if err != nil {
-		reason := fmt.Sprintf("read the item's bytes: %v", err)
-		var refused *worker.StatusError
-		if errors.As(err, &refused) && refused.Status != http.StatusTooManyRequests && refused.Status < 500 {
-			return failed(h.extractor, reason)
-		}
-		return worker.Result{Outcome: server.OutcomeRetry, Error: &reason, RetryAfter: blobRetry}
-	}
-	defer func() { _ = body.Close() }()
+	result := h.extract(ctx, body)
+	result.Page = page
+	return result
+}
+
+// extract runs the extractor over body, and reports its parse.
+func (h handler) extract(ctx context.Context, body io.Reader) worker.Result {
 	runCtx, cancel := bounded(ctx, h.extractor)
 	defer cancel()
 	read, err := h.extractor.Extract(runCtx, body)
@@ -107,6 +134,43 @@ func (h handler) Run(ctx context.Context, task worker.Task) worker.Result {
 		return failed(h.extractor, err.Error())
 	}
 	return parsed(h.extractor, read)
+}
+
+// fetch GETs the page at the task's URL through h.pages, and keeps it through
+// the service's blob route. It answers the page's bytes and the page as the
+// report names it, or the result that ends the parse in its place. A refusal
+// that may clear queues the parse again after pageRetry until its claims reach
+// ReadAttempts. Any other refusal fails the parse with the refusal's reason,
+// which never quotes the link or the page.
+func (h handler) fetch(ctx context.Context, task worker.Task) ([]byte, server.ReportPage, *worker.Result) {
+	body, mediaType, refused := h.pages.Read(ctx, *task.URL)
+	if refused != nil {
+		reason := "the page was not fetched: " + refused.Reason
+		if refused.MayClear && task.Attempts < ReadAttempts {
+			return nil, server.ReportPage{}, &worker.Result{Outcome: server.OutcomeRetry, Error: &reason, RetryAfter: pageRetry}
+		}
+		result := failed(h.extractor, reason)
+		return nil, server.ReportPage{}, &result
+	}
+	sum := sha256.Sum256(body)
+	page := server.ReportPage{BlobSHA256: hex.EncodeToString(sum[:]), Title: publicweb.Title(body)}
+	if _, err := h.client.PutBlob(ctx, page.BlobSHA256, mediaType, bytes.NewReader(body)); err != nil {
+		result := h.unreachedService("keep the page", err)
+		return nil, server.ReportPage{}, &result
+	}
+	return body, page, nil
+}
+
+// unreachedService ends a parse whose call to the service, doing what, failed
+// with err. A refusal that a later call would meet again fails the parse, and
+// any other call queues it again after blobRetry.
+func (h handler) unreachedService(what string, err error) worker.Result {
+	reason := fmt.Sprintf("%s: %v", what, err)
+	var refused *worker.StatusError
+	if errors.As(err, &refused) && refused.Status != http.StatusTooManyRequests && refused.Status < 500 {
+		return failed(h.extractor, reason)
+	}
+	return worker.Result{Outcome: server.OutcomeRetry, Error: &reason, RetryAfter: blobRetry}
 }
 
 // readHandler runs the parse tasks of an extractor that ReadsURL: it reads

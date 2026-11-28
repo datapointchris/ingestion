@@ -164,13 +164,23 @@ func redirectedAway(requested, final *url.URL) bool {
 	return landed == "" || strings.HasPrefix(asked, landed+"/")
 }
 
-// challenge says whether page's title names a bot's challenge.
-func challenge(page []byte) bool {
+// Title is the text of page's title element, unescaped with its whitespace
+// collapsed, and "" where the page's opening holds none.
+func Title(page []byte) string {
 	m := titleElement.FindSubmatch(page[:min(len(page), titleWindow)])
 	if m == nil {
+		return ""
+	}
+	return strings.Join(strings.Fields(html.UnescapeString(string(m[1]))), " ")
+}
+
+// challenge says whether page's title names a bot's challenge.
+func challenge(page []byte) bool {
+	title := Title(page)
+	if title == "" {
 		return false
 	}
-	segments := []string{strings.ToLower(html.UnescapeString(string(m[1])))}
+	segments := []string{strings.ToLower(title)}
 	for _, separator := range titleSeparators {
 		var split []string
 		for _, s := range segments {

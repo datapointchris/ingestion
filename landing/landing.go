@@ -525,6 +525,42 @@ func record(ctx context.Context, tx *store.Tx, a Arrival, key string, w *Written
 	return landed, nil
 }
 
+// ErrNoBlob is a fetched page that names bytes whose blob row the store does
+// not hold.
+var ErrNoBlob = errors.New("the store keeps no such blob")
+
+// KeepFetched makes the bytes named sum, which the volume already keeps, the
+// bytes of the item keyed key where it holds none, in tx. A parse that fetched
+// the page of an item that landed no bytes, such as a pushed link, reports
+// them so. title fills the item's title where it holds none. An item that
+// holds bytes already keeps them, as a second landing of it would.
+func KeepFetched(ctx context.Context, tx *store.Tx, key, sum, title string) error {
+	if err := CheckSHA256(sum); err != nil {
+		return fmt.Errorf("%w: %w", ErrNoBlob, err)
+	}
+	if _, ok, err := tx.Blob(ctx, sum); err != nil {
+		return err
+	} else if !ok {
+		return fmt.Errorf("%w: %s", ErrNoBlob, sum)
+	}
+	item, found, err := tx.Item(ctx, key)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("%s: %w", key, store.ErrNoItem)
+	}
+	merged := item
+	merged.BlobSHA256 = fill(merged.BlobSHA256, sum)
+	if title != "" {
+		merged.Title = fill(merged.Title, title)
+	}
+	if reflect.DeepEqual(merged, item) {
+		return nil
+	}
+	return tx.PutItem(ctx, merged)
+}
+
 // raiseChildren makes every item below key at least as strict as zone. A
 // child's zone is derived from its parent's, so a parent that a later sighting
 // made outside leaves no child reading as the owner's words.

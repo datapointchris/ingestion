@@ -30,6 +30,7 @@ import (
 	"github.com/datapointchris/ingestion/extract"
 	"github.com/datapointchris/ingestion/landing"
 	"github.com/datapointchris/ingestion/promptproposal"
+	"github.com/datapointchris/ingestion/publicweb"
 	"github.com/datapointchris/ingestion/redditexport"
 	"github.com/datapointchris/ingestion/route"
 	"github.com/datapointchris/ingestion/schemas"
@@ -132,11 +133,17 @@ func newPipelineOver(t *testing.T, extractors *extract.Registry, after func(*lan
 }
 
 // parse runs every queued parse task through the handlers of extractors, as a
-// worker does, and counts the tasks it ran.
+// worker does, and counts the tasks it ran. No parse fetches a page.
 func (p *pipeline) parse(t *testing.T, extractors *extract.Registry) int {
 	t.Helper()
-	return p.run(t, extractors.Handlers(p.worker, slog.New(slog.NewTextHandler(io.Discard, nil)))...)
+	return p.run(t, extractors.Handlers(p.worker, noPages, slog.New(slog.NewTextHandler(io.Discard, nil)))...)
 }
+
+// noPages is a page reader that reaches no page, for a parse whose item holds
+// its bytes.
+var noPages = publicweb.NewReader(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+	return nil, errors.New("this parse fetches no page")
+})})
 
 // run claims and runs every task that one of handlers holds the capability
 // of, until no claim answers one, and reports each as a worker does. It counts
@@ -164,7 +171,7 @@ func (p *pipeline) run(t *testing.T, workers ...worker.Handler) int {
 			if err := p.worker.Report(ctx, task.ID, server.ReportRequest{
 				Token: task.LeaseToken, Outcome: result.Outcome, Error: result.Error, Wait: result.Wait, Outputs: result.Outputs,
 				RetryAfterSeconds: int(result.RetryAfter.Seconds()), Delivery: result.Delivery, Arrivals: result.Arrivals, Cursor: result.Cursor,
-				Metrics: result.Metrics,
+				Metrics: result.Metrics, Page: result.Page,
 			}); err != nil {
 				t.Fatal(err)
 			}

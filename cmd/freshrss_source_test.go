@@ -193,7 +193,8 @@ func newStandInPages(t *testing.T, refused, unavailableOnce []int) *httptest.Ser
 }
 
 func standInPage(n int) string {
-	return fmt.Sprintf("<!doctype html><html><body><nav>Home</nav><article>\n<p>Page text of test entry %d.</p>\n</article></body></html>", n)
+	return fmt.Sprintf("<!doctype html><html><head><title>Test entry %d | Test site</title></head><body><nav>Home</nav><article>\n"+
+		"<p>Page text of test entry %d.</p>\n</article></body></html>", n, n)
 }
 
 // standInPagesAlone is a transport that reaches pages and nothing else, so a
@@ -220,8 +221,10 @@ func newStandInPoller(api, pages *httptest.Server) freshrss.Poller {
 }
 
 // newFreshRSSPipeline is a pipeline under one freshrss connector, polled
-// hourly, whose parse of a page runs a stand-in for article-trafilatura that
-// writes one unit for each line that holds a paragraph.
+// hourly, and the cli-push connector, which pushes to the destination psyche.
+// Its parse of a page runs a stand-in for article-trafilatura that writes one
+// unit for each line that holds a paragraph, and fetches the page of an item
+// that holds no bytes.
 func newFreshRSSPipeline(t *testing.T) (*pipeline, *extract.Registry) {
 	t.Helper()
 	dir := t.TempDir()
@@ -230,8 +233,9 @@ func newFreshRSSPipeline(t *testing.T) (*pipeline, *extract.Registry) {
 	if err := os.WriteFile(program, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	extractors, err := extract.NewRegistry(extract.Program(extract.ArticleTrafilatura.Name, extract.ArticleTrafilatura.Version,
-		extract.MediaTypeHTML, program))
+	article := extract.Program(extract.ArticleTrafilatura.Name, extract.ArticleTrafilatura.Version, extract.MediaTypeHTML, program)
+	article.FetchesPage = true
+	extractors, err := extract.NewRegistry(article)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,9 +243,14 @@ func newFreshRSSPipeline(t *testing.T) (*pipeline, *extract.Registry) {
 	if err := os.MkdirAll(filepath.Join(dir, "set", "connectors"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	declaration := "name: freshrss\nmode: poll\nsource: freshrss\nzone: outside\nschedule: \"@hourly\"\n"
-	if err := os.WriteFile(filepath.Join(dir, "set", "connectors", "freshrss.yml"), []byte(declaration), 0o600); err != nil {
-		t.Fatal(err)
+	for name, declaration := range map[string]string{
+		"connectors/freshrss.yml": "name: freshrss\nmode: poll\nsource: freshrss\nzone: outside\nschedule: \"@hourly\"\n",
+		"connectors/cli-push.yml": "name: cli-push\nmode: push\nsource: cli-pushes\ndue_interval: 30d\n",
+		"destinations.yml":        "destinations:\n  - name: psyche\n    side: personal\n    push_only: true\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, "set", name), []byte(declaration), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	p.apply(t, filepath.Join(dir, "set"))
 	return p, extractors

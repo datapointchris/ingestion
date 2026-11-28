@@ -17,6 +17,10 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
 	"github.com/datapointchris/ingestion/extract"
+	"github.com/datapointchris/ingestion/freshrss"
+	"github.com/datapointchris/ingestion/itemkey"
+	"github.com/datapointchris/ingestion/polling"
+	"github.com/datapointchris/ingestion/publicweb"
 	"github.com/datapointchris/ingestion/push"
 	"github.com/datapointchris/ingestion/scan"
 	"github.com/datapointchris/ingestion/server"
@@ -368,6 +372,85 @@ func TestAPushOfANewLinkLandsItPlacedAtPsycheAndWaitsForItsScan(t *testing.T) {
 	_, err = runCLI(t, "review", "place", "youtube/pushedvid02", "psyche", "--config", p.config)
 	if code := exitCode(io.Discard, err); code != 2 || !strings.Contains(fmt.Sprint(err), "only a push places an item at psyche") {
 		t.Errorf("a placement from review at psyche exited %d (%v), want 2 naming the push", code, err)
+	}
+}
+
+// A pushed link to a web page lands one outside text/html item under its
+// link's url key, holding no bytes. The worker's parse GETs the page through
+// publicweb, and the service keeps it as the item's bytes and its title as the
+// item's. The same page from a FreshRSS feed adds that feed's sighting to the
+// one item and queues no second parse. A page that refuses its GET fails the
+// parse, and `ingestion push` prints why. A refusal that may clear fetches the
+// page again later.
+func TestAPushedPageLandsOnceAndItsParseFetchesIt(t *testing.T) {
+	stand, api := newStandInFreshRSS(t)
+	pages := newStandInPages(t, []int{6}, []int{8})
+	p, extractors := newFreshRSSPipeline(t)
+	parse := extractors.Handlers(p.worker, publicweb.NewReader(&http.Client{Timeout: 10 * time.Second, Transport: standInPagesAlone(pages)}), quiet)
+	link := func(n int) string { return fmt.Sprintf("%s/post/%d", pages.URL, n) }
+	keyOf := func(n int) string {
+		key, err := itemkey.FromURL(link(n))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return key
+	}
+	pushOf := func(t *testing.T, n int, wait string) error {
+		t.Helper()
+		_, err := runCLI(t, "push", link(n), "--to", "psyche", "--relate", "--wait", wait, "--config", p.config)
+		return err
+	}
+
+	if code := exitCode(io.Discard, pushOf(t, 1, "0")); code != 1 {
+		t.Fatalf("a push of a page with --wait 0 exited %d, want 1 waiting at its parse", code)
+	}
+	landed := p.item(t, keyOf(1)).Item
+	if landed.MediaType != extract.MediaTypeHTML || landed.Zone != store.Outside || landed.BlobSHA256 != nil || landed.URL == nil || *landed.URL != link(1) {
+		t.Errorf("the pushed page landed as %s, want an outside text/html item under its link with no bytes", jsonOf(landed))
+	}
+	if ran := p.run(t, parse...); ran != 1 {
+		t.Fatalf("%d parses ran, want the pushed page's", ran)
+	}
+	fetched := p.item(t, keyOf(1)).Item
+	if p.blobText(t, fetched.BlobSHA256) != standInPage(1) || fetched.Title == nil || *fetched.Title != "Test entry 1 | Test site" {
+		t.Errorf("the parse kept %s, want the page as the item's bytes and its title as the item's", jsonOf(fetched))
+	}
+	if parsed := p.readParse(t, keyOf(1), ""); parsed.Extractor != extract.ArticleTrafilatura.Name || len(parsed.Units) != 1 ||
+		parsed.Units[0].Text != "Page text of test entry 1." {
+		t.Errorf("the page parsed as %s, want article-trafilatura's one paragraph", jsonOf(parsed))
+	}
+
+	poll := &recording{Handler: polling.Handler(freshrss.Source, newStandInPoller(api, pages), p.worker, quiet)}
+	stand.add(pages, time.Now().Add(-2*time.Hour), "Uncategorized", 2)
+	p.runConnector(t, "freshrss")
+	p.run(t, poll)
+	stand.add(pages, time.Now().Add(-time.Hour), "Uncategorized", 1)
+	p.runConnector(t, "freshrss")
+	p.run(t, poll)
+	if got := poll.landedKeys(t); !slices.Equal(got, []string{keyOf(1)}) {
+		t.Fatalf("the feed's poll landed %q, want the pushed page's key", got)
+	}
+	if n := p.count(t, `SELECT count(*) FROM sightings WHERE item_key = ? AND connector IN ('cli-push', 'freshrss')`, keyOf(1)); n != 2 ||
+		p.count(t, `SELECT count(*) FROM tasks WHERE item_key = ? AND stage = 'parse'`, keyOf(1)) != 1 {
+		t.Errorf("the page holds %d of the push's and the feed's sightings, want both on one item with one parse", n)
+	}
+
+	_ = pushOf(t, 6, "0")
+	if ran := p.run(t, parse...); ran != 1 {
+		t.Fatalf("%d parses ran, want the refused page's", ran)
+	}
+	err := pushOf(t, 6, "30s")
+	if code := exitCode(io.Discard, err); code != 1 || !strings.Contains(fmt.Sprint(err), "parse failed: the page was not fetched: HTTP 403") {
+		t.Errorf("a push of a page that answered 403 exited %d (%v), want 1 naming the refusal", code, err)
+	}
+
+	_ = pushOf(t, 8, "0")
+	if ran := p.run(t, parse...); ran != 1 || p.item(t, keyOf(8)).Item.BlobSHA256 != nil {
+		t.Fatalf("%d parses ran on a page that answered 503, want one that kept nothing", ran)
+	}
+	p.advance(15*time.Minute + time.Second)
+	if ran := p.run(t, parse...); ran != 1 || p.blobText(t, p.item(t, keyOf(8)).Item.BlobSHA256) != standInPage(8) {
+		t.Errorf("%d parses ran once the 503's wait passed, want one that kept the page", ran)
 	}
 }
 

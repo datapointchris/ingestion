@@ -35,6 +35,7 @@ import (
 	"github.com/datapointchris/ingestion/polling"
 	"github.com/datapointchris/ingestion/promptproposal"
 	"github.com/datapointchris/ingestion/prompts"
+	"github.com/datapointchris/ingestion/publicweb"
 	"github.com/datapointchris/ingestion/qualitygate"
 	"github.com/datapointchris/ingestion/scan"
 	"github.com/datapointchris/ingestion/sections"
@@ -62,7 +63,7 @@ const (
 func workerHandlers(client *worker.Client, deliverers map[string]deliver.Deliverer, opened openedSources,
 	port modelport.Port, scanner *scan.Scanner, contexts lens.Readers, models modelConfig, log *slog.Logger,
 ) []worker.Handler {
-	handlers := extract.Builtin().Handlers(client, log)
+	handlers := extract.Builtin().Handlers(client, publicweb.NewReader(publicweb.Client()), log)
 	if structure := sections.NewHandler(sections.Program, client, log); structure != nil {
 		handlers = append(handlers, structure)
 	}

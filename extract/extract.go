@@ -164,6 +164,13 @@ type Extractor struct {
 	// the item's key, as its poll lands it. An extractor with a LinkKind sets
 	// it, so an item's URL is the same whichever connector landed it first.
 	LinkURL func(id string) string
+	// FetchesPage marks the extractor of a web page whose parse, where its
+	// item holds no bytes, GETs the page at the item's URL through publicweb
+	// and keeps it as the item's bytes before reading it. A pushed link that
+	// keys as a url lands as its media type with no bytes, so the service
+	// stores only the page that it fetched. Only one primary extractor that
+	// reads bytes sets it.
+	FetchesPage bool
 }
 
 // Unit is one part of a parse, as an extractor writes it. The parse numbers
@@ -185,15 +192,18 @@ func Capability(e Extractor) string { return store.StageParse + ":" + e.Name }
 type Registry struct {
 	byType map[string]Extractor
 	byLink map[string]Extractor
-	all    []Extractor
+	// page is the extractor that FetchesPage, and nil where none does.
+	page *Extractor
+	all  []Extractor
 }
 
 // NewRegistry registers extractors. It refuses one with no name, version,
 // media type or way to run, two of one name, two primary ones of one media
 // type or one link kind, and one that defers to an extractor it does not hold
 // as secondary. It refuses a link kind on an extractor that is secondary or
-// reads bytes. It refuses a slot group that SlotGroups does not hold, and a
-// SlotLimit beside a slot group, whose limit is the group's.
+// reads bytes, and a page fetch on one that is secondary or reads its item at
+// its source, or beside another. It refuses a slot group that SlotGroups does
+// not hold, and a SlotLimit beside a slot group, whose limit is the group's.
 func NewRegistry(extractors ...Extractor) (*Registry, error) {
 	r := &Registry{byType: map[string]Extractor{}, byLink: map[string]Extractor{}}
 	names := map[string]bool{}
@@ -213,9 +223,16 @@ func NewRegistry(extractors ...Extractor) (*Registry, error) {
 			return nil, fmt.Errorf("extractor %s runs in slot group %s, so it sets no SlotLimit of its own", e.Name, e.SlotGroup)
 		case e.LinkKind != "" && (e.Secondary || !e.ReadsURL || e.LinkURL == nil):
 			return nil, fmt.Errorf("extractor %s reads %s links, so it is primary, reads its item at its source and sets LinkURL", e.Name, e.LinkKind)
+		case e.FetchesPage && (e.Secondary || e.ReadsURL):
+			return nil, fmt.Errorf("extractor %s fetches a page that it keeps as its item's bytes, so it is primary and reads bytes", e.Name)
+		case e.FetchesPage && r.page != nil:
+			return nil, fmt.Errorf("extractors %s and %s both fetch pages", r.page.Name, e.Name)
 		}
 		names[e.Name] = true
 		r.all = append(r.all, e)
+		if e.FetchesPage {
+			r.page = &e
+		}
 		if e.Secondary {
 			continue
 		}
@@ -275,6 +292,16 @@ func (r *Registry) LinkArrival(key string) (mediaType, link string, ok bool) {
 
 // LinkKinds names, in order, each kind of key whose link an extractor reads.
 func (r *Registry) LinkKinds() []string { return slices.Sorted(maps.Keys(r.byLink)) }
+
+// PageMediaType is the media type that a pushed link to a web page lands as,
+// with no bytes, so that the extractor that FetchesPage GETs the page in its
+// parse. It is false where no extractor fetches pages.
+func (r *Registry) PageMediaType() (string, bool) {
+	if r.page == nil {
+		return "", false
+	}
+	return r.page.MediaType, true
+}
 
 // QueueParse queues a parse task for item where an extractor reads its media
 // type. Landing calls it in the write that adds the item, so every item lands

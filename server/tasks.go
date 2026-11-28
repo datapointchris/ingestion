@@ -37,6 +37,7 @@ var (
 	errBadDelivery             = errors.New("the delivery is not one the store records")
 	errArrivalsOutsideDonePoll = errors.New("only a poll that ends done reports arrivals or a cursor")
 	errMetricsOutsideRefresh   = errors.New("only a refresh of a source's metrics reports metrics")
+	errPageOutsideParse        = errors.New("only an item's parse reports a page that it fetched")
 )
 
 // MaxListed is the most tasks one list answers.
@@ -247,6 +248,17 @@ type ReportRequest struct {
 	Arrivals []ReportArrival `json:"arrivals,omitempty"`
 	Cursor   *string         `json:"cursor,omitempty"`
 	Metrics  []ReportMetrics `json:"metrics,omitempty"`
+	Page     *ReportPage     `json:"page,omitempty"`
+}
+
+// ReportPage is the page that a parse GET at its item's URL, because the item
+// held no bytes, and kept through the blob route before it reported. serve
+// makes it the item's bytes in the write that ends the lease, whatever the
+// parse's outcome, where the item still holds none. Title is the page's title
+// element, which fills an item that holds no title, and is outsider text.
+type ReportPage struct {
+	BlobSHA256 string `json:"blob_sha256"`
+	Title      string `json:"title,omitempty"`
 }
 
 // ReportMetrics is one item's metrics as a refresh read them again at its
@@ -679,6 +691,14 @@ func (h taskHandlers) report(w http.ResponseWriter, r *http.Request) {
 				ended.State, ended.Error = store.TaskFailed, &polled.Failure
 			}
 		}
+		if p := body.Page; p != nil {
+			if task.Stage != store.StageParse || task.ItemKey == nil {
+				return errPageOutsideParse
+			}
+			if err := landing.KeepFetched(r.Context(), tx, *task.ItemKey, p.BlobSHA256, p.Title); err != nil {
+				return err
+			}
+		}
 		for _, o := range body.Outputs {
 			if err := tx.KeepRun(r.Context(), task, o.output(), o.Units); err != nil {
 				return err
@@ -897,8 +917,10 @@ func (h taskHandlers) leaseRefused(w http.ResponseWriter, r *http.Request, err e
 		Refuse(w, http.StatusUnprocessableEntity, CodeInvalidBody, "task %s delivers nothing, so it reports no delivery", r.PathValue("id"))
 	case errors.Is(err, errBadDelivery):
 		Refuse(w, http.StatusUnprocessableEntity, CodeInvalidBody, "%v", err)
-	case errors.Is(err, errArrivalsOutsideDonePoll), errors.Is(err, errMetricsOutsideRefresh):
+	case errors.Is(err, errArrivalsOutsideDonePoll), errors.Is(err, errMetricsOutsideRefresh), errors.Is(err, errPageOutsideParse):
 		Refuse(w, http.StatusUnprocessableEntity, CodeInvalidBody, "task %s: %v", r.PathValue("id"), err)
+	case errors.Is(err, landing.ErrNoBlob):
+		Refuse(w, http.StatusUnprocessableEntity, CodeInvalidBody, "the page names bytes that the service does not keep: %v", err)
 	case errors.Is(err, store.ErrInvalidMetric):
 		Refuse(w, http.StatusUnprocessableEntity, CodeInvalidBody, "%v", err)
 	case errors.Is(err, store.ErrUnitsOutsideParse), errors.Is(err, store.ErrUnitsOutOfOrder):

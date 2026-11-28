@@ -52,6 +52,9 @@ type Result struct {
 	Arrivals []server.ReportArrival
 	Cursor   *string
 	Metrics  []server.ReportMetrics
+	// Page is the page that a parse fetched and kept for an item that held
+	// no bytes, which the service makes the item's bytes.
+	Page *server.ReportPage
 }
 
 // Handler runs the tasks of one capability.
@@ -310,7 +313,7 @@ func runTask(ctx context.Context, client *Client, cfg Config, h Handler, task Ta
 	err := report(ctx, runCtx, client, cfg, log, task, server.ReportRequest{
 		Token: task.LeaseToken, Outcome: result.Outcome, Error: result.Error, Wait: result.Wait,
 		RetryAfterSeconds: int(result.RetryAfter.Seconds()), Outputs: result.Outputs, Delivery: result.Delivery,
-		Arrivals: result.Arrivals, Cursor: result.Cursor, Metrics: result.Metrics,
+		Arrivals: result.Arrivals, Cursor: result.Cursor, Metrics: result.Metrics, Page: result.Page,
 	})
 	switch {
 	case errors.Is(err, ErrStaleLease):

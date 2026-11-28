@@ -31,7 +31,8 @@ const (
 	// Reddit share link.
 	CodeInvalidLink = "invalid_link"
 	// CodeLinkNotRead is a link of a kind that no extractor of this build
-	// reads at its source, so the push stores nothing.
+	// reads at its source, or a page that no extractor fetches, so the push
+	// stores nothing.
 	CodeLinkNotRead = "link_not_read"
 	// CodeMediaNotRead is a body that is neither a JSON link nor the audio of
 	// a memo in a container that store.MemoMediaTypes names.
@@ -99,7 +100,8 @@ func mpegFrame(head []byte) bool {
 }
 
 // LinkExtractors answers whether an extractor reads a pushed link at its
-// source, and as what media type and URL.
+// source, or fetches the web page that it names, and as what media type and
+// URL it lands.
 type LinkExtractors interface {
 	// LinkArrival is the media type and URL that a link keyed key lands with,
 	// and false where no extractor reads such a link.
@@ -107,6 +109,10 @@ type LinkExtractors interface {
 	// LinkKinds names, in order, each kind of key whose link an extractor
 	// reads.
 	LinkKinds() []string
+	// PageMediaType is the media type that a link to a web page lands as,
+	// with no bytes, so that its parse fetches the page. It is false where no
+	// extractor fetches pages.
+	PageMediaType() (string, bool)
 }
 
 // PushRequest is what POST /api/v1/items reads as a link.
@@ -153,11 +159,14 @@ func (h connectorHandlers) push(w http.ResponseWriter, r *http.Request) {
 
 // pushLink lands the link that body names as an outside item under its
 // itemkey, through the push connector that it names. A link lands only where
-// an extractor of this build reads it at its source, because the service
-// stores nothing that it did not fetch that way. Any other link answers 422
-// and stores nothing. A push that names its destination is the person's
-// placement, written in the landing's write, so no gate and no model stage
-// reads the item.
+// an extractor of this build reads it at its source, or fetches the web page
+// that it names, because the service stores nothing that it did not fetch
+// itself. A page lands with no bytes, under the link that keys it, and its
+// parse GETs it on a worker. So the page that the same link names from a feed
+// is the same item. Any other link answers 422 and stores nothing, as does a
+// page of a site whose items an extractor reads, such as a channel's. A push
+// that names its destination is the person's placement, written in the
+// landing's write, so no gate and no model stage reads the item.
 func (h connectorHandlers) pushLink(w http.ResponseWriter, r *http.Request, raw io.Reader) {
 	key := requestKey(r)
 	var body PushRequest
@@ -179,8 +188,10 @@ func (h connectorHandlers) pushLink(w http.ResponseWriter, r *http.Request, raw 
 		return
 	}
 	mediaType, landAt, read := "", "", false
+	pageType, fetched := "", false
 	if h.cfg.Links != nil {
 		mediaType, landAt, read = h.cfg.Links.LinkArrival(itemKey)
+		pageType, fetched = h.cfg.Links.PageMediaType()
 	}
 	kind, _, _ := strings.Cut(itemKey, "/")
 	switch site := itemkey.SiteKind(link); {
@@ -190,6 +201,8 @@ func (h connectorHandlers) pushLink(w http.ResponseWriter, r *http.Request, raw 
 			"the link is on a %s site but names no single %s item, as a channel's or a playlist's page names none, so nothing was stored. %s",
 			site, site, kindsRead(h.cfg.Links))
 		return
+	case kind == itemkey.URL && fetched:
+		mediaType, landAt = pageType, link
 	default:
 		Refuse(w, http.StatusUnprocessableEntity, CodeLinkNotRead,
 			"the link keys as %s, and no extractor of this build reads a %s link at its source, so nothing was stored. %s",
@@ -391,11 +404,20 @@ func kindsOf(links LinkExtractors) []string {
 	return links.LinkKinds()
 }
 
-// kindsRead names each kind of link that an extractor reads, in a sentence.
+// kindsRead names each kind of link that an extractor reads, and a web page
+// where an extractor fetches pages, in a sentence.
 func kindsRead(links LinkExtractors) string {
-	kinds := kindsOf(links)
-	if len(kinds) == 0 {
+	var named []string
+	if kinds := kindsOf(links); len(kinds) > 0 {
+		named = append(named, "one "+strings.Join(kinds, " or ")+" item")
+	}
+	if links != nil {
+		if _, ok := links.PageMediaType(); ok {
+			named = append(named, "a web page")
+		}
+	}
+	if len(named) == 0 {
 		return "This build lands no pushed link."
 	}
-	return "This build lands a pushed link only where it names one " + strings.Join(kinds, " or ") + " item."
+	return "This build lands a pushed link only where it names " + strings.Join(named, " or ") + "."
 }
