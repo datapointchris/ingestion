@@ -85,7 +85,7 @@ var serveCmd = &cobra.Command{
 		"  [note]\n" +
 		"  floor             a confidence from 0 to 1 (default " + strconv.FormatFloat(route.DefaultNoteFloor, 'f', -1, 64) + ")\n" +
 		"\n" +
-		"A sort by watch adds a video to the playlist that the person picks, through\n" +
+		"The watch choice adds a video to the playlist that the person picks, through\n" +
 		"the ypl-watch deliverer, and to this one where they pick none. With none named,\n" +
 		"a watch that picks no playlist is refused:\n" +
 		"\n" +

@@ -120,14 +120,14 @@
         "required": ["gate", "verdict", "decided_by", "cause", "decided_ts"],
         "properties": {
           "gate": {"enum": ["quality", "side", "read"]},
-          "verdict": {"enum": ["pass", "drop", "review", "personal", "fleet", "as-is", "model", "shelf", "split"]},
+          "verdict": {"enum": ["pass", "drop", "review", "personal", "fleet", "as-is", "model", "archive", "shelf", "split"]},
           "decided_by": {"type": "string"},
           "confidence": {"type": ["number", "null"]},
           "cause": {"type": "string"},
           "destination": {"type": ["string", "null"]},
           "note": {"type": ["string", "null"]},
-          "lens": {"description": "How a model read takes the item, on a read decision whose verdict is model, and on a shelf whose opening reads it by a model.", "type": ["string", "null"]},
-          "playlist": {"description": "The playlist that a sort by watch adds the video to, on its side decision, and null on every other decision.", "type": ["string", "null"]},
+          "lens": {"description": "How a model read takes the item, on a read decision whose verdict is model, and on a shelf decision written while review offered one, whose opening read it by a model.", "type": ["string", "null"]},
+          "playlist": {"description": "The playlist that the watch choice adds the video to, on its side decision, and null on every other decision.", "type": ["string", "null"]},
           "client_id": {"description": "The client that sent a person's decision.", "type": ["string", "null"]},
           "presented": {"anyOf": [{"$ref": "ingestion-record.schema.json#/$defs/presented"}, {"type": "null"}]},
           "decided_after_ms": {"description": "How long after its review card was drawn the person decided, in milliseconds.", "type": ["integer", "null"], "minimum": 0},
@@ -147,7 +147,7 @@
           "outcome": {"description": "delivered-to-existing is a record that the destination held before the write, as its answer to that write said: one under no key that took the item's key, or, for learning-resources, one that the key already named. A retry whose first answer was lost reads delivered under life-articles, and delivered-to-existing under learning-resources. refused is a destination's answer naming an existing record that conflicts with the item, kept with that record's id and never retried. pending waits on its task, which tries again after a failure, or was withdrawn, as last_error then says.", "enum": ["pending", "delivered", "delivered-to-existing", "refused"]},
           "attempts": {"type": "integer"},
           "last_error": {"description": "The destination's answer to the last write that failed, what a refusal names, or why the delivery was withdrawn.", "type": ["string", "null"]},
-          "playlist": {"description": "The playlist that a watch's delivery adds the video to, as its sort picked it, and null for every other deliverer.", "type": ["string", "null"]},
+          "playlist": {"description": "The playlist that a watch's delivery adds the video to, as its placement picked it, and null for every other deliverer.", "type": ["string", "null"]},
           "unclaimed_capability": {"description": "The capability of the delivery's queued task where no worker heard from lately holds it, so nothing here writes to that destination yet, and null otherwise.", "type": ["string", "null"]}
         }
       }

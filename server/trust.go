@@ -21,6 +21,15 @@ const (
 	ScopeTrustPromote = "ingestion.trust.promote"
 )
 
+// mayMark says whether the caller of r may write a mark beside a decision, as
+// an archive and a drop for low quality do. A person's token may. A service's
+// token may only where it holds ScopeMarksWrite, the marks route's own scope,
+// since a mark against a drop raises the trust that hides later drops.
+func mayMark(r *http.Request) bool {
+	caller, _ := goapiauth.IdentityFrom(r.Context())
+	return !caller.Service || slices.Contains(caller.Scopes, ScopeMarksWrite)
+}
+
 // CodeFamilyNotFound refuses a promotion naming a family that the store holds
 // no standing of.
 const CodeFamilyNotFound = "family_not_found"

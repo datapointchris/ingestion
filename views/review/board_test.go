@@ -3,8 +3,10 @@ package review
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -18,23 +20,30 @@ import (
 
 	"github.com/datapointchris/ingestion/connectors"
 	"github.com/datapointchris/ingestion/route"
-	"github.com/datapointchris/ingestion/schemas"
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
 )
 
-// fakeService answers the queue and the playlists it holds, and keeps each placement and sort it
-// is sent.
+// fakeService answers the queue and the playlists it holds, and keeps each placement, archive and
+// relate it is sent.
 type fakeService struct {
 	answer    server.ReviewAnswer
 	playlists []Playlist
 	placed    []server.PlaceRequest
-	sorted    []server.SortRequest
+	archived  []server.ArchiveRequest
+	related   []string
+	// refuse is the error that the next placement answers, once.
+	refuse error
 }
 
-func (f *fakeService) Sort(_ context.Context, key string, body server.SortRequest) (string, error) {
-	f.sorted = append(f.sorted, body)
-	return "sorted " + key, nil
+func (f *fakeService) Archive(_ context.Context, key string, body server.ArchiveRequest) (string, error) {
+	f.archived = append(f.archived, body)
+	return "archived " + key, nil
+}
+
+func (f *fakeService) Relate(ctx context.Context, key string) *exec.Cmd {
+	f.related = append(f.related, key)
+	return exec.CommandContext(ctx, "true")
 }
 
 func (f *fakeService) Playlists(context.Context) ([]Playlist, error) { return f.playlists, nil }
@@ -45,16 +54,16 @@ func (f *fakeService) Parse(context.Context, string) (server.ParseAnswer, bool, 
 }
 
 func (f *fakeService) Place(_ context.Context, key string, body server.PlaceRequest) (string, error) {
+	if err := f.refuse; err != nil {
+		f.refuse = nil
+		return "", err
+	}
 	f.placed = append(f.placed, body)
 	return "placed " + key, nil
 }
 
 func (f *fakeService) Drop(_ context.Context, key string, _ server.DropRequest) (string, error) {
 	return "dropped " + key, nil
-}
-
-func (f *fakeService) Mark(_ context.Context, key, mark string) (string, error) {
-	return "marked " + key + " " + mark, nil
 }
 
 func (f *fakeService) Comments(context.Context, string) (server.ReviewComments, error) {
@@ -91,13 +100,15 @@ func fit(n int) *int { return &n }
 func deck() server.ReviewAnswer {
 	save, subreddit := "A post about sourdough", "r/baking"
 	fleet, personal := connectors.SideFleet, connectors.SidePersonal
-	inbox, watch, later := "work-inbox", "watch", "Later"
+	inbox, watch, psyche, later := "work-inbox", "watch", "psyche", "Later"
 	return server.ReviewAnswer{
 		SchemaVersion: server.ReviewListVersion,
-		Destinations:  []server.ReviewDestination{{Name: "reading-list", Side: &personal}, {Name: inbox, Side: &fleet}},
-		Verbs: []server.ReviewVerb{
-			{Verb: route.VerbFleetRelate, Side: &fleet, Destination: &inbox},
-			{Verb: route.VerbWatch, Side: &personal, Destination: &watch, Playlist: true},
+		Choices: []server.ReviewChoice{
+			{Choice: route.ChoiceSuggestion, Side: &fleet, Destination: &inbox},
+			{Choice: route.ChoiceWatch, Side: &personal, Destination: &watch, Playlist: true},
+			{Choice: route.ChoicePsyche, Side: &personal, Destination: &psyche, RunsHere: true},
+			{Choice: route.ChoiceArchive},
+			{Choice: route.ChoiceDrop},
 		},
 		WatchDefaultPlaylist: &later,
 		Items: []server.ReviewItem{
@@ -232,23 +243,24 @@ func TestAPlacementFromAFilteredTabKeepsTheCardAsTheTabShowedIt(t *testing.T) {
 	if m.Cursor() != "youtube/vidc" {
 		t.Fatalf("filtered to the greenhouse video, the cursor rests on %q", m.Cursor())
 	}
-	fleet := VerbBindings[route.VerbFleetRelate].Key
-	runKey(m, letter(fleet[0]))
-	if len(service.sorted) != 1 {
-		t.Fatalf("%s sent %d sorts, want one", fleet, len(service.sorted))
+	suggestion := ChoiceBindings[route.ChoiceSuggestion].Key
+	runKey(m, letter(suggestion[0]))
+	if len(service.placed) != 1 {
+		t.Fatalf("%s sent %d placements, want one", suggestion, len(service.placed))
 	}
-	body := service.sorted[0]
+	body := service.placed[0]
 	p := body.Presented
-	if body.Verb != route.VerbFleetRelate || p == nil || p.Sort != store.SortQuality || p.Grouping != store.GroupByConnector || p.Rank != 1 || p.Position != 1 || p.Shown != 1 ||
+	if body.Choice != route.ChoiceSuggestion || body.Destination != "" || p == nil || p.Sort != store.SortQuality || p.Grouping != store.GroupByConnector || p.Rank != 1 || p.Position != 1 || p.Shown != 1 ||
 		p.Quality == nil || *p.Quality != 8 || p.Fit != nil || p.Verdict == nil || *p.Verdict != "drop" ||
 		p.Side == nil || *p.Side != connectors.SideFleet || body.DecidedAfterMS == nil || *body.DecidedAfterMS < 0 {
-		t.Errorf("%s sorted by %s keeping %+v after %v ms, want fleet-relate with the one row shown, first under quality, grouped by connector",
-			fleet, body.Verb, p, body.DecidedAfterMS)
+		t.Errorf("%s placed by %s keeping %+v after %v ms, want suggestion with the one row shown, first under quality, grouped by connector",
+			suggestion, body.Choice, p, body.DecidedAfterMS)
 	}
 }
 
 // W asks which playlist, the service's default first and then each playlist this machine lists.
-// Enter takes the default, which the sort leaves to the service, and a number its playlist's id.
+// Enter takes the default, which the placement leaves to the service, and a number its playlist's
+// id.
 func TestWatchAsksForThePlaylistWithTheDefaultFirst(t *testing.T) {
 	service := &fakeService{answer: deck(), playlists: []Playlist{{ID: "PLb", Title: "Bench"}, {ID: "PLl", Title: "Later"}, {ID: "PLa", Title: "Audio"}}}
 	b := readBoard(t, service)
@@ -257,14 +269,46 @@ func TestWatchAsksForThePlaylistWithTheDefaultFirst(t *testing.T) {
 	m := gotermboard.NewModel(b, gotermstyle.PaletteFor(nil))
 	m.Update(tea.WindowSizeMsg{Width: 200, Height: 40})
 	first := m.Cursor()
-	watch := VerbBindings[route.VerbWatch].Key
+	watch := ChoiceBindings[route.ChoiceWatch].Key
 	runKey(m, letter(watch[0]))
 	runKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	runKey(m, letter(watch[0]))
 	runKey(m, letter('3'))
 	runKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
-	if len(service.sorted) != 2 || service.sorted[0].Verb != route.VerbWatch || service.sorted[0].Playlist != "" || service.sorted[1].Playlist != "PLb" {
-		t.Fatalf("after W enter on %s, then W 3 enter, the sorts are %+v, want the default, then Bench by its id", first, service.sorted)
+	if len(service.placed) != 2 || service.placed[0].Choice != route.ChoiceWatch || service.placed[0].Playlist != "" || service.placed[1].Playlist != "PLb" {
+		t.Fatalf("after W enter on %s, then W 3 enter, the placements are %+v, want the default, then Bench by its id", first, service.placed)
+	}
+}
+
+// P places the item at psyche and hands the terminal to psyche relate on this machine once the
+// placement lands, and relates nothing where the placement is refused. E asks what
+// was liked, and archives it with the like picked.
+func TestPsycheRelatesHereAndArchiveAsksWhatWasLiked(t *testing.T) {
+	service := &fakeService{answer: deck()}
+	b := NewBoard(t.Context(), service, Outside{HandOver: func(m *gotermboard.Model, cmd *exec.Cmd, then func(*gotermboard.Model, error, []byte) tea.Cmd) tea.Cmd {
+		return func() tea.Msg { return then(m, cmd.Run(), nil) }
+	}})
+	if err := b.ReadAll(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	m := gotermboard.NewModel(b, gotermstyle.PaletteFor(nil))
+	m.Update(tea.WindowSizeMsg{Width: 200, Height: 40})
+	first := m.Cursor()
+	service.refuse = errors.New("422 choice_refused: psyche is not declared")
+	runKey(m, letter(ChoiceBindings[route.ChoicePsyche].Key[0]))
+	if len(service.related) != 0 {
+		t.Fatalf("P on %s related %v though its placement was refused, want nothing sent to psyche", first, service.related)
+	}
+	m.MoveCursorTo(first)
+	runKey(m, letter(ChoiceBindings[route.ChoicePsyche].Key[0]))
+	if len(service.placed) != 1 || service.placed[0].Choice != route.ChoicePsyche || !slices.Equal(service.related, []string{first}) {
+		t.Fatalf("P on %s placed %+v and related %v, want it placed at psyche and related here", first, service.placed, service.related)
+	}
+	next := m.Cursor()
+	runKey(m, letter(ChoiceBindings[route.ChoiceArchive].Key[0]))
+	runKey(m, letter('h'))
+	if len(service.archived) != 1 || service.archived[0].Liked != route.LikedTheme {
+		t.Errorf("E h on %s archived %+v, want it archived for its theme", next, service.archived)
 	}
 }
 
@@ -287,42 +331,19 @@ func runKey(m *gotermboard.Model, key tea.KeyPressMsg) {
 	m.Rebuild()
 }
 
-// Each verb has one key, no two verbs share one, and tui-review's key enum
-// names exactly those keys. A verb with no binding would never be offered.
-func TestEachVerbHasItsOwnKey(t *testing.T) {
+// Each choice has one key, and no two choices share one. A choice with no
+// binding would never be offered.
+func TestEachChoiceHasItsOwnKey(t *testing.T) {
 	var keys []string
-	for _, v := range route.Verbs {
-		bound, ok := VerbBindings[v.Verb]
+	for _, c := range route.Choices {
+		bound, ok := ChoiceBindings[c.Name]
 		if !ok || bound.Key == "" || bound.Footer == "" {
-			t.Errorf("verb %s has the binding %+v", v.Verb, bound)
+			t.Errorf("choice %s has the binding %+v", c.Name, bound)
 		}
 		keys = append(keys, bound.Key)
 	}
-	if len(VerbBindings) != len(route.Verbs) || len(slices.Compact(slices.Sorted(slices.Values(keys)))) != len(keys) {
-		t.Errorf("the bindings %v give the verbs %v keys %v, want one key each", VerbBindings, route.VerbNames(), keys)
-	}
-	raw, err := schemas.Files.ReadFile("tui-review.schema.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var schema struct {
-		Properties struct {
-			Verbs struct {
-				Items struct {
-					Properties struct {
-						Key struct {
-							Enum []string `json:"enum"`
-						} `json:"key"`
-					} `json:"properties"`
-				} `json:"items"`
-			} `json:"verbs"`
-		} `json:"properties"`
-	}
-	if err := json.Unmarshal(raw, &schema); err != nil {
-		t.Fatal(err)
-	}
-	if enum := schema.Properties.Verbs.Items.Properties.Key.Enum; !slices.Equal(slices.Sorted(slices.Values(enum)), slices.Sorted(slices.Values(keys))) {
-		t.Errorf("tui-review's key enum is %v, and the bindings' keys %v", enum, keys)
+	if len(ChoiceBindings) != len(route.Choices) || len(slices.Compact(slices.Sorted(slices.Values(keys)))) != len(keys) {
+		t.Errorf("the bindings %v give the choices %v keys %v, want one key each", ChoiceBindings, route.ChoiceNames(), keys)
 	}
 }
 

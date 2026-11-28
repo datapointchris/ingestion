@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/datapointchris/ingestion/connectors"
+	"github.com/datapointchris/ingestion/push"
 	"github.com/datapointchris/ingestion/route"
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
@@ -23,15 +24,16 @@ import (
 
 var reviewCmd = &cobra.Command{
 	Use:   "review",
-	Short: "Read the items that wait on a person, and place, sort or drop one",
+	Short: "Read the items that wait on a person, and place, archive or drop one",
 	Example: "  # the items waiting on a person, the longest waiting first\n" +
 		"  ingestion review list\n" +
 		"\n" +
-		"  # place one on a destination, naming what decided it\n" +
-		"  ingestion review place reddit/t3_1h9xk2 reading-list --cause subreddit\n" +
+		"  # place one by a choice, naming what decided it\n" +
+		"  ingestion review place reddit/t3_1h9xk2 articles --cause subreddit\n" +
+		"  ingestion review place youtube/aqz-KE-bpKQ watch --playlist \"Later\"\n" +
 		"\n" +
-		"  # sort one by a verb, which places, reads or shelves it\n" +
-		"  ingestion review sort youtube/aqz-KE-bpKQ watch --playlist \"Later\"",
+		"  # archive one you are done with, naming what you liked\n" +
+		"  ingestion review archive youtube/aqz-KE-bpKQ --liked channel",
 }
 
 var reviewListCmd = &cobra.Command{
@@ -61,62 +63,78 @@ func reviewReasonLines() string {
 }
 
 var reviewPlaceCmd = &cobra.Command{
-	Use:   "place <key or url> <destination>",
-	Short: "Place an item on a destination, and print the side and read it takes",
-	Long: "Places the item on a destination that the set in force declares, as your\n" +
-		"decision, recorded under person:<login>. The item takes the destination's\n" +
-		"side, and the read gate then chooses whether it is read as is or by a model.\n" +
-		"A destination that takes no side drops the item, which keeps its row. Any\n" +
-		"item can be placed, including one that a rule already placed.\n" +
+	Use:   "place <key or url> <choice or destination>",
+	Short: "Place an item by one of review's choices, and print the side and read it takes",
+	Long: "Places the item by a choice as your decision, recorded under person:<login>,\n" +
+		"with the choice as the read decision's cause. Each choice places the item on\n" +
+		"a side and a destination, and says what runs:\n" +
 		"\n" +
-		"--cause names the aspect that decided it, such as subreddit, channel, theme\n" +
-		"or title, so a filter can learn from it. Left out, the cause is unstated.\n" +
-		"--note carries the questions and why the item was saved, which a model read\n" +
-		"answers. With no note, a read by a model answers a note that a model drafts\n" +
-		"from the item's opening. An item whose draft fell below the note floor waits\n" +
-		"as note-unclear. Placing an item that holds a draft with no --note takes that\n" +
-		"draft. Placing an item again with the same destination, cause and note\n" +
-		"changes nothing. A destination whose deliverer adds the item to a playlist is\n" +
-		"refused and exits 2, because only a sort by watch picks the playlist.",
-	Example: "  ingestion review place reddit/t3_1h9xk2 reading-list --cause subreddit\n" +
-		"  ingestion review place reddit/t3_1h9xk2 work-inbox --note \"what would this change for retries?\"",
-	Args: cobra.ExactArgs(2),
-	RunE: runReviewPlace,
-}
-
-var reviewSortCmd = &cobra.Command{
-	Use:   "sort <key or url> <verb>",
-	Short: "Sort an item by a verb, which places it, reads it, shelves it, or adds it to a playlist",
-	Long: "Sorts the item by a verb as your decision, recorded under person:<login> with\n" +
-		"the verb as its cause. Each verb places the item on a side and says what runs:\n" +
+		choiceLines(route.PlacingChoiceNames()) +
 		"\n" +
-		verbLines() +
+		"A choice places the item on the destination whose deliverer it names, for\n" +
+		"suggestion on the fleet side's default, and for psyche on the destination\n" +
+		"named psyche, as review list --json lists under choices. A name that is no\n" +
+		"choice names a destination of the set in force, and places the item on it\n" +
+		"with the side it takes. A name that is both a choice's and a destination's\n" +
+		"is read as the choice. The push-only psyche and the watch, which picks a\n" +
+		"playlist, take only their choices. Any item can be placed, including one that\n" +
+		"a rule already placed.\n" +
 		"\n" +
-		"A verb places the item on the destination whose deliverer it names, or for\n" +
-		"fleet-relate on the fleet side's default, as review list --json lists under\n" +
-		"verbs. A shelf verb places it on no destination, and nothing runs until\n" +
-		"`ingestion shelf open <key>`. --playlist names the playlist that a watch adds\n" +
-		"the video to, by its YouTube id or the title that ypl holds. Left out, a watch\n" +
-		"takes serve's [watch] default_playlist. A verb whose destination the set in\n" +
-		"force does not declare, or whose deliverer does not take the item, is refused\n" +
-		"and exits 2. A watch is refused the same way where the item's delivery holds\n" +
-		"another playlist. A sort that repeats the newest side decision, playlist\n" +
-		"included, changes nothing.",
-	Example: "  ingestion review sort youtube/aqz-KE-bpKQ learning\n" +
-		"  ingestion review sort youtube/aqz-KE-bpKQ watch --playlist \"Later\"\n" +
-		"  ingestion review sort reddit/t3_1h9xk2 personal-summarize",
+		"psyche hands the item's parse and its scan's findings to psyche relate on this\n" +
+		"machine once the placement lands, as `ingestion push --to psyche --relate`\n" +
+		"does, waiting up to " + push.Wait.String() + " for the scan. The sentence saying where it went goes\n" +
+		"to stderr, psyche's answer to stdout, and --json asks psyche for its JSON.\n" +
+		"Where psyche fails, the item stays placed, and that push runs it again.\n" +
+		"\n" +
+		"--playlist names the playlist that a watch adds the video to, by its YouTube\n" +
+		"id or the title that ypl holds. Left out, a watch takes serve's [watch]\n" +
+		"default_playlist. --cause names the aspect that decided it, such as\n" +
+		"subreddit, channel, theme or title, so a filter can learn from it. Left out,\n" +
+		"the cause is unstated. --note carries the questions and why the item was\n" +
+		"saved, which a suggestion's model read answers. With no note, a suggestion\n" +
+		"answers a note that a model drafts from the item's opening, and takes a draft\n" +
+		"already done. A choice whose destination the set in force does not declare,\n" +
+		"or whose deliverer does not take the item, is refused and exits 2. A watch is\n" +
+		"refused the same way where the item's delivery holds another playlist.\n" +
+		"Placing an item again with the same choice, cause, note and playlist changes\n" +
+		"nothing.",
+	Example: "  ingestion review place reddit/t3_1h9xk2 articles --cause subreddit\n" +
+		"  ingestion review place reddit/t3_1h9xk2 suggestion --note \"what would this change for retries?\"\n" +
+		"  ingestion review place youtube/aqz-KE-bpKQ watch --playlist \"Later\"\n" +
+		"  ingestion review place youtube/aqz-KE-bpKQ psyche\n" +
+		"  ingestion review place reddit/t3_1h9xk2 reading-list",
 	Args:      cobra.ExactArgs(2),
-	ValidArgs: route.VerbNames(),
-	RunE:      runReviewSort,
+	ValidArgs: route.PlacingChoiceNames(),
+	RunE:      runReviewPlace,
 }
 
-// verbLines gives each of route.Verbs its help line.
-func verbLines() string {
+// choiceLines gives each choice that names names its help line.
+func choiceLines(names []string) string {
 	var b strings.Builder
-	for _, v := range route.Verbs {
-		fmt.Fprintf(&b, "  %-20s %s\n", v.Verb, v.Help)
+	for _, name := range names {
+		c, _ := route.ChoiceOf(name)
+		fmt.Fprintf(&b, "  %-11s %s\n", c.Name, c.Help)
 	}
 	return b.String()
+}
+
+var reviewArchiveCmd = &cobra.Command{
+	Use:   "archive <key or url>",
+	Short: "Archive an item you are done with, keeping its record with no destination",
+	Long: "Archives the item as your decision, recorded under person:<login>: done, such\n" +
+		"as a video watched elsewhere. It takes the personal side and no destination,\n" +
+		"and its read decision is archive, so nothing reads or delivers it. It also\n" +
+		"writes your read mark, which teaches the quality gate as `ingestion items mark`\n" +
+		"does.\n" +
+		"\n" +
+		"--liked names what you liked, which the archive keeps as its cause, so a\n" +
+		"reader of the decisions learns what to keep from it: " + strings.Join(route.Likes, ", ") + ".\n" +
+		"Left out, the cause is unstated. Archiving an item again with the same like changes\n" +
+		"nothing.",
+	Example: "  ingestion review archive youtube/aqz-KE-bpKQ --liked channel\n" +
+		"  ingestion review archive reddit/t3_1h9xk2",
+	Args: cobra.ExactArgs(1),
+	RunE: runReviewArchive,
 }
 
 var reviewDropCmd = &cobra.Command{
@@ -126,10 +144,12 @@ var reviewDropCmd = &cobra.Command{
 		"soft: the item keeps its row and every record, and a later placement moves\n" +
 		"it. --cause names the aspect that decided it, such as subreddit, channel,\n" +
 		"theme or title, so a filter can learn from it. Left out, the cause is\n" +
-		"unstated.",
-	Example: "  ingestion review drop reddit/t3_1hb0qa --cause subreddit",
-	Args:    cobra.ExactArgs(1),
-	RunE:    runReviewDrop,
+		"unstated. --cause " + route.CauseLowQuality + " also writes your low-quality mark, which\n" +
+		"teaches the quality gate as `ingestion items mark` does.",
+	Example: "  ingestion review drop reddit/t3_1hb0qa --cause subreddit\n" +
+		"  ingestion review drop youtube/aqz-KE-bpKQ --cause " + route.CauseLowQuality,
+	Args: cobra.ExactArgs(1),
+	RunE: runReviewDrop,
 }
 
 func init() {
@@ -140,13 +160,14 @@ func init() {
 		c.Flags().String("note", "", "Carry the questions and why the item was saved, for a model read to answer")
 		c.Flags().Bool("json", false, "Print the service's answer as JSON")
 	}
-	reviewSortCmd.Flags().String("playlist", "", "Name the playlist that a watch adds the video to")
-	reviewSortCmd.Flags().Bool("json", false, "Print the service's answer as JSON")
-	for _, c := range []*cobra.Command{reviewListCmd, reviewPlaceCmd, reviewSortCmd, reviewDropCmd} {
+	reviewPlaceCmd.Flags().String("playlist", "", "Name the playlist that a watch adds the video to")
+	reviewArchiveCmd.Flags().String("liked", "", "Name what you liked: "+strings.Join(route.Likes, ", "))
+	reviewArchiveCmd.Flags().Bool("json", false, "Print the service's answer as JSON")
+	for _, c := range []*cobra.Command{reviewListCmd, reviewPlaceCmd, reviewArchiveCmd, reviewDropCmd} {
 		c.Flags().String("api", "", "Call this server rather than the config file's api")
 		addConfigFlag(c)
 	}
-	reviewCmd.AddCommand(reviewListCmd, reviewPlaceCmd, reviewSortCmd, reviewDropCmd)
+	reviewCmd.AddCommand(reviewListCmd, reviewPlaceCmd, reviewArchiveCmd, reviewDropCmd)
 	rootCmd.AddCommand(reviewCmd)
 }
 
@@ -184,21 +205,54 @@ func writeReview(w io.Writer, items []server.ReviewItem) {
 }
 
 func runReviewPlace(cmd *cobra.Command, args []string) error {
-	body := server.PlaceRequest{Destination: args[1]}
+	name := strings.TrimSpace(args[1])
+	body := server.PlaceRequest{Choice: name}
+	c, ok := route.ChoiceOf(name)
+	switch {
+	case ok && !c.Places():
+		return fmt.Errorf("%w: %s is a command of its own: `ingestion review %s %s`", goclikit.ErrUsage, name, name, args[0])
+	case !ok:
+		body = server.PlaceRequest{Destination: name}
+	}
+	body.Playlist, _ = cmd.Flags().GetString("playlist")
 	body.Cause, _ = cmd.Flags().GetString("cause")
 	if note, _ := cmd.Flags().GetString("note"); note != "" {
 		body.Note = &note
 	}
-	return sendReview(cmd, server.RouteReviewPlace, args[0], "place", body)
+	if !ok || !c.RunsHere {
+		return sendReview(cmd, server.RouteReviewPlace, args[0], "place", body)
+	}
+	asJSON, _ := cmd.Flags().GetBool("json")
+	api, _ := cmd.Flags().GetString("api")
+	ctx, config, stderr := cmd.Context(), configPath(cmd), cmd.ErrOrStderr()
+	answer, _, err := decideReview(ctx, config, api, server.RouteReviewPlace, args[0], "place", body)
+	if err := reviewRefusal(err); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintln(stderr, placedSentence(answer))
+	return relateHere(ctx, config, api, answer.Key, asJSON, cmd.OutOrStdout(), stderr)
 }
 
-func runReviewSort(cmd *cobra.Command, args []string) error {
-	body := server.SortRequest{Verb: strings.TrimSpace(args[1])}
-	if _, ok := route.VerbOf(body.Verb); !ok {
-		return fmt.Errorf("%w: %q is no verb. A sort takes one of %s", goclikit.ErrUsage, body.Verb, strings.Join(route.VerbNames(), ", "))
+// relateHere hands the landed item under key to psyche relate on this machine,
+// as a push of a landed item does.
+func relateHere(ctx context.Context, config, api, key string, asJSON bool, out, stderr io.Writer) error {
+	target := "/api/v1/items/" + url.PathEscape(key)
+	var parse server.ParseAnswer
+	_, err := getJSON(ctx, config, api, server.RouteItemParse, target+"/parse", &parse)
+	var refused *refusal
+	if err != nil && (!errors.As(err, &refused) || refused.Code != server.CodeParseNotFound || refused.Status >= http.StatusInternalServerError) {
+		return argumentRefusal(err)
 	}
-	body.Playlist, _ = cmd.Flags().GetString("playlist")
-	return sendReview(cmd, server.RouteReviewSort, args[0], "sort", body)
+	return relateParse(ctx, config, api, target, parse, push.Wait, false, asJSON, out, stderr)
+}
+
+func runReviewArchive(cmd *cobra.Command, args []string) error {
+	body := server.ArchiveRequest{}
+	body.Liked, _ = cmd.Flags().GetString("liked")
+	if body.Liked != "" && !slices.Contains(route.Likes, body.Liked) {
+		return fmt.Errorf("%w: --liked names %q, and an archive likes one of %s", goclikit.ErrUsage, body.Liked, strings.Join(route.Likes, ", "))
+	}
+	return sendReview(cmd, server.RouteReviewArchive, args[0], "archive", body)
 }
 
 func runReviewDrop(cmd *cobra.Command, args []string) error {
@@ -229,8 +283,7 @@ func sendReview(cmd *cobra.Command, route server.Route, key, verb string, body a
 	asJSON, _ := cmd.Flags().GetBool("json")
 	api, _ := cmd.Flags().GetString("api")
 	answer, raw, err := decideReview(cmd.Context(), configPath(cmd), api, route, key, verb, body)
-	if err := argumentRefusal(err, server.CodeDestinationNotDeclared, server.CodeDestinationPushOnly, server.CodeDestinationTakesPlaylist,
-		server.CodeChapterOfBook, server.CodeInvalidBody, server.CodeVerbRefused); err != nil {
+	if err := reviewRefusal(err); err != nil {
 		return err
 	}
 	w := cmd.OutOrStdout()
@@ -240,6 +293,13 @@ func sendReview(cmd *cobra.Command, route server.Route, key, verb string, body a
 	}
 	_, err = fmt.Fprintln(w, placedSentence(answer))
 	return err
+}
+
+// reviewRefusal is err as a usage error where the server refused what a
+// review command named, and err as it is otherwise.
+func reviewRefusal(err error) error {
+	return argumentRefusal(err, server.CodeDestinationNotDeclared, server.CodeDestinationPushOnly, server.CodeDestinationTakesPlaylist,
+		server.CodeChapterOfBook, server.CodeInvalidBody, server.CodeChoiceRefused)
 }
 
 // decideReview posts body to the item's verb under route, on the server the
@@ -266,15 +326,21 @@ func placedSentence(a server.PlacementAnswer) string {
 		}
 	}
 	switch {
-	case read != nil && read.Verdict == store.VerdictShelf:
-		return fmt.Sprintf("Shelved %s by %s: nothing runs until ingestion shelf open %s.", a.Key, side.Cause, a.Key)
+	case read != nil && read.Verdict == store.VerdictArchive:
+		liked := ""
+		switch side.Cause {
+		case route.LikedThisItem:
+			liked = ", liked for this item alone"
+		case route.LikedChannel, route.LikedTheme:
+			liked = ", liked for its " + side.Cause
+		}
+		return fmt.Sprintf("Archived %s%s. Its record stays with no destination, and your read mark teaches the quality gate.", a.Key, liked)
+	case side.Destination == nil && side.Cause == route.CauseLowQuality:
+		return fmt.Sprintf("Dropped %s, cause %s, and marked it low quality, which teaches the quality gate.", a.Key, side.Cause)
 	case side.Destination == nil:
 		return fmt.Sprintf("Dropped %s, cause %s.", a.Key, side.Cause)
 	case side.Verdict != connectors.SidePersonal && side.Verdict != connectors.SideFleet:
 		return fmt.Sprintf("Placed %s on %s, which takes no side, so it is dropped.", a.Key, *side.Destination)
-	case read != nil && read.Cause == route.CauseLearningRefused:
-		return fmt.Sprintf("%s is back in review as %s: the quality gate's newest answer did not pass it, so nothing goes to %s.",
-			a.Key, route.CauseLearningRefused, *side.Destination)
 	}
 	how := "unread"
 	switch {

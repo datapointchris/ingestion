@@ -763,7 +763,7 @@ program as `youtube-whisper` over the memo's bytes, in the slot group `heavy`.
   by `gate`, for `topics`. The `topics` table keeps each topic's units, title and idea, and the
   outbox ships the title and idea as `ingestion.text`.
 - **Each topic waits in review as `owners-words`**, because the quality gate never reads the
-  owner's words. A tag or a rule still places it first. `fleet-relate` reads a topic by a model
+  owner's words. A tag or a rule still places it first. `suggestion` reads a topic by a model
   after its note's draft.
   `learning` and `watch` refuse a topic, because neither deliverer takes one.
 - **The connector's first fill holds every memo after the first at the `topics` stage.** The
@@ -1216,52 +1216,74 @@ and `comment_count`. Each source registers which of its fields and metrics those
 `landing.RegisterSightingRoles`, so a reader needs no source's names. Whatever the reason an item waits, its `guess` is present
 wherever the gate gave one, so a reader shows it by its presence. The answer also lists each declared destination with its side, so a
 reader needs no call per item. Where the set in force cannot be read, `destinations` is null and
-the queue still answers. `place` and `drop` post to `/api/v1/review/{key}/place` and
-`…/drop`, and print `schemas/review-placement.schema.json` with `--json`. A placement names a
-destination that the set in force declares, and any other is refused. `--cause` names the aspect
+the queue still answers. `place`, `archive` and `drop` post to `/api/v1/review/{key}/place`,
+`…/archive` and `…/drop`, and print `schemas/review-placement.schema.json` with `--json`. A
+placement names one of review's choices, as the next section tells, or a destination that the set
+in force declares, and any other is refused. `--cause` names the aspect
 that decided it, such as subreddit or title, and a decision that names none is kept as
 `unstated`. `--note` carries the questions that a model read answers. With no note, a model drafts
 one, and a placement with no note of an item that holds a draft takes the draft. Sending the same placement again changes nothing. A service placing for a person names
 the person's `login` in its body, because a service token carries no person. The decision keeps
 the service's client id beside the login.
 
-### A person sorts an item by a verb, and a shelved item runs nothing until it is opened
+### Each of review's choices places, archives or drops an item
 
-Each sort verb is a route. It places the item on a side and says what runs on it then.
-`ingestion review sort <key> <verb>` posts to `POST /api/v1/review/{key}/sort` under
-`ingestion.review.place`, and the review tab binds one key to each verb:
+Each choice says where the item goes and what runs on it then. `ingestion review place <key>
+<choice>` posts the choice to `POST /api/v1/review/{key}/place`. `review archive` and `review
+drop` post to `…/archive` and `…/drop`. Each route needs `ingestion.review.place`, and the review
+tab binds one key to each choice:
 
-| Key | Verb | What runs | When |
+| Key | Choice | Where it goes, and what runs | When |
 | --- | --- | --- | --- |
-| `F` | `fleet-relate` | a model read under the `fleet` lens, after a note's draft, on the fleet side's default destination | in the background |
-| `L` | `learning` | delivery to the destination whose deliverer is `learning-resources`, where the quality gate's newest answer passes the item. Otherwise the item returns to review as `learning-refused`, and its card holds the gate's reason | at once |
-| `P` | `personal-relate` | nothing until opened, then `psyche relate` on the machine that opens it, as `ingestion push --to psyche --relate` runs it | when opened |
-| `S` | `personal-summarize` | nothing until opened, then one model read under the `personal` lens | when opened |
-| `T` | `technical-summarize` | nothing until opened, then one model read under the `learning` lens | when opened |
+| `A` | `articles` | delivery to the destination whose deliverer is `life-articles`, read as is | at once |
+| `L` | `learning` | delivery to the destination whose deliverer is `learning-resources`, whatever the quality gate answered | at once |
+| `S` | `suggestion` | the fleet side's default destination, read by a model under the `fleet` lens after a note's draft | in the background |
 | `W` | `watch` | the `ypl-watch` deliverer adds the video to the playlist picked, or to `[watch] default_playlist` | at once |
-| `d` | drop | the drop, with the cause picked from the drop menu | at once |
+| `P` | `psyche` | the destination named `psyche`, then `psyche relate` on the machine that placed it, as `ingestion push --to psyche --relate` runs it | at once |
+| `E` | `archive` | nowhere: the record stays on the personal side with no destination, with the `read` mark | at once |
+| `d` | `drop` | the drop, with the cause picked from the drop menu, and the `low-quality` mark for a drop for low quality | at once |
 
 ```text
-$ ingestion review sort youtube/aqz-KE-bpKQ watch --playlist "Watch soon"
+$ ingestion review place youtube/aqz-KE-bpKQ watch --playlist "Watch soon"
 Placed youtube/aqz-KE-bpKQ on watch in the playlist Watch soon: side personal, read as-is.
-$ ingestion review sort youtube/Ks-_Mh1QhMc personal-summarize
-Shelved youtube/Ks-_Mh1QhMc by personal-summarize: nothing runs until ingestion shelf open youtube/Ks-_Mh1QhMc.
-$ ingestion shelf open youtube/Ks-_Mh1QhMc
-Opened youtube/Ks-_Mh1QhMc: a model reads it under the personal lens. Open it again once it is done to read its summary.
+$ ingestion review archive youtube/Ks-_Mh1QhMc --liked channel
+Archived youtube/Ks-_Mh1QhMc, liked for its channel. Its record stays with no destination, and your read mark teaches the quality gate.
 ```
 
-- **Each sort writes a person's side decision with the verb as its cause**, then its read
-  decision. The gate's trust and its agreement count it as a person's placement, as they count
-  `review place`. A card sent with it is kept as a placement's is. A sort that repeats the newest
-  side decision, playlist included, changes nothing.
-- **A verb places on the first destination whose deliverer is the verb's.** Fleet relate places
-  on the fleet side's default. `review list --json` lists each verb under `verbs` with that
-  destination, and says why the verb places nothing where the set declares none. The sort then
-  answers 422 `verb_refused`, and so it does where the deliverer cannot take the item, such as
+- **Each placing choice writes a person's side decision, then a read decision whose cause is the
+  choice.** The side decision keeps `--cause`, or `unstated`. The gate's trust and its agreement
+  count it as a person's placement. A card sent with it is kept. A placement that repeats the
+  newest side decision, playlist included, changes nothing.
+- **A choice places on the first destination whose deliverer is the choice's.** Suggestion places
+  on the fleet side's default, and psyche on the destination named `psyche`. `review list --json`
+  lists each choice under `choices` with that destination. It says why a choice places nothing
+  where the set declares no destination for it. The placement then answers 422
+  `choice_refused`. It answers the same where the deliverer cannot take the item, such as
   `ypl-watch` for anything but a YouTube video.
-- **`learning-refused` is the read gate's review.** The item keeps the person's side decision.
-  A quality task that has not run stays queued, and the item waits until the person sorts it
-  again.
+- **`review place` also takes a destination's name**, for a destination that no choice reaches.
+  The item takes that destination's side, as a tag or a rule would place it. The route's body
+  names `destination` rather than `choice`, and a caller sends one of the two. A name that is
+  both a choice's and a destination's is read as the choice. The tab's note menu numbers each
+  such destination after the choices.
+- **A psyche placement lands first, then `psyche relate` reads the item's parse and its scan on
+  the machine that placed it.** The service keeps nothing of the relate. Where it fails, the item
+  stays at psyche, and `ingestion push <key> --to psyche --relate` runs it again.
+- **An archive is done with the item, such as a video watched elsewhere.** Its side decision is
+  the person's, on the personal side with no destination. Its read decision has verdict
+  `archive`, so nothing is delivered, and the item's phase reads `archived`. It writes the `read`
+  mark, which counts on the item's gate families. `--liked` names what the person liked:
+  `channel`, `theme` or `this-item`. The side decision keeps it as its cause, and `unstated`
+  where none is named. The tab's `E` asks the same from a menu.
+- **A drop for low quality writes the `low-quality` mark** in the same write as the drop, so the
+  gate families count it as `items mark` would.
+- **An archive or a drop writes its mark only for a caller that may write marks.** A person's
+  token may. A service's token may only where it also holds `ingestion.marks.write`, the scope of
+  `POST /api/v1/items/{key}/marks`. A mark against the gate's drop raises the trust that hides
+  later drops, so `ingestion.review.place` alone does not write one. The decision is written
+  either way.
+- **Two reasons wait in review only on records already written.** `shelved` is a read decision
+  of verdict `shelf` that no opening followed. `learning-refused` is a learning sort that the
+  quality gate did not pass. A person places either item by a choice.
 - **`ypl-watch` inserts the video through ypl's `POST /api/v1/youtube/playlists/{id}/items`.**
   Each insert spends ypl's Data API quota. YouTube keeps a second copy of a video that a playlist
   holds already. The `deliveries` row keeps the playlist picked, and is never queued again once
@@ -1272,36 +1294,14 @@ Opened youtube/Ks-_Mh1QhMc: a model reads it under the personal lens. Open it ag
   deliverer writes through the client of the worker's `[source.ypl]` table. The Data API cannot
   write the Watch Later list, so a watch names a playlist of the channel's own.
 - **One delivery adds the video to one playlist.** Where the item's delivery holds another
-  playlist, a watch answers 422 `verb_refused` and names the playlist held.
-- **Only a watch places an item on the `watch` destination**, because only the sort picks the
-  playlist. Review leaves the destination out. `review place` answers 422
-  `destination_takes_playlist`. The set check refuses the destination as a side's default or a
-  tag's target. It also refuses an accepted rule that names it.
+  playlist, a watch answers 422 `choice_refused` and names the playlist held.
+- **Only the watch choice places an item on the `watch` destination**, because only it picks the
+  playlist. Review leaves the destination out of `destinations`. A placement that names it
+  answers 422 `destination_takes_playlist`. The set check refuses the destination as a side's
+  default or a tag's target. It also refuses an accepted rule that names it.
 - **The review tab's `W` asks which playlist.** It lists the default first, then each playlist
   that `ypl playlists list --json` prints on the person's machine. Enter takes the default, a
   number picks its playlist, and any other text names a playlist by its title or its id.
-- **A shelved item's phase is `shelved` until a person opens it**, and nothing runs on it before.
-  `ingestion shelf list` reads `GET /api/v1/shelf` under `ingestion.review.read`, in
-  `schemas/shelf-list.schema.json`. `ingestion shelf open <key>` posts to
-  `POST /api/v1/shelf/{key}/open` under `ingestion.review.place`, and answers
-  `schemas/shelf-open.schema.json`. An item that is not on the shelf answers 409 `not_shelved`.
-- **The first opening appends the person's read decision with cause `shelf-open`.** For a
-  summary, that decision reads the item by a model under the shelf's lens, which queues one
-  model read. A later opening appends and queues nothing, so it shows the kept summary with no
-  model call. A failed read runs again only through `ingestion tasks retry`.
-- **A relate runs only on the machine that opens it.** `shelf open` reads the item's parse and its
-  scan, and hands them to `psyche relate`, as `ingestion push --to psyche --relate` does. The
-  service keeps nothing of it, so each opening runs it again.
-- **A shelf item's state** is `waiting` until opened. A relate then reads `opened`. A summary
-  reads `reading` while its model read is queued or running, `done` once kept, and `failed`.
-- **Once opened, an item stays on the shelf until a person removes it.**
-  `ingestion shelf remove <key>` posts to `POST /api/v1/shelf/{key}/remove` under
-  `ingestion.review.place`, and answers `schemas/shelf-remove.schema.json`. The removal appends
-  the person's read decision with cause `shelf-remove`. It keeps the newest read's verdict and
-  lens, so a summary already kept stays in the item. Removing it again answers `removed: false`.
-- **`ingestion tui --view shelf` lists the shelf**, grouped by verb or by state, with a kept
-  summary in the side panel. `a` opens the item under the cursor, `o` opens its URL, and `D`
-  removes it. The tab's `--json` snapshot holds to `schemas/tui-shelf.schema.json`.
 
 ### A person accepts a routing rule in the service, and its review share shows what it would hide
 
@@ -1385,16 +1385,14 @@ idea and themes, or a sighting's fields.
 
 | Key | Does |
 | --- | --- |
-| `F` `L` `P` `S` `T` `W` | sorts it by `fleet-relate`, `learning`, `personal-relate`, `personal-summarize`, `technical-summarize` or `watch`, as the section on sort verbs tells. The bar under the strip names where each verb sends an item |
-| `d` | drops it, after asking what decided it: its channel or another field of its source such as its subreddit, its title, its theme, its low quality, or none |
-| `x` | marks it `low-quality`, which counts on its gate families and leaves it waiting |
-| `r` | marks it `read`, which counts on its gate families and leaves it waiting |
+| `A` `L` `S` `W` `P` `E` | places it by `articles`, `learning`, `suggestion`, `watch` or `psyche`, or archives it, as the section on review's choices tells. The bar under the strip gives each choice a line naming where it sends an item |
+| `d` | drops it, after asking what decided it: its channel or another field of its source such as its subreddit, its title, its theme, its low quality, or none. A drop for low quality also marks it `low-quality` |
 | `c` | asks once what a video's top comments say, as the next section tells |
-| `n` | writes a note in `$VISUAL` or `$EDITOR`, which a model read answers, then places the item with it on the destination picked from a numbered menu |
+| `n` | writes a note in `$VISUAL` or `$EDITOR`, which a model read answers, then places the item with it by the choice picked from a numbered menu |
 | `o` | opens its URL in the browser, where it is an http or https address |
 
-Each key posts to the routes that `review sort`, `review place`, `review drop` and `items mark`
-post to, under the same login, so the decision is the person's. A placement or a drop also keeps `presented`,
+Each key posts to the routes that `review place`, `review archive` and `review drop` post to,
+under the same login, so the decision is the person's. A placement or a drop also keeps `presented`,
 the card as the tab showed it:
 
 - the sort and grouping in force
@@ -1615,10 +1613,11 @@ It puts them to the model through `prompts/model-read/prompt.tmpl` and the lens'
 
 - **The lens says what the item is read for.** The `fleet` lens reads it for the software it may
   bear on: how that software is built, run and kept safe. The `personal` lens reads it for the
-  owner's own life, and the `learning` lens to learn its subject, concept by concept. A sort by
-  `personal-summarize` or `technical-summarize` reads under those two once opened. Only the
-  `fleet` lens drafts a missing note. Where the item carries a note, the read answers the note. A draft is quoted under its own heading, as questions a model drafted, so an
-  instruction inside it is not the owner's. Where the item carries neither, the read answers the
+  owner's own life, under a connector whose `read_rule` is `model`. The `learning` lens reads it
+  to learn its subject, concept by concept, for the read decisions already written under it. The
+  `suggestion` choice reads under the `fleet` lens. Only the `fleet` lens drafts a missing note.
+  Where the item carries a note, the read answers the note. A draft is quoted under its own
+  heading, as questions a model drafted, so an instruction inside it is not the owner's. Where the item carries neither, the read answers the
   lens's default questions.
 - **The answer holds to `prompts/model-read/answer.schema.json`**: a summary, a suggestion
   sentence, or both, with the other null. An answer holding neither fails the task.
@@ -1675,7 +1674,7 @@ learning's `/api/v1/resources` as a book whose copy is that PDF. It sends the it
 type `book`, the copy `pdf`, its key as `source_key`, and its file as `file_path`: the path of its
 live home below the `[serve.homes]` root that `[deliver.learning-resources]` names as `root`. It
 posts a video, which holds no bytes, as type `video` with its URL. `ypl-watch` adds a video to the
-playlist that its sort picked, through ypl, as the section on sort verbs tells.
+playlist that its watch picked, through ypl, as the section on review's choices tells.
 
 A book's chapter takes its book's placement, so it goes where its book goes. `learning-resources`
 posts it as type `chapter`, `part_of` the resource that its book's delivery settled on. It sends

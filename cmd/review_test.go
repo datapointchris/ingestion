@@ -176,10 +176,11 @@ func (p *pipeline) decisions(t *testing.T, key string) (all []server.DecisionVie
 // is. A save that no rule names waits at the quality gate, and an item whose
 // parse failed waits in review. A person places the waiting save with a cause
 // and a note, which withdraws its quality task, and a service places the other
-// for the person its body names. Each decision records who decided, the
-// client, the cause and the note. A second copy of a placement appends
-// nothing, a destination the set does not declare is refused, and a drop
-// leaves the item dropped.
+// for the person its body names. The service's drop for low quality writes no
+// mark, since its token holds no marks scope. Each decision records who
+// decided, the client, the cause and the note. A second copy of a placement
+// appends nothing, a destination the set does not declare is refused, and a
+// drop leaves the item dropped.
 func TestASaveIsPlacedByItsRuleOrWaitsInReviewForAPersonToPlace(t *testing.T) {
 	ctx := t.Context()
 	p := newGatedPipeline(t, mustAbs(t, "../examples/declarations"))
@@ -226,8 +227,8 @@ func TestASaveIsPlacedByItsRuleOrWaitsInReviewForAPersonToPlace(t *testing.T) {
 		ClientID: "ingestion-svc-desk", ClientSecret: "desk-secret", TokenURL: p.provider.URL + "/token",
 		Scopes: []string{server.ScopeReviewRead, server.ScopeReviewPlace},
 	}).Client(ctx)
-	post := func(body string) (int, []byte) {
-		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, p.api.URL+"/api/v1/review/"+url.PathEscape(unparsable.Key)+"/place", strings.NewReader(body))
+	post := func(route, body string) (int, []byte) {
+		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, p.api.URL+"/api/v1/review/"+url.PathEscape(unparsable.Key)+"/"+route, strings.NewReader(body))
 		resp, err := desk.Do(req)
 		if err != nil {
 			t.Fatal(err)
@@ -236,10 +237,10 @@ func TestASaveIsPlacedByItsRuleOrWaitsInReviewForAPersonToPlace(t *testing.T) {
 		raw, _ := io.ReadAll(resp.Body)
 		return resp.StatusCode, raw
 	}
-	if status, _ := post(`{"destination":"reading-list"}`); status != http.StatusBadRequest {
+	if status, _ := post("place", `{"destination":"reading-list"}`); status != http.StatusBadRequest {
 		t.Errorf("a service's placement naming no login answered %d, want 400", status)
 	}
-	status, raw := post(`{"destination":"reading-list","cause":"title","login":"alice"}`)
+	status, raw := post("place", `{"destination":"reading-list","cause":"title","login":"alice"}`)
 	if status != http.StatusOK {
 		t.Fatalf("a service's placement for alice answered %d: %s", status, raw)
 	}
@@ -251,6 +252,10 @@ func TestASaveIsPlacedByItsRuleOrWaitsInReviewForAPersonToPlace(t *testing.T) {
 	}
 	if c := p.gated(t); len(c.review) != 0 {
 		t.Errorf("after both placements the review queue holds %v, want nothing", c.review)
+	}
+	if status, raw := post("drop", `{"cause":"low-quality","login":"alice"}`); status != http.StatusOK ||
+		p.count(t, `SELECT count(*) FROM marks WHERE item_key = ?`, unparsable.Key) != 0 {
+		t.Errorf("a service's drop for low quality answered %d: %s, and left marks, want the drop with no mark, since it holds no marks scope", status, raw)
 	}
 
 	_, err = runCLI(t, "review", "place", "reddit/t3_aa1", "nowhere", "--config", p.config)
@@ -311,5 +316,44 @@ func TestASaveWaitingOnTheGateIsPlacedByARuleOrGuessThatArrivesLater(t *testing.
 	}
 	if c := p.gated(t); len(c.review) != 0 {
 		t.Errorf("the review queue holds %v, want nothing", c.review)
+	}
+}
+
+// Records already written still wait in review under their own reasons: a shelf read that nobody
+// opened as shelved, and a learning sort that the quality gate did not pass as learning-refused.
+// The review list holds to its schema with both, and a person's archive and placement each take
+// one out of review.
+func TestAShelfReadOrALearningRefusalAlreadyWrittenWaitsInReviewForAChoice(t *testing.T) {
+	p := newGatedPipeline(t, mustAbs(t, "../examples/declarations"))
+	p.landExports(t, map[string][]byte{"first": redditExport(redditSave("t3_aa1", "golang"), redditSave("t3_bb2", "rust"))})
+	p.parse(t, extract.Builtin())
+	p.scanFindingNothing(t)
+	person, learning := route.ByPerson("person"), "learning-plan"
+	if err := p.st.Update(t.Context(), func(tx *store.Tx) error {
+		for _, d := range []store.Decision{
+			{ItemKey: "reddit/t3_aa1", Gate: store.GateSide, Verdict: connectors.SidePersonal, DecidedBy: person, Cause: "personal-summarize"},
+			{ItemKey: "reddit/t3_aa1", Gate: store.GateRead, Verdict: store.VerdictShelf, DecidedBy: person, Cause: "personal-summarize"},
+			{ItemKey: "reddit/t3_bb2", Gate: store.GateSide, Verdict: connectors.SidePersonal, Destination: &learning, DecidedBy: person, Cause: route.ChoiceLearning},
+			{ItemKey: "reddit/t3_bb2", Gate: store.GateRead, Verdict: store.VerdictReview, DecidedBy: route.ByGate, Cause: route.CauseLearningRefused},
+		} {
+			if _, err := tx.AddDecision(t.Context(), d); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if c := p.gated(t); !maps.Equal(c.review, map[string]int{store.ReasonShelved: 1, route.CauseLearningRefused: 1}) {
+		t.Fatalf("the review list holds %v, want the shelf read as shelved and the learning sort as learning-refused", c.review)
+	}
+	if _, err := runCLI(t, "review", "archive", "reddit/t3_aa1", "--config", p.config); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runCLI(t, "review", "place", "reddit/t3_bb2", "reading-list", "--config", p.config); err != nil {
+		t.Fatal(err)
+	}
+	if c := p.gated(t); len(c.review) != 0 {
+		t.Errorf("after an archive and a placement the review list holds %v, want nothing", c.review)
 	}
 }

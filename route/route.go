@@ -114,13 +114,9 @@ const (
 	// sends to review an item whose draft fell below the floor.
 	CauseNoteDraft   = "note-draft"
 	CauseNoteUnclear = "note-unclear"
-	// CauseLearningRefused sends to review, at the read gate, an item that a
-	// person sorted to learning where the quality gate's newest answer did
-	// not pass it. CauseShelfOpen is a person's opening of a shelved item,
-	// and CauseShelfRemove their taking it off the shelf.
+	// CauseLearningRefused sends to review a learning sort that the quality
+	// gate did not pass, which records already written carry.
 	CauseLearningRefused = "learning-refused"
-	CauseShelfOpen       = store.CauseShelfOpen
-	CauseShelfRemove     = store.CauseShelfRemove
 )
 
 // ReviewReason is one reason an item waits in review: its name, the line
@@ -149,7 +145,11 @@ var ReviewReasons = []ReviewReason{
 		"the note's draft is unclear",
 	},
 	{
-		CauseLearningRefused, "you sorted it to learning, and the quality gate's newest answer did not pass it: its card holds the gate's reason",
+		store.ReasonShelved, "you put it on the shelf, which review does not offer: choose where it goes",
+		"it waited on the shelf",
+	},
+	{
+		CauseLearningRefused, "you sorted it to learning, and the quality gate's newest answer did not pass it: choose where it goes",
 		"learning refused it",
 	},
 	{CauseBelowFloor, "the quality gate guessed fleet, or its guess fell below its floor", "fleet guess, or below its floor"},
@@ -620,9 +620,7 @@ func GuessOf(outputs []store.Output) *Guess {
 // Where a person decides the side, it withdraws the item's queued quality
 // task, so no model judges an item that a person placed before the gate
 // answered. A tag's or a rule's placement leaves the task queued, because the
-// gate's answer on every item it reads is what its trust is earned from. So
-// does a learning sort that the gate's want of an answer refused, which the
-// person decides again once the gate answers.
+// gate's answer on every item it reads is what its trust is earned from.
 func decide(ctx context.Context, tx *store.Tx, key string, side store.Decision, set connectors.Set, sightings []store.Sighting,
 	note *string, readAs *store.Decision,
 ) ([]store.Decision, error) {
@@ -631,7 +629,7 @@ func decide(ctx context.Context, tx *store.Tx, key string, side store.Decision, 
 	if err != nil {
 		return nil, err
 	}
-	if written.ByPerson() && (readAs == nil || readAs.Cause != CauseLearningRefused) {
+	if written.ByPerson() {
 		why := "withdrawn: " + written.DecidedBy + " decided the item's side before the quality gate ran"
 		if err := tx.WithdrawQueued(ctx, key, store.StageQuality, why); err != nil {
 			return nil, err
@@ -1059,6 +1057,9 @@ type Placement struct {
 	// decision keeps both, and the read decision after it neither.
 	Presented      *store.Presented
 	DecidedAfterMS *int64
+	// Unmarked keeps a drop for low quality from writing the low-quality mark,
+	// for a caller that may not write marks.
+	Unmarked bool
 }
 
 // NotDeclaredError is a placement naming a destination that the set in force
@@ -1093,26 +1094,28 @@ func (e *ChapterError) Error() string {
 }
 
 // PlaylistDestinationError is a placement on a destination whose deliverer
-// adds the item to the playlist that a sort picks, which no placement carries.
+// adds the item to the playlist that a person picks, which no placement
+// carries.
 type PlaylistDestinationError struct {
 	Destination string
-	// Verb is the verb whose sort places an item there.
-	Verb string
+	// Choice is the choice whose pick places an item there.
+	Choice string
 }
 
 func (e *PlaylistDestinationError) Error() string {
-	return fmt.Sprintf("only a sort by %s places an item at %s, since its deliverer adds the item to the playlist that the sort picks, so sort the item by %s instead",
-		e.Verb, e.Destination, e.Verb)
+	return fmt.Sprintf("only the %s choice places an item at %s, since its deliverer adds the item to the playlist that the pick names, so choose %s instead",
+		e.Choice, e.Destination, e.Choice)
 }
 
-// PushOnlyError is a placement other than a push on a push-only destination,
-// whose program only a push hands the item to.
+// PushOnlyError is a placement on a push-only destination, whose program only
+// a push or the psyche choice hands the item to.
 type PushOnlyError struct {
 	Destination string
 }
 
 func (e *PushOnlyError) Error() string {
-	return fmt.Sprintf("only a push places an item at %s, since a push hands the item to its program, so push the item there instead", e.Destination)
+	return fmt.Sprintf("only a push or the %s choice places an item at %s, since each hands the item to its program, so choose %s instead",
+		ChoicePsyche, e.Destination, ChoicePsyche)
 }
 
 // Place appends a person's decision on the item under key: on p's destination,
@@ -1123,12 +1126,13 @@ func (e *PushOnlyError) Error() string {
 // a rule already placed. A placement that repeats the newest side decision
 // appends nothing, and answers the decisions it made. A placement on a
 // destination of an item whose drop the gate showed or hid disagrees with the
-// gate, which returns each family of its answer to rung 0. Place answers
-// store.ErrNoItem where the store holds no such item, a NotDeclaredError
-// for a destination that the set in force does not declare, a PushOnlyError
-// for a push-only destination that p does not push to, a
-// PlaylistDestinationError for a destination that only a sort places on, and
-// a ChapterError for a book's chapter.
+// gate, which returns each family of its answer to rung 0. A drop for low
+// quality also writes the person's low-quality mark, which teaches the
+// quality gate as the mark does. Place answers store.ErrNoItem where the
+// store holds no such item, a NotDeclaredError for a destination that the set
+// in force does not declare, a PushOnlyError for a push-only destination that
+// p does not push to, a PlaylistDestinationError for a destination that only
+// the watch choice places on, and a ChapterError for a book's chapter.
 func Place(ctx context.Context, tx *store.Tx, key string, p Placement) ([]store.Decision, error) {
 	if item, ok, err := tx.Item(ctx, key); err != nil {
 		return nil, err
@@ -1168,8 +1172,8 @@ func Place(ctx context.Context, tx *store.Tx, key string, p Placement) ([]store.
 		}
 		if connectors.TakesPlaylist(destination.Deliverer) {
 			e := &PlaylistDestinationError{Destination: destination.Name}
-			if i := slices.IndexFunc(Verbs, func(v VerbRoute) bool { return v.Deliverer == destination.Deliverer }); i >= 0 {
-				e.Verb = Verbs[i].Verb
+			if i := slices.IndexFunc(Choices, func(c Choice) bool { return c.Deliverer == destination.Deliverer }); i >= 0 {
+				e.Choice = Choices[i].Name
 			}
 			return nil, e
 		}
@@ -1196,10 +1200,14 @@ func Place(ctx context.Context, tx *store.Tx, key string, p Placement) ([]store.
 		}
 	}
 	made, err := decide(ctx, tx, key, side, set, sightings, p.Note, readAs)
-	if err != nil || !sided || p.Destination == "" || !gateDropped(held) {
-		return made, err
+	switch {
+	case err != nil:
+		return nil, err
+	case p.Destination == "" && p.Cause == CauseLowQuality && !p.Unmarked:
+		_, _, err = gatetrust.Mark(ctx, tx, key, gatetrust.Marking{Mark: gatetrust.MarkLowQuality, DecidedBy: side.DecidedBy, ClientID: p.ClientID})
+	case sided && p.Destination != "" && gateDropped(held):
+		_, err = gatetrust.Disagree(ctx, tx, key, side.DecidedBy, p.ClientID)
 	}
-	_, err = gatetrust.Disagree(ctx, tx, key, side.DecidedBy, p.ClientID)
 	return made, err
 }
 

@@ -16,7 +16,7 @@ type Repeat string
 const (
 	ItemsListVersion  = 2
 	ItemVersion       = 2
-	ReviewListVersion = 3
+	ReviewListVersion = 4
 	PlacementVersion  = 2
 )
 
@@ -77,11 +77,8 @@ var (
 	RouteConnectorDrops   = Route{"POST /api/v1/connectors/{name}/drops", ScopeItemsDrop, RepeatKeyed}
 	RouteReview           = Route{"GET /api/v1/review", ScopeReviewRead, RepeatRead}
 	RouteReviewPlace      = Route{"POST /api/v1/review/{key}/place", ScopeReviewPlace, RepeatByContent}
+	RouteReviewArchive    = Route{"POST /api/v1/review/{key}/archive", ScopeReviewPlace, RepeatByContent}
 	RouteReviewDrop       = Route{"POST /api/v1/review/{key}/drop", ScopeReviewPlace, RepeatByContent}
-	RouteReviewSort       = Route{"POST /api/v1/review/{key}/sort", ScopeReviewPlace, RepeatByContent}
-	RouteShelf            = Route{"GET /api/v1/shelf", ScopeReviewRead, RepeatRead}
-	RouteShelfOpen        = Route{"POST /api/v1/shelf/{key}/open", ScopeReviewPlace, RepeatByContent}
-	RouteShelfRemove      = Route{"POST /api/v1/shelf/{key}/remove", ScopeReviewPlace, RepeatByContent}
 	RouteGateAgreement    = Route{"GET /api/v1/gates/agreement", ScopeItemsRead, RepeatRead}
 	RouteItemMarks        = Route{"POST /api/v1/items/{key}/marks", ScopeMarksWrite, RepeatByContent}
 	RouteItemComments     = Route{"POST /api/v1/items/{key}/comments", ScopeCommentsRead, RepeatByContent}

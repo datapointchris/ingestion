@@ -39,7 +39,7 @@ func (s Set) ruleTargetProblems(m Match, destination string) []string {
 	case d.PushOnly:
 		out = append(out, fmt.Sprintf("destination %s is push-only, so only a push places an item there", destination))
 	case TakesPlaylist(d.Deliverer):
-		out = append(out, fmt.Sprintf("destination %s adds to the playlist that a sort picks, so only a sort places an item there", destination))
+		out = append(out, fmt.Sprintf("destination %s adds to the playlist that the watch choice picks, so only that choice places an item there", destination))
 	}
 	return out
 }

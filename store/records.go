@@ -381,8 +381,7 @@ type Decision struct {
 	Cause       string   `json:"cause"`
 	Destination *string  `json:"destination"`
 	Note        *string  `json:"note"`
-	// Lens is set on a read decision whose verdict is model, and on a shelf
-	// whose opening runs a model read.
+	// Lens is set on a read decision whose verdict is model.
 	Lens     *string `json:"lens"`
 	ClientID *string `json:"client_id"`
 	// Playlist is the playlist that a person's watch adds the video to, on
@@ -448,8 +447,13 @@ const (
 	VerdictPass   = "pass"
 	VerdictDrop   = "drop"
 	VerdictReview = "review"
+	// VerdictArchive is the read gate's verdict on an item that a person
+	// archived from review: done, so nothing reads or delivers it, and its
+	// record stays.
+	VerdictArchive = "archive"
 	// VerdictShelf is the read gate's verdict on an item that a person put on
-	// the shelf: nothing reads it until the person opens it.
+	// the shelf, which records already written carry. Such an item that
+	// nobody opened or took off the shelf waits in review as ReasonShelved.
 	VerdictShelf = "shelf"
 	// VerdictSplit is the side gate's verdict on a memo once its topics are
 	// landed. The memo routes nothing of its own, and each topic is placed as
@@ -460,20 +464,12 @@ const (
 // CauseTopics is the cause of a memo's split, which the topics stage made.
 const CauseTopics = "topics"
 
-// The causes of a person's read decisions on a shelved item. CauseShelfOpen
-// opens it, and CauseShelfRemove takes it off the shelf, keeping the newest
-// read's verdict and lens.
+// The causes of a person's read decisions on a shelved item, which records
+// already written carry. CauseShelfOpen opened it, and CauseShelfRemove took
+// it off the shelf, keeping the newest read's verdict and lens.
 const (
 	CauseShelfOpen   = "shelf-open"
 	CauseShelfRemove = "shelf-remove"
-)
-
-// The standings of an item on the shelf, as ItemRecords.ShelfStanding answers
-// them: waiting for a person to open it, and opened. An item off the shelf
-// stands at "".
-const (
-	ShelfWaiting = "waiting"
-	ShelfOpened  = "opened"
 )
 
 // Who decided, as decided_by spells it, beside the forms that the DecidedBy
@@ -542,7 +538,9 @@ func (d Decision) Provisional() bool {
 // to review. The gates sent it there where an earlier side decision was a
 // review, or where the quality gate's review came before the placement. A
 // placement that no review came before labels nothing, as one made before the
-// gates ran, or one carried over from a judgment made elsewhere.
+// gates ran, or one carried over from a judgment made elsewhere. An archive
+// labels nothing either. It says the item is done rather than which side it
+// belongs on, and its read mark carries the person's word.
 func ReviewPlacement(decisions []Decision) (Decision, bool) {
 	var placement Decision
 	sided := false
@@ -551,13 +549,21 @@ func ReviewPlacement(decisions []Decision) (Decision, bool) {
 			placement, sided = d, true
 		}
 	}
-	if !sided || !placement.ByPerson() {
+	if !sided || !placement.ByPerson() || archives(decisions, placement) {
 		return Decision{}, false
 	}
 	if _, ok := ReviewBefore(decisions, placement); !ok {
 		return Decision{}, false
 	}
 	return placement, true
+}
+
+// archives says whether side came with a read decision of verdict archive by
+// the same person in the same write, as an archive writes the two.
+func archives(decisions []Decision, side Decision) bool {
+	return slices.ContainsFunc(decisions, func(d Decision) bool {
+		return d.Gate == GateRead && d.Verdict == VerdictArchive && d.DecidedTS == side.DecidedTS && d.DecidedBy == side.DecidedBy
+	})
 }
 
 // ReviewBefore is the review among decisions that sent the item to the person

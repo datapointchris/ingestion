@@ -7,12 +7,15 @@ import (
 	"strings"
 )
 
-// Why an item waits on a person where no side decision sent it to review, in
-// the words of schemas/review-list.schema.json. Every other reason is the
-// cause of the side decision that sent the item to review.
+// Why an item waits on a person where no side or read decision sent it to
+// review, in the words of schemas/review-list.schema.json. Every other reason
+// is the cause of the decision that sent the item to review. ReasonShelved is
+// an item that a person put on the shelf and nobody opened or took off it,
+// which waits on them again, because review offers no shelf.
 const (
 	ReasonNoParse       = "no-parse"
 	ReasonQualityReview = "quality-review"
+	ReasonShelved       = "shelved"
 )
 
 // Waiting is one item that waits on a person's placement.
@@ -30,15 +33,20 @@ type Waiting struct {
 // placement. An item waits where its newest side decision sent it to review,
 // under that decision's cause. It waits too where that decision placed it on a
 // side and its newest read decision sent it to review, as a note's draft below
-// its floor does, under the read decision's cause. Where no side decision
-// holds it, the item waits as no-parse where no parse is usable, and as
+// its floor does, under the read decision's cause, and as shelved where that
+// read put it on the shelf and nobody opened it or took it off. Where no side
+// decision holds it, the item waits as no-parse where no parse is usable, and as
 // quality-review where the quality gate's newest decision sent it there. It is
 // false where the item waits on nobody.
 func (r ItemRecords) WaitsOnPerson() (reason, since string, ok bool) {
 	if side, sided := r.NewestDecision(GateSide); sided {
 		if _, onASide := r.Side(); onASide {
-			if read, ok := r.NewestDecision(GateRead); ok && read.Verdict == VerdictReview {
+			read, ok := r.NewestDecision(GateRead)
+			switch {
+			case ok && read.Verdict == VerdictReview:
 				return read.Cause, read.DecidedTS, true
+			case ok && read.Verdict == VerdictShelf && read.Cause != CauseShelfOpen && read.Cause != CauseShelfRemove:
+				return ReasonShelved, read.DecidedTS, true
 			}
 		}
 		return side.Cause, side.DecidedTS, side.Verdict == VerdictReview
@@ -60,11 +68,12 @@ func (r ItemRecords) WaitsOnPerson() (reason, since string, ok bool) {
 
 // reviewCandidates selects every item that may wait on a person, as a superset
 // that WaitsOnPerson narrows: each one that a side or read decision sent to
-// review, and each one that holds no side decision. It leaves out a book's
-// chapter, as ReviewQueue's PlacedThroughParent check does, so the queue never
-// loads a book's chapters.
+// review or a read put on the shelf, and each one that holds no side decision.
+// It leaves out a book's chapter, as ReviewQueue's PlacedThroughParent check
+// does, so the queue never loads a book's chapters.
 const reviewCandidates = `
-SELECT DISTINCT d.item_key FROM decisions d WHERE d.gate IN ('side', 'read') AND d.verdict = 'review'
+SELECT DISTINCT d.item_key FROM decisions d
+WHERE ((d.gate IN ('side', 'read') AND d.verdict = '` + VerdictReview + `') OR (d.gate = 'read' AND d.verdict = '` + VerdictShelf + `'))
 	AND d.item_key NOT IN (SELECT c.key FROM items c WHERE c.media_type = '` + MediaTypeChapter + `')
 UNION
 SELECT i.key FROM items i WHERE i.media_type != '` + MediaTypeChapter + `'

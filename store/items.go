@@ -330,37 +330,18 @@ var reached = map[string]string{
 }
 
 // PhaseReview is the phase of an item that waits on a person's placement,
-// PhaseShelved of one that waits on the shelf for a person to open it, and
-// PhaseSplit of a memo whose topics are landed, each routed on its own.
+// PhaseArchived of one that a person archived from review, and PhaseSplit of
+// a memo whose topics are landed, each routed on its own.
 const (
-	PhaseReview  = "review"
-	PhaseShelved = "shelved"
-	PhaseSplit   = "split"
+	PhaseReview   = "review"
+	PhaseArchived = "archived"
+	PhaseSplit    = "split"
 )
-
-// ShelfStanding is where the item stands on the shelf, read from its newest
-// side and read decisions: ShelfWaiting where a sort put it on the shelf and
-// nobody opened it, ShelfOpened once a person opened it, and "" off the shelf.
-// Its side decision places it on a side. A person's removal, or any other
-// read decision, takes it off.
-func (r ItemRecords) ShelfStanding() string {
-	_, onASide := r.Side()
-	read, ok := r.NewestDecision(GateRead)
-	switch {
-	case !onASide || !ok:
-		return ""
-	case read.Cause == CauseShelfOpen:
-		return ShelfOpened
-	case read.Verdict == VerdictShelf && read.Cause != CauseShelfRemove:
-		return ShelfWaiting
-	}
-	return ""
-}
 
 // Phase is the item's phase in the words of schemas/items-list.schema.json:
 // dropped where the newest side decision drops it, split where it splits a
 // memo into its topics, review where WaitsOnPerson
-// says it waits, shelved where it waits on the shelf for a person to open it,
+// says it waits, archived where a person archived it from review,
 // failed where another stage on the line holds a newest task
 // that failed, dropped where the quality gate drops it before any side
 // decision, waiting where a model stage holds it, and otherwise the furthest
@@ -379,8 +360,10 @@ func (r ItemRecords) Phase() string {
 	if _, _, waits := r.WaitsOnPerson(); waits {
 		return PhaseReview
 	}
-	if r.ShelfStanding() == ShelfWaiting {
-		return PhaseShelved
+	if read, ok := r.NewestDecision(GateRead); ok && read.Verdict == VerdictArchive {
+		if _, onASide := r.Side(); onASide {
+			return PhaseArchived
+		}
 	}
 	newest := map[string]Task{}
 	for _, t := range r.Tasks {

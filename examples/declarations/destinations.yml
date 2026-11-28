@@ -3,16 +3,17 @@
 # each item placed on its destination through that app's API. A destination
 # with none, such as one whose reader pulls items itself, takes no delivery.
 # An item that the quality gate's guess places on a side, naming no
-# destination, goes to the side's default_for_side destination. A sort verb
-# places an item on the first destination whose deliverer is the verb's, such
-# as learning-resources for learning. The review tab's note menu numbers the
-# destinations in this order, so a new destination goes last.
+# destination, goes to the side's default_for_side destination. A review
+# choice places an item on the first destination whose deliverer is the
+# choice's, such as learning-resources for learning, and the suggestion choice
+# on the fleet side's default.
 destinations:
   - name: reading-list
     side: personal
     tags: [read-later]
     # Saves each item as an article in life, where a worker's config holds a
-    # [deliver.life-articles] table.
+    # [deliver.life-articles] table. The articles choice places only on a
+    # destination with this deliverer.
     # deliverer: life-articles
     default_for_side: true
   - name: work-inbox
@@ -20,19 +21,19 @@ destinations:
     tags: [work]
     default_for_side: true
   - name: dropped
-  # Takes each item that a sort by learning sends to a learning plan, where a
+  # Takes each item that the learning choice sends to a learning plan, where a
   # worker's config holds a [deliver.learning-resources] table.
   - name: learning-plan
     side: personal
     deliverer: learning-resources
-  # Takes each video that a sort by watch adds to a playlist at its source,
+  # Takes each video that the watch choice adds to a playlist at its source,
   # through the client of a worker's [source.ypl] table.
   - name: watch
     side: personal
     deliverer: ypl-watch
-  # Takes each link that `ingestion push --to psyche` lands. Only a push places
-  # an item here, because the push hands the item to psyche itself, so review
-  # offers it nowhere and it names no deliverer.
+  # Takes each link that `ingestion push --to psyche` lands, and each item that
+  # review's psyche choice places. Both hand the item to psyche on the person's
+  # machine, so it names no deliverer, and no tag, rule or default reaches it.
   - name: psyche
     side: personal
     push_only: true
