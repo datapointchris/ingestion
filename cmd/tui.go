@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -102,20 +101,23 @@ func tuiTabList() []tuiTab {
 				fmt.Sprint(history.Limit) + ". Each row shows its outcome, where it went, who decided and why, its\n" +
 				"connectors, its phase, how long ago it landed, and its title. An outcome is placed\n" +
 				"at a destination, archived, dropped with its cause, split into a memo's topics, or\n" +
-				"waiting, in review or at a stage. Who decided is a person, a service, a rule, a tag,\n" +
-				"the gate, or a chapter's book. " + history.KeyOutcome + " cycles the outcome filter, reading the items\n" +
+				"undecided, in review or on its way there. Who decided is a person, a service, a\n" +
+				"rule, a tag, a model, the side gate, or a chapter's book. A book's chapters take\n" +
+				"its decisions, so the tab leaves them out, and `ingestion items list --chapters`\n" +
+				"lists them. " + history.KeyOutcomeBack + " and " + history.KeyOutcome + " step the outcome filter back and on, reading the items\n" +
 				"again under it, so the dropped list audits what the gates, the rules and you\n" +
 				"dropped. v cycles the grouping: none, by outcome, by connector, or by who decided.\n" +
 				"/ filters on the title, the URL, the channel and who decided.\n" +
 				"\n" +
 				"A choice's key places the item under the cursor as review's does, and " + review.ChoiceBindings[route.ChoiceArchive].Key + "\n" +
 				"archives it. Each calls the routes that `ingestion review place` and `review\n" +
-				"archive` call, under the same login, so the decision is yours. Placing or archiving\n" +
-				"an item that the gate dropped overrules the gate, and gate trust takes it as it\n" +
-				"takes a placement from review: each family of the gate's answer returns to rung 0.\n" +
-				"The row stays, and the read after the decision draws its new outcome.",
+				"archive` call, under the same login, so the decision is yours. Placing an item that\n" +
+				"the gate dropped disagrees with the gate, as a placement from review does.\n" +
+				"Archiving it writes the read mark, which disagrees too. Either returns each family\n" +
+				"of the gate's answer to rung 0. The row stays, and the read after the decision\n" +
+				"draws its new outcome.",
 			func(ctx context.Context, o tuiOptions) tuiBoard {
-				return historyTab{history.NewBoard(ctx, historyService{reviewService(o)}, history.Outside{Open: openInBrowser})}
+				return historyTab{history.NewBoard(ctx, historyService{reviewService(o)}, review.Outside{Open: openInBrowser})}
 			},
 		},
 	}
@@ -275,26 +277,15 @@ func (t historyTab) print(out io.Writer, asJSON bool) error {
 // make, under the same login as reviewService.
 type historyService struct{ reviewService }
 
-// Items is `ingestion items list --outcome <outcome> --limit <limit> --json`, read one page at a
-// time until it holds limit, so its Next is null only where no item is left.
+// Items is `ingestion items list --outcome <outcome> --limit <limit> --json`. It refuses an
+// answer from a service that predates each item's outcome, which the tab draws on every row.
 func (s historyService) Items(ctx context.Context, outcome string, limit int) (server.ItemsAnswer, error) {
-	answer := server.ItemsAnswer{SchemaVersion: server.ItemsListVersion, Items: []server.ItemListed{}}
-	for len(answer.Items) < limit {
-		q := url.Values{"limit": {strconv.Itoa(limit - len(answer.Items))}}
-		if outcome != "" {
-			q.Set("outcome", outcome)
-		}
-		if answer.Next != nil {
-			q.Set("after", *answer.Next)
-		}
-		var page server.ItemsAnswer
-		if _, err := getJSON(ctx, s.config, s.api, server.RouteItems, "/api/v1/items?"+q.Encode(), &page); err != nil {
-			return answer, refusalWords(err)
-		}
-		answer.Items, answer.Next = append(answer.Items, page.Items...), page.Next
-		if page.Next == nil {
-			break
-		}
+	answer, err := listItems(ctx, s.config, s.api, itemsQuery{outcome: outcome, limit: limit})
+	if err != nil {
+		return answer, refusalWords(err)
+	}
+	if answer.SchemaVersion < server.ItemsOutcomeVersion {
+		return answer, fmt.Errorf("the service answers the items list at schema version %d, which gives no item its outcome: upgrade ingestion serve to read the history", answer.SchemaVersion)
 	}
 	return answer, nil
 }

@@ -63,51 +63,20 @@ type ItemListed struct {
 }
 
 // DecidedView is the decision that left an item at its outcome: its gate and
-// verdict, who made it, as a decider and as decided_by spells it, why, the
+// verdict, who made it, as store.Decision.Decider names them and as
+// decided_by spells it, the rule's name where a rule made it, why, the
 // destination and playlist it placed the item on, and when.
 type DecidedView struct {
 	Gate        string   `json:"gate"`
 	Verdict     string   `json:"verdict"`
 	Decider     string   `json:"decider"`
 	DecidedBy   string   `json:"decided_by"`
+	Rule        *string  `json:"rule"`
 	Confidence  *float64 `json:"confidence"`
 	Cause       string   `json:"cause"`
 	Destination *string  `json:"destination"`
 	Playlist    *string  `json:"playlist"`
 	DecidedTS   string   `json:"decided_ts"`
-}
-
-// Who made a decision, as an item's decided names them. The gate is the
-// quality gate's answer or the side gate itself, and a book is the parent
-// whose decision a chapter took.
-const (
-	DeciderPerson  = "person"
-	DeciderService = "service"
-	DeciderRule    = "rule"
-	DeciderTag     = "tag"
-	DeciderGate    = "gate"
-	DeciderBook    = "book"
-)
-
-// deciderOf names who made d.
-func deciderOf(d store.Decision) string {
-	_, byModel := d.ModelRun()
-	_, byRule := d.RuleName()
-	switch {
-	case d.ByPerson():
-		return DeciderPerson
-	case strings.HasPrefix(d.DecidedBy, store.DecidedByService("")):
-		return DeciderService
-	case byRule:
-		return DeciderRule
-	case d.DecidedBy == store.DecidedByTag:
-		return DeciderTag
-	case byModel || d.DecidedBy == store.DecidedByGate:
-		return DeciderGate
-	case d.ByParent():
-		return DeciderBook
-	}
-	return d.DecidedBy
 }
 
 // itemListed is rec as the list shows it.
@@ -127,8 +96,11 @@ func itemListed(rec store.ItemRecords) ItemListed {
 	listed.Outcome, decided = rec.Outcome()
 	if d := decided; d != nil {
 		listed.Decided = &DecidedView{
-			Gate: d.Gate, Verdict: d.Verdict, Decider: deciderOf(*d), DecidedBy: d.DecidedBy, Confidence: d.Confidence, Cause: d.Cause,
+			Gate: d.Gate, Verdict: d.Verdict, Decider: d.Decider(), DecidedBy: d.DecidedBy, Confidence: d.Confidence, Cause: d.Cause,
 			Destination: d.Destination, Playlist: d.Playlist, DecidedTS: d.DecidedTS,
+		}
+		if rule, ok := d.RuleName(); ok {
+			listed.Decided.Rule = &rule
 		}
 	}
 	if reason, _, waits := rec.WaitsOnPerson(); waits {
@@ -453,6 +425,14 @@ type itemHandlers struct {
 func (h itemHandlers) list(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	page := store.ItemPage{Limit: DefaultItemsListed, After: query.Get("after"), Outcome: query.Get("outcome")}
+	if raw := query.Get("chapters"); raw != "" {
+		chapters, err := strconv.ParseBool(raw)
+		if err != nil {
+			Refuse(w, http.StatusBadRequest, CodeInvalidQuery, "chapters is true or false, not %q", raw)
+			return
+		}
+		page.Chapters = chapters
+	}
 	if raw := query.Get("limit"); raw != "" {
 		n, err := strconv.Atoi(raw)
 		if err != nil || n < 1 {

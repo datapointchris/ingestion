@@ -20,6 +20,12 @@ const (
 	PlacementVersion  = 2
 )
 
+// ItemsOutcomeVersion is the first version of the items list that gives each
+// item its outcome and reads ?outcome= and ?chapters=. A serve of an earlier
+// version ignores both and answers every item, so a client that filters
+// refuses its answer.
+const ItemsOutcomeVersion = 3
+
 const (
 	// RepeatRead reads, so a second copy changes nothing.
 	RepeatRead Repeat = "read"

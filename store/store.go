@@ -26,6 +26,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -52,6 +53,9 @@ type Store struct {
 	itemColumns []itemColumn
 	// inputsNamed counts the outputs that this open named their parse on.
 	inputsNamed int
+	// phasesSettled says that SettlePhases settled every item's stored phase
+	// under this build's Phase, which every write keeps current after.
+	phasesSettled atomic.Bool
 
 	mu sync.Mutex
 	// last is the newest stamp taken, so the next is later.

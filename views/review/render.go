@@ -96,7 +96,7 @@ func choiceBar(h held, unread bool, width int) []gotermboard.Line {
 		return nil
 	}
 	if h.choices == nil {
-		_, why := queuedChoice(h, route.ChoiceArticles)
+		_, why := ChoiceIn(h.choices, route.ChoiceArticles)
 		return []gotermboard.Line{{gotermboard.C(cut(why, width), gotermboard.Yellow)}}
 	}
 	var lines []gotermboard.Line
@@ -145,7 +145,7 @@ func choiceLabel(c server.ReviewChoice, watchDefault *string) string {
 	case c.Destination == nil:
 		return c.Choice
 	case c.Playlist && watchDefault != nil:
-		return c.Choice + " → " + *c.Destination + ", " + outsider(*watchDefault) + " unless picked"
+		return c.Choice + " → " + *c.Destination + ", " + Outsider(*watchDefault) + " unless picked"
 	}
 	return c.Choice + " → " + *c.Destination
 }
@@ -162,8 +162,8 @@ func destinationLabel(d server.ReviewDestination) string {
 // watch asked for them.
 func (b *Board) statuses() []gotermboard.Status {
 	out := []gotermboard.Status{b.queue.Status(), b.parses.Status()}
-	if b.wantPlaylists.Load() {
-		out = append(out, b.playlists.Status())
+	if status, asked := b.choiceKeys.PlaylistsStatus(); asked {
+		out = append(out, status)
 	}
 	return out
 }
@@ -269,7 +269,7 @@ func (b *Board) row(it item, now time.Time) gotermboard.Row {
 		age = gotermboard.Ticking(gotermboard.Ago(now.Sub(made(it))), "")
 	}
 	under := gotermboard.C(underLine(it), dim)
-	title := gotermboard.Line{gotermboard.C(outsider(orDash(it.Title)), "")}
+	title := gotermboard.Line{gotermboard.C(Outsider(orDash(it.Title)), "")}
 	if p, held := b.writes.Pending(key); held && p.Fault != "" {
 		title = append(gotermboard.Line{gotermboard.C("write failed  ", gotermboard.Red)}, title...)
 		under = gotermboard.C(strings.ReplaceAll(strings.TrimSpace(p.Fault), "\n", "; "), gotermboard.Red)
@@ -277,14 +277,14 @@ func (b *Board) row(it item, now time.Time) gotermboard.Row {
 	return gotermboard.Row{
 		Key: key,
 		Cells: []gotermboard.Cell{
-			gotermboard.C(outsider(sourceOf(it)), ""), gotermboard.C(it.Reason, ""), verdict, quality, fit, side,
+			gotermboard.C(Outsider(sourceOf(it)), ""), gotermboard.C(it.Reason, ""), verdict, quality, fit, side,
 			lengthCell, views, likeRatio, age,
 		},
 		Cut:         title,
 		Under:       under,
 		Text:        filterText(it),
 		Document:    func(width int) []gotermboard.Line { return b.renderer.Lines(b.document(key), min(width, readingWidth)) },
-		ReaderTitle: outsider(key),
+		ReaderTitle: Outsider(key),
 	}
 }
 
@@ -332,7 +332,7 @@ func underLine(it item) string {
 	if it.answer != nil && it.answer.Idea != "" {
 		parts = append(parts, it.answer.Idea)
 	}
-	return outsider(strings.Join(parts, " · "))
+	return Outsider(strings.Join(parts, " · "))
 }
 
 // filterText is what the filter matches beyond the row: the URL, the gate's idea, genre, domains
@@ -353,7 +353,7 @@ func filterText(it item) string {
 			words = append(words, name, s.Fields[name])
 		}
 	}
-	return outsider(strings.Join(words, " "))
+	return Outsider(strings.Join(words, " "))
 }
 
 // since is when the item began to wait.
@@ -365,9 +365,9 @@ func since(it item) time.Time {
 	return at
 }
 
-// outsider is text that a stranger may have written, with every terminal control taken out, so a
+// Outsider is text that a stranger may have written, with every terminal control taken out, so a
 // title, a body or a comment cannot drive the terminal it is drawn on.
-func outsider(text string) string { return terminalcontrol.Strip(text) }
+func Outsider(text string) string { return terminalcontrol.Strip(text) }
 
 func orDash(s *string) string {
 	if s == nil || *s == "" {

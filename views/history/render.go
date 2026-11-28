@@ -9,10 +9,10 @@ import (
 	"time"
 
 	"github.com/datapointchris/gotermboard"
-	"github.com/datapointchris/gotermboard/terminalcontrol"
 
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
+	"github.com/datapointchris/ingestion/views/review"
 )
 
 const dim = "\033[2m"
@@ -31,13 +31,13 @@ var columns = []gotermboard.Column{
 	{Title: "TITLE"},
 }
 
-// outcomeCodes color each outcome: a placement green, a drop red, a wait yellow.
+// outcomeCodes color each outcome's cell, so the outcome reads at a glance without its word.
 var outcomeCodes = map[string]string{
-	store.OutcomePlaced:   gotermboard.Green,
-	store.OutcomeArchived: gotermboard.Cyan,
-	store.OutcomeDropped:  gotermboard.Red,
-	store.OutcomeWaiting:  gotermboard.Yellow,
-	store.OutcomeSplit:    gotermboard.Blue,
+	store.OutcomePlaced:    gotermboard.Green,
+	store.OutcomeArchived:  gotermboard.Cyan,
+	store.OutcomeDropped:   gotermboard.Red,
+	store.OutcomeUndecided: gotermboard.Yellow,
+	store.OutcomeSplit:     gotermboard.Blue,
 }
 
 // Frame is gotermboard.Board's, one frame for a live table and --once alike.
@@ -47,7 +47,7 @@ func (b *Board) Frame(now time.Time, grouping string) gotermboard.Frame {
 	unread := b.items.Status().ReadAt.IsZero()
 	items := b.shown(h)
 	groups := b.grouped(items, grouping, now, unread)
-	if len(items) == 0 && !unread {
+	if len(items) == 0 && !unread && h.outcome == b.Outcome() {
 		groups = append(groups, gotermboard.Group{
 			Key: "empty", Title: gotermboard.Line{gotermboard.C("No item has this outcome.", "")}, Still: true,
 		})
@@ -65,26 +65,30 @@ func (b *Board) Frame(now time.Time, grouping string) gotermboard.Frame {
 }
 
 // header counts the items shown under the filter in force, says where the read holds only the
-// newest, and names the grouping.
+// newest, and names the grouping. Until a read under the filter in force lands, it counts nothing,
+// because the rows shown are another filter's read narrowed to this one.
 func (b *Board) header(h held, items []server.ItemListed, grouping string, unread bool) gotermboard.Line {
 	count := "unread"
-	if !unread {
+	switch {
+	case !unread && h.outcome != b.Outcome():
+		count = "unread under " + filterWords(b.Outcome())
+	case !unread:
 		count = strconv.Itoa(len(items)) + " items"
-		if h.more && h.outcome == b.Outcome() {
+		if h.more {
 			count = "the newest " + count
 		}
 	}
 	return gotermboard.Line{
 		gotermboard.C("history ", ""), gotermboard.C(count, gotermboard.Bold), gotermboard.C("  outcome ", ""),
 		gotermboard.C(filterWords(b.Outcome()), gotermboard.Bold), gotermboard.C("  group ", ""), gotermboard.C(grouping, gotermboard.Bold),
-		gotermboard.C(", newest landed first", ""),
+		gotermboard.C(", newest landed first, no chapters", ""),
 	}
 }
 
-// filterLine names each outcome filter that l cycles, with the one in force bracketed and bold, so
-// a frame printed without color still marks it.
+// filterLine names each outcome filter that h and l step through, with the one in force bracketed
+// and bold, so a frame printed without color still marks it.
 func (b *Board) filterLine() gotermboard.Line {
-	line := gotermboard.Line{gotermboard.C(KeyOutcome, gotermboard.Bold), gotermboard.C(" outcome:", "")}
+	line := gotermboard.Line{gotermboard.C(KeyOutcomeBack+"/"+KeyOutcome, gotermboard.Bold), gotermboard.C(" outcome:", "")}
 	for _, f := range filters {
 		word := gotermboard.C(filterWords(f), dim)
 		if f == b.Outcome() {
@@ -98,12 +102,12 @@ func (b *Board) filterLine() gotermboard.Line {
 // filterWords names an outcome filter, "every outcome" for none.
 func filterWords(outcome string) string { return cmp.Or(outcome, "every outcome") }
 
-// statuses are the reads the strip names: the items, and the playlists once a watch asked for
-// them.
+// statuses are the reads the strip names: the items, the choices, and the playlists once a watch
+// asked for them.
 func (b *Board) statuses() []gotermboard.Status {
-	out := []gotermboard.Status{b.items.Status()}
-	if b.wantPlaylists.Load() {
-		out = append(out, b.playlists.Status())
+	out := []gotermboard.Status{b.items.Status(), b.choices.Status()}
+	if status, asked := b.choiceKeys.PlaylistsStatus(); asked {
+		out = append(out, status)
 	}
 	return out
 }
@@ -165,7 +169,7 @@ func (b *Board) groupedBy(items []server.ItemListed, kind string, nameOf func(se
 func (b *Board) appendGroup(groups []gotermboard.Group, key, title string, items []server.ItemListed, keep func(server.ItemListed) bool,
 	now time.Time, unread bool,
 ) []gotermboard.Group {
-	g := gotermboard.Group{Key: key, Title: gotermboard.Line{gotermboard.C(outsider(title), gotermboard.Bold)}, Counted: !unread}
+	g := gotermboard.Group{Key: key, Title: gotermboard.Line{gotermboard.C(review.Outsider(title), gotermboard.Bold)}, Counted: !unread}
 	for _, it := range items {
 		if keep(it) {
 			g.Rows = append(g.Rows, b.row(it, now))
@@ -189,7 +193,7 @@ func (b *Board) row(it server.ItemListed, now time.Time) gotermboard.Row {
 		age = gotermboard.Ticking(gotermboard.Ago(now.Sub(at)), "")
 	}
 	under := gotermboard.C(underLine(it), dim)
-	title := gotermboard.Line{gotermboard.C(outsider(orDash(it.Title)), "")}
+	title := gotermboard.Line{gotermboard.C(review.Outsider(orDash(it.Title)), "")}
 	if p, held := b.writes.Pending(key); held && p.Fault != "" {
 		title = append(gotermboard.Line{gotermboard.C("write failed  ", gotermboard.Red)}, title...)
 		under = gotermboard.C(strings.ReplaceAll(strings.TrimSpace(p.Fault), "\n", "; "), gotermboard.Red)
@@ -200,7 +204,7 @@ func (b *Board) row(it server.ItemListed, now time.Time) gotermboard.Row {
 		Key: key,
 		Cells: []gotermboard.Cell{
 			gotermboard.C(it.Outcome, outcomeCodes[it.Outcome]), cellOf(where), cellOf(by), cellOf(why),
-			cellOf(outsider(strings.Join(it.Connectors, ", "))), gotermboard.C(phaseWords(it), ""), age,
+			cellOf(review.Outsider(strings.Join(it.Connectors, ", "))), gotermboard.C(phaseWords(it), ""), age,
 		},
 		CutLast: title,
 		Under:   under,
@@ -225,14 +229,14 @@ func whereWords(it server.ItemListed) string {
 	return ""
 }
 
-// byWords is who decided: a person, a rule by its name, a tag, the gate, a book or a service.
+// byWords is who decided, as store.Deciders names them, with a rule's name.
 func byWords(it server.ItemListed) string {
 	d := it.Decided
-	if d == nil {
+	switch {
+	case d == nil:
 		return ""
-	}
-	if name, ok := strings.CutPrefix(d.DecidedBy, store.DecidedByRule("")); ok {
-		return server.DeciderRule + " " + name
+	case d.Rule != nil:
+		return d.Decider + " " + *d.Rule
 	}
 	return d.Decider
 }
@@ -275,7 +279,7 @@ func underLine(it server.ItemListed) string {
 	if it.Decided != nil {
 		parts = append(parts, it.Decided.DecidedBy)
 	}
-	return outsider(strings.Join(parts, " · "))
+	return review.Outsider(strings.Join(parts, " · "))
 }
 
 // filterText is what / matches beyond the row: the URL, the channel and decided_by.
@@ -284,24 +288,24 @@ func filterText(it server.ItemListed) string {
 	if it.Decided != nil {
 		words = append(words, it.Decided.DecidedBy)
 	}
-	return outsider(strings.Join(words, " "))
+	return review.Outsider(strings.Join(words, " "))
 }
 
 // detail is what the side panel and an opened row show: the title, the URL, the key, the outcome
 // in a sentence, the connectors and channel, the phase and when the item landed, and what a
 // placement here does.
 func detail(it server.ItemListed) []gotermboard.Cell {
-	cells := []gotermboard.Cell{gotermboard.C(outsider(orDash(it.Title)), gotermboard.Bold)}
+	cells := []gotermboard.Cell{gotermboard.C(review.Outsider(orDash(it.Title)), gotermboard.Bold)}
 	if it.URL != nil {
-		cells = append(cells, gotermboard.C(outsider(*it.URL), ""))
+		cells = append(cells, gotermboard.C(review.Outsider(*it.URL), ""))
 	}
 	cells = append(cells,
-		gotermboard.C(outsider("key "+it.Key+" · zone "+string(it.Zone)+" · "+it.MediaType), ""),
-		gotermboard.C(outsider(outcomeSentence(it)), outcomeCodes[it.Outcome]),
-		gotermboard.C(outsider("from "+cmp.Or(strings.Join(it.Connectors, ", "), "no connector")+channelWords(it)), ""),
-		gotermboard.C(outsider("phase "+phaseWords(it)+" · landed "+localStamp(it.CreatedTS)), dim),
+		gotermboard.C(review.Outsider("key "+it.Key+" · zone "+string(it.Zone)+" · "+it.MediaType), ""),
+		gotermboard.C(review.Outsider(outcomeSentence(it)), outcomeCodes[it.Outcome]),
+		gotermboard.C(review.Outsider("from "+cmp.Or(strings.Join(it.Connectors, ", "), "no connector")+channelWords(it)), ""),
+		gotermboard.C(review.Outsider("phase "+phaseWords(it)+" · landed "+localStamp(it.CreatedTS)), dim),
 	)
-	if it.Decided != nil && it.Decided.Decider == server.DeciderGate && it.Outcome == store.OutcomeDropped {
+	if d := it.Decided; d != nil && (d.Decider == store.DeciderModel || d.Decider == store.DeciderGate) && it.Outcome == store.OutcomeDropped {
 		cells = append(cells, gotermboard.C("The gate dropped it. Placing or archiving it here overrules the gate, which returns each of its families to rung 0.", dim))
 	}
 	return cells
@@ -346,10 +350,6 @@ func localStamp(stamp string) string {
 	}
 	return at.Local().Format("2006-01-02 15:04 MST")
 }
-
-// outsider is text that a stranger may have written, with every terminal control taken out, so a
-// title or a channel cannot drive the terminal it is drawn on.
-func outsider(text string) string { return terminalcontrol.Strip(text) }
 
 func orDash(s *string) string {
 	if s == nil || *s == "" {

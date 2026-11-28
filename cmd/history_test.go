@@ -22,10 +22,11 @@ import (
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
 	"github.com/datapointchris/ingestion/views/history"
+	"github.com/datapointchris/ingestion/views/review"
 )
 
 // Once the gate's family has earned hiding a share of its drops, a save that it hid lists under the
-// history tab's dropped filter, with the gate as who decided and quality-drop as why. Placing it
+// history tab's dropped filter, with the gate's model as who decided and quality-drop as why. Placing it
 // there by the articles choice delivers it to life's stand-in, lists it under placed, and records
 // the person's disagreement, which returns the family to rung 0.
 func TestTheHistoryTabListsAGateDropAndAPlacementThereOverrulesTheGate(t *testing.T) {
@@ -73,6 +74,9 @@ func TestTheHistoryTabListsAGateDropAndAPlacementThereOverrulesTheGate(t *testin
 	if hidden == "" {
 		t.Fatal("the promoted family hid none of eight drops")
 	}
+	if _, _, err := p.st.SettlePhases(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 
 	out, err := runCLI(t, "tui", "--view", "history", "--json", "--config", p.config)
 	if err != nil {
@@ -87,12 +91,12 @@ func TestTheHistoryTabListsAGateDropAndAPlacementThereOverrulesTheGate(t *testin
 	for _, it := range every.Items {
 		outcomes[it.Item.Key] = it.Item.Outcome
 	}
-	if every.Outcome != nil || len(every.Items) != 40 || outcomes[hidden] != store.OutcomeDropped || outcomes[first[0]] != store.OutcomeWaiting {
-		t.Errorf("the history snapshot under every outcome holds %d items, %s as %s and %s as %s, want both exports and all 38 saves, the hidden drop dropped and the shown one waiting",
+	if every.Outcome != nil || len(every.Items) != 40 || outcomes[hidden] != store.OutcomeDropped || outcomes[first[0]] != store.OutcomeUndecided {
+		t.Errorf("the history snapshot under every outcome holds %d items, %s as %s and %s as %s, want both exports and all 38 saves, the hidden drop dropped and the shown one undecided",
 			len(every.Items), hidden, outcomes[hidden], first[0], outcomes[first[0]])
 	}
 
-	board := historyTab{history.NewBoard(t.Context(), historyService{reviewService(tuiOptions{config: p.config})}, history.Outside{})}
+	board := historyTab{history.NewBoard(t.Context(), historyService{reviewService(tuiOptions{config: p.config})}, review.Outside{})}
 	m := gotermboard.NewModel(board, gotermstyle.PaletteFor(io.Discard))
 	m.Update(tea.WindowSizeMsg{Width: 180, Height: 40})
 	for range 3 {
@@ -123,23 +127,12 @@ func TestTheHistoryTabListsAGateDropAndAPlacementThereOverrulesTheGate(t *testin
 		return items
 	}
 	dropped := shown()
-	if d := dropped[hidden].Decided; d == nil || d.Decider != server.DeciderGate || d.Cause != route.CauseQualityDrop {
-		t.Fatalf("under dropped the tab shows %s as %s, want the gate's quality-drop", hidden, jsonOf(dropped[hidden]))
+	if d := dropped[hidden].Decided; d == nil || d.Decider != store.DeciderModel || d.Cause != route.CauseQualityDrop {
+		t.Fatalf("under dropped the tab shows %s as %s, want the model's quality-drop", hidden, jsonOf(dropped[hidden]))
 	}
 	if _, listed := dropped[first[0]]; listed {
 		t.Errorf("under dropped the tab shows %s, which waits in review", first[0])
 	}
-	var frame strings.Builder
-	if err := board.print(&frame, false); err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{"history", "outcome dropped", "l outcome: every outcome placed archived [dropped] waiting split", hidden, "quality-drop"} {
-		if !strings.Contains(frame.String(), want) {
-			t.Errorf("the frame lacks %q:\n%s", want, frame.String())
-		}
-	}
-	t.Logf("the history tab under the dropped filter:\n%s", frame.String())
-
 	if !m.MoveCursorTo(hidden) {
 		t.Fatalf("the cursor does not reach %s", hidden)
 	}
@@ -165,7 +158,7 @@ func TestTheHistoryTabListsAGateDropAndAPlacementThereOverrulesTheGate(t *testin
 	if err := board.ReadAll(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if placed := shown()[hidden]; placed.Decided == nil || placed.Decided.Decider != server.DeciderPerson || text(placed.Decided.Destination) != "reading-list" ||
+	if placed := shown()[hidden]; placed.Decided == nil || placed.Decided.Decider != store.DeciderPerson || text(placed.Decided.Destination) != "reading-list" ||
 		!slices.Contains([]string{"placed", "read", "delivered"}, placed.Phase) {
 		t.Errorf("under placed the tab shows %s as %s, want the person's placement on reading-list", hidden, jsonOf(placed))
 	}

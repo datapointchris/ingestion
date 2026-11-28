@@ -520,6 +520,47 @@ func (d Decision) ModelRun() (string, bool) { return strings.CutPrefix(d.Decided
 // rule:<name> records.
 func (d Decision) RuleName() (string, bool) { return strings.CutPrefix(d.DecidedBy, rulePrefix) }
 
+// Who made a decision, one word for each form of decided_by. A model is the
+// quality gate's or the side gate's answer under a run, and the gate is the
+// side gate itself, where no rung placed the item. A book is the parent whose
+// decision a chapter took.
+const (
+	DeciderPerson  = "person"
+	DeciderService = "service"
+	DeciderRule    = "rule"
+	DeciderTag     = "tag"
+	DeciderModel   = "model"
+	DeciderGate    = "gate"
+	DeciderBook    = "book"
+)
+
+// Deciders is every decider, in the order schemas/items-list.schema.json
+// lists them.
+var Deciders = []string{DeciderPerson, DeciderService, DeciderRule, DeciderTag, DeciderModel, DeciderGate, DeciderBook}
+
+// Decider names who made d, one of Deciders for each form of decided_by, and
+// decided_by itself for a form that no function here writes.
+func (d Decision) Decider() string {
+	by := d.DecidedBy
+	switch {
+	case strings.HasPrefix(by, personPrefix):
+		return DeciderPerson
+	case strings.HasPrefix(by, servicePrefix):
+		return DeciderService
+	case strings.HasPrefix(by, rulePrefix):
+		return DeciderRule
+	case strings.HasPrefix(by, modelPrefix):
+		return DeciderModel
+	case strings.HasPrefix(by, parentPrefix):
+		return DeciderBook
+	case by == DecidedByTag:
+		return DeciderTag
+	case by == DecidedByGate:
+		return DeciderGate
+	}
+	return by
+}
+
 // Provisional says whether a side decision waits on a later input: a review
 // that the side gate wrote for want of a rule or a guess, or for an error,
 // and a model's review or drop. A rule that a later set adds, or a later

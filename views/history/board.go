@@ -1,20 +1,18 @@
 // Package history is the history tab of `ingestion tui`: every item that came through ingestion,
 // newest first, with its connector, its outcome, who decided it and why, under the outcome filter
-// that l cycles. A choice's key places the item under the cursor and E archives it, through the
-// routes that `ingestion review place` and `ingestion review archive` call. So placing or
-// archiving an item that the gate dropped is the person's word against the gate, which gate
-// trust takes as it takes a placement from review.
+// that h and l step through. A book's chapters take their book's decisions, so the tab leaves them
+// out. A choice's key places the item under the cursor and E archives it, through the routes that
+// `ingestion review place` and `ingestion review archive` call. Placing an item that the gate
+// dropped disagrees with the gate, as a placement from review does. Archiving it writes the read
+// mark, which disagrees too. Either returns each family of the gate's answer to rung 0.
 package history
 
 import (
 	"context"
-	"fmt"
-	"os/exec"
 	"slices"
 	"sync/atomic"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
 	"github.com/datapointchris/gotermboard"
 	"github.com/datapointchris/gotermboard/keywrites"
 
@@ -27,25 +25,17 @@ import (
 // that `ingestion items list` and `ingestion review` make, under the same login, so a key is
 // refused wherever those commands are, and records the decision as the person's.
 type Service interface {
+	review.ChoiceService
 	// Items reads up to limit items, newest first, of outcome, or of every outcome where it is
-	// empty.
+	// empty, leaving out each book's chapters.
 	Items(ctx context.Context, outcome string, limit int) (server.ItemsAnswer, error)
+	// Queue reads the review queue, which the tab reads for the choices of the set in force and the
+	// watch's default playlist alone.
+	Queue(ctx context.Context) (server.ReviewAnswer, error)
 	// Place and Archive write the decision and answer the sentence that `ingestion review place`
 	// and `ingestion review archive` print.
 	Place(ctx context.Context, key string, body server.PlaceRequest) (string, error)
 	Archive(ctx context.Context, key string, body server.ArchiveRequest) (string, error)
-	// Relate is the command that hands the item to psyche relate on this machine, which the psyche
-	// choice hands the terminal to.
-	Relate(ctx context.Context, key string) *exec.Cmd
-	// Playlists lists the playlists that a watch can add a video to, as this machine reads them.
-	Playlists(ctx context.Context) ([]review.Playlist, error)
-}
-
-// Outside is how the tab reaches the programs beside it. Open hands a URL to the browser, and
-// HandOver gives the terminal to psyche relate, as gotermboard.Model.HandOver does where it is nil.
-type Outside struct {
-	Open     func(url string) error
-	HandOver func(m *gotermboard.Model, cmd *exec.Cmd, then func(*gotermboard.Model, error, []byte) tea.Cmd) tea.Cmd
 }
 
 // Limit is how many items one read of the history holds, the newest first.
@@ -53,11 +43,11 @@ const Limit = 500
 
 // The sources' names, as the strip and the ? overlay name them.
 const (
-	sourceItems     = "items"
-	sourcePlaylists = "playlists"
+	sourceItems   = "items"
+	sourceChoices = "choices"
 )
 
-// filters are the outcome filters that l cycles, every outcome first.
+// filters are the outcome filters that h and l step through, every outcome first.
 var filters = append([]string{""}, store.Outcomes...)
 
 // held is one read of the items under the outcome filter it was read with. readFrom is when the
@@ -68,6 +58,13 @@ type held struct {
 	items        []server.ItemListed
 	index        map[string]int
 	more         bool
+}
+
+// offered is the choices of the set in force, as the service answers them, and the watch's
+// default playlist.
+type offered struct {
+	choices      []server.ReviewChoice
+	watchDefault *string
 }
 
 func (h held) item(key string) (server.ItemListed, bool) {
@@ -83,30 +80,24 @@ func (h held) item(key string) (server.ItemListed, bool) {
 type Board struct {
 	ctx     context.Context
 	service Service
-	outside Outside
 	items   *gotermboard.Source[held]
 	// itemsErr is why the newest read of the items failed, and nil where it read.
 	itemsErr atomic.Pointer[error]
-	// playlists holds the playlists that a watch picks from, read once the first watch asks for
-	// them. playlistsErr is why the newest read failed.
-	playlists     *gotermboard.Source[[]review.Playlist]
-	wantPlaylists atomic.Bool
-	playlistsErr  atomic.Pointer[error]
+	// choices holds the choices that each key checks before it places, read as review's are.
+	choices *gotermboard.Source[offered]
+	// choiceKeys asks what a choice's key needs, such as a watch's playlist, and relates a psyche
+	// placement, as the review tab's keys do.
+	choiceKeys *review.ChoiceKeys
 	// filterAt is the outcome filter in force, as an index into filters.
 	filterAt atomic.Int32
 	writes   keywrites.Writes
 }
 
 // NewBoard declares the board's reads, reading nothing yet.
-func NewBoard(ctx context.Context, service Service, outside Outside) *Board {
-	if outside.HandOver == nil {
-		outside.HandOver = func(m *gotermboard.Model, cmd *exec.Cmd, then func(*gotermboard.Model, error, []byte) tea.Cmd) tea.Cmd {
-			return m.HandOver(cmd, then)
-		}
-	}
-	b := &Board{ctx: ctx, service: service, outside: outside}
+func NewBoard(ctx context.Context, service Service, outside review.Outside) *Board {
+	b := &Board{ctx: ctx, service: service, choiceKeys: review.NewChoiceKeys(ctx, service, outside)}
 	b.items = gotermboard.NewSource(sourceItems, time.Minute, b.readItems)
-	b.playlists = gotermboard.NewSource(sourcePlaylists, time.Hour, b.readPlaylists)
+	b.choices = gotermboard.NewSource(sourceChoices, 10*time.Minute, b.readChoices)
 	return b
 }
 
@@ -140,23 +131,18 @@ func (b *Board) readItems(ctx context.Context) (held, string, error) {
 	return h, "", nil
 }
 
-// readPlaylists reads the playlists once a watch asked for them, and holds none before.
-func (b *Board) readPlaylists(ctx context.Context) ([]review.Playlist, string, error) {
-	if !b.wantPlaylists.Load() {
-		return b.playlists.Value(), "", nil
-	}
-	lists, err := b.service.Playlists(ctx)
+// readChoices reads the choices of the set in force from the review queue's answer.
+func (b *Board) readChoices(ctx context.Context) (offered, string, error) {
+	answer, err := b.service.Queue(ctx)
 	if err != nil {
-		b.playlistsErr.Store(&err)
-		return b.playlists.Value(), "", fmt.Errorf("the playlists were not read: %w", err)
+		return b.choices.Value(), "", err
 	}
-	b.playlistsErr.Store(nil)
-	return lists, "", nil
+	return offered{choices: answer.Choices, watchDefault: answer.WatchDefaultPlaylist}, "", nil
 }
 
 // Sources is gotermboard.Board's.
 func (b *Board) Sources() []gotermboard.Refresher {
-	return []gotermboard.Refresher{b.items, b.playlists}
+	return []gotermboard.Refresher{b.items, b.choices, b.choiceKeys.Playlists()}
 }
 
 // The groupings that v cycles, the first the default: none, newest first, then by outcome, by
@@ -176,10 +162,11 @@ func (b *Board) Groupings() []string {
 // TwoLines is gotermboard.TwoLineBoard's: each row's key and who decided sit dim under it.
 func (b *Board) TwoLines() bool { return true }
 
-// ReadAll reads the items under the filter in force, for a frame printed once or a snapshot. It
-// answers why they were not read, so a printed frame of items never read fails as `ingestion
+// ReadAll reads the choices, then the items under the filter in force, for a frame printed once
+// or a snapshot. It answers why the items were not read, so a printed frame of items never read fails as `ingestion
 // items list` does.
 func (b *Board) ReadAll(ctx context.Context) error {
+	b.choices.Refresh(ctx)
 	b.items.Refresh(ctx)
 	if failed := b.itemsErr.Load(); failed != nil {
 		return *failed

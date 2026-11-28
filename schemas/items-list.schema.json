@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/datapointchris/ingestion/schemas/items-list.schema.json",
   "title": "Items, newest first",
-  "description": "What GET /api/v1/items answers and `ingestion items list --json` prints: a page of items, newest first, of every outcome or of the one that the outcome query names. An item's phase and outcome are derived from which of its records exist.",
+  "description": "What GET /api/v1/items answers and `ingestion items list --json` prints: a page of items, newest first, of every outcome or of the one that the outcome query names, leaving out each book's chapters unless the chapters query is true. An item's phase and outcome are derived from which of its records exist.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "items"],
@@ -44,22 +44,23 @@
     },
     "waiting_at": {"description": "The model stage the item waits at.", "enum": ["contents", "topics", "quality", "note", "model-read", null]},
     "outcome": {
-      "description": "Where the item's decisions leave it: placed on a side at a destination, even where its delivery or model read failed, archived by a person with no destination, dropped with its cause by a gate, a rule or a person, split, a memo whose topics each carry on, or waiting, which no decision has settled yet, such as an item in review, one placed whose read waits in review, or one at a model stage before any side decision.",
-      "enum": ["placed", "archived", "dropped", "waiting", "split"]
+      "description": "Where the item's decisions leave it: placed on a side at a destination, even where its delivery or model read failed, archived by a person with no destination, dropped with its cause by a gate, a rule or a person, split, a memo whose topics each carry on, or undecided, which no decision has settled yet, such as an item in review, one placed whose read waits in review, or one that the line has not brought to a side decision.",
+      "enum": ["placed", "archived", "dropped", "undecided", "split"]
     },
     "decided": {
-      "description": "The decision that left the item at its outcome: the newest side decision, or the quality gate's drop where no side decision came, and null where the item waits.",
+      "description": "The decision that left the item at its outcome: the newest side decision, or the quality gate's drop where no side decision came, and null where the item is undecided.",
       "type": ["object", "null"],
       "additionalProperties": false,
-      "required": ["gate", "verdict", "decider", "decided_by", "confidence", "cause", "destination", "playlist", "decided_ts"],
+      "required": ["gate", "verdict", "decider", "decided_by", "rule", "confidence", "cause", "destination", "playlist", "decided_ts"],
       "properties": {
         "gate": {"$ref": "item.schema.json#/properties/decisions/items/properties/gate"},
         "verdict": {"$ref": "item.schema.json#/properties/decisions/items/properties/verdict"},
         "decider": {
-          "description": "Who made the decision: a person, a service acting on its own, a routing rule, a sighting's tag, the gate, which is the quality gate's answer or the side gate itself, or the book whose decision a chapter took.",
-          "enum": ["person", "service", "rule", "tag", "gate", "book"]
+          "description": "Who made the decision: a person, a service acting on its own, a routing rule, a sighting's tag, a model, which answered the quality gate or the side gate, the side gate itself, where no rung placed the item, or the book whose decision a chapter took.",
+          "enum": ["person", "service", "rule", "tag", "model", "gate", "book"]
         },
-        "decided_by": {"description": "Who made the decision, as person:<login>, rule:<name>, model:<run>, parent:<key>, tag or gate.", "type": "string"},
+        "decided_by": {"description": "Who made the decision, as the decisions table spells it: a prefixed form such as person:<login> or model:<run>, or tag or gate.", "type": "string"},
+        "rule": {"description": "The routing rule's name where a rule made the decision, and null otherwise.", "type": ["string", "null"]},
         "confidence": {"type": ["number", "null"]},
         "cause": {"description": "Why: the cause the decision names, such as quality-drop, tags, rule, unstated, or the aspect that a person named, such as subreddit.", "type": "string"},
         "destination": {"type": ["string", "null"]},
