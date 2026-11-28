@@ -115,15 +115,12 @@ type Board struct {
 	// parses holds the parse of each item the cursor has rested on. Each is read off the screen's
 	// loop, as the cursor lands, rather than one per row on every read of the queue.
 	parses *gotermboard.Source[map[string]parsed]
-	// playlists holds the playlists that a watch picks from, read once the first watch asks for
-	// them, so a run that sorts nothing to watch reads none. playlistsErr is why the newest read
-	// failed.
-	playlists     *gotermboard.Source[[]Playlist]
-	wantPlaylists atomic.Bool
-	playlistsErr  atomic.Pointer[error]
-	cursor        atomic.Pointer[string]
-	renderer      *markdown.Renderer
-	writes        keywrites.Writes
+	// choiceKeys asks what a choice's key needs, such as a watch's playlist, and relates a psyche
+	// placement, as the history tab's keys do.
+	choiceKeys *ChoiceKeys
+	cursor     atomic.Pointer[string]
+	renderer   *markdown.Renderer
+	writes     keywrites.Writes
 	// drawn is every row's key in the order the last frame drew them, and drawnIn the group each
 	// drew under, which a decided row passes the cursor along.
 	drawn   []string
@@ -147,25 +144,10 @@ func NewBoard(ctx context.Context, service Service, outside Outside) *Board {
 			return m.HandOver(cmd, then)
 		}
 	}
-	b := &Board{ctx: ctx, service: service, outside: outside, renderer: markdown.New(nil), drawnIn: map[string]string{}}
+	b := &Board{ctx: ctx, service: service, outside: outside, choiceKeys: NewChoiceKeys(ctx, service, outside), renderer: markdown.New(nil), drawnIn: map[string]string{}}
 	b.queue = gotermboard.NewSource(sourceQueue, 30*time.Second, b.readQueue)
 	b.parses = gotermboard.NewSource(sourceParses, time.Hour, b.readParse)
-	b.playlists = gotermboard.NewSource(sourcePlaylists, time.Hour, b.readPlaylists)
 	return b
-}
-
-// readPlaylists reads the playlists once a watch asked for them, and holds none before.
-func (b *Board) readPlaylists(ctx context.Context) ([]Playlist, string, error) {
-	if !b.wantPlaylists.Load() {
-		return b.playlists.Value(), "", nil
-	}
-	lists, err := b.service.Playlists(ctx)
-	if err != nil {
-		b.playlistsErr.Store(&err)
-		return b.playlists.Value(), "", fmt.Errorf("the playlists were not read: %w", err)
-	}
-	b.playlistsErr.Store(nil)
-	return lists, "", nil
 }
 
 func (b *Board) readQueue(ctx context.Context) (held, string, error) {
@@ -245,7 +227,7 @@ func (b *Board) CursorOn(key string) {
 
 // Sources is gotermboard.Board's.
 func (b *Board) Sources() []gotermboard.Refresher {
-	return []gotermboard.Refresher{b.queue, b.parses, b.playlists}
+	return []gotermboard.Refresher{b.queue, b.parses, b.choiceKeys.Playlists()}
 }
 
 // Groupings is gotermboard.Board's: the groupings v cycles, the first the default, which a

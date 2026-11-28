@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -39,15 +40,28 @@ var itemsCmd = &cobra.Command{
 
 var itemsListCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List items, newest first, with each one's zone, phase and connectors",
+	Short: "List items, newest first, with each one's zone, phase, outcome and connectors",
 	Long: "Lists the service's items, newest first, up to --limit. Each row shows the\n" +
-		"item's key, its zone, the phase its records reach, the connectors that\n" +
-		"sighted it, when it landed, and its title.\n" +
+		"item's key, its zone, the phase its records reach, its outcome, the\n" +
+		"connectors that sighted it, when it landed, and its title.\n" +
+		"\n" +
+		"An outcome is where the item's decisions leave it: " + strings.Join(store.Outcomes, ", ") + ".\n" +
+		"Placed is on a side at a destination, archived is done with no destination,\n" +
+		"dropped is dropped by a gate, a rule or a person, split is a memo whose topics\n" +
+		"carry on, and undecided is what no decision has settled, such as an item in\n" +
+		"review. --outcome lists only the items of one, so --outcome dropped lists what\n" +
+		"the gates, the rules and you dropped.\n" +
+		"\n" +
+		"A book's chapters take their book's decisions, so the list leaves them out.\n" +
+		"--chapters lists them too.\n" +
 		"\n" +
 		"A title is outsider text where the zone is outside. --keys prints the keys\n" +
 		"alone, one per line, so a session can work through items without reading one.",
 	Example: "  # the newest items\n" +
 		"  ingestion items list\n" +
+		"\n" +
+		"  # every item the gates, the rules or you dropped\n" +
+		"  ingestion items list --outcome dropped --limit 5000\n" +
 		"\n" +
 		"  # every key, for a script to read\n" +
 		"  ingestion items list --keys --limit 5000",
@@ -163,6 +177,8 @@ func init() {
 	itemsDropCmd.Flags().Bool("json", false, "Print the service's answer as JSON")
 	_ = itemsDropCmd.MarkFlagRequired("connector")
 	itemsListCmd.Flags().Int("limit", server.DefaultItemsListed, "List at most this many items")
+	itemsListCmd.Flags().String("outcome", "", "List only the items of this outcome: "+strings.Join(store.Outcomes, ", "))
+	itemsListCmd.Flags().Bool("chapters", false, "List each book's chapters too")
 	itemsListCmd.Flags().Bool("keys", false, "Print each item's key alone, one per line")
 	itemsListCmd.Flags().Bool("json", false, "Print the service's answer as JSON")
 	itemsShowCmd.Flags().Bool("json", false, "Print the service's answer as JSON")
@@ -255,29 +271,20 @@ func runItemsList(cmd *cobra.Command, _ []string) error {
 	keys, _ := cmd.Flags().GetBool("keys")
 	asJSON, _ := cmd.Flags().GetBool("json")
 	api, _ := cmd.Flags().GetString("api")
+	outcome, _ := cmd.Flags().GetString("outcome")
+	chapters, _ := cmd.Flags().GetBool("chapters")
 	if limit < 1 {
 		return fmt.Errorf("%w: --limit is at least 1, not %d", goclikit.ErrUsage, limit)
+	}
+	if outcome != "" && !slices.Contains(store.Outcomes, outcome) {
+		return fmt.Errorf("%w: --outcome is one of %s, not %q", goclikit.ErrUsage, strings.Join(store.Outcomes, ", "), outcome)
 	}
 	if keys && asJSON {
 		return fmt.Errorf("%w: --keys and --json each choose the output, so give one", goclikit.ErrUsage)
 	}
-	answer := server.ItemsAnswer{SchemaVersion: server.ItemsListVersion, Items: []server.ItemListed{}}
-	// The server answers at most its own page, with a cursor to the rest.
-	for len(answer.Items) < limit {
-		q := url.Values{}
-		q.Set("limit", strconv.Itoa(limit-len(answer.Items)))
-		if answer.Next != nil {
-			q.Set("after", *answer.Next)
-		}
-		var page server.ItemsAnswer
-		if _, err := getJSON(cmd.Context(), configPath(cmd), api, server.RouteItems, "/api/v1/items?"+q.Encode(), &page); err != nil {
-			return err
-		}
-		answer.Items = append(answer.Items, page.Items...)
-		answer.Next = page.Next
-		if page.Next == nil {
-			break
-		}
+	answer, err := listItems(cmd.Context(), configPath(cmd), api, itemsQuery{outcome: outcome, chapters: chapters, limit: limit})
+	if err != nil {
+		return err
 	}
 	if answer.Next != nil && !asJSON {
 		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "More items are held than the %d listed; a larger --limit lists them.\n", limit)
@@ -303,16 +310,63 @@ func runItemsList(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
+// itemsQuery is what one listing of GET /api/v1/items asks for: the outcome,
+// "" for every one, whether to list each book's chapters, and how many items.
+type itemsQuery struct {
+	outcome  string
+	chapters bool
+	limit    int
+}
+
+// listItems reads GET /api/v1/items one page at a time until it holds
+// q.limit, so its Next is null only where no item is left. The answer carries
+// the schema version that the service answered. Where q names an outcome, it
+// refuses a page from a service that predates the outcome, and a row of
+// another outcome, because such a service answers every item.
+func listItems(ctx context.Context, config, api string, q itemsQuery) (server.ItemsAnswer, error) {
+	answer := server.ItemsAnswer{SchemaVersion: server.ItemsListVersion, Items: []server.ItemListed{}}
+	for len(answer.Items) < q.limit {
+		query := url.Values{"limit": {strconv.Itoa(q.limit - len(answer.Items))}}
+		if q.outcome != "" {
+			query.Set("outcome", q.outcome)
+		}
+		if q.chapters {
+			query.Set("chapters", "true")
+		}
+		if answer.Next != nil {
+			query.Set("after", *answer.Next)
+		}
+		var page server.ItemsAnswer
+		if _, err := getJSON(ctx, config, api, server.RouteItems, "/api/v1/items?"+query.Encode(), &page); err != nil {
+			return answer, err
+		}
+		if q.outcome != "" && page.SchemaVersion < server.ItemsOutcomeVersion {
+			return answer, fmt.Errorf("the service answers the items list at schema version %d, which reads no outcome, so it lists every item: upgrade ingestion serve to filter by outcome", page.SchemaVersion)
+		}
+		for _, it := range page.Items {
+			if q.outcome != "" && it.Outcome != q.outcome {
+				return answer, fmt.Errorf("the service listed %s as %q under the outcome %s, so its answer is not filtered", it.Key, it.Outcome, q.outcome)
+			}
+		}
+		answer.SchemaVersion = page.SchemaVersion
+		answer.Items, answer.Next = append(answer.Items, page.Items...), page.Next
+		if page.Next == nil {
+			break
+		}
+	}
+	return answer, nil
+}
+
 func writeItems(w io.Writer, items []server.ItemListed) {
 	table := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(table, "ITEM\tZONE\tPHASE\tCONNECTORS\tLANDED\tTITLE")
+	_, _ = fmt.Fprintln(table, "ITEM\tZONE\tPHASE\tOUTCOME\tCONNECTORS\tLANDED\tTITLE")
 	for _, it := range items {
 		phase := it.Phase
 		if it.WaitingAt != nil {
 			phase += " at " + *it.WaitingAt
 		}
-		_, _ = fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%s\t%s\n",
-			it.Key, it.Zone, phase, strings.Join(it.Connectors, ","), localTime(it.CreatedTS), orDash(it.Title))
+		_, _ = fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			it.Key, it.Zone, phase, it.Outcome, strings.Join(it.Connectors, ","), localTime(it.CreatedTS), orDash(it.Title))
 	}
 	if len(items) == 0 {
 		_, _ = fmt.Fprintln(table, "(none)")

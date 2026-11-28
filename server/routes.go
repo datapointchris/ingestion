@@ -14,11 +14,17 @@ type Repeat string
 // schemas/items-list.schema.json, item.schema.json, review-list.schema.json
 // and review-placement.schema.json.
 const (
-	ItemsListVersion  = 2
+	ItemsListVersion  = 3
 	ItemVersion       = 2
 	ReviewListVersion = 4
 	PlacementVersion  = 2
 )
+
+// ItemsOutcomeVersion is the first version of the items list that gives each
+// item its outcome and reads ?outcome= and ?chapters=. A serve of an earlier
+// version ignores both and answers every item, so a client that filters
+// refuses its answer.
+const ItemsOutcomeVersion = 3
 
 const (
 	// RepeatRead reads, so a second copy changes nothing.

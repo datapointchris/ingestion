@@ -127,7 +127,9 @@ func (t *Tx) settlePhases(ctx context.Context, keys []string) (int, error) {
 // SettlePhases settles every item's phase, a batch to a write, and answers how
 // many items it read and how many it moved. A store that an earlier release
 // wrote holds no phase, or one that an earlier Phase decided, and each item
-// it moves ships again. Other writes run between its batches.
+// it moves ships again. Other writes run between its batches, each settling
+// the phases of its own items. Once every batch is written, Items trusts the
+// stored phase.
 func (s *Store) SettlePhases(ctx context.Context) (items, moved int, err error) {
 	after := ""
 	for {
@@ -157,6 +159,7 @@ func (s *Store) SettlePhases(ctx context.Context) (items, moved int, err error) 
 		}
 		items, moved = items+len(keys), moved+n
 		if len(keys) < phaseBatch {
+			s.phasesSettled.Store(true)
 			return items, moved, nil
 		}
 		after = keys[len(keys)-1]

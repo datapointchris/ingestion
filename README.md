@@ -284,6 +284,26 @@ bounds the list, and `ingestion items list --help` prints its default. `--json` 
 in `schemas/items-list.schema.json` and `schemas/item.schema.json`. `items show` sends a URL to
 the service, which resolves it to its key.
 
+Each listed item carries its outcome, where its decisions leave it, beside the decision that left
+it there:
+
+- `placed` on a side at a destination, even where its delivery or model read failed
+- `archived` by a person, with no destination
+- `dropped` with its cause, by the gate, a rule or a person
+- `split`, a memo whose topics each carry on
+- `undecided`, as an item in review is, or one that the line has not brought to a side decision
+
+`items list --outcome <outcome>` and `GET /api/v1/items?outcome=<outcome>` list only the items of
+one. Once serve has settled every item's stored phase, the service first reads each row whose
+phase can give the outcome. It then keeps the items whose records give it. So a page holds
+`--limit` items of the outcome wherever they sit. A serve too old to read `?outcome=` lists every
+item, so `items list --outcome` refuses its answer.
+
+The decision's `decider` names who made it: `person`, `service`, `rule`, `tag`, `model`, `gate`
+for the side gate itself, or `book` for a chapter that takes its book's decision. A book's chapters
+take its decisions, so the list leaves them out. `items list --chapters` and `?chapters=true` list
+them too.
+
 The service keeps each item's bytes under their SHA-256 in `blobs/sha256/<first two>/<rest>` below
 `state_dir`, with their MD5 beside them. A file under a `[serve.homes]` root is read where it lies
 instead. Its size and modification time are recorded when it lands. A file whose size or time
@@ -1417,6 +1437,44 @@ so an escape sequence in it cannot set the clipboard or clear the screen. Its ma
 typed. `--once` prints one frame at `COLUMNS` by `LINES`, and `--json` the snapshot it is drawn
 from, in `schemas/tui-review.schema.json`. Where the queue was not read, each still prints, then
 exits as `review list` would, 4 where the server gave no answer.
+
+### Placing a gate's drop from the `history` tab overrules the gate
+
+The `history` tab lists every item that came through ingestion, the newest landed first. It
+leaves out a book's chapters, which take their book's decisions. It reads `GET /api/v1/items`
+under the outcome filter in force, up to `history.Limit` items, and `ingestion tui --help` prints
+that number. The strip says where more are held. Each row shows the item's outcome and where it
+went. Then come who decided, why, its connectors and its phase. The row ends on how long ago it
+landed, and its title. Dim under it sit its key, its channel and the decision's `decided_by`.
+
+```text
+history 7 items  outcome dropped  group none, newest landed first, no chapters
+h/l outcome: every outcome placed archived [dropped] undecided split
+read 0s ago
+
+ ▾ dropped, newest landed first · 7  WHERE  BY     WHY           CONNECTOR       PHASE    LANDED  TITLE
+ ▸ dropped                          —      model  quality-drop  reddit-exports  dropped      0s  A post
+    └─ reddit/t3_h107 · r/misc · model:run-38
+```
+
+`l` steps the outcome filter on and `h` steps it back: every outcome, then `placed`, `archived`,
+`dropped`, `undecided` and `split`. Each step reads the items again under the new filter. Until
+that read lands, the header reads `unread under` the new filter. The dropped list is the audit of
+the filter: every item that the gate, a rule or a person dropped. `v` cycles the grouping: none,
+by outcome, by connector, or by who decided. `/` filters on the title, the URL, the channel and
+`decided_by`.
+
+A choice's key places the item under the cursor, as the review tab's key does. `E` archives it
+after asking what was liked. Each key calls the route that `review place` or `review archive`
+calls, under the same login, so the decision is the person's. The tab reads the choices of the set
+in force from the review queue's answer, as the review tab does, so a key refuses a choice that the
+set cannot place. The row stays with the write named on it. The read after the write lands draws
+the new outcome.
+
+Placing an item that the gate dropped is the person's disagreement with the gate. Gate trust takes
+it as it takes a placement from review, so each family of the gate's answer returns to rung 0.
+Archiving such an item writes the read mark. A read mark disagrees with the gate's drop too.
+`--json` prints the snapshot in `schemas/tui-history.schema.json`.
 
 ### `c` reads what a video's top comments say, once, when a person asks
 

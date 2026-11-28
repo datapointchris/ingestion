@@ -264,8 +264,8 @@ func TestAPlacementFromAFilteredTabKeepsTheCardAsTheTabShowedIt(t *testing.T) {
 func TestWatchAsksForThePlaylistWithTheDefaultFirst(t *testing.T) {
 	service := &fakeService{answer: deck(), playlists: []Playlist{{ID: "PLb", Title: "Bench"}, {ID: "PLl", Title: "Later"}, {ID: "PLa", Title: "Audio"}}}
 	b := readBoard(t, service)
-	b.wantPlaylists.Store(true)
-	b.playlists.Refresh(t.Context())
+	b.choiceKeys.wantPlaylists.Store(true)
+	b.choiceKeys.playlists.Refresh(t.Context())
 	m := gotermboard.NewModel(b, gotermstyle.PaletteFor(nil))
 	m.Update(tea.WindowSizeMsg{Width: 200, Height: 40})
 	first := m.Cursor()

@@ -12,6 +12,7 @@ import (
 
 	"github.com/datapointchris/ingestion/connectors"
 	"github.com/datapointchris/ingestion/itemkey"
+	"github.com/datapointchris/ingestion/landing"
 	"github.com/datapointchris/ingestion/route"
 	"github.com/datapointchris/ingestion/store"
 )
@@ -44,10 +45,68 @@ type ItemListed struct {
 	Title      *string    `json:"title"`
 	URL        *string    `json:"url"`
 	Connectors []string   `json:"connectors"`
-	Phase      string     `json:"phase"`
-	WaitingAt  *string    `json:"waiting_at"`
-	Side       *string    `json:"side"`
-	CreatedTS  string     `json:"created_ts"`
+	// Channel is who published the item, as its sightings name it, and null
+	// where none does.
+	Channel   *string `json:"channel"`
+	Phase     string  `json:"phase"`
+	WaitingAt *string `json:"waiting_at"`
+	Side      *string `json:"side"`
+	// Outcome is where the item's decisions leave it, as
+	// store.ItemRecords.Outcome decides it, and Decided the decision that left
+	// it there, null where it waits.
+	Outcome string       `json:"outcome"`
+	Decided *DecidedView `json:"decided"`
+	// ReviewReason is why the item waits in review, as route.ReviewReasons
+	// names it, and null where it waits on no person.
+	ReviewReason *string `json:"review_reason"`
+	CreatedTS    string  `json:"created_ts"`
+}
+
+// DecidedView is the decision that left an item at its outcome: its gate and
+// verdict, who made it, as store.Decision.Decider names them and as
+// decided_by spells it, the rule's name where a rule made it, why, the
+// destination and playlist it placed the item on, and when.
+type DecidedView struct {
+	Gate        string   `json:"gate"`
+	Verdict     string   `json:"verdict"`
+	Decider     string   `json:"decider"`
+	DecidedBy   string   `json:"decided_by"`
+	Rule        *string  `json:"rule"`
+	Confidence  *float64 `json:"confidence"`
+	Cause       string   `json:"cause"`
+	Destination *string  `json:"destination"`
+	Playlist    *string  `json:"playlist"`
+	DecidedTS   string   `json:"decided_ts"`
+}
+
+// itemListed is rec as the list shows it.
+func itemListed(rec store.ItemRecords) ItemListed {
+	listed := ItemListed{
+		Key: rec.Item.Key, Zone: rec.Item.Zone, MediaType: rec.Item.MediaType, Title: rec.Item.Title, URL: rec.Item.URL,
+		Connectors: []string{}, Channel: landing.ReadRoles(rec.Sightings).Channel, Phase: rec.Phase(), WaitingAt: optional(rec.WaitingAt()),
+		CreatedTS: rec.Item.CreatedTS,
+	}
+	for _, s := range rec.Sightings {
+		listed.Connectors = append(listed.Connectors, s.Connector)
+	}
+	if side, ok := rec.Side(); ok {
+		listed.Side = &side
+	}
+	var decided *store.Decision
+	listed.Outcome, decided = rec.Outcome()
+	if d := decided; d != nil {
+		listed.Decided = &DecidedView{
+			Gate: d.Gate, Verdict: d.Verdict, Decider: d.Decider(), DecidedBy: d.DecidedBy, Confidence: d.Confidence, Cause: d.Cause,
+			Destination: d.Destination, Playlist: d.Playlist, DecidedTS: d.DecidedTS,
+		}
+		if rule, ok := d.RuleName(); ok {
+			listed.Decided.Rule = &rule
+		}
+	}
+	if reason, _, waits := rec.WaitsOnPerson(); waits {
+		listed.ReviewReason = &reason
+	}
+	return listed
 }
 
 // ItemAnswer is what GET /api/v1/items/{key} answers:
@@ -364,8 +423,17 @@ type itemHandlers struct {
 }
 
 func (h itemHandlers) list(w http.ResponseWriter, r *http.Request) {
-	page := store.ItemPage{Limit: DefaultItemsListed, After: r.URL.Query().Get("after")}
-	if raw := r.URL.Query().Get("limit"); raw != "" {
+	query := r.URL.Query()
+	page := store.ItemPage{Limit: DefaultItemsListed, After: query.Get("after"), Outcome: query.Get("outcome")}
+	if raw := query.Get("chapters"); raw != "" {
+		chapters, err := strconv.ParseBool(raw)
+		if err != nil {
+			Refuse(w, http.StatusBadRequest, CodeInvalidQuery, "chapters is true or false, not %q", raw)
+			return
+		}
+		page.Chapters = chapters
+	}
+	if raw := query.Get("limit"); raw != "" {
 		n, err := strconv.Atoi(raw)
 		if err != nil || n < 1 {
 			Refuse(w, http.StatusBadRequest, CodeInvalidQuery, "limit is a whole number from 1, not %q", raw)
@@ -374,11 +442,14 @@ func (h itemHandlers) list(w http.ResponseWriter, r *http.Request) {
 		page.Limit = min(n, MaxItemsListed)
 	}
 	records, next, err := h.store.Items(r.Context(), page)
-	if errors.Is(err, store.ErrBadCursor) {
+	switch {
+	case errors.Is(err, store.ErrBadCursor):
 		Refuse(w, http.StatusBadRequest, CodeInvalidQuery, "after is the next cursor a list answered, not %q", page.After)
 		return
-	}
-	if err != nil {
+	case errors.Is(err, store.ErrUnknownOutcome):
+		Refuse(w, http.StatusBadRequest, CodeInvalidQuery, "outcome is one of %s, or left out for every item, not %q", strings.Join(store.Outcomes, ", "), page.Outcome)
+		return
+	case err != nil:
 		h.internal(w, r, "list items", err)
 		return
 	}
@@ -387,17 +458,7 @@ func (h itemHandlers) list(w http.ResponseWriter, r *http.Request) {
 		answer.Next = &next
 	}
 	for _, rec := range records {
-		listed := ItemListed{
-			Key: rec.Item.Key, Zone: rec.Item.Zone, MediaType: rec.Item.MediaType, Title: rec.Item.Title, URL: rec.Item.URL,
-			Connectors: []string{}, Phase: rec.Phase(), WaitingAt: optional(rec.WaitingAt()), CreatedTS: rec.Item.CreatedTS,
-		}
-		for _, s := range rec.Sightings {
-			listed.Connectors = append(listed.Connectors, s.Connector)
-		}
-		if side, ok := rec.Side(); ok {
-			listed.Side = &side
-		}
-		answer.Items = append(answer.Items, listed)
+		answer.Items = append(answer.Items, itemListed(rec))
 	}
 	JSON(w, http.StatusOK, answer)
 }

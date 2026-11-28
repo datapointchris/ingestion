@@ -26,6 +26,7 @@ import (
 	"github.com/datapointchris/ingestion/push"
 	"github.com/datapointchris/ingestion/route"
 	"github.com/datapointchris/ingestion/server"
+	"github.com/datapointchris/ingestion/views/history"
 	"github.com/datapointchris/ingestion/views/review"
 )
 
@@ -37,7 +38,10 @@ const (
 )
 
 // The tabs, in the order tab cycles them.
-const tabReview = "review"
+const (
+	tabReview  = "review"
+	tabHistory = "history"
+)
 
 // tuiTab is one tab: its paragraph of the help, and its board, which an open program draws and
 // --once and --json print. Every list of the tabs comes from tuiTabList, so a tab is declared once.
@@ -91,6 +95,31 @@ func tuiTabList() []tuiTab {
 				return reviewTab{review.NewBoard(ctx, reviewService(o), review.Outside{Open: openInBrowser})}
 			},
 		},
+		{
+			tabHistory,
+			"history lists every item that came through ingestion, the newest landed first, up to\n" +
+				fmt.Sprint(history.Limit) + ". Each row shows its outcome, where it went, who decided and why, its\n" +
+				"connectors, its phase, how long ago it landed, and its title. An outcome is placed\n" +
+				"at a destination, archived, dropped with its cause, split into a memo's topics, or\n" +
+				"undecided, in review or on its way there. Who decided is a person, a service, a\n" +
+				"rule, a tag, a model, the side gate, or a chapter's book. A book's chapters take\n" +
+				"its decisions, so the tab leaves them out, and `ingestion items list --chapters`\n" +
+				"lists them. " + history.KeyOutcomeBack + " and " + history.KeyOutcome + " step the outcome filter back and on, reading the items\n" +
+				"again under it, so the dropped list audits what the gates, the rules and you\n" +
+				"dropped. v cycles the grouping: none, by outcome, by connector, or by who decided.\n" +
+				"/ filters on the title, the URL, the channel and who decided.\n" +
+				"\n" +
+				"A choice's key places the item under the cursor as review's does, and " + review.ChoiceBindings[route.ChoiceArchive].Key + "\n" +
+				"archives it. Each calls the routes that `ingestion review place` and `review\n" +
+				"archive` call, under the same login, so the decision is yours. Placing an item that\n" +
+				"the gate dropped disagrees with the gate, as a placement from review does.\n" +
+				"Archiving it writes the read mark, which disagrees too. Either returns each family\n" +
+				"of the gate's answer to rung 0. The row stays, and the read after the decision\n" +
+				"draws its new outcome.",
+			func(ctx context.Context, o tuiOptions) tuiBoard {
+				return historyTab{history.NewBoard(ctx, historyService{reviewService(o)}, review.Outside{Open: openInBrowser})}
+			},
+		},
 	}
 }
 
@@ -119,11 +148,12 @@ type tuiOptions struct {
 
 var tuiCmd = &cobra.Command{
 	Use:   "tui",
-	Short: "A tab per view of what waits on a person: " + strings.Join(tuiTabNames(), ", "),
+	Short: "A tab per view of what waits on a person and where every item went: " + strings.Join(tuiTabNames(), ", "),
 	Example: "  ingestion tui\n" +
 		"  ingestion tui --view review\n" +
 		"  COLUMNS=188 LINES=60 ingestion tui --view review --once > frame.txt\n" +
-		"  ingestion tui --view review --json | jq '.items[] | {source, key: .item.key, reason: .item.reason}'",
+		"  ingestion tui --view review --json | jq '.items[] | {source, key: .item.key, reason: .item.reason}'\n" +
+		"  ingestion tui --view history --json | jq '.items[].item | {key, outcome, by: .decided.decider}'",
 	Args: cobra.NoArgs,
 	RunE: runTUICommand,
 }
@@ -234,6 +264,30 @@ type reviewTab struct{ *review.Board }
 
 func (t reviewTab) print(out io.Writer, asJSON bool) error {
 	return gotermboard.PrintTab(out, asJSON, t.Board, gotermstyle.PaletteFor(os.Stdout), onceDefaultWidth, onceDefaultHeight)
+}
+
+// historyTab is the history board, printed as gotermboard prints any tab.
+type historyTab struct{ *history.Board }
+
+func (t historyTab) print(out io.Writer, asJSON bool) error {
+	return gotermboard.PrintTab(out, asJSON, t.Board, gotermstyle.PaletteFor(os.Stdout), onceDefaultWidth, onceDefaultHeight)
+}
+
+// historyService is history.Service over the calls `ingestion items list` and `ingestion review`
+// make, under the same login as reviewService.
+type historyService struct{ reviewService }
+
+// Items is `ingestion items list --outcome <outcome> --limit <limit> --json`. It refuses an
+// answer from a service that predates each item's outcome, which the tab draws on every row.
+func (s historyService) Items(ctx context.Context, outcome string, limit int) (server.ItemsAnswer, error) {
+	answer, err := listItems(ctx, s.config, s.api, itemsQuery{outcome: outcome, limit: limit})
+	if err != nil {
+		return answer, refusalWords(err)
+	}
+	if answer.SchemaVersion < server.ItemsOutcomeVersion {
+		return answer, fmt.Errorf("the service answers the items list at schema version %d, which gives no item its outcome: upgrade ingestion serve to read the history", answer.SchemaVersion)
+	}
+	return answer, nil
 }
 
 // reviewService is review.Service over the calls `ingestion review` makes, under the login the

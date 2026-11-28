@@ -2,19 +2,19 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/datapointchris/ingestion/schemas/items-list.schema.json",
   "title": "Items, newest first",
-  "description": "What GET /api/v1/items answers and `ingestion items list --json` prints: a page of items, newest first. An item's phase is derived from which of its records exist.",
+  "description": "What GET /api/v1/items answers and `ingestion items list --json` prints: a page of items, newest first, of every outcome or of the one that the outcome query names, leaving out each book's chapters unless the chapters query is true. An item's phase and outcome are derived from which of its records exist.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "items"],
   "properties": {
-    "schema_version": {"const": 2},
+    "schema_version": {"const": 3},
     "next": {"description": "The cursor that the next page's after takes, and null where no item is left.", "type": ["string", "null"]},
     "items": {
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["key", "zone", "media_type", "connectors", "phase", "created_ts"],
+        "required": ["key", "zone", "media_type", "connectors", "phase", "outcome", "created_ts"],
         "properties": {
           "key": {"type": "string"},
           "zone": {"enum": ["outside", "owner"]},
@@ -22,9 +22,16 @@
           "title": {"type": ["string", "null"]},
           "url": {"type": ["string", "null"]},
           "connectors": {"description": "Each connector that sighted the item.", "type": "array", "items": {"type": "string"}},
+          "channel": {"description": "Who published the item, as its sightings name it, such as a video's channel or a save's subreddit as r/<name>, and null where none does.", "type": ["string", "null"]},
           "phase": {"$ref": "#/$defs/phase"},
           "waiting_at": {"$ref": "#/$defs/waiting_at"},
           "side": {"enum": ["personal", "fleet", null]},
+          "outcome": {"$ref": "#/$defs/outcome"},
+          "decided": {"$ref": "#/$defs/decided"},
+          "review_reason": {
+            "description": "Why the item waits in review, and null where it waits on no person.",
+            "anyOf": [{"$ref": "review-list.schema.json#/properties/items/items/properties/reason"}, {"type": "null"}]
+          },
           "created_ts": {"type": "string", "format": "date-time"}
         }
       }
@@ -35,6 +42,31 @@
       "description": "The furthest stage the item's records reach, or waiting where a model stage holds it, review where it waits on a person, archived where a person archived it, its record kept with no destination, shelved on a record shipped while review offered a shelf, and failed where the newest task of a stage that holds back the line failed. A parse holds back no stage once the item is placed. A failed structure profile or contents reading holds back none, costs a PDF its sections only, and shows in its outputs. An item waits in review where no tag, rule or confident guess placed it, or where it holds no usable parse, the review list's no-parse reason.",
       "enum": ["landed", "parsed", "structured", "sectioned", "scanned", "gated", "placed", "read", "delivered", "dropped", "waiting", "review", "archived", "shelved", "split", "failed"]
     },
-    "waiting_at": {"description": "The model stage the item waits at.", "enum": ["contents", "topics", "quality", "note", "model-read", null]}
+    "waiting_at": {"description": "The model stage the item waits at.", "enum": ["contents", "topics", "quality", "note", "model-read", null]},
+    "outcome": {
+      "description": "Where the item's decisions leave it: placed on a side at a destination, even where its delivery or model read failed, archived by a person with no destination, dropped with its cause by a gate, a rule or a person, split, a memo whose topics each carry on, or undecided, which no decision has settled yet, such as an item in review, one placed whose read waits in review, or one that the line has not brought to a side decision.",
+      "enum": ["placed", "archived", "dropped", "undecided", "split"]
+    },
+    "decided": {
+      "description": "The decision that left the item at its outcome: the newest side decision, or the quality gate's drop where no side decision came, and null where the item is undecided.",
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["gate", "verdict", "decider", "decided_by", "rule", "confidence", "cause", "destination", "playlist", "decided_ts"],
+      "properties": {
+        "gate": {"$ref": "item.schema.json#/properties/decisions/items/properties/gate"},
+        "verdict": {"$ref": "item.schema.json#/properties/decisions/items/properties/verdict"},
+        "decider": {
+          "description": "Who made the decision: a person, a service acting on its own, a routing rule, a sighting's tag, a model, which answered the quality gate or the side gate, the side gate itself, where no rung placed the item, or the book whose decision a chapter took.",
+          "enum": ["person", "service", "rule", "tag", "model", "gate", "book"]
+        },
+        "decided_by": {"description": "Who made the decision, as the decisions table spells it: a prefixed form such as person:<login> or model:<run>, or tag or gate.", "type": "string"},
+        "rule": {"description": "The routing rule's name where a rule made the decision, and null otherwise.", "type": ["string", "null"]},
+        "confidence": {"type": ["number", "null"]},
+        "cause": {"description": "Why: the cause the decision names, such as quality-drop, tags, rule, unstated, or the aspect that a person named, such as subreddit.", "type": "string"},
+        "destination": {"type": ["string", "null"]},
+        "playlist": {"type": ["string", "null"]},
+        "decided_ts": {"type": "string", "format": "date-time"}
+      }
+    }
   }
 }

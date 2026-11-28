@@ -81,46 +81,107 @@ func (s *Store) ItemsWithNoSourceTime(ctx context.Context, mediaTypes []string, 
 }
 
 // ItemPage asks for up to Limit items, newest first, after the item that the
-// cursor After names.
+// cursor After names. Outcome keeps only the items whose Outcome it names, one
+// of Outcomes, and every item where it is empty. Chapters keeps each book's
+// chapters, which take their book's decisions and are left out otherwise.
 type ItemPage struct {
-	Limit int
-	After string
+	Limit    int
+	After    string
+	Outcome  string
+	Chapters bool
 }
 
 // ErrBadCursor refuses a page cursor that Items did not write.
 var ErrBadCursor = errors.New("not a cursor this list wrote")
 
+// ErrUnknownOutcome refuses a page asking for an outcome that is none of
+// Outcomes.
+var ErrUnknownOutcome = errors.New("not an outcome")
+
+// outcomeBatch is how many rows a list filtered by outcome reads at a time,
+// since some of the rows its phases select hold another outcome.
+const outcomeBatch = 200
+
 // Items reads a page of items, newest first, each with its records, and the
 // cursor of the next page, which is "" where none is left. It reads the page
-// in one snapshot.
+// in one snapshot. A page filtered by outcome keeps the items whose Outcome is
+// it. Once SettlePhases has settled every item's stored phase, it reads only
+// the rows whose phase can give the outcome, as phaseOutcome decides.
 func (s *Store) Items(ctx context.Context, page ItemPage) ([]ItemRecords, string, error) {
+	if page.Outcome != "" && !slices.Contains(Outcomes, page.Outcome) {
+		return nil, "", fmt.Errorf("%q: %w", page.Outcome, ErrUnknownOutcome)
+	}
 	tx, err := s.snapshot(ctx)
 	if err != nil {
 		return nil, "", err
 	}
 	defer func() { _ = tx.Rollback() }()
-	where, args := `1`, []any{}
+	created, key := "", ""
 	if page.After != "" {
 		raw, err := base64.RawURLEncoding.DecodeString(page.After)
-		created, key, ok := strings.Cut(string(raw), "\x00")
+		var ok bool
+		created, key, ok = strings.Cut(string(raw), "\x00")
 		if err != nil || !ok {
 			return nil, "", ErrBadCursor
 		}
-		where, args = `(created_ts < ? OR (created_ts = ? AND key < ?))`, []any{created, created, key}
 	}
-	items, err := readInto[Item](ctx, tx, table("items"), where+` ORDER BY created_ts DESC, key DESC LIMIT ?`,
-		append(args, page.Limit+1)...)
-	if err != nil {
-		return nil, "", err
+	var kept []ItemRecords
+	for len(kept) <= page.Limit {
+		where, args := `1`, []any{}
+		if created != "" || key != "" {
+			where, args = `(created_ts < ? OR (created_ts = ? AND key < ?))`, []any{created, created, key}
+		}
+		if !page.Chapters {
+			where, args = where+` AND NOT (media_type = ? AND parent_key IS NOT NULL)`, append(args, MediaTypeChapter)
+		}
+		batch := page.Limit + 1 - len(kept)
+		if page.Outcome != "" {
+			batch = max(batch, outcomeBatch)
+			if s.phasesSettled.Load() {
+				phases, phaseArgs := outcomePhasesWhere(page.Outcome)
+				where, args = where+` AND `+phases, append(args, phaseArgs...)
+			}
+		}
+		items, err := readInto[Item](ctx, tx, table("items"), where+` ORDER BY created_ts DESC, key DESC LIMIT ?`, append(args, batch)...)
+		if err != nil {
+			return nil, "", err
+		}
+		records, err := recordsOf(ctx, tx, items)
+		if err != nil {
+			return nil, "", err
+		}
+		for _, r := range records {
+			if outcome, _ := r.Outcome(); page.Outcome == "" || outcome == page.Outcome {
+				kept = append(kept, r)
+			}
+		}
+		if len(items) < batch {
+			break
+		}
+		created, key = items[len(items)-1].CreatedTS, items[len(items)-1].Key
 	}
 	next := ""
-	if len(items) > page.Limit {
-		items = items[:page.Limit]
-		last := items[len(items)-1]
+	if len(kept) > page.Limit {
+		kept = kept[:page.Limit]
+		last := kept[len(kept)-1].Item
 		next = base64.RawURLEncoding.EncodeToString([]byte(last.CreatedTS + "\x00" + last.Key))
 	}
-	records, err := recordsOf(ctx, tx, items)
-	return records, next, err
+	return kept, next, nil
+}
+
+// outcomePhasesWhere is the condition on an item's row that selects each row
+// whose stored phase can give outcome, as phaseOutcome decides it, or that
+// holds no phase or one that Phases lacks.
+func outcomePhasesWhere(outcome string) (string, []any) {
+	var known, giving []any
+	for _, phase := range Phases {
+		known = append(known, phase)
+		if slices.Contains(phaseOutcomes(phase), outcome) {
+			giving = append(giving, phase)
+		}
+	}
+	marks := func(n int) string { return `(?` + strings.Repeat(`, ?`, n-1) + `)` }
+	return `(phase IS NULL OR phase NOT IN ` + marks(len(known)) + ` OR phase IN ` + marks(len(giving)) + `)`, append(known, giving...)
 }
 
 // recordsOf reads every record of items, one query per table. A table read
@@ -314,29 +375,116 @@ func (r ItemRecords) Conditions() []Condition {
 // reached names the phase that each stage or gate's True condition reaches,
 // in the words of schemas/items-list.schema.json.
 var reached = map[string]string{
-	StageLand:      "landed",
-	StageParse:     "parsed",
-	StageStructure: "structured",
-	StageContents:  "structured",
-	StageSections:  "sectioned",
-	StageScan:      "scanned",
-	StageTopics:    "scanned",
-	StageQuality:   "gated",
-	GateSide:       "placed",
-	GateRead:       "read",
-	StageNote:      "read",
-	StageModelRead: "read",
-	StageDeliver:   "delivered",
+	StageLand:      PhaseLanded,
+	StageParse:     PhaseParsed,
+	StageStructure: PhaseStructured,
+	StageContents:  PhaseStructured,
+	StageSections:  PhaseSectioned,
+	StageScan:      PhaseScanned,
+	StageTopics:    PhaseScanned,
+	StageQuality:   PhaseGated,
+	GateSide:       PhasePlaced,
+	GateRead:       PhaseRead,
+	StageNote:      PhaseRead,
+	StageModelRead: PhaseRead,
+	StageDeliver:   PhaseDelivered,
 }
 
-// PhaseReview is the phase of an item that waits on a person's placement,
-// PhaseArchived of one that a person archived from review, and PhaseSplit of
-// a memo whose topics are landed, each routed on its own.
+// Each phase that Phase answers. Each of the first nine is the furthest stage
+// or gate whose condition is True. PhaseWaiting is an item that a model stage
+// holds, and PhaseFailed one that a stage on the line failed. PhaseReview is
+// an item that waits on a person's placement, PhaseArchived one that a person
+// archived from review, PhaseSplit a memo whose topics are landed, each routed
+// on its own, and PhaseDropped one that a gate, a rule or a person dropped.
 const (
-	PhaseReview   = "review"
-	PhaseArchived = "archived"
-	PhaseSplit    = "split"
+	PhaseLanded     = "landed"
+	PhaseParsed     = "parsed"
+	PhaseStructured = "structured"
+	PhaseSectioned  = "sectioned"
+	PhaseScanned    = "scanned"
+	PhaseGated      = "gated"
+	PhasePlaced     = "placed"
+	PhaseRead       = "read"
+	PhaseDelivered  = "delivered"
+	PhaseWaiting    = "waiting"
+	PhaseFailed     = "failed"
+	PhaseReview     = "review"
+	PhaseArchived   = "archived"
+	PhaseSplit      = "split"
+	PhaseDropped    = "dropped"
 )
+
+// Phases is every phase that Phase answers.
+var Phases = []string{
+	PhaseLanded, PhaseParsed, PhaseStructured, PhaseSectioned, PhaseScanned, PhaseGated, PhasePlaced, PhaseRead, PhaseDelivered,
+	PhaseWaiting, PhaseFailed, PhaseReview, PhaseArchived, PhaseSplit, PhaseDropped,
+}
+
+// The outcomes that an item's decisions leave it at, in the words of
+// schemas/items-list.schema.json. Placed is on a side at a destination,
+// archived is done with no destination, dropped is dropped with its cause,
+// split is a memo whose topics each carry on, and undecided is everything
+// that no decision has settled yet, such as an item in review or one that
+// the line has not reached a side for.
+const (
+	OutcomePlaced    = "placed"
+	OutcomeArchived  = "archived"
+	OutcomeDropped   = "dropped"
+	OutcomeUndecided = "undecided"
+	OutcomeSplit     = "split"
+)
+
+// Outcomes is every outcome, in the order the history tab's filter cycles
+// them.
+var Outcomes = []string{OutcomePlaced, OutcomeArchived, OutcomeDropped, OutcomeUndecided, OutcomeSplit}
+
+// phaseOutcome is the outcome of an item at phase, given whether it stands on
+// a side. An item on a side whose read waits in review is undecided, and one
+// whose delivery or model read failed is still placed.
+func phaseOutcome(phase string, onASide bool) string {
+	switch phase {
+	case PhaseDropped:
+		return OutcomeDropped
+	case PhaseSplit:
+		return OutcomeSplit
+	case PhaseArchived:
+		return OutcomeArchived
+	case PhaseReview:
+		return OutcomeUndecided
+	}
+	if onASide {
+		return OutcomePlaced
+	}
+	return OutcomeUndecided
+}
+
+// phaseOutcomes is each outcome that an item at phase can have, on a side or
+// on none.
+func phaseOutcomes(phase string) []string {
+	off, on := phaseOutcome(phase, false), phaseOutcome(phase, true)
+	if off == on {
+		return []string{off}
+	}
+	return []string{off, on}
+}
+
+// Outcome is where the item's decisions leave it, as phaseOutcome reads its
+// phase, and the decision that left it there. That is the newest side
+// decision, or the quality gate's drop where no side decision came, and nil
+// where the item is undecided.
+func (r ItemRecords) Outcome() (string, *Decision) {
+	_, onASide := r.Side()
+	outcome := phaseOutcome(r.Phase(), onASide)
+	side, sided := r.NewestDecision(GateSide)
+	switch {
+	case outcome == OutcomeUndecided:
+		return outcome, nil
+	case outcome == OutcomeDropped && (!sided || side.Verdict != VerdictDrop):
+		quality, _ := r.NewestDecision(GateQuality)
+		return outcome, &quality
+	}
+	return outcome, &side
+}
 
 // Phase is the item's phase in the words of schemas/items-list.schema.json:
 // dropped where the newest side decision drops it, split where it splits a
@@ -352,7 +500,7 @@ const (
 func (r ItemRecords) Phase() string {
 	side, sided := r.NewestDecision(GateSide)
 	if sided && side.Verdict == VerdictDrop {
-		return "dropped"
+		return PhaseDropped
 	}
 	if sided && side.Verdict == VerdictSplit {
 		return PhaseSplit
@@ -372,24 +520,24 @@ func (r ItemRecords) Phase() string {
 	for stage, t := range newest {
 		if t.State == TaskFailed && slices.Contains(line, stage) && stage != StageParse && !slices.Contains(besideScan, stage) &&
 			(stage != StageQuality || !r.SideSettled()) && (stage != StageNote || r.awaitsNote()) {
-			return "failed"
+			return PhaseFailed
 		}
 	}
 	if quality, decided := r.NewestDecision(GateQuality); decided && !sided && quality.Verdict == VerdictDrop {
-		return "dropped"
+		return PhaseDropped
 	}
 	phase := ""
 	for _, c := range r.Conditions() {
 		switch c.Status {
 		case ConditionUnknown:
 			if c.Reason == OutputWaiting {
-				return "waiting"
+				return PhaseWaiting
 			}
 		case ConditionFalse:
 			if c.Type == StageParse && sided {
 				continue
 			}
-			return "failed"
+			return PhaseFailed
 		case ConditionTrue:
 			phase = reached[c.Type]
 		}
