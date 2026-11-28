@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/datapointchris/ingestion/schemas/tui-history.schema.json",
+  "title": "The history tab's snapshot",
+  "description": "What `ingestion tui --view history --json` prints: each item that the tab shows under the outcome filter in force, the newest landed first, beside the group that the board's default grouping draws it under, whether the read holds only the newest, and how each read stands. A change to its shape bumps schema_version.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "taken_at", "outcome", "grouping", "more", "items", "sources"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "taken_at": {"description": "When the snapshot was taken, in UTC.", "type": "string", "format": "date-time"},
+    "outcome": {
+      "description": "The outcome filter in force, and null for every outcome.",
+      "anyOf": [{"$ref": "items-list.schema.json#/$defs/outcome"}, {"type": "null"}]
+    },
+    "grouping": {"description": "The board's default grouping, which orders the items. A display the person left grouped otherwise does not change it.", "enum": ["none", "outcome", "connector", "decider"]},
+    "more": {"description": "Whether the service holds more items of the outcome than the tab read, which are older than every item listed.", "type": "boolean"},
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["group", "item"],
+        "properties": {
+          "group": {"description": "The key of the group the item draws under, such as all, or outcome/dropped.", "type": "string"},
+          "item": {"$ref": "items-list.schema.json#/properties/items/items"}
+        }
+      }
+    },
+    "sources": {"$ref": "tui-review.schema.json#/properties/sources"},
+    "unread_sources": {"$ref": "tui-review.schema.json#/properties/unread_sources"}
+  }
+}

@@ -39,15 +39,25 @@ var itemsCmd = &cobra.Command{
 
 var itemsListCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List items, newest first, with each one's zone, phase and connectors",
+	Short: "List items, newest first, with each one's zone, phase, outcome and connectors",
 	Long: "Lists the service's items, newest first, up to --limit. Each row shows the\n" +
-		"item's key, its zone, the phase its records reach, the connectors that\n" +
-		"sighted it, when it landed, and its title.\n" +
+		"item's key, its zone, the phase its records reach, its outcome, the\n" +
+		"connectors that sighted it, when it landed, and its title.\n" +
+		"\n" +
+		"An outcome is where the item's decisions leave it: " + strings.Join(store.Outcomes, ", ") + ".\n" +
+		"Placed is on a side at a destination, archived is done with no destination,\n" +
+		"dropped is dropped by a gate, a rule or a person, split is a memo whose topics\n" +
+		"carry on, and waiting is what no decision has settled, such as an item in\n" +
+		"review. --outcome lists only the items of one, so --outcome dropped lists what\n" +
+		"the gates, the rules and you dropped.\n" +
 		"\n" +
 		"A title is outsider text where the zone is outside. --keys prints the keys\n" +
 		"alone, one per line, so a session can work through items without reading one.",
 	Example: "  # the newest items\n" +
 		"  ingestion items list\n" +
+		"\n" +
+		"  # every item the gates, the rules or you dropped\n" +
+		"  ingestion items list --outcome dropped --limit 5000\n" +
 		"\n" +
 		"  # every key, for a script to read\n" +
 		"  ingestion items list --keys --limit 5000",
@@ -163,6 +173,7 @@ func init() {
 	itemsDropCmd.Flags().Bool("json", false, "Print the service's answer as JSON")
 	_ = itemsDropCmd.MarkFlagRequired("connector")
 	itemsListCmd.Flags().Int("limit", server.DefaultItemsListed, "List at most this many items")
+	itemsListCmd.Flags().String("outcome", "", "List only the items of this outcome: "+strings.Join(store.Outcomes, ", "))
 	itemsListCmd.Flags().Bool("keys", false, "Print each item's key alone, one per line")
 	itemsListCmd.Flags().Bool("json", false, "Print the service's answer as JSON")
 	itemsShowCmd.Flags().Bool("json", false, "Print the service's answer as JSON")
@@ -255,8 +266,12 @@ func runItemsList(cmd *cobra.Command, _ []string) error {
 	keys, _ := cmd.Flags().GetBool("keys")
 	asJSON, _ := cmd.Flags().GetBool("json")
 	api, _ := cmd.Flags().GetString("api")
+	outcome, _ := cmd.Flags().GetString("outcome")
 	if limit < 1 {
 		return fmt.Errorf("%w: --limit is at least 1, not %d", goclikit.ErrUsage, limit)
+	}
+	if outcome != "" && !slices.Contains(store.Outcomes, outcome) {
+		return fmt.Errorf("%w: --outcome is one of %s, not %q", goclikit.ErrUsage, strings.Join(store.Outcomes, ", "), outcome)
 	}
 	if keys && asJSON {
 		return fmt.Errorf("%w: --keys and --json each choose the output, so give one", goclikit.ErrUsage)
@@ -266,6 +281,9 @@ func runItemsList(cmd *cobra.Command, _ []string) error {
 	for len(answer.Items) < limit {
 		q := url.Values{}
 		q.Set("limit", strconv.Itoa(limit-len(answer.Items)))
+		if outcome != "" {
+			q.Set("outcome", outcome)
+		}
 		if answer.Next != nil {
 			q.Set("after", *answer.Next)
 		}
@@ -305,14 +323,14 @@ func runItemsList(cmd *cobra.Command, _ []string) error {
 
 func writeItems(w io.Writer, items []server.ItemListed) {
 	table := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(table, "ITEM\tZONE\tPHASE\tCONNECTORS\tLANDED\tTITLE")
+	_, _ = fmt.Fprintln(table, "ITEM\tZONE\tPHASE\tOUTCOME\tCONNECTORS\tLANDED\tTITLE")
 	for _, it := range items {
 		phase := it.Phase
 		if it.WaitingAt != nil {
 			phase += " at " + *it.WaitingAt
 		}
-		_, _ = fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%s\t%s\n",
-			it.Key, it.Zone, phase, strings.Join(it.Connectors, ","), localTime(it.CreatedTS), orDash(it.Title))
+		_, _ = fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			it.Key, it.Zone, phase, it.Outcome, strings.Join(it.Connectors, ","), localTime(it.CreatedTS), orDash(it.Title))
 	}
 	if len(items) == 0 {
 		_, _ = fmt.Fprintln(table, "(none)")

@@ -14,7 +14,7 @@ type Repeat string
 // schemas/items-list.schema.json, item.schema.json, review-list.schema.json
 // and review-placement.schema.json.
 const (
-	ItemsListVersion  = 2
+	ItemsListVersion  = 3
 	ItemVersion       = 2
 	ReviewListVersion = 4
 	PlacementVersion  = 2
