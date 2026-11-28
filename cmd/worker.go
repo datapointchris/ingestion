@@ -32,7 +32,6 @@ import (
 	"github.com/datapointchris/ingestion/modelread"
 	"github.com/datapointchris/ingestion/modelstage"
 	"github.com/datapointchris/ingestion/note"
-	"github.com/datapointchris/ingestion/polling"
 	"github.com/datapointchris/ingestion/promptproposal"
 	"github.com/datapointchris/ingestion/prompts"
 	"github.com/datapointchris/ingestion/publicweb"
@@ -110,7 +109,7 @@ type openedSources struct {
 // registered source with no table, or whose table cannot open, is logged and
 // left out, so the worker's other stages run on and its tasks wait queued for
 // a worker that opens it.
-func openSources(ctx context.Context, cfg fileConfig, issuer string, blobs polling.BlobWriter, log *slog.Logger) openedSources {
+func openSources(ctx context.Context, cfg fileConfig, issuer string, blobs worker.BlobWriter, log *slog.Logger) openedSources {
 	out := openedSources{comments: comments.Readers{}}
 	for _, name := range sources.Names() {
 		r, _ := sources.Lookup(name)

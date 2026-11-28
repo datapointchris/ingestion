@@ -124,7 +124,7 @@ func (r Registration) Capabilities() []string {
 // Handlers are the worker handlers of each stage that r serves, which reach
 // the source at api through client. A poll keeps the bytes that its arrivals
 // carry through blobs.
-func (r Registration) Handlers(api string, client *http.Client, blobs polling.BlobWriter, log *slog.Logger) []worker.Handler {
+func (r Registration) Handlers(api string, client *http.Client, blobs worker.BlobWriter, log *slog.Logger) []worker.Handler {
 	var out []worker.Handler
 	if r.Poller != nil {
 		out = append(out, polling.Handler(r.Name, r.Poller(api, client), blobs, log))

@@ -3,6 +3,8 @@ package worker
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -148,6 +150,23 @@ func (c *Client) Blob(ctx context.Context, sum string) (io.ReadCloser, string, e
 		return nil, "", refusal(http.MethodGet, path, resp)
 	}
 	return cancelOnClose{ReadCloser: resp.Body, cancel: cancel}, resp.Header.Get("Content-Type"), nil
+}
+
+// BlobWriter keeps bytes under their SHA-256 in the service, as Client does
+// through the blob route.
+type BlobWriter interface {
+	PutBlob(ctx context.Context, sum, mediaType string, r io.Reader) (server.BlobAnswer, error)
+}
+
+// Keep writes body through blobs as mediaType, under its SHA-256, and answers
+// that SHA-256 in hex. Every stage that keeps the bytes it read keeps them so.
+func Keep(ctx context.Context, blobs BlobWriter, mediaType string, body []byte) (string, error) {
+	sum := sha256.Sum256(body)
+	name := hex.EncodeToString(sum[:])
+	if _, err := blobs.PutBlob(ctx, name, mediaType, bytes.NewReader(body)); err != nil {
+		return "", fmt.Errorf("keep %d bytes of %s: %w", len(body), mediaType, err)
+	}
+	return name, nil
 }
 
 // PutBlob writes r's bytes under sum as mediaType. The service refuses bytes
