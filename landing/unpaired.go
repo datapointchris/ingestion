@@ -29,10 +29,10 @@ type Unpaired struct {
 	// temporary file older than LeftoverAfter.
 	Leftovers []StoredFile
 	// Unnamed is each blob row older than LeftoverAfter that no item, home or
-	// output names. One example is a page that a poll kept for an item that
-	// already held its bytes. Another is a page kept by a poll whose report
-	// never landed. A younger row may be a poll's page that waits on its
-	// report.
+	// output names. One example is a page that a poll or a parse kept for an
+	// item that already held its bytes. Another is a page kept by a poll or a
+	// parse whose report never landed. A younger row may be a page that waits
+	// on its report.
 	Unnamed []store.Blob
 }
 

@@ -460,6 +460,7 @@ func TestAPushedPageLandsOnceAndItsParseFetchesIt(t *testing.T) {
 	if code := exitCode(io.Discard, err); code != 1 || !strings.Contains(fmt.Sprint(err), "parse failed: the page was not fetched: HTTP 403") {
 		t.Errorf("a push of a page that answered 403 exited %d (%v), want 1 naming the refusal", code, err)
 	}
+	// A feed that the person follows carries the page whose GET was refused.
 	stand.add(pages, time.Now(), "Uncategorized", 6)
 	p.runConnector(t, "freshrss")
 	p.run(t, poll)
@@ -470,6 +471,7 @@ func TestAPushedPageLandsOnceAndItsParseFetchesIt(t *testing.T) {
 		t.Errorf("the refused page parsed as %s, want the feed's paragraph", jsonOf(parsed))
 	}
 
+	// The phone shares a link that serves a PDF, as a paper's link does.
 	paper := pages.URL + "/post/9.pdf"
 	_ = pushLink(t, paper, "0")
 	if ran := p.run(t, parse...); ran != 2 {
@@ -483,6 +485,7 @@ func TestAPushedPageLandsOnceAndItsParseFetchesIt(t *testing.T) {
 		t.Errorf("the pushed PDF parsed as %s, want pdf-text's one page", jsonOf(parsed))
 	}
 
+	// The feed lands the pushed page while the parse GETs it.
 	meanwhile = func() {
 		stand.add(pages, time.Now(), "Uncategorized", 10)
 		p.runConnector(t, "freshrss")
