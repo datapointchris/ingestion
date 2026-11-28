@@ -105,7 +105,7 @@ type fileConfig struct {
 	Note struct {
 		Floor *float64 `toml:"floor"`
 	} `toml:"note"`
-	// Watch holds what serve reads for the watch verb: the playlist that a
+	// Watch holds what serve reads for the watch choice: the playlist that a
 	// watch adds a video to where the person picks none.
 	Watch struct {
 		DefaultPlaylist string `toml:"default_playlist"`

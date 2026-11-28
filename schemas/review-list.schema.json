@@ -2,12 +2,12 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/datapointchris/ingestion/schemas/review-list.schema.json",
   "title": "Items waiting on a person's placement",
-  "description": "What GET /api/v1/review answers and `ingestion review list --json` prints: each item that waits on a person, the longest waiting first: one that the side gate sent to review, one that holds no usable parse, and one that the quality gate sent to review before any side decision. POST /api/v1/review/{key}/place takes one of the destinations the set in force declares but a push-only one, and answers schemas/review-placement.schema.json. A caller holding ingestion.review.read reads each item's title, URL, quality answer and sightings' fields here, without ingestion.items.read. Where the zone is outside, each is a stranger's text or a model's reading of it.",
+  "description": "What GET /api/v1/review answers and `ingestion review list --json` prints: each item that waits on a person, the longest waiting first: one that the side gate sent to review, one that holds no usable parse, and one that the quality gate sent to review before any side decision. POST /api/v1/review/{key}/place takes one of the choices that place an item, or one of the destinations the set in force declares but a push-only one or the watch. POST /api/v1/review/{key}/archive and /api/v1/review/{key}/drop take the other two choices. Each answers schemas/review-placement.schema.json. A caller holding ingestion.review.read reads each item's title, URL, quality answer and sightings' fields here, without ingestion.items.read. Where the zone is outside, each is a stranger's text or a model's reading of it.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "items"],
   "properties": {
-    "schema_version": {"const": 3},
+    "schema_version": {"const": 4},
     "items": {
       "type": "array",
       "items": {
@@ -20,8 +20,8 @@
           "title": {"type": ["string", "null"]},
           "url": {"type": ["string", "null"]},
           "reason": {
-            "description": "Why the item waits: its sightings' tags disagree, the guess fell below the floor, a connector that sighted it leaves its side to a person and the guess waits beside it, no tag or rule placed it and the quality gate gave no answer, because its run failed, its scan could not read the set in force, or it waited in review from before the quality gate ran, the side gate could not read the set in force or the item's sightings, it has no usable parse, the quality gate sent it to review, or the quality gate would drop it and a family of it has not earned hiding it, or the family's draw showed it, or a routing rule that a person accepted would drop it or place it and the rule's review share drew it, or a read by a model waits on its note, whose draft fell below the note floor, or a person sorted it to learning and the quality gate's newest answer did not pass it, whose reason the quality answer holds.",
-            "enum": ["tags-disagree", "below-floor", "person-sorts", "owners-words", "no-guess", "gate-error", "no-parse", "quality-review", "gate-would-drop", "rule-would-hide", "note-unclear", "learning-refused"]
+            "description": "Why the item waits: its sightings' tags disagree, the guess fell below the floor, a connector that sighted it leaves its side to a person and the guess waits beside it, no tag or rule placed it and the quality gate gave no answer, because its run failed, its scan could not read the set in force, or it waited in review from before the quality gate ran, the side gate could not read the set in force or the item's sightings, it has no usable parse, the quality gate sent it to review, or the quality gate would drop it and a family of it has not earned hiding it, or the family's draw showed it, or a routing rule that a person accepted would drop it or place it and the rule's review share drew it, or a read by a model waits on its note, whose draft fell below the note floor, or a person put it on the shelf, which review no longer offers, and never opened it.",
+            "enum": ["tags-disagree", "below-floor", "person-sorts", "owners-words", "no-guess", "gate-error", "no-parse", "quality-review", "gate-would-drop", "rule-would-hide", "note-unclear", "shelved"]
           },
           "rule": {
             "description": "The routing rule that would have decided the item, where it waits as rule-would-hide, and null under any other reason: its name, and the destination that a keep would place it on, null where a block would drop it.",
@@ -91,25 +91,26 @@
         }
       }
     },
-    "verbs": {
-      "description": "Each sort verb that POST /api/v1/review/{key}/sort takes, in the order the review tab binds them, with the destination it places an item on under the set in force. destination is null for a verb that places on none, as a shelf does, and missing where the set declares none that the verb takes, so the verb refuses. playlist is true for a verb whose sort picks a playlist. Null where the set in force could not be read.",
+    "choices": {
+      "description": "Each of review's choices, in the order the review tab binds them: articles, learning, suggestion, watch and psyche place an item through POST /api/v1/review/{key}/place, archive through /api/v1/review/{key}/archive, and drop through /api/v1/review/{key}/drop. side and destination are where a placing choice puts an item under the set in force, and null for archive and drop. missing says why a placing choice places nothing, where the set declares no destination that it takes. playlist is true for the choice whose placement names a playlist, and runs_here for the choice whose client runs psyche relate on its own machine. Null where the set in force could not be read.",
       "type": ["array", "null"],
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["verb", "side", "destination", "playlist", "missing"],
+        "required": ["choice", "side", "destination", "playlist", "runs_here", "missing"],
         "properties": {
-          "verb": {"enum": ["fleet-relate", "learning", "personal-relate", "personal-summarize", "technical-summarize", "watch"]},
+          "choice": {"enum": ["articles", "learning", "suggestion", "watch", "psyche", "archive", "drop"]},
           "side": {"enum": ["personal", "fleet", null]},
           "destination": {"type": ["string", "null"]},
-          "playlist": {"description": "Whether the verb's deliverer adds the item to the playlist that the sort picks, or to watch_default_playlist where it picks none.", "type": "boolean"},
-          "missing": {"description": "Why the verb places nothing under the set in force, and null where it places.", "type": ["string", "null"]}
+          "playlist": {"description": "Whether the choice's deliverer adds the item to the playlist that the placement names, or to watch_default_playlist where it names none.", "type": "boolean"},
+          "runs_here": {"description": "Whether the client that picks the choice hands the item's parse to psyche relate on its own machine once it places the item.", "type": "boolean"},
+          "missing": {"description": "Why the choice places nothing under the set in force, and null where it places, or where it is archive or drop.", "type": ["string", "null"]}
         }
       }
     },
     "watch_default_playlist": {"description": "The playlist that a watch adds a video to where the person names none, as serve's [watch] default_playlist names it, and null where it names none, so a watch names its playlist.", "type": ["string", "null"]},
     "destinations": {
-      "description": "Each destination the set in force declares, in its order, which a placement takes. A push-only destination is left out, since a placement from review refuses it. side is the side an item placed there takes, and null where the destination drops what it takes. Empty where the set declares none, and null where the set in force could not be read, so the queue still answers.",
+      "description": "Each destination the set in force declares, in its order, which a placement that names a destination rather than a choice takes. A push-only destination is left out, since a placement from review refuses it. side is the side an item placed there takes, and null where the destination drops what it takes. Empty where the set declares none, and null where the set in force could not be read, so the queue still answers.",
       "type": ["array", "null"],
       "items": {
         "type": "object",

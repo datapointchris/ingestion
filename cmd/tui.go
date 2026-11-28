@@ -27,7 +27,6 @@ import (
 	"github.com/datapointchris/ingestion/route"
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/views/review"
-	"github.com/datapointchris/ingestion/views/shelf"
 )
 
 // The size --once draws at where neither the environment nor a terminal gives one. It is wide
@@ -38,10 +37,7 @@ const (
 )
 
 // The tabs, in the order tab cycles them.
-const (
-	tabReview = "review"
-	tabShelf  = "shelf"
-)
+const tabReview = "review"
 
 // tuiTab is one tab: its paragraph of the help, and its board, which an open program draws and
 // --once and --json print. Every list of the tabs comes from tuiTabList, so a tab is declared once.
@@ -73,46 +69,35 @@ func tuiTabList() []tuiTab {
 				"whole answer with its reason, the scan's findings, and its text. enter reads it full\n" +
 				"screen.\n" +
 				"\n" +
-				"A verb's key sorts the item at once, and the bar under the strip says where each\n" +
+				"A choice's key places the item at once, and the bar under the strip says where each\n" +
 				"sends it:\n" +
 				"\n" +
-				tuiVerbLines() +
+				tuiChoiceLines() +
 				"\n" +
-				review.VerbBindings[route.VerbWatch].Key + " asks which playlist, listing the service's default first and then the playlists\n" +
-				"that `" + playlistsProgram + " playlists list` reads on this machine. d drops the item after asking\n" +
-				"what decided it. n writes a note in $VISUAL or $EDITOR, then places the item with\n" +
-				"the note on the destination you pick. Each decision keeps the card as it was drawn\n" +
-				"and how long you took. x marks the item low quality and r marks it read, which\n" +
-				"teaches the gate and leaves the item waiting. c reads what a video's top comments\n" +
-				"say, with one model call that the card shows once it lands, and asks again where the\n" +
-				"read failed. o opens its URL. Each key calls the routes that `ingestion review sort`,\n" +
-				"`review place`, `review drop` and `items mark` call, under the same login, so the\n" +
+				review.ChoiceBindings[route.ChoiceWatch].Key + " asks which playlist, listing the service's default first and then the playlists\n" +
+				"that `" + playlistsProgram + " playlists list` reads on this machine. " + review.ChoiceBindings[route.ChoicePsyche].Key + " hands the terminal to\n" +
+				push.Program + " relate on this machine while the placement is sent, and enter returns to the board.\n" +
+				review.ChoiceBindings[route.ChoiceArchive].Key + " asks what you liked: the channel, the theme or this item alone, and\n" +
+				"the decision keeps the answer as its cause. " + review.KeyDrop + " drops the item after asking what decided it,\n" +
+				"and a drop for low quality marks it low quality too. " + review.KeyNote + " writes a note in $VISUAL or $EDITOR,\n" +
+				"then places the item with the note by the choice whose digit you pick. Each decision\n" +
+				"keeps the card as it was drawn and how long you took. " + review.KeyComments + " reads what a video's top\n" +
+				"comments say, with one model call that the card shows once it lands, and asks again\n" +
+				"where the read failed. o opens its URL. Each key calls the routes that `ingestion\n" +
+				"review place`, `review archive` and `review drop` call, under the same login, so the\n" +
 				"decision is yours.",
 			func(ctx context.Context, o tuiOptions) tuiBoard {
 				return reviewTab{review.NewBoard(ctx, reviewService(o), review.Outside{Open: openInBrowser})}
 			},
 		},
-		{
-			tabShelf,
-			"shelf lists each item sorted by " + strings.Join(route.ShelfVerbs(), ", ") + ",\n" +
-				"where nothing runs until you open it, grouped by its verb. " + shelf.KeyOpen + " opens the item\n" +
-				"under the cursor. A relate hands the terminal to `ingestion shelf open`, which\n" +
-				"hands the item to " + push.Program + " relate on this machine, and enter returns to the board. A\n" +
-				"summary queues its model read once, and the side panel shows the summary once\n" +
-				"kept. Opening it again runs nothing new. " + shelf.KeyRemove + " takes the item off the shelf, and " + shelf.KeyBrowser + "\n" +
-				"opens its URL.",
-			func(ctx context.Context, o tuiOptions) tuiBoard {
-				return shelfTab{shelf.NewBoard(ctx, shelfService(o), shelf.Outside{Open: openInBrowser})}
-			},
-		},
 	}
 }
 
-// tuiVerbLines gives each verb's key and its help line.
-func tuiVerbLines() string {
+// tuiChoiceLines gives each choice's key and its help line.
+func tuiChoiceLines() string {
 	var b strings.Builder
-	for _, v := range route.Verbs {
-		fmt.Fprintf(&b, "  %s  %-20s %s\n", review.VerbBindings[v.Verb].Key, v.Verb, v.Help)
+	for _, c := range route.Choices {
+		fmt.Fprintf(&b, "  %s  %-11s %s\n", review.ChoiceBindings[c.Name].Key, c.Name, c.Help)
 	}
 	return b.String()
 }
@@ -245,67 +230,6 @@ func (t reviewTab) print(out io.Writer, asJSON bool) error {
 	return gotermboard.PrintTab(out, asJSON, t.Board, gotermstyle.PaletteFor(os.Stdout), onceDefaultWidth, onceDefaultHeight)
 }
 
-// shelfTab is the shelf board, printed as gotermboard prints any tab.
-type shelfTab struct{ *shelf.Board }
-
-func (t shelfTab) print(out io.Writer, asJSON bool) error {
-	return gotermboard.PrintTab(out, asJSON, t.Board, gotermstyle.PaletteFor(os.Stdout), onceDefaultWidth, onceDefaultHeight)
-}
-
-// shelfService is shelf.Service over the calls `ingestion shelf` makes, under the login the config
-// file at o.config names, or on o.api where it is set.
-type shelfService tuiOptions
-
-func (s shelfService) Shelf(ctx context.Context) (server.ShelfAnswer, error) {
-	var answer server.ShelfAnswer
-	_, err := getJSON(ctx, s.config, s.api, server.RouteShelf, "/api/v1/shelf", &answer)
-	return answer, refusalWords(err)
-}
-
-func (s shelfService) Remove(ctx context.Context, key string) (string, error) {
-	answer, _, err := removeShelved(ctx, s.config, s.api, key)
-	if err != nil {
-		return "", refusalWords(err)
-	}
-	return removedSentence(answer), nil
-}
-
-func (s shelfService) Open(ctx context.Context, key string) (string, error) {
-	answer, _, err := openShelved(ctx, s.config, s.api, key)
-	if err != nil {
-		return "", refusalWords(err)
-	}
-	it, lens := answer.Item, "its"
-	if it.Lens != nil {
-		lens = "the " + *it.Lens
-	}
-	switch {
-	case it.State == route.ShelfDone:
-		return "the summary of " + it.Key + " is kept, and its panel shows it", nil
-	case it.State == route.ShelfFailed:
-		return "", fmt.Errorf("the model read of %s failed, and `ingestion tasks retry` runs it again", it.Key)
-	case answer.Opened:
-		return "opened " + it.Key + ": a model reads it under " + lens + " lens", nil
-	}
-	return it.Key + " was opened before, and a model still reads it under " + lens + " lens", nil
-}
-
-// Relate is `ingestion shelf open <key>` under the same config and server, which hands a relate
-// to psyche here, then waits for enter, so its answer stays on the screen until the person reads
-// it.
-func (s shelfService) Relate(ctx context.Context, key string) *exec.Cmd {
-	self, err := os.Executable()
-	if err != nil {
-		self = product
-	}
-	args := []string{self, "shelf", "open", key, "--config", s.config}
-	if s.api != "" {
-		args = append(args, "--api", s.api)
-	}
-	script := `"$@"; status=$?; printf '\n%s' 'enter returns to the board '; read -r _; exit "$status"`
-	return exec.CommandContext(ctx, "sh", append([]string{"-c", script, "sh"}, args...)...)
-}
-
 // reviewService is review.Service over the calls `ingestion review` makes, under the login the
 // config file at o.config names, or on o.api where it is set.
 type reviewService tuiOptions
@@ -338,10 +262,26 @@ func (s reviewService) Drop(ctx context.Context, key string, body server.DropReq
 	return s.decide(ctx, server.RouteReviewDrop, key, "drop", body, bare)
 }
 
-func (s reviewService) Sort(ctx context.Context, key string, body server.SortRequest) (string, error) {
+func (s reviewService) Archive(ctx context.Context, key string, body server.ArchiveRequest) (string, error) {
 	bare := body
 	bare.Presented, bare.DecidedAfterMS = nil, nil
-	return s.decide(ctx, server.RouteReviewSort, key, "sort", body, bare)
+	return s.decide(ctx, server.RouteReviewArchive, key, "archive", body, bare)
+}
+
+// Relate is `ingestion push <key> --to psyche --relate` under the same config and server, which
+// hands the item's parse to psyche here and places nothing, then waits for enter, so its answer
+// stays on the screen until the person reads it.
+func (s reviewService) Relate(ctx context.Context, key string) *exec.Cmd {
+	self, err := os.Executable()
+	if err != nil {
+		self = product
+	}
+	args := []string{self, "push", key, "--to", push.Program, "--relate", "--config", s.config}
+	if s.api != "" {
+		args = append(args, "--api", s.api)
+	}
+	script := `"$@"; status=$?; printf '\n%s' 'enter returns to the board '; read -r _; exit "$status"`
+	return exec.CommandContext(ctx, "sh", append([]string{"-c", script, "sh"}, args...)...)
 }
 
 // playlistsProgram lists the playlists that a watch picks from, on this machine.
@@ -383,18 +323,6 @@ func (s reviewService) decide(ctx context.Context, route server.Route, key, verb
 		return "", refusalWords(err)
 	}
 	return placedSentence(answer), nil
-}
-
-func (s reviewService) Mark(ctx context.Context, key, mark string) (string, error) {
-	encoded, err := json.Marshal(server.MarkRequest{Mark: mark})
-	if err != nil {
-		return "", err
-	}
-	var answer server.MarkAnswer
-	if _, err := sendJSON(ctx, s.config, s.api, server.RouteItemMarks, "/api/v1/items/"+url.PathEscape(key)+"/marks", encoded, &answer); err != nil {
-		return "", refusalWords(err)
-	}
-	return markedSentence(answer), nil
 }
 
 func (s reviewService) Comments(ctx context.Context, key string) (server.ReviewComments, error) {

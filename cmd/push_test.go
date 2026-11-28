@@ -22,6 +22,7 @@ import (
 	"github.com/datapointchris/ingestion/polling"
 	"github.com/datapointchris/ingestion/publicweb"
 	"github.com/datapointchris/ingestion/push"
+	"github.com/datapointchris/ingestion/route"
 	"github.com/datapointchris/ingestion/scan"
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
@@ -368,10 +369,13 @@ func TestAPushOfANewLinkLandsItPlacedAtPsycheAndWaitsForItsScan(t *testing.T) {
 		t.Errorf("a push on a parse that failed with no output exited %d after %s (%v), want 1 at once with the task's error", code, time.Since(started), err)
 	}
 
-	// psyche takes only a push's placement, so review neither offers nor takes it.
+	// review's psyche choice places the item even where psyche cannot read its parse.
 	_, err = runCLI(t, "review", "place", "youtube/pushedvid02", "psyche", "--config", p.config)
-	if code := exitCode(io.Discard, err); code != 2 || !strings.Contains(fmt.Sprint(err), "only a push places an item at psyche") {
-		t.Errorf("a placement from review at psyche exited %d (%v), want 2 naming the push", code, err)
+	if code := exitCode(io.Discard, err); code != 1 || !strings.Contains(fmt.Sprint(err), "parse failed") {
+		t.Errorf("the psyche choice on a failed parse exited %d (%v), want 1 naming the parse", code, err)
+	}
+	if _, side, _ := p.decisions(t, "youtube/pushedvid02"); text(side.Destination) != "psyche" || side.DecidedBy != route.ByPerson("person") {
+		t.Errorf("the psyche choice left %+v, want the person's placement at psyche", side)
 	}
 }
 

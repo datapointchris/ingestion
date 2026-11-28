@@ -152,13 +152,11 @@ func TestTheReadGateTakesTheConnectorsRuleElseTheSidesDefault(t *testing.T) {
 	}
 }
 
-// A connector that declares read_rule: model reads a personal item by a model
-// under the personal lens, and no model read is due, because the build holds
-// no prompt for that lens. The same item on the fleet side, placed with a
-// note, is due one.
+// A model read is due under a lens whose prompt the build holds, the fleet's or
+// the personal side's, and under no other.
 func TestAModelReadIsDueOnlyUnderALensWhosePromptTheBuildHolds(t *testing.T) {
 	note := "what would this change?"
-	for lens, want := range map[string]bool{route.LensFleet: true, route.LensPersonal: true, route.LensLearning: true, "unheld": false} {
+	for lens, want := range map[string]bool{route.LensFleet: true, connectors.SidePersonal: true, "unheld": false} {
 		read := store.Decision{Gate: store.GateRead, Verdict: connectors.ReadModel, DecidedBy: route.ByPerson("ana"), Lens: &lens, Note: &note}
 		if due := route.ModelReadDue(store.Decision{Verdict: connectors.SidePersonal}, read, nil, false); due != want {
 			t.Errorf("a model read under lens %s is due: %v, want %v", lens, due, want)
@@ -199,38 +197,25 @@ func TestTheReviewReasonsAreTheReviewListSchemasReasons(t *testing.T) {
 	}
 }
 
-// A verb that the table gains and a schema's enum lacks fails a reader that
-// validates the answer. So each schema that names the verbs names
-// route.Verbs, and the shelf-list names the shelf verbs.
-func TestTheVerbSchemasNameTheVerbTable(t *testing.T) {
-	enumAt := func(file string, path ...string) []string {
-		raw, err := schemas.Files.ReadFile(file)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var node any
-		if err := json.Unmarshal(raw, &node); err != nil {
-			t.Fatal(err)
-		}
-		for _, step := range append(path, "enum") {
-			node = node.(map[string]any)[step]
-		}
-		var enum []string
-		for _, v := range node.([]any) {
-			enum = append(enum, v.(string))
-		}
-		return slices.Sorted(slices.Values(enum))
+// A choice that the table gains and the review list's enum lacks fails a
+// reader that validates the answer, so the schema names route.Choices.
+func TestTheReviewListSchemaNamesTheChoiceTable(t *testing.T) {
+	raw, err := schemas.Files.ReadFile("review-list.schema.json")
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, c := range []struct {
-		file  string
-		path  []string
-		verbs []string
-	}{
-		{"review-list.schema.json", []string{"properties", "verbs", "items", "properties", "verb"}, route.VerbNames()},
-		{"shelf-list.schema.json", []string{"$defs", "shelved", "properties", "verb"}, route.ShelfVerbs()},
-	} {
-		if enum, want := enumAt(c.file, c.path...), slices.Sorted(slices.Values(c.verbs)); !slices.Equal(enum, want) {
-			t.Errorf("%s names the verbs %v, and the table %v", c.file, enum, want)
-		}
+	var node any
+	if err := json.Unmarshal(raw, &node); err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range []string{"properties", "choices", "items", "properties", "choice", "enum"} {
+		node = node.(map[string]any)[step]
+	}
+	var enum []string
+	for _, v := range node.([]any) {
+		enum = append(enum, v.(string))
+	}
+	if !slices.Equal(enum, route.ChoiceNames()) {
+		t.Errorf("review-list.schema.json names the choices %v, and the table %v", enum, route.ChoiceNames())
 	}
 }

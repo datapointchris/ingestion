@@ -48,9 +48,9 @@ func RegisterDeliverer(name string, w Writes) {
 }
 
 // TakesPlaylist says whether the deliverer called name adds an item to the
-// playlist that a person's sort picked. No tag, rule, side default or
-// placement carries a playlist, so only a sort places an item on such a
-// deliverer's destination.
+// playlist that a person's watch picked. No tag, rule, side default or
+// placement by destination carries a playlist, so only the watch choice places
+// an item on such a deliverer's destination.
 func TakesPlaylist(name string) bool { return deliverers[name].Playlist }
 
 // SetDelivererRoot names root as the [serve.homes] root below which the

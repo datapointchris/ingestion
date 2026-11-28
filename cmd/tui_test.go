@@ -19,6 +19,7 @@ import (
 	"github.com/datapointchris/ingestion/connectors"
 	"github.com/datapointchris/ingestion/extract"
 	"github.com/datapointchris/ingestion/qualitygate"
+	"github.com/datapointchris/ingestion/route"
 	"github.com/datapointchris/ingestion/scan"
 	"github.com/datapointchris/ingestion/server"
 	"github.com/datapointchris/ingestion/store"
@@ -114,18 +115,18 @@ func TestTheReviewTabShowsTheGatesAnswerAndDecidesByKey(t *testing.T) {
 		snap.Items[0].Group != "reason/"+store.ReasonQualityReview || len(snap.Items[0].Item.QualityAnswer) == 0 {
 		t.Fatalf("the snapshot lists %s, want both saves under the gate's review, the drop first from r/golang with its answer", jsonOf(snap.Items))
 	}
-	if len(snap.Destinations) != 4 || snap.Destinations[1].Key != "2" || snap.Destinations[1].Name != "work-inbox" || snap.Destinations[2].Side != nil {
-		t.Errorf("the snapshot's destinations are %s, want the four the set declares but the push-only psyche and the watch, keyed 1 to 4", jsonOf(snap.Destinations))
+	if len(snap.NoteChoices) != 5 || snap.NoteChoices[2].Key != "3" || snap.NoteChoices[2].Choice != route.ChoiceSuggestion {
+		t.Errorf("the note's menu is %s, want the five placing choices keyed 1 to 5, suggestion third", jsonOf(snap.NoteChoices))
 	}
 	keyed := map[string]string{}
-	for _, v := range snap.Verbs {
-		keyed[v.Key] = v.Verb + " → " + orDash(v.Destination)
+	for _, c := range snap.Choices {
+		keyed[c.Key] = c.Choice + " → " + orDash(c.Destination)
 	}
 	if want := map[string]string{
-		"F": "fleet-relate → work-inbox", "L": "learning → learning-plan", "P": "personal-relate → —",
-		"S": "personal-summarize → —", "T": "technical-summarize → —", "W": "watch → watch",
+		"A": "articles → —", "L": "learning → learning-plan", "S": "suggestion → work-inbox", "W": "watch → watch",
+		"P": "psyche → psyche", "E": "archive → —", "d": "drop → —",
 	}; !maps.Equal(keyed, want) {
-		t.Errorf("the snapshot keys the verbs %v, want %v", keyed, want)
+		t.Errorf("the snapshot keys the choices %v, want %v", keyed, want)
 	}
 
 	t.Setenv("COLUMNS", "200")
@@ -170,10 +171,6 @@ func TestTheReviewTabShowsTheGatesAnswerAndDecidesByKey(t *testing.T) {
 	if m.Cursor() != "reddit/t3_bb2" {
 		t.Fatalf("the cursor starts on %q, want the first waiting save", m.Cursor())
 	}
-	runKey(t, m, letter('x'))
-	if n := p.count(t, `SELECT count(*) FROM marks WHERE item_key = ? AND mark = 'low-quality'`, "reddit/t3_bb2"); n != 1 || m.Cursor() != "reddit/t3_bb2" {
-		t.Errorf("after x the hostile save holds %d low-quality marks and the cursor is on %q, want one mark and the save still waiting", n, m.Cursor())
-	}
 	runKey(t, m, letter('d'))
 	runKey(t, m, letter('s'))
 	_, side, _ := p.decisions(t, "reddit/t3_bb2")
@@ -191,16 +188,12 @@ func TestTheReviewTabShowsTheGatesAnswerAndDecidesByKey(t *testing.T) {
 	if m.Cursor() != "reddit/t3_cc3" {
 		t.Fatalf("after the drop the cursor is on %q, want the next waiting save", m.Cursor())
 	}
-	runKey(t, m, letter('r'))
-	if n := p.count(t, `SELECT count(*) FROM marks WHERE item_key = ? AND mark = 'read'`, "reddit/t3_cc3"); n != 1 {
-		t.Errorf("after r the save holds %d read marks, want one", n)
-	}
 	runKey(t, m, letter('n'))
-	runKey(t, m, letter('2'))
+	runKey(t, m, letter('3'))
 	if _, side, read := p.decisions(t, "reddit/t3_cc3"); side.Verdict != connectors.SideFleet || side.Destination == nil || *side.Destination != "work-inbox" ||
 		side.Note == nil || *side.Note != "why save this?" || read.Verdict != connectors.ReadModel ||
 		side.Presented == nil || side.Presented.Position != 1 || side.Presented.Shown != 1 || side.DecidedAfterMS == nil || read.Presented != nil {
-		t.Errorf("after n, a note and 2 the save holds %+v and read %+v, want the person's placement on work-inbox with the note and its card, read by a model", side, read)
+		t.Errorf("after n, a note and 3 the save holds %+v and read %+v, want the person's placement on work-inbox with the note and its card, read by a model", side, read)
 	}
 	if left := board.Snapshot(time.Now()).Items; len(left) != 0 {
 		t.Errorf("after both decisions the tab still lists %s", jsonOf(left))

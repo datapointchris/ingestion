@@ -2,44 +2,44 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/datapointchris/ingestion/schemas/tui-review.schema.json",
   "title": "The review tab's snapshot",
-  "description": "What `ingestion tui --view review --json` prints: each item that waits on a person, ordered by the board's default grouping and, within each group, by the sort in force, the key that sorts by each verb, the digit that the note's menu places on each destination with, and how each read stands. A change to its shape bumps schema_version.",
+  "description": "What `ingestion tui --view review --json` prints: each item that waits on a person, ordered by the board's default grouping and, within each group, by the sort in force, the key that picks each of review's choices, the digit that the note's menu places by each placing choice with, and how each read stands. A change to its shape bumps schema_version.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "taken_at", "grouping", "sort", "verbs", "watch_default_playlist", "destinations", "items", "sources"],
+  "required": ["schema_version", "taken_at", "grouping", "sort", "choices", "watch_default_playlist", "note_choices", "items", "sources"],
   "properties": {
-    "schema_version": {"const": 3},
+    "schema_version": {"const": 4},
     "taken_at": {"description": "When the snapshot was taken, in UTC.", "type": "string", "format": "date-time"},
     "grouping": {"description": "The board's default grouping, which orders the items. A display the person left grouped otherwise does not change it.", "$ref": "ingestion-record.schema.json#/$defs/presented/properties/grouping"},
     "sort": {"description": "The sort in force, which orders the items within each group. An item with no value for the sort follows every item with one.", "$ref": "ingestion-record.schema.json#/$defs/presented/properties/sort"},
-    "verbs": {
-      "description": "The key that sorts by each verb, and where the verb sends an item under the set in force, as review-list.schema.json's verbs. Null where the queue came without its verbs or was not read.",
+    "choices": {
+      "description": "The key that picks each of review's choices, and where the choice sends an item under the set in force, as review-list.schema.json's choices. Null where the queue came without its choices or was not read.",
       "type": ["array", "null"],
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["key", "verb", "side", "destination", "playlist", "missing"],
+        "required": ["key", "choice", "side", "destination", "playlist", "runs_here", "missing"],
         "properties": {
-          "key": {"enum": ["F", "L", "P", "S", "T", "W"]},
-          "verb": {"$ref": "review-list.schema.json#/properties/verbs/items/properties/verb"},
-          "side": {"$ref": "review-list.schema.json#/properties/verbs/items/properties/side"},
+          "key": {"enum": ["A", "L", "S", "W", "P", "E", "d"]},
+          "choice": {"$ref": "review-list.schema.json#/properties/choices/items/properties/choice"},
+          "side": {"$ref": "review-list.schema.json#/properties/choices/items/properties/side"},
           "destination": {"type": ["string", "null"]},
-          "playlist": {"$ref": "review-list.schema.json#/properties/verbs/items/properties/playlist"},
+          "playlist": {"$ref": "review-list.schema.json#/properties/choices/items/properties/playlist"},
+          "runs_here": {"$ref": "review-list.schema.json#/properties/choices/items/properties/runs_here"},
           "missing": {"type": ["string", "null"]}
         }
       }
     },
     "watch_default_playlist": {"$ref": "review-list.schema.json#/properties/watch_default_playlist"},
-    "destinations": {
-      "description": "Each destination that a digit of the note's menu places on, in the order the set in force declares them, up to nine. Null where the queue came without its destinations or was not read.",
+    "note_choices": {
+      "description": "Each choice that a digit of the note's menu places by, in the order of choices: each one that places an item. Null where the queue came without its choices or was not read.",
       "type": ["array", "null"],
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["key", "name", "side"],
+        "required": ["key", "choice"],
         "properties": {
           "key": {"type": "string", "pattern": "^[1-9]$"},
-          "name": {"type": "string"},
-          "side": {"enum": ["personal", "fleet", null]}
+          "choice": {"enum": ["articles", "learning", "suggestion", "watch", "psyche"]}
         }
       }
     },

@@ -1,7 +1,7 @@
 // Package review is the review tab of `ingestion tui`: the items that wait on a person's
 // placement, each opening into its text, the quality gate's whole answer and the scan's findings,
-// and sorted by a verb's key, dropped or placed with a note through the routes `ingestion review`
-// calls.
+// and placed by a choice's key, archived, dropped or placed with a note through the routes
+// `ingestion review` calls.
 package review
 
 import (
@@ -31,17 +31,16 @@ type Service interface {
 	// Parse is the item's newest parse with the scan's findings, and false where it holds no done
 	// parse.
 	Parse(ctx context.Context, key string) (server.ParseAnswer, bool, error)
-	// Place and Drop write the decision and answer the sentence `ingestion review place` and
-	// `ingestion review drop` print.
+	// Place, Archive and Drop write the decision and answer the sentence `ingestion review place`,
+	// `ingestion review archive` and `ingestion review drop` print.
 	Place(ctx context.Context, key string, body server.PlaceRequest) (string, error)
+	Archive(ctx context.Context, key string, body server.ArchiveRequest) (string, error)
 	Drop(ctx context.Context, key string, body server.DropRequest) (string, error)
-	// Sort sorts the item by a verb and answers the sentence `ingestion review sort` prints.
-	Sort(ctx context.Context, key string, body server.SortRequest) (string, error)
+	// Relate is the command that hands the item to psyche relate on this machine, which the psyche
+	// choice hands the terminal to.
+	Relate(ctx context.Context, key string) *exec.Cmd
 	// Playlists lists the playlists that a watch can add a video to, as this machine reads them.
 	Playlists(ctx context.Context) ([]Playlist, error)
-	// Mark posts a person's mark on the item, low-quality or read, and
-	// answers the sentence `ingestion items mark` prints.
-	Mark(ctx context.Context, key, mark string) (string, error)
 	// Comments asks for the read of what the item's top comments say, and
 	// answers how it stands.
 	Comments(ctx context.Context, key string) (server.ReviewComments, error)
@@ -65,8 +64,7 @@ const (
 // read began, which settles each write that landed before it.
 type held struct {
 	at, readFrom time.Time
-	destinations []server.ReviewDestination
-	verbs        []server.ReviewVerb
+	choices      []server.ReviewChoice
 	watchDefault *string
 	items        []item
 	index        map[string]int
@@ -178,7 +176,7 @@ func (b *Board) readQueue(ctx context.Context) (held, string, error) {
 	}
 	b.queueErr.Store(nil)
 	h := held{
-		at: time.Now(), readFrom: readFrom, destinations: answer.Destinations, verbs: answer.Verbs, watchDefault: answer.WatchDefaultPlaylist,
+		at: time.Now(), readFrom: readFrom, choices: answer.Choices, watchDefault: answer.WatchDefaultPlaylist,
 		index: make(map[string]int, len(answer.Items)),
 	}
 	for i, it := range answer.Items {

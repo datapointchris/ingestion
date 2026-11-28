@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -51,17 +52,17 @@ type ItemCommentsAnswer struct {
 // CodeDestinationPushOnly refuses a placement from review on a push-only
 // destination, which only a push places an item at.
 // CodeDestinationTakesPlaylist refuses a placement on a destination whose
-// deliverer adds the item to the playlist that a sort picks, which only a
-// sort places an item at. CodeVerbRefused refuses a sort that its verb cannot
-// carry out on the item, such as a watch that names no playlist where serve
-// names no default.
+// deliverer adds the item to the playlist that a person picks, which only the
+// watch choice places an item at. CodeChoiceRefused refuses a pick that its
+// choice cannot carry out on the item, such as a watch that names no playlist
+// where serve names no default.
 const (
 	CodeDestinationNotDeclared   = "destination_not_declared"
 	CodeActingForAnother         = "acting_for_another"
 	CodeChapterOfBook            = "chapter_of_book"
 	CodeDestinationPushOnly      = "destination_push_only"
 	CodeDestinationTakesPlaylist = "destination_takes_playlist"
-	CodeVerbRefused              = "verb_refused"
+	CodeChoiceRefused            = "choice_refused"
 )
 
 var errActingForAnother = errors.New("a person's token acts only as that person")
@@ -75,28 +76,31 @@ var causeSpelling = regexp.MustCompile(`^[a-z][a-z-]{0,63}$`)
 func ValidCause(cause string) bool { return causeSpelling.MatchString(cause) }
 
 // ReviewAnswer is what GET /api/v1/review answers:
-// schemas/review-list.schema.json. Destinations are those a placement takes,
-// in the order the set in force declares them, and Verbs each sort verb with
-// the destination it places on. Both are nil where the set in force could not
-// be read. WatchDefaultPlaylist is the playlist a watch takes where the sort
-// names none, and nil where serve names none.
+// schemas/review-list.schema.json. Destinations are those a placement by
+// destination takes, in the order the set in force declares them, and Choices
+// each of review's choices with the destination it places on. Both are nil
+// where the set in force could not be read. WatchDefaultPlaylist is the
+// playlist a watch takes where the pick names none, and nil where serve names
+// none.
 type ReviewAnswer struct {
 	SchemaVersion        int                 `json:"schema_version"`
 	Items                []ReviewItem        `json:"items"`
 	Destinations         []ReviewDestination `json:"destinations"`
-	Verbs                []ReviewVerb        `json:"verbs"`
+	Choices              []ReviewChoice      `json:"choices"`
 	WatchDefaultPlaylist *string             `json:"watch_default_playlist"`
 }
 
-// ReviewVerb is one sort verb under the set in force: the side and the
-// destination it places an item on, the destination nil for a shelf, whether
-// its sort picks a playlist, and why it places nothing where the set declares
+// ReviewChoice is one of review's choices under the set in force: the side and
+// the destination it places an item on, each nil for archive and drop, whether
+// its pick names a playlist, whether the client that picks it runs psyche
+// relate on its own machine, and why it places nothing where the set declares
 // no destination it takes.
-type ReviewVerb struct {
-	Verb        string  `json:"verb"`
+type ReviewChoice struct {
+	Choice      string  `json:"choice"`
 	Side        *string `json:"side"`
 	Destination *string `json:"destination"`
 	Playlist    bool    `json:"playlist"`
+	RunsHere    bool    `json:"runs_here"`
 	Missing     *string `json:"missing"`
 }
 
@@ -201,15 +205,19 @@ type ReviewDestination struct {
 	Side *string `json:"side"`
 }
 
-// PlaceRequest places an item on Destination, one the set in force declares.
-// Cause names the aspect that decided it, such as subreddit, channel, theme or
-// title, and Note the questions and why the item was saved. A service placing
-// for a person names the person's Login, since its token carries none.
-// Presented is the review card as drawn when the person decided, and
-// DecidedAfterMS how long after the drawing they decided, which a client that
-// drew no card leaves out.
+// PlaceRequest places an item on Destination, one the set in force declares,
+// or by Choice, one of review's placing choices, and names one of the two.
+// Playlist is the playlist that a watch adds the video to, and a watch that
+// names none takes serve's [watch] default_playlist. Cause names the aspect
+// that decided it, such as subreddit, channel, theme or title, and Note the
+// questions and why the item was saved. A service placing for a person names
+// the person's Login, since its token carries none. Presented is the review
+// card as drawn when the person decided, and DecidedAfterMS how long after the
+// drawing they decided, which a client that drew no card leaves out.
 type PlaceRequest struct {
-	Destination    string           `json:"destination"`
+	Destination    string           `json:"destination,omitempty"`
+	Choice         string           `json:"choice,omitempty"`
+	Playlist       string           `json:"playlist,omitempty"`
 	Cause          string           `json:"cause,omitempty"`
 	Note           *string          `json:"note,omitempty"`
 	Login          string           `json:"login,omitempty"`
@@ -217,21 +225,21 @@ type PlaceRequest struct {
 	DecidedAfterMS *int64           `json:"decided_after_ms,omitempty"`
 }
 
-// SortRequest sorts an item by Verb, one of route.Verbs. Playlist is the
-// playlist that a watch adds the video to, and a watch that names none takes
-// serve's [watch] default_playlist. Login, Presented and DecidedAfterMS are a
+// ArchiveRequest archives an item: done, its record kept with no destination.
+// Liked names what the person liked, one of route.Likes, and an archive that
+// names none is kept as unstated. Login, Presented and DecidedAfterMS are a
 // PlaceRequest's.
-type SortRequest struct {
-	Verb           string           `json:"verb"`
-	Playlist       string           `json:"playlist,omitempty"`
+type ArchiveRequest struct {
+	Liked          string           `json:"liked,omitempty"`
 	Login          string           `json:"login,omitempty"`
 	Presented      *store.Presented `json:"presented,omitempty"`
 	DecidedAfterMS *int64           `json:"decided_after_ms,omitempty"`
 }
 
 // DropRequest drops an item, which keeps its row. Cause names the aspect that
-// decided it, and a drop that names none is kept as unstated. Presented and
-// DecidedAfterMS are a PlaceRequest's.
+// decided it, and a drop that names none is kept as unstated. A drop for
+// low-quality also writes the low-quality mark. Presented and DecidedAfterMS
+// are a PlaceRequest's.
 type DropRequest struct {
 	Cause          string           `json:"cause,omitempty"`
 	Note           *string          `json:"note,omitempty"`
@@ -266,7 +274,7 @@ func checkPresented(p *store.Presented, after *int64) (string, error) {
 	return "", nil
 }
 
-// PlacementAnswer is what a placement or a drop answers:
+// PlacementAnswer is what a placement, an archive or a drop answers:
 // schemas/review-placement.schema.json. Decisions are the side decision and,
 // where it places the item on a side, the read decision after it.
 type PlacementAnswer struct {
@@ -276,11 +284,10 @@ type PlacementAnswer struct {
 }
 
 // ReviewRoutes are the routes for a person, or a service acting for one, to
-// read the review queue, and place, drop or sort an item, and to read and open
-// the shelf. A placement, a drop or a sort sent again with the same body
-// appends nothing, and neither does a second opening. watchDefault is the
-// playlist that a watch takes where its sort names none, and "" where serve
-// names none.
+// read the review queue, and place, archive or drop an item. A placement, an
+// archive or a drop sent again with the same body appends nothing.
+// watchDefault is the playlist that a watch takes where its pick names none,
+// and "" where serve names none.
 func ReviewRoutes(st *store.Store, comments CommentsState, watchDefault string, log *slog.Logger) Routes {
 	if log == nil {
 		log = slog.Default()
@@ -292,11 +299,8 @@ func ReviewRoutes(st *store.Store, comments CommentsState, watchDefault string, 
 	return func(r *Router) {
 		r.Handle(RouteReview, h.list)
 		r.Handle(RouteReviewPlace, h.place)
+		r.Handle(RouteReviewArchive, h.archive)
 		r.Handle(RouteReviewDrop, h.drop)
-		r.Handle(RouteReviewSort, h.sort)
-		r.Handle(RouteShelf, h.shelf)
-		r.Handle(RouteShelfOpen, h.open)
-		r.Handle(RouteShelfRemove, h.remove)
 	}
 }
 
@@ -320,8 +324,8 @@ func (h reviewHandlers) list(w http.ResponseWriter, r *http.Request) {
 		Refuse(w, http.StatusInternalServerError, CodeInternal, "the server could not read the review queue")
 		return
 	}
-	destinations, verbs := h.destinations(r)
-	answer := ReviewAnswer{SchemaVersion: ReviewListVersion, Items: make([]ReviewItem, 0, len(waiting)), Destinations: destinations, Verbs: verbs}
+	destinations, choices := h.destinations(r)
+	answer := ReviewAnswer{SchemaVersion: ReviewListVersion, Items: make([]ReviewItem, 0, len(waiting)), Destinations: destinations, Choices: choices}
 	if h.watchDefault != "" {
 		answer.WatchDefaultPlaylist = &h.watchDefault
 	}
@@ -358,11 +362,12 @@ func (h reviewHandlers) list(w http.ResponseWriter, r *http.Request) {
 }
 
 // destinations are those the set in force declares, but for each push-only
-// one, which a placement from review refuses, and each sort verb with where
-// it places an item under that set. A set that cannot be read answers nil for
-// both, which the answer carries as null, so the queue itself still reads and
-// a reader tells the fault from a set that declares none.
-func (h reviewHandlers) destinations(r *http.Request) ([]ReviewDestination, []ReviewVerb) {
+// one and each that takes a playlist, which a placement by destination
+// refuses, and each of review's choices with where it places an item under
+// that set. A set that cannot be read answers nil for both, which the answer
+// carries as null, so the queue itself still reads and a reader tells the
+// fault from a set that declares none.
+func (h reviewHandlers) destinations(r *http.Request) ([]ReviewDestination, []ReviewChoice) {
 	set, err := connectors.AppliedSet(r.Context(), h.store)
 	if err != nil {
 		h.log.ErrorContext(r.Context(), "read the set in force for the review queue's destinations", "error", err)
@@ -374,17 +379,17 @@ func (h reviewHandlers) destinations(r *http.Request) ([]ReviewDestination, []Re
 			out = append(out, ReviewDestination{Name: d.Name, Side: optional(d.Side)})
 		}
 	}
-	verbs := make([]ReviewVerb, 0, len(route.Verbs))
-	for _, v := range route.Verbs {
-		verb := ReviewVerb{Verb: v.Verb, Side: optional(v.Side), Playlist: v.TakesPlaylist()}
-		destination, missing := v.Destination(set)
+	choices := make([]ReviewChoice, 0, len(route.Choices))
+	for _, c := range route.Choices {
+		choice := ReviewChoice{Choice: c.Name, Playlist: c.TakesPlaylist(), RunsHere: c.RunsHere}
+		destination, missing := c.Destination(set)
 		if destination != nil {
-			verb.Destination = &destination.Name
+			choice.Side, choice.Destination = &destination.Side, &destination.Name
 		}
-		verb.Missing = optional(missing)
-		verbs = append(verbs, verb)
+		choice.Missing = optional(missing)
+		choices = append(choices, choice)
 	}
-	return out, verbs
+	return out, choices
 }
 
 func (h reviewHandlers) place(w http.ResponseWriter, r *http.Request) {
@@ -392,8 +397,8 @@ func (h reviewHandlers) place(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &body) {
 		return
 	}
-	if body.Destination == "" {
-		Refuse(w, http.StatusBadRequest, CodeInvalidBody, "a placement names its destination")
+	if (body.Destination == "") == (body.Choice == "") {
+		Refuse(w, http.StatusBadRequest, CodeInvalidBody, "a placement names its destination or its choice, one of %s, and not both", strings.Join(route.PlacingChoiceNames(), ", "))
 		return
 	}
 	if body.Cause != "" && !ValidCause(body.Cause) {
@@ -401,6 +406,14 @@ func (h reviewHandlers) place(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.refusedPresented(w, r, body.Presented, body.DecidedAfterMS) {
+		return
+	}
+	if body.Choice != "" {
+		h.choose(w, r, body)
+		return
+	}
+	if body.Playlist != "" {
+		Refuse(w, http.StatusBadRequest, CodeInvalidBody, "only the %s choice adds to a playlist, so a placement by destination names none", route.ChoiceWatch)
 		return
 	}
 	h.decide(w, r, route.Placement{
@@ -423,18 +436,54 @@ func (h reviewHandlers) drop(w http.ResponseWriter, r *http.Request) {
 	h.decide(w, r, route.Placement{Cause: body.Cause, Note: body.Note, Presented: body.Presented, DecidedAfterMS: body.DecidedAfterMS}, body.Login)
 }
 
-func (h reviewHandlers) sort(w http.ResponseWriter, r *http.Request) {
-	var body SortRequest
+// choose picks the item by body's choice, which place has checked but for
+// the choice itself.
+func (h reviewHandlers) choose(w http.ResponseWriter, r *http.Request, body PlaceRequest) {
+	c, ok := route.ChoiceOf(body.Choice)
+	if !ok || !c.Places() {
+		Refuse(w, http.StatusBadRequest, CodeInvalidBody, "choice is one of %s, not %q: archive and drop each take a route of their own",
+			strings.Join(route.PlacingChoiceNames(), ", "), body.Choice)
+		return
+	}
+	if body.Playlist != "" && !c.TakesPlaylist() {
+		Refuse(w, http.StatusBadRequest, CodeInvalidBody, "the %s choice adds to no playlist, so it names none", body.Choice)
+		return
+	}
+	if body.Note != nil && strings.TrimSpace(*body.Note) == "" {
+		body.Note = nil
+	}
+	key, login, clientID, ok := h.decidedItem(w, r, body.Login)
+	if !ok {
+		return
+	}
+	var made []store.Decision
+	err := h.store.Update(r.Context(), func(tx *store.Tx) error {
+		var err error
+		made, err = route.Choose(r.Context(), tx, key, route.Pick{
+			Choice: body.Choice, Playlist: body.Playlist, DefaultPlaylist: h.watchDefault, Cause: body.Cause, Note: body.Note,
+			Login: login, ClientID: clientID, Presented: body.Presented, DecidedAfterMS: body.DecidedAfterMS,
+		})
+		return err
+	})
+	var refused *route.ChoiceRefusedError
+	if errors.As(err, &refused) {
+		Refuse(w, http.StatusUnprocessableEntity, CodeChoiceRefused, "%v", refused)
+		return
+	}
+	if h.refusedDecision(w, r, key, err) {
+		return
+	}
+	h.log.Info("a person chose for an item", "item", key, "choice", body.Choice, "decided_by", made[0].DecidedBy, "client", clientID, "cause", made[0].Cause)
+	JSON(w, http.StatusOK, placementAnswer(key, made))
+}
+
+func (h reviewHandlers) archive(w http.ResponseWriter, r *http.Request) {
+	var body ArchiveRequest
 	if !decode(w, r, &body) {
 		return
 	}
-	v, ok := route.VerbOf(body.Verb)
-	if !ok {
-		Refuse(w, http.StatusBadRequest, CodeInvalidBody, "verb is one of %s, not %q", strings.Join(route.VerbNames(), ", "), body.Verb)
-		return
-	}
-	if body.Playlist != "" && !v.TakesPlaylist() {
-		Refuse(w, http.StatusBadRequest, CodeInvalidBody, "a sort by %s adds to no playlist, so it names none", body.Verb)
+	if body.Liked != "" && !slices.Contains(route.Likes, body.Liked) {
+		Refuse(w, http.StatusBadRequest, CodeInvalidBody, "liked is one of %s, or left out, not %q", strings.Join(route.Likes, ", "), body.Liked)
 		return
 	}
 	if h.refusedPresented(w, r, body.Presented, body.DecidedAfterMS) {
@@ -447,26 +496,26 @@ func (h reviewHandlers) sort(w http.ResponseWriter, r *http.Request) {
 	var made []store.Decision
 	err := h.store.Update(r.Context(), func(tx *store.Tx) error {
 		var err error
-		made, err = route.SortItem(r.Context(), tx, key, route.Sort{
-			Verb: body.Verb, Playlist: body.Playlist, DefaultPlaylist: h.watchDefault, Login: login, ClientID: clientID,
-			Presented: body.Presented, DecidedAfterMS: body.DecidedAfterMS,
+		made, err = route.Archive(r.Context(), tx, key, route.Archival{
+			Liked: body.Liked, Login: login, ClientID: clientID, Presented: body.Presented, DecidedAfterMS: body.DecidedAfterMS,
 		})
 		return err
 	})
-	var refused *route.VerbRefusedError
-	if errors.As(err, &refused) {
-		Refuse(w, http.StatusUnprocessableEntity, CodeVerbRefused, "%v", refused)
-		return
-	}
 	if h.refusedDecision(w, r, key, err) {
 		return
 	}
+	h.log.Info("a person archived an item", "item", key, "decided_by", made[0].DecidedBy, "client", clientID, "cause", made[0].Cause)
+	JSON(w, http.StatusOK, placementAnswer(key, made))
+}
+
+// placementAnswer is the answer of a decision on the item under key that made
+// made.
+func placementAnswer(key string, made []store.Decision) PlacementAnswer {
 	answer := PlacementAnswer{SchemaVersion: PlacementVersion, Key: key, Decisions: make([]DecisionView, 0, len(made))}
 	for _, d := range made {
 		answer.Decisions = append(answer.Decisions, decisionView(d))
 	}
-	h.log.Info("a person sorted an item", "item", key, "verb", body.Verb, "decided_by", made[0].DecidedBy, "client", clientID)
-	JSON(w, http.StatusOK, answer)
+	return answer
 }
 
 // decidedItem reads the item that the path names and who decides it, and
@@ -549,10 +598,7 @@ func (h reviewHandlers) decide(w http.ResponseWriter, r *http.Request, p route.P
 	if h.refusedDecision(w, r, key, err) {
 		return
 	}
-	answer := PlacementAnswer{SchemaVersion: PlacementVersion, Key: key, Decisions: make([]DecisionView, 0, len(made))}
-	for _, d := range made {
-		answer.Decisions = append(answer.Decisions, decisionView(d))
-	}
+	answer := placementAnswer(key, made)
 	h.log.Info("a person decided an item", "item", key, "verdict", made[0].Verdict, "destination", p.Destination,
 		"decided_by", made[0].DecidedBy, "client", p.ClientID, "cause", made[0].Cause)
 	JSON(w, http.StatusOK, answer)

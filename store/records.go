@@ -381,8 +381,7 @@ type Decision struct {
 	Cause       string   `json:"cause"`
 	Destination *string  `json:"destination"`
 	Note        *string  `json:"note"`
-	// Lens is set on a read decision whose verdict is model, and on a shelf
-	// whose opening runs a model read.
+	// Lens is set on a read decision whose verdict is model.
 	Lens     *string `json:"lens"`
 	ClientID *string `json:"client_id"`
 	// Playlist is the playlist that a person's watch adds the video to, on
@@ -448,8 +447,13 @@ const (
 	VerdictPass   = "pass"
 	VerdictDrop   = "drop"
 	VerdictReview = "review"
+	// VerdictArchive is the read gate's verdict on an item that a person
+	// archived from review: done, so nothing reads or delivers it, and its
+	// record stays.
+	VerdictArchive = "archive"
 	// VerdictShelf is the read gate's verdict on an item that a person put on
-	// the shelf: nothing reads it until the person opens it.
+	// the shelf, which records already written carry. Such an item that
+	// nobody opened or took off the shelf waits in review as ReasonShelved.
 	VerdictShelf = "shelf"
 	// VerdictSplit is the side gate's verdict on a memo once its topics are
 	// landed. The memo routes nothing of its own, and each topic is placed as
@@ -460,20 +464,12 @@ const (
 // CauseTopics is the cause of a memo's split, which the topics stage made.
 const CauseTopics = "topics"
 
-// The causes of a person's read decisions on a shelved item. CauseShelfOpen
-// opens it, and CauseShelfRemove takes it off the shelf, keeping the newest
-// read's verdict and lens.
+// The causes of a person's read decisions on a shelved item, which records
+// already written carry. CauseShelfOpen opened it, and CauseShelfRemove took
+// it off the shelf, keeping the newest read's verdict and lens.
 const (
 	CauseShelfOpen   = "shelf-open"
 	CauseShelfRemove = "shelf-remove"
-)
-
-// The standings of an item on the shelf, as ItemRecords.ShelfStanding answers
-// them: waiting for a person to open it, and opened. An item off the shelf
-// stands at "".
-const (
-	ShelfWaiting = "waiting"
-	ShelfOpened  = "opened"
 )
 
 // Who decided, as decided_by spells it, beside the forms that the DecidedBy

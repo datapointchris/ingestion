@@ -264,20 +264,20 @@ func TestAMemoSplitsIntoOneItemPerTopic(t *testing.T) {
 			t.Errorf("%s holds decisions %q, want a wait in review as owners-words and no quality task", child, decisionLines(t, p, child))
 		}
 	}
-	if _, err := runCLI(t, "review", "sort", first, route.VerbFleetRelate, "--config", p.config); err != nil {
+	if _, err := runCLI(t, "review", "place", first, route.ChoiceSuggestion, "--config", p.config); err != nil {
 		t.Fatal(err)
 	}
 	if n := p.count(t, `SELECT count(*) FROM tasks WHERE item_key = ? AND stage = 'note' AND held_by = 'phone'`, first); n != 1 {
-		t.Errorf("fleet-relate queued %d note tasks on the topic that the first fill holds, want 1", n)
+		t.Errorf("suggestion queued %d note tasks on the topic that the first fill holds, want 1", n)
 	}
-	for _, sort := range [][]string{{route.VerbLearning}, {route.VerbWatch, "--playlist", "Later"}} {
-		args := append(append([]string{"review", "sort", second}, sort...), "--config", p.config)
+	for _, choice := range [][]string{{route.ChoiceLearning}, {route.ChoiceWatch, "--playlist", "Later"}} {
+		args := append(append([]string{"review", "place", second}, choice...), "--config", p.config)
 		if _, err := runCLI(t, args...); err == nil {
-			t.Errorf("%s on a topic placed it, want a refusal", sort[0])
+			t.Errorf("%s on a topic placed it, want a refusal", choice[0])
 		}
 	}
 	if !inReview(t, p, second, route.CauseOwnersWords) {
-		t.Errorf("the refused sorts moved the topic, which holds %q", decisionLines(t, p, second))
+		t.Errorf("the refused choices moved the topic, which holds %q", decisionLines(t, p, second))
 	}
 }
 

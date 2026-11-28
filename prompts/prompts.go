@@ -74,7 +74,7 @@ var Comments = load("comments", "1", nil)
 var PromptProposal = load("prompt-proposal", "1", nil)
 
 // ModelRead is the model read's prompt under each lens, by the lens's name.
-var ModelRead = loadLenses("model-read", "1", map[string]string{"fleet": "1", "personal": "1", "learning": "1"})
+var ModelRead = loadLenses("model-read", "1", map[string]string{"fleet": "1", "personal": "1"})
 
 // Note is the note stage's prompt under each lens, by the lens's name. A read
 // under a lens with no note prompt answers the lens's own questions.

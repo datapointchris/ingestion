@@ -69,7 +69,7 @@ func (b *Board) Frame(now time.Time, grouping string) gotermboard.Frame {
 			gotermboard.ReadStatus(b.statuses(), now),
 			b.writes.Line(now),
 		},
-		Charts:  func(width, _ int) []gotermboard.Line { return verbBar(h, unread, width) },
+		Charts:  func(width, _ int) []gotermboard.Line { return choiceBar(h, unread, width) },
 		Columns: columns,
 		Groups:  groups,
 	}
@@ -88,79 +88,67 @@ func (b *Board) header(h held, grouping string, unread bool) gotermboard.Line {
 	}
 }
 
-// verbBar is the key that sorts by each verb and where the verb sends an item, then the drop's,
-// wrapped at the screen's width. A strip line would cut it, and a verb's key sorts at once, so
-// every key stays on screen. A verb that the set in force gives no destination is drawn in yellow,
-// and the queue's verbs missing say why no verb sorts.
-func verbBar(h held, unread bool, width int) []gotermboard.Line {
+// choiceBar is a line for each choice: its key, where it sends an item and what it does, then the
+// line that names what each digit of the note's menu places, each cut at the screen's width. A
+// choice's key places at once, so every key stays on screen. A choice that the set in force gives
+// no destination is drawn in yellow, and the queue's choices missing say why none places.
+func choiceBar(h held, unread bool, width int) []gotermboard.Line {
 	if unread {
 		return nil
 	}
-	if h.verbs == nil {
-		_, why := queuedVerb(h, route.VerbFleetRelate)
-		return []gotermboard.Line{{gotermboard.C(why, gotermboard.Yellow)}}
+	if h.choices == nil {
+		_, why := queuedChoice(h, route.ChoiceArticles)
+		return []gotermboard.Line{{gotermboard.C(cut(why, width), gotermboard.Yellow)}}
 	}
 	var lines []gotermboard.Line
-	var line gotermboard.Line
-	used := 0
-	add := func(key, label, color string) {
-		wide := utf8.RuneCountInString(key + label)
-		if used > 0 && used+2+wide > width {
-			lines, line, used = append(lines, line), nil, 0
-		}
-		if used > 0 {
-			line, used = append(line, gotermboard.C("  ", "")), used+2
-		}
-		line, used = append(line, gotermboard.C(key, gotermboard.Bold), gotermboard.C(label, color)), used+wide
-	}
-	for _, v := range h.verbs {
-		bound, ok := VerbBindings[v.Verb]
+	for _, c := range h.choices {
+		bound, ok := ChoiceBindings[c.Choice]
 		if !ok {
 			continue
 		}
-		label, color := " "+verbLabel(v, h.watchDefault), ""
-		if v.Missing != nil {
+		label, color := " "+choiceLabel(c, h.watchDefault), ""
+		if c.Missing != nil {
 			color = gotermboard.Yellow
 		}
-		add(bound.Key, label, color)
+		help := ""
+		if r, ok := route.ChoiceOf(c.Choice); ok {
+			help = "  " + r.Help
+		}
+		used := utf8.RuneCountInString(bound.Key + label)
+		lines = append(lines, gotermboard.Line{
+			gotermboard.C(bound.Key, gotermboard.Bold), gotermboard.C(cut(label, width-1), color), gotermboard.C(cut(help, width-used), dim),
+		})
 	}
-	add(KeyDrop, " drop", "")
-	return append(lines, line)
+	digits := KeyNote + " note, then by its digit:"
+	for i, c := range noteChoices(h) {
+		digits += fmt.Sprintf("  %d %s", i+1, c.Choice)
+	}
+	return append(lines, gotermboard.Line{gotermboard.C(cut(digits, width), "")})
 }
 
-// verbLabel is a verb with where it sends an item, as `learning → learning-plan`, a shelf's as
-// `personal-relate → shelf`, and one that picks a playlist with the playlist that enter takes.
-func verbLabel(v server.ReviewVerb, watchDefault *string) string {
+// cut is text cut to at most width runes.
+func cut(text string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if runes := []rune(text); len(runes) > width {
+		return string(runes[:width])
+	}
+	return text
+}
+
+// choiceLabel is a choice with where it sends an item, as `learning → learning`, archive and drop
+// bare, and the one that picks a playlist with the playlist that enter takes.
+func choiceLabel(c server.ReviewChoice, watchDefault *string) string {
 	switch {
-	case v.Missing != nil:
-		return v.Verb + " → no destination"
-	case v.Destination == nil:
-		return v.Verb + " → shelf"
-	case v.Playlist && watchDefault != nil:
-		return v.Verb + " → " + *v.Destination + ", " + outsider(*watchDefault) + " unless picked"
+	case c.Missing != nil:
+		return c.Choice + " → no destination"
+	case c.Destination == nil:
+		return c.Choice
+	case c.Playlist && watchDefault != nil:
+		return c.Choice + " → " + *c.Destination + ", " + outsider(*watchDefault) + " unless picked"
 	}
-	return v.Verb + " → " + *v.Destination
-}
-
-// destinationsMissing is why no key places, or empty where the set declares a destination. The
-// queue comes without its destinations where the service could not read its set in force, or
-// where its release is older than the list.
-func destinationsMissing(destinations []server.ReviewDestination) string {
-	switch {
-	case destinations == nil:
-		return "the queue came without its destinations, so no key places: the service could not read its set in force, or predates the list"
-	case len(destinations) == 0:
-		return "the set in force declares no destination, so no key places"
-	}
-	return ""
-}
-
-// destinationLabel is a destination with the side it gives, as `reading-list → personal`.
-func destinationLabel(d server.ReviewDestination) string {
-	if d.Side == nil {
-		return d.Name + " → drops"
-	}
-	return d.Name + " → " + *d.Side
+	return c.Choice + " → " + *c.Destination
 }
 
 // statuses are the reads the strip names: the queue and the parses, and the playlists once a
@@ -394,36 +382,36 @@ func sortedKeys(m map[string]string) []string { return slices.Sorted(maps.Keys(m
 
 // SchemaVersion is the shape `ingestion tui --view review --json` prints, which
 // schemas/tui-review.schema.json holds.
-const SchemaVersion = 3
+const SchemaVersion = 4
 
 // Snapshot is what --json prints: each waiting item ordered by the board's default grouping and,
 // within each group, by the sort in force, beside the group it draws under, the source the row
-// names and its rank under the sort, then the key that sorts by each verb, the digit that the
-// note's menu places on each destination with, and how each read stands. A display left grouped
+// names and its rank under the sort, then the key that picks each choice, the digit that the
+// note's menu places by each placing choice with, and how each read stands. A display left grouped
 // otherwise does not change it.
 type Snapshot struct {
 	SchemaVersion        int                  `json:"schema_version"`
 	TakenAt              time.Time            `json:"taken_at"`
 	Grouping             string               `json:"grouping"`
 	Sort                 string               `json:"sort"`
-	Verbs                []VerbKey            `json:"verbs"`
+	Choices              []ChoiceKey          `json:"choices"`
 	WatchDefaultPlaylist *string              `json:"watch_default_playlist"`
-	Destinations         []DestinationKey     `json:"destinations"`
+	NoteChoices          []NoteChoiceKey      `json:"note_choices"`
 	Items                []ItemShown          `json:"items"`
 	Sources              []gotermboard.Status `json:"sources"`
 	Unread               []string             `json:"unread_sources,omitempty"`
 }
 
-// VerbKey is the key that sorts by a verb, and where the verb sends an item.
-type VerbKey struct {
+// ChoiceKey is the key that picks a choice, and where the choice sends an item.
+type ChoiceKey struct {
 	Key string `json:"key"`
-	server.ReviewVerb
+	server.ReviewChoice
 }
 
-// DestinationKey is the digit that the note's menu places on a destination with.
-type DestinationKey struct {
-	Key string `json:"key"`
-	server.ReviewDestination
+// NoteChoiceKey is the digit that the note's menu places by a choice with.
+type NoteChoiceKey struct {
+	Key    string `json:"key"`
+	Choice string `json:"choice"`
 }
 
 // ItemShown is one row: the queue's item as the service answered it, the group it draws under, and
@@ -444,22 +432,16 @@ func (b *Board) Snapshot(now time.Time) Snapshot {
 		SchemaVersion: SchemaVersion, TakenAt: now.UTC(), Grouping: grouping, Sort: sort, WatchDefaultPlaylist: h.watchDefault,
 		Items: []ItemShown{}, Sources: b.statuses(),
 	}
-	if h.verbs != nil {
-		snap.Verbs = []VerbKey{}
+	if h.choices != nil {
+		snap.Choices, snap.NoteChoices = []ChoiceKey{}, []NoteChoiceKey{}
 	}
-	for _, v := range h.verbs {
-		if bound, ok := VerbBindings[v.Verb]; ok {
-			snap.Verbs = append(snap.Verbs, VerbKey{Key: bound.Key, ReviewVerb: v})
+	for _, c := range h.choices {
+		if bound, ok := ChoiceBindings[c.Choice]; ok {
+			snap.Choices = append(snap.Choices, ChoiceKey{Key: bound.Key, ReviewChoice: c})
 		}
 	}
-	if h.destinations != nil {
-		snap.Destinations = []DestinationKey{}
-	}
-	for i, d := range h.destinations {
-		if i == 9 {
-			break
-		}
-		snap.Destinations = append(snap.Destinations, DestinationKey{Key: strconv.Itoa(i + 1), ReviewDestination: d})
+	for i, c := range noteChoices(h) {
+		snap.NoteChoices = append(snap.NoteChoices, NoteChoiceKey{Key: strconv.Itoa(i + 1), Choice: c.Choice})
 	}
 	for _, s := range snap.Sources {
 		if s.ReadAt.IsZero() && s.Name == sourceQueue {
